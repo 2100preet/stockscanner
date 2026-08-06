@@ -1,13 +1,19 @@
 """Full call+put strike ladders from Yahoo for Echo flow / GEX."""
 from __future__ import annotations
 
+import json
 import logging
+import time
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import yfinance as yf
 
 logger = logging.getLogger(__name__)
+
+_CACHE_DIR = Path(__file__).resolve().parents[2] / "outputs" / "echo_ladders"
+_DEFAULT_TTL_SEC = 900  # 15m — avoid Yahoo rate limits on UI poll
 
 
 def _nearest_expiries(expirations: list[str], *, max_dte: int = 7) -> list[tuple[str, int]]:
@@ -66,6 +72,34 @@ def _rows_to_side(table, *, right: str, spot: float) -> list[dict[str, Any]]:
     return rows
 
 
+def _cache_path(symbol: str) -> Path:
+    _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    return _CACHE_DIR / f"{symbol.upper()}.json"
+
+
+def load_cached_ladder(symbol: str, *, ttl_sec: int = _DEFAULT_TTL_SEC) -> dict[str, Any] | None:
+    path = _cache_path(symbol)
+    if not path.exists():
+        return None
+    try:
+        raw = json.loads(path.read_text())
+        age = time.time() - float(raw.get("_cached_at") or 0)
+        if age > ttl_sec:
+            return None
+        ladder = raw.get("ladder")
+        return ladder if isinstance(ladder, dict) else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def save_cached_ladder(symbol: str, ladder: dict[str, Any]) -> None:
+    try:
+        path = _cache_path(symbol)
+        path.write_text(json.dumps({"_cached_at": time.time(), "ladder": ladder}))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("echo ladder cache write failed %s: %s", symbol, exc)
+
+
 def fetch_option_ladder(
     symbol: str,
     *,
@@ -73,17 +107,28 @@ def fetch_option_ladder(
     spot: float | None = None,
     max_dte: int = 7,
     prefer_dte: int | None = None,
+    use_cache: bool = True,
+    cache_ttl_sec: int = _DEFAULT_TTL_SEC,
 ) -> dict[str, Any] | None:
     """Nearest short-dated call+put ladder for one symbol."""
+    if use_cache:
+        cached = load_cached_ladder(symbol, ttl_sec=cache_ttl_sec)
+        if cached:
+            if spot and spot > 0:
+                cached = dict(cached)
+                cached["spot"] = float(spot)
+            return cached
+
     fetch_sym = yahoo_symbol or symbol
     try:
         t = yf.Ticker(fetch_sym)
         exps = list(t.options or [])
         if not exps:
-            return None
+            # Stale cache better than nothing when rate-limited
+            return load_cached_ladder(symbol, ttl_sec=cache_ttl_sec * 8)
         window = _nearest_expiries(exps, max_dte=max_dte)
         if not window:
-            return None
+            return load_cached_ladder(symbol, ttl_sec=cache_ttl_sec * 8)
         if prefer_dte is not None:
             window = sorted(window, key=lambda x: abs(x[1] - prefer_dte))
         expiry, dte = window[0]
@@ -96,8 +141,8 @@ def fetch_option_ladder(
         calls = _rows_to_side(chain.calls, right="C", spot=float(spot or 0))
         puts = _rows_to_side(chain.puts, right="P", spot=float(spot or 0))
         if not calls and not puts:
-            return None
-        return {
+            return load_cached_ladder(symbol, ttl_sec=cache_ttl_sec * 8)
+        ladder = {
             "symbol": symbol,
             "yahoo_symbol": fetch_sym,
             "expiry": expiry,
@@ -106,6 +151,9 @@ def fetch_option_ladder(
             "calls": calls,
             "puts": puts,
         }
+        save_cached_ladder(symbol, ladder)
+        return ladder
     except Exception as exc:  # noqa: BLE001
         logger.debug("echo ladder failed %s: %s", symbol, exc)
-        return None
+        # Rate limits / transient Yahoo errors → serve stale cache if present
+        return load_cached_ladder(symbol, ttl_sec=cache_ttl_sec * 8)

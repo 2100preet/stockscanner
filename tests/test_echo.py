@@ -137,9 +137,37 @@ def test_echo_board_without_network_ladders():
         actions={"buy_now": [], "sell_now": []},
         lottery={},
         max_symbols=1,
+        fetch_ladders=False,
     )
     assert "option_flow" in board
     assert board["dark_pool"]["available"] is False
     assert "algo_edge" in board
     assert "cortex" in board
     assert "disclaimer" in board
+
+
+def test_echo_board_candidate_fallback_builds_flow():
+    board = build_echo_board(
+        scores=[{"symbol": "SPY", "horizon": "0dte", "ensemble_score": 75, "confirms": 3, "quality": True, "signals": []}],
+        candidates=[
+            {
+                "symbol": "SPY",
+                "expiry": "2026-08-06",
+                "dte": 0,
+                "strike": 500,
+                "spot": 499,
+                "ask": 1.5,
+                "bid": 1.4,
+                "volume": 8000,
+                "open_interest": 2000,
+                "contract": "SPYTEST",
+                "moneyness_pct": 0.2,
+            }
+        ],
+        quotes={"SPY": {"last": 499, "session_change_pct": 0.3, "mom_5m_pct": 0.1}},
+        fetch_ladders=False,
+        max_symbols=1,
+    )
+    assert board["ladder_source"] == "candidates_fallback"
+    assert board["ladder_count"] >= 1
+    assert board["option_flow"]["counts"]["all"] >= 1

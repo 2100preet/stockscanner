@@ -983,7 +983,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 journal_sync=journal_sync if isinstance(journal_sync, dict) else None,
                 actions=actions,
                 lottery=lottery,
-                max_symbols=int(actions_cfg.get("echo_max_symbols", 8)),
+                max_symbols=int(actions_cfg.get("echo_max_symbols", 6)),
                 max_dte=int((cfg.get("options") or {}).get("max_dte", 5)),
             )
         except Exception as exc:  # noqa: BLE001

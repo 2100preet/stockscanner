@@ -199,6 +199,56 @@ def _build_cortex(
     }
 
 
+def _ladders_from_candidates(candidates: list[dict[str, Any]], quotes: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """Fallback mini-ladders from already-fetched call candidates (no extra Yahoo hits)."""
+    by_sym: dict[str, dict[str, Any]] = {}
+    for c in candidates or []:
+        sym = str(c.get("symbol") or "")
+        if not sym:
+            continue
+        spot = float(
+            (quotes.get(sym) or {}).get("last")
+            or c.get("live_spot")
+            or c.get("spot")
+            or 0
+        )
+        bucket = by_sym.setdefault(
+            sym,
+            {
+                "symbol": sym,
+                "expiry": c.get("expiry"),
+                "dte": c.get("dte"),
+                "spot": spot,
+                "calls": [],
+                "puts": [],
+                "source": "candidates",
+            },
+        )
+        mid = float(c.get("ask") or c.get("mid") or 0)
+        vol = int(c.get("volume") or 0)
+        oi = int(c.get("open_interest") or 0)
+        bucket["calls"].append(
+            {
+                "right": "C",
+                "strike": float(c.get("strike") or 0),
+                "bid": float(c.get("bid") or 0),
+                "ask": float(c.get("ask") or 0),
+                "last": mid,
+                "mid": mid,
+                "volume": vol,
+                "open_interest": oi,
+                "iv": c.get("iv"),
+                "moneyness_pct": c.get("moneyness_pct"),
+                "contract": c.get("contract") or "",
+                "premium_notional": round(mid * 100 * vol, 2),
+            }
+        )
+        if c.get("expiry") and (bucket.get("dte") is None or int(c.get("dte") or 99) < int(bucket.get("dte") or 99)):
+            bucket["expiry"] = c.get("expiry")
+            bucket["dte"] = c.get("dte")
+    return list(by_sym.values())
+
+
 def build_echo_board(
     *,
     scores: list[dict[str, Any]] | None = None,
@@ -209,8 +259,9 @@ def build_echo_board(
     journal_sync: dict[str, Any] | None = None,
     actions: dict[str, Any] | None = None,
     lottery: dict[str, Any] | None = None,
-    max_symbols: int = 8,
+    max_symbols: int = 6,
     max_dte: int = 5,
+    fetch_ladders: bool = True,
 ) -> dict[str, Any]:
     scores = scores or []
     candidates = candidates or []
@@ -234,18 +285,26 @@ def build_echo_board(
             spot=spot,
             max_dte=max_dte,
             prefer_dte=0,
+            use_cache=True,
         )
 
-    with ThreadPoolExecutor(max_workers=min(6, max(1, len(symbols)))) as pool:
-        futs = {pool.submit(_one, s): s for s in symbols}
-        for fut in as_completed(futs):
-            try:
-                ladder = fut.result()
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("echo ladder worker failed %s: %s", futs[fut], exc)
-                continue
-            if ladder:
-                ladders.append(ladder)
+    if fetch_ladders and symbols:
+        # Keep concurrency low — Yahoo rate-limits hard under UI polling
+        with ThreadPoolExecutor(max_workers=min(3, max(1, len(symbols)))) as pool:
+            futs = {pool.submit(_one, s): s for s in symbols}
+            for fut in as_completed(futs):
+                try:
+                    ladder = fut.result()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("echo ladder worker failed %s: %s", futs[fut], exc)
+                    continue
+                if ladder:
+                    ladders.append(ladder)
+
+    ladder_source = "yahoo_or_cache"
+    if not ladders:
+        ladders = _ladders_from_candidates(candidates, quotes)
+        ladder_source = "candidates_fallback"
 
     flow = build_option_flow(ladders)
     dealer = build_dealer_edge(ladders)
@@ -258,6 +317,7 @@ def build_echo_board(
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "symbols": symbols,
         "ladder_count": len(ladders),
+        "ladder_source": ladder_source,
         "option_flow": flow,
         "dealer_edge": dealer,
         "dark_pool": {
