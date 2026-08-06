@@ -29,6 +29,14 @@ def test_dram_memory_universe_present():
     assert market_cap_tier("MU") == "mega_large"
 
 
+def test_spcx_in_scan_universe():
+    from odte_scanner.data.universe import FOCUS_DEFAULT, liquid_universe
+
+    assert "SPCX" in liquid_universe()
+    assert "SPCX" in FOCUS_DEFAULT
+    assert market_cap_tier("SPCX") == "mega_large"
+
+
 def test_classify_post_earnings():
     as_of = date(2026, 8, 5)
     last = (as_of - timedelta(days=3)).isoformat()

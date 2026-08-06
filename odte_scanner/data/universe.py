@@ -66,6 +66,8 @@ LIQUID_UNIVERSE: list[str] = [
     "SNOW", "CRWD", "NET", "DDOG", "MDB", "ZS", "OKTA", "ROKU", "SNAP", "PINS",
     "RBLX", "U", "SOFI", "AFRM", "UPST", "RIVN", "LCID", "NIO", "MARA", "RIOT",
     "SMCI", "DELL", "HPE", "TSM", "ASML", "BABA", "PDD", "JD", "SE", "MELI",
+    # Recent mega IPOs / high-attention names (missed when only on curated lists)
+    "SPCX",
     # Energy / cyclicals / others
     "COP", "SLB", "OXY", "HAL", "F", "GM", "NKE", "LULU", "DE", "HON",
     "UNP", "RTX", "LMT", "NOC", "SPGI", "CME", "ICE", "SCHW", "C", "USB",
@@ -105,7 +107,7 @@ FOCUS_DEFAULT: list[str] = [
     "AAPL", "MSFT", "NVDA", "TSLA", "AMD", "META", "AMZN", "GOOGL", "AVGO",
     "INTC", "MU", "USO", "UNG", "NFLX", "CRM", "ORCL", "ADBE", "QCOM", "AMAT",
     "ARM", "PLTR", "COIN", "MSTR", "HOOD", "UBER", "JPM", "BAC", "XOM", "COST",
-    "TSM", "DIA", "XLK", "XLE", "SOXX", "HYG", "EEM",
+    "TSM", "DIA", "XLK", "XLE", "SOXX", "HYG", "EEM", "SPCX",
 ]
 
 

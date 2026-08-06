@@ -55,6 +55,7 @@ tickers:
   - SOXX
   - HYG
   - EEM
+  - SPCX  # SpaceX — recent IPO; include for swing/earnings watch
 
 # Yahoo Finance symbol overrides (indexes need ^ prefix for quotes/chains)
 symbol_aliases:
