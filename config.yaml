@@ -168,6 +168,8 @@ actions:
   challenge_auto_exit: false
   challenge_max_open: 1
   challenge_ledger_path: outputs/challenge_ledger.json
+  challenge_min_option_volume: 25
+  challenge_min_option_oi: 200
 
 options:
   # Look out to ~1 week for best listed call (not only same-day)

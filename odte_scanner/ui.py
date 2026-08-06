@@ -573,6 +573,7 @@ PAGE = r"""
             <div class="ac-meta">
               <div>Approx hold<strong>${holdLbl(t0)}</strong></div>
               <div>Strike / expiry<strong>${t0.strike==null?"—":fmt(t0.strike,2)} · ${t0.expiry||"—"}</strong></div>
+              <div>Day vol / OI<strong>${t0.volume==null?"—":Number(t0.volume).toLocaleString()} / ${t0.open_interest==null?"—":Number(t0.open_interest).toLocaleString()}</strong></div>
               <div>DTE / contract<strong>${t0.dte??"—"}d · ${t0.contract||"pending"}</strong></div>
               <div>Opt ${t0.mark_source||"price"} → tgt<strong>${(t0.ask??t0.option_last)==null?"—":"$"+fmt(t0.ask??t0.option_last,2)} → ${t0.target_ask==null?"—":"$"+fmt(t0.target_ask,2)}</strong></div>
               <div>Strike rate ≥1%/≥2%<strong>${t0.hit_1pct==null?"—":fmt(t0.hit_1pct,0)+"%"} / ${t0.hit_2pct==null?"—":fmt(t0.hit_2pct,0)+"%"}</strong></div>
@@ -589,17 +590,19 @@ PAGE = r"""
         statusEl.innerHTML = !rows.length
           ? `<div class="empty">No ENTRY/HOLD/EXIT updates yet.</div>`
           : `<table><thead><tr>
-              <th>Status</th><th>Side</th><th>Symbol</th><th>Strike</th><th>Expiry</th><th>Opt $</th><th>Strike rate</th><th>Hold</th><th>Why</th>
+              <th>Status</th><th>Side</th><th>Symbol</th><th>Strike</th><th>Expiry</th><th>Vol/OI</th><th>Opt $</th><th>Strike rate</th><th>Hold</th><th>Why</th>
             </tr></thead><tbody>${rows.map(t=>{
               const a=(t.action||"WAIT");
               const cls=a==="EXIT"?"sell":(a==="ENTRY"?"buy":(a==="HOLD"?"hold":"wait"));
               const mark=t.ask??t.option_last;
+              const liqBad=(Number(t.volume||0)<=0 && Number(t.open_interest||0)<5000);
               return `<tr>
                 <td><span class="badge ${cls}">${a}</span></td>
                 <td class="mono">${t.right==="P"?"PUT":"CALL"}</td>
                 <td><strong>${t.symbol}</strong> ${spotBadge(t)} ${earnBadge(t)}</td>
                 <td class="mono"><strong>${t.strike==null?"—":fmt(t.strike,2)}</strong></td>
                 <td class="mono">${t.expiry||"—"}<div class="why">${t.dte==null?"":t.dte+"d"}</div></td>
+                <td class="mono ${liqBad?"down":"up"}">${t.volume==null?"—":Number(t.volume).toLocaleString()} / ${t.open_interest==null?"—":Number(t.open_interest).toLocaleString()}</td>
                 <td class="mono"><strong>${mark==null?"—":"$"+fmt(mark,2)}</strong><div class="why">${t.mark_source||""}${t.target_ask!=null?" → $"+fmt(t.target_ask,2):""}</div></td>
                 <td class="mono">≥1% ${t.hit_1pct==null?"—":fmt(t.hit_1pct,0)+"%"} · ≥2% ${t.hit_2pct==null?"—":fmt(t.hit_2pct,0)+"%"}</td>
                 <td class="mono"><strong>${holdLbl(t)}</strong></td>
@@ -729,18 +732,21 @@ PAGE = r"""
       if (ticketsEl) {
         if (!tickets.length) ticketsEl.innerHTML = `<div class="empty">No tickets.</div>`;
         else ticketsEl.innerHTML = `<table><thead><tr>
-          <th>Status</th><th>Side</th><th>Symbol</th><th>Strike</th><th>Expiry</th><th>Opt price</th><th>Strike rate</th><th>Hist</th><th>Hold</th><th>Reason</th>
+          <th>Status</th><th>Side</th><th>Symbol</th><th>Strike</th><th>Expiry</th><th>Vol / OI</th><th>Opt price</th><th>Strike rate</th><th>Hist</th><th>Hold</th><th>Reason</th>
         </tr></thead><tbody>${tickets.map(t=>{
           const a=t.action||"WAIT";
           const cls=a==="EXIT"?"sell":(a==="ENTRY"?"buy":(a==="HOLD"?"hold":"wait"));
           const mark = t.ask!=null?t.ask:t.option_last;
           const markLbl = t.mark_source==="last"?"last":(t.mark_source==="ask"?"ask":(mark!=null?"mark":"zone"));
+          const vol=t.volume, oi=t.open_interest;
+          const liqBad = (vol==null && oi==null) || (Number(vol||0)<=0 && Number(oi||0)<5000) || (Number(vol||0)<25 && Number(oi||0)<200);
           return `<tr>
           <td><span class="badge ${cls}">${a}</span></td>
           <td class="mono">${t.right==="P"?"PUT":"CALL"}</td>
           <td><strong>${t.symbol}</strong> ${spotBadge(t)} ${earnBadge(t)}<div class="why">spot ${t.spot==null?"—":"$"+fmt(t.spot,2)}</div></td>
           <td class="mono"><strong>${t.strike==null?"—":fmt(t.strike,2)}</strong><div class="why">${t.moneyness_pct==null?"":fmt(t.moneyness_pct,1)+"% mny"}</div></td>
           <td class="mono"><strong>${t.expiry||"—"}</strong><div class="why">${t.dte==null?"":t.dte+" DTE"} · ${t.contract||"no OCC"}</div></td>
+          <td class="mono ${liqBad?"down":"up"}"><strong>${vol==null?"—":Number(vol).toLocaleString()}</strong><div class="why">OI ${oi==null?"—":Number(oi).toLocaleString()}${liqBad?" · illiquid":""}</div></td>
           <td class="mono"><strong>${mark==null?"—":"$"+fmt(mark,2)}</strong><div class="why">${markLbl}${t.target_ask!=null?" → tgt $"+fmt(t.target_ask,2):""}${t.bid!=null?" · bid "+fmt(t.bid,2):""}</div></td>
           <td class="mono">≥1% <strong class="up">${t.hit_1pct==null?"—":fmt(t.hit_1pct,0)+"%"}</strong><div class="why">≥2% ${t.hit_2pct==null?"—":fmt(t.hit_2pct,0)+"%"}</div></td>
           <td class="mono up"><strong>${fmt(t.hist_win_pct,0)}%</strong><div class="why">n=${t.hist_samples}</div></td>

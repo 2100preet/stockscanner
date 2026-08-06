@@ -41,12 +41,21 @@ def test_pick_challenge_contract_from_cached_payload(tmp_path, monkeypatch):
                     {
                         "contractSymbol": "PLTRFAKEC00160000",
                         "strike": 160.0,
-                        "bid": 0,
-                        "ask": 0,
-                        "lastPrice": 12.5,
+                        "bid": 12.0,
+                        "ask": 12.5,
+                        "lastPrice": 12.4,
                         "openInterest": 2000,
                         "volume": 100,
-                    }
+                    },
+                    {
+                        "contractSymbol": "PLTRFAKEC00155000",
+                        "strike": 155.0,
+                        "bid": 0,
+                        "ask": 0,
+                        "lastPrice": 14.0,
+                        "openInterest": 5,
+                        "volume": 0,
+                    },
                 ],
                 "puts": [],
             }
@@ -64,8 +73,12 @@ def test_pick_challenge_contract_from_cached_payload(tmp_path, monkeypatch):
     assert picked["strike"] == 160.0
     assert picked["expiry"] == exp
     assert picked["ask"] == 12.5
-    assert picked["mark_source"] == "last"
+    assert picked["volume"] == 100
+    assert picked["open_interest"] == 2000
+    assert picked["mark_source"] == "ask"
     assert picked["contract"].startswith("PLTR")
+    # Zero-volume thin OI strike must not win
+    assert picked["strike"] != 155.0
 
 
 def test_list_expiries_dte():

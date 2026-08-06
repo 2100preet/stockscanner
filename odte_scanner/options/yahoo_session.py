@@ -268,8 +268,18 @@ def pick_challenge_contract(
     otm_pct_max: float = 8.0,
     itm_pct_max: float = 2.0,
     prefer_dte: int = 180,
+    min_volume: int = 25,
+    min_oi: int = 200,
+    require_bid: bool = True,
+    allow_zero_volume_if_oi: int = 5000,
 ) -> dict[str, Any] | None:
-    """Select a liquid-ish swing/LEAP call or put with live/last option price."""
+    """Select a liquid swing/LEAP call or put — rejects no-volume shells.
+
+    Liquidity rules (challenge):
+    - Prefer day volume ≥ min_volume
+    - Require OI ≥ min_oi (or very high OI if volume is temporarily 0)
+    - Prefer live bid/ask over last-only marks
+    """
     right = right.upper()
     root = fetch_option_chain(symbol, yahoo_symbol=yahoo_symbol)
     if not root:
@@ -320,6 +330,19 @@ def pick_challenge_contract(
             bid = float(row.get("bid") or 0)
             ask = float(row.get("ask") or 0)
             last = float(row.get("lastPrice") or 0)
+            oi = int(row.get("openInterest") or 0)
+            vol = int(row.get("volume") or 0)
+
+            # Hard liquidity gate — do not recommend empty shells
+            if vol <= 0 and oi < allow_zero_volume_if_oi:
+                continue
+            if vol < min_volume and oi < max(min_oi * 5, allow_zero_volume_if_oi):
+                # Need either real day volume or fortress OI
+                if vol <= 0:
+                    continue
+            if oi < min_oi and vol < min_volume:
+                continue
+
             mark_source = "ask"
             if ask <= 0 and last > 0:
                 ask = last
@@ -327,19 +350,24 @@ def pick_challenge_contract(
                 mark_source = "last"
             if ask <= 0:
                 continue
-            oi = int(row.get("openInterest") or 0)
-            vol = int(row.get("volume") or 0)
-            if oi < 10 and vol < 5 and last <= 0:
+            if require_bid and bid <= 0 and vol < min_volume:
                 continue
-            spread = ((ask - bid) / ask) if ask and bid > 0 else 0.0
+            if require_bid and bid <= 0 and mark_source == "last" and oi < allow_zero_volume_if_oi:
+                # last-only with no bid and weak tape — skip
+                continue
+
+            spread = ((ask - bid) / ask) if ask and bid > 0 else 0.5
+            if spread > 0.35 and vol < min_volume:
+                continue
             rank = (
                 50.0
                 - abs(mny - otm_target) * 4.0
                 - abs(dte - prefer_dte) * 0.04
-                - spread * 25.0
-                + min(25.0, oi / 200.0)
-                + min(12.0, vol / 50.0)
-                + (5.0 if mark_source == "ask" else 0.0)
+                - spread * 30.0
+                + min(30.0, oi / 150.0)
+                + min(35.0, vol / 20.0)  # volume dominates ranking
+                + (8.0 if mark_source == "ask" and bid > 0 else 0.0)
+                + (12.0 if vol >= min_volume else -20.0)
             )
             if rank > best_rank:
                 best_rank = rank
@@ -358,6 +386,7 @@ def pick_challenge_contract(
                     "moneyness_pct": round(mny, 3),
                     "open_interest": oi,
                     "volume": vol,
+                    "liquid": bool(vol >= min_volume and oi >= min_oi and bid > 0),
                     "style": "leap" if dte >= 180 else "swing",
                     "live": True,
                     "suggested_zone": False,

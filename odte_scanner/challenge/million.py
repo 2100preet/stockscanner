@@ -210,11 +210,13 @@ def select_leap_option(
     otm_pct_max: float = 8.0,
     itm_pct_max: float = 2.0,
     max_ask: float = 80.0,
-    min_oi: int = 50,
+    min_oi: int = 200,
+    min_volume: int = 25,
 ) -> dict[str, Any] | None:
     """Pick a liquid swing/LEAP call or put — slight OTM, mid-dated.
 
     Prefers Yahoo crumb options API (more reliable than yfinance under rate limits).
+    Rejects contracts with no/low day volume unless OI is extremely high.
     """
     right = right.upper()
     prefer_dte = 180 if max_dte >= 180 else max(min_dte, int((min_dte + max_dte) / 2))
@@ -231,11 +233,20 @@ def select_leap_option(
             otm_pct_max=otm_pct_max,
             itm_pct_max=itm_pct_max,
             prefer_dte=prefer_dte,
+            min_volume=min_volume,
+            min_oi=min_oi,
         )
         if picked and picked.get("ask") and float(picked["ask"]) <= max_ask:
+            # Final liquidity check
+            vol = int(picked.get("volume") or 0)
+            oi = int(picked.get("open_interest") or 0)
+            if vol <= 0 and oi < 5000:
+                return None
+            if vol < min_volume and oi < min_oi:
+                return None
             return picked
         if picked:
-            return picked
+            return None
     except Exception as exc:  # noqa: BLE001
         logger.debug("crumb option pick %s: %s", symbol, exc)
 
@@ -310,7 +321,11 @@ def select_leap_option(
                 continue
             oi = int(row.get("openInterest") or 0)
             vol = int(row.get("volume") or 0)
-            if oi < min_oi and vol < 20 and mark_source != "last":
+            if vol <= 0 and oi < 5000:
+                continue
+            if oi < min_oi and vol < min_volume:
+                continue
+            if vol < min_volume and oi < min_oi * 5:
                 continue
             spread = (ask - bid) / ask if ask and bid > 0 else 0.0
             if spread > 0.45 and mark_source == "ask":
@@ -320,8 +335,8 @@ def select_leap_option(
                 - abs(mny - otm_target) * 4.0
                 - abs(dte - prefer_dte) * 0.05
                 - spread * 30.0
-                + min(20.0, oi / 500.0)
-                + min(10.0, vol / 100.0)
+                + min(25.0, oi / 200.0)
+                + min(30.0, vol / 25.0)
             )
             if rank > best_rank:
                 best_rank = rank
@@ -613,7 +628,8 @@ def build_challenge_board(
                     min_dte=min_dte,
                     max_dte=max_dte,
                     otm_pct_max=8.0 if prefer_leap or horizon != "weekly" else 6.0,
-                    min_oi=10,
+                    min_oi=200,
+                    min_volume=25,
                 )
                 chain_fetches += 1
                 # Prefer live spot from option quote payload when present
@@ -626,6 +642,15 @@ def build_challenge_board(
                             quote_asof = datetime.now(timezone.utc).isoformat()
                     except Exception:  # noqa: BLE001
                         pass
+                # Drop illiquid picks — never recommend 0-volume shells
+                if contract:
+                    vol_i = int(contract.get("volume") or 0)
+                    oi_i = int(contract.get("open_interest") or 0)
+                    if vol_i <= 0 and oi_i < 5000:
+                        logger.info("skip illiquid %s vol=%s oi=%s", sym, vol_i, oi_i)
+                        contract = None
+                    elif vol_i < 25 and oi_i < 200:
+                        contract = None
             except Exception as exc:  # noqa: BLE001
                 logger.debug("challenge contract fetch %s: %s", sym, exc)
                 contract = None
@@ -721,10 +746,10 @@ def build_challenge_board(
             action = "WAIT"
             status_detail = "WAIT — earnings day; skip new long-premium ENTRY"
         elif ask is None:
-            action = "ENTRY"
-            status_detail = "ENTRY — confirm live ask before fill (hold window set)"
+            action = "WAIT"
+            status_detail = "WAIT — no liquid listed option (need volume + OI + live ask)"
             if earn.get("window") == "pre_earnings":
-                status_detail = "ENTRY (LEAP) — earnings nearing; confirm ask & accept IV risk"
+                status_detail = "WAIT — earnings nearing and no liquid LEAP quote yet"
 
         recommend_reason, reasons = _build_reasons(
             tier=tier,
@@ -755,18 +780,37 @@ def build_challenge_board(
             reasons.append(f"Scan spot ${spot:.2f} — refresh live quote when Yahoo allows")
         else:
             reasons.append("No spot yet — cannot size strike until quote/cache lands")
+        vol_i = int((contract or {}).get("volume") or 0) if contract else 0
+        oi_i = int((contract or {}).get("open_interest") or 0) if contract else 0
         if ask is None:
-            reasons.append("Option ask not live yet — strike/DTE zone only until chain quote returns")
-        elif mark_source == "last":
-            reasons.append(
-                f"Option mark ${ask:.2f} from last trade"
-                + (f" (bid/ask closed)" if bid in (None, 0) else "")
-                + f" · {contract.get('expiry')} K{contract.get('strike')}"
-            )
-        elif mark_source == "ask":
-            reasons.append(
-                f"Live option ask ${ask:.2f} · expiry {contract.get('expiry')} · strike {contract.get('strike')}"
-            )
+            reasons.append("No liquid contract — skipped zero/low volume shells (need vol≥25 or OI≥5000)")
+        else:
+            reasons.append(f"Liquidity: day volume {vol_i:,} · open interest {oi_i:,}")
+            if vol_i <= 0:
+                reasons.append("WARNING: day volume 0 — only kept due to very high OI")
+            if mark_source == "last":
+                reasons.append(
+                    f"Option mark ${ask:.2f} from last trade"
+                    + (f" (bid/ask closed)" if bid in (None, 0) else "")
+                    + f" · {contract.get('expiry')} K{contract.get('strike')}"
+                )
+            elif mark_source == "ask":
+                reasons.append(
+                    f"Live option ask ${ask:.2f} · expiry {contract.get('expiry')} · strike {contract.get('strike')}"
+                )
+
+        # Block ENTRY when liquidity fails even if a zone strike exists
+        if action == "ENTRY" and (
+            ask is None
+            or (contract or {}).get("suggested_zone")
+            or (vol_i <= 0 and oi_i < 5000)
+            or (vol_i < 25 and oi_i < 200)
+        ):
+            action = "WAIT"
+            if (contract or {}).get("suggested_zone") or ask is None:
+                status_detail = "WAIT — no liquid listed option yet (volume/OI not confirmed)"
+            else:
+                status_detail = f"WAIT — illiquid option (vol={vol_i}, OI={oi_i})"
 
         data_note = {
             "live": "Live tape",
