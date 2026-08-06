@@ -310,8 +310,19 @@ PAGE = r"""
 
     <section class="tabpane" id="tab-screener">
       <h2>Market screener</h2>
-      <p class="lede">Ranked liquid universe across horizons. Default <strong>Scan focus</strong> = 46 optionable names; <strong>Scan liquid universe</strong> = ~147 S&amp;P100 + high-volume optionables (Yahoo rate limits block a full-market scan).</p>
-      <div id="screener" class="empty">Run a liquid scan to populate.</div>
+      <p class="lede">
+        Liquid optionable universe (~200 names) — <strong>not</strong> the full US market (Yahoo rate limits).
+        Sort by <strong>earnings</strong>, <strong>volume</strong>, or <strong>score</strong>.
+        Earnings cache warms across refreshes until coverage is complete.
+        Use <strong>Scan liquid</strong> to refresh scores/hist.
+      </p>
+      <div class="metric-row" id="marketMetrics"></div>
+      <div class="playbook" id="screenerSort" style="margin:.4rem 0 .6rem">
+        <button type="button" class="tag active" data-sort="earnings">Earnings</button>
+        <button type="button" class="tag" data-sort="volume">Volume</button>
+        <button type="button" class="tag" data-sort="score">Score</button>
+      </div>
+      <div id="screener" class="empty">Loading market board…</div>
     </section>
 
     <section class="tabpane" id="tab-journal">
@@ -1018,34 +1029,84 @@ PAGE = r"""
       if (disc) disc.textContent = echo.disclaimer || "";
     }
 
-    function renderScreener(horizons) {
+    let SCREENER_SORT = "earnings";
+    function renderScreener(horizons, market) {
       const el = document.getElementById("screener");
-      const hz = horizons || {};
-      const merge = {};
-      ["0dte","weekly","swing"].forEach(h => {
-        (hz[h]||[]).forEach(t => {
-          if (!merge[t.symbol]) merge[t.symbol] = { symbol: t.symbol, last: t.last_price };
-          merge[t.symbol][h] = t.ensemble_score;
-          merge[t.symbol][h+"_q"] = t.quality;
-          merge[t.symbol][h+"_c"] = t.confirms;
+      const metrics = document.getElementById("marketMetrics");
+      const sortEl = document.getElementById("screenerSort");
+      const mkt = market || DATA.market || {};
+      const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
+      const c = mkt.counts || {};
+      if (metrics) metrics.innerHTML = [
+        m("Universe", mkt.universe_size||DATA.liquid_size||"—"),
+        m("Earn cached", `${mkt.earnings_classified??"—"} / ${mkt.universe_size||"—"}`),
+        m("Vol cached", mkt.volume_cached??"—"),
+        m("Today / week / next", `${c.today||0} / ${c.this_week||0} / ${c.next_week||0}`),
+        m("Post / soon", `${c.post||0} / ${c.soon||0}`),
+      ].join("");
+      if (sortEl && !sortEl.dataset.bound) {
+        sortEl.dataset.bound = "1";
+        sortEl.querySelectorAll("[data-sort]").forEach(btn=>{
+          btn.addEventListener("click", ()=>{
+            SCREENER_SORT = btn.getAttribute("data-sort")||"earnings";
+            sortEl.querySelectorAll("[data-sort]").forEach(b=>b.classList.toggle("active", b===btn));
+            renderScreener(DATA.horizons, DATA.market);
+          });
         });
-      });
-      const rows = Object.values(merge).sort((a,b)=>(b.swing||0)-(a.swing||0));
-      if (!rows.length) { el.innerHTML = `<div class="empty">No screener data.</div>`; return; }
-      el.innerHTML = `<table><thead><tr>
-        <th>Symbol</th><th>Last</th><th>0DTE</th><th>1W</th><th>Swing</th><th>Hist win 0DTE / 1W / Swing</th>
-      </tr></thead><tbody>${rows.slice(0,80).map(r=>{
-        const w0=winLookup(r.symbol,"0dte"), ww=winLookup(r.symbol,"weekly"), ws=winLookup(r.symbol,"swing");
-        const cell=(v,q)=> v==null?"—":`<span class="${q?"up":""}">${fmt(v,0)}</span>`;
-        return `<tr>
-          <td><strong>${r.symbol}</strong></td>
-          <td class="mono">${fmt(r.last,2)}</td>
-          <td class="mono">${cell(r["0dte"], r["0dte_q"])}</td>
-          <td class="mono">${cell(r.weekly, r.weekly_q)}</td>
-          <td class="mono">${cell(r.swing, r.swing_q)}</td>
-          <td class="mono">${[w0,ww,ws].map(w=>w.pct==null?"—":fmt(w.pct,0)+"%").join(" / ")}</td>
-        </tr>`;
-      }).join("")}</tbody></table>`;
+      }
+      const earnBadge = (t) => {
+        const w = t.earnings_window||t.window||"none";
+        const b = t.bucket||"";
+        if (w==="post_earnings"||b==="post") return `<span class="badge buy">POST</span>`;
+        if (w==="earnings_day"||b==="today") return `<span class="badge sell">TODAY</span>`;
+        if (b==="this_week") return `<span class="badge wait">THIS WK</span>`;
+        if (b==="next_week") return `<span class="badge wait">NEXT WK</span>`;
+        if (w==="pre_earnings") return `<span class="badge wait">PRE</span>`;
+        if (w==="earnings_soon"||b==="soon") return `<span class="badge skip">SOON</span>`;
+        return `<span class="badge skip">—</span>`;
+      };
+      let rows = [];
+      if (SCREENER_SORT === "volume") rows = mkt.by_volume || [];
+      else if (SCREENER_SORT === "score") rows = mkt.by_score || [];
+      else rows = mkt.by_earnings || mkt.earnings_watch || [];
+      // Fallback: old score merge if market board empty
+      if (!rows.length) {
+        const hz = horizons || {};
+        const merge = {};
+        ["0dte","weekly","swing"].forEach(h => {
+          (hz[h]||[]).forEach(t => {
+            if (!merge[t.symbol]) merge[t.symbol] = { symbol: t.symbol, last: t.last_price, swing_score: t.ensemble_score, quality: t.quality };
+            if (h==="swing") { merge[t.symbol].swing_score = t.ensemble_score; merge[t.symbol].quality = t.quality; }
+          });
+        });
+        rows = Object.values(merge).sort((a,b)=>(b.swing_score||0)-(a.swing_score||0));
+      }
+      if (!rows.length) {
+        el.innerHTML = `<div class="empty">No screener data yet — wait for snapshot / run Scan liquid. ${mkt.note||""}</div>`;
+        return;
+      }
+      el.innerHTML = `<p class="lede" style="margin-top:0;font-size:.72rem">${mkt.note||""}</p>
+        <table><thead><tr>
+          <th>Earn</th><th>Symbol</th><th>Last</th><th>Chg%</th><th>Day vol</th><th>Rel vol</th><th>Days</th><th>Swing score</th><th>Hist swing</th><th>Bias</th>
+        </tr></thead><tbody>${rows.slice(0,80).map(r=>{
+          const days = (r.bucket==="post"||r.earnings_window==="post_earnings")
+            ? (r.days_since_earnings!=null?r.days_since_earnings+"d since":"—")
+            : (r.days_to_earnings!=null?r.days_to_earnings+"d to":"—");
+          const bias = r.strategy_bias||"—";
+          const bcls = bias==="prefer_post"?"buy":(bias==="caution_pre"||bias==="avoid_short_premium"?"sell":"wait");
+          return `<tr>
+            <td>${earnBadge(r)}</td>
+            <td><strong>${r.symbol}</strong>${r.in_focus?` <span class="tag">focus</span>`:""}<div class="why">${(r.tier||"").replace("_","/")}</div></td>
+            <td class="mono">${r.last==null?"—":fmt(r.last,2)}</td>
+            <td class="mono ${pctClass(r.change_pct)}">${r.change_pct==null?"—":fmt(r.change_pct,1)+"%"}</td>
+            <td class="mono">${r.day_volume==null?"—":Number(r.day_volume).toLocaleString()}</td>
+            <td class="mono ${Number(r.rel_volume||0)>=1.5?"up":""}">${r.rel_volume==null?"—":fmt(r.rel_volume,2)+"×"}</td>
+            <td class="mono">${days}<div class="why">${r.next_earnings||r.last_earnings||""}</div></td>
+            <td class="mono ${r.quality?"up":""}">${r.swing_score==null?"—":fmt(r.swing_score,0)}</td>
+            <td class="mono">${r.hist_swing_win==null?"—":fmt(r.hist_swing_win,0)+"%"}${r.hist_swing_n!=null?` <span class="why">n=${r.hist_swing_n}</span>`:""}</td>
+            <td><span class="badge ${bcls}">${bias}</span>${r.prefer_leap?` <span class="tag">LEAP</span>`:""}<div class="why">${r.earnings_label||""}</div></td>
+          </tr>`;
+        }).join("")}</tbody></table>`;
     }
 
     function renderInsights(ins) {
@@ -1117,7 +1178,7 @@ PAGE = r"""
       renderEcho(DATA.echo || {});
       renderDarkpoolMini(DATA.echo || {});
       renderChallenge(DATA.challenge || {});
-      renderScreener(hz);
+      renderScreener(hz, DATA.market || {});
       renderInsights(DATA.insights);
       document.getElementById("session").textContent = (DATA.session||"—") + " · " + (DATA.universe_mode||"focus");
       const uniPill = document.getElementById("universePill");
@@ -1275,13 +1336,16 @@ def create_app(config_path: str | None = None) -> Flask:
         dram_syms: list[str] = []
         try:
             from odte_scanner.challenge.million import _eligible_rows
-            from odte_scanner.data.universe import dram_memory_universe
+            from odte_scanner.data.universe import dram_memory_universe, liquid_universe
 
             challenge_syms = [
                 str(r["symbol"])
                 for r in _eligible_rows(win_table if isinstance(win_table, dict) else None)[:14]
             ]
             dram_syms = dram_memory_universe()[:16]
+            # Aliases for full liquid universe (earnings/volume board — no extra quotes)
+            for s in liquid_universe():
+                aliases.setdefault(s, resolve_yahoo_symbol(s, cfg))
         except Exception:  # noqa: BLE001
             challenge_syms = []
             dram_syms = []
@@ -1559,6 +1623,46 @@ def create_app(config_path: str | None = None) -> Flask:
             logger.warning("challenge board unavailable: %s", exc)
             challenge = {"error": str(exc), "tickets": [], "disclaimer": "Challenge board unavailable."}
 
+        market = {}
+        try:
+            from odte_scanner.market import build_market_board
+
+            market = build_market_board(
+                scores=scan.get("scores") or [],
+                quotes=quotes,
+                aliases=aliases,
+                fetch_earnings=bool(actions_cfg.get("challenge_fetch_earnings", True)),
+                earnings_max_fetch=int(
+                    actions_cfg.get(
+                        "market_board_earnings_max_fetch",
+                        actions_cfg.get("challenge_earnings_max_fetch", 60),
+                    )
+                ),
+                win_table=win_table if isinstance(win_table, dict) else None,
+            )
+            # Keep challenge earnings watch at least as broad as market board
+            if market.get("earnings_watch") and (
+                len(market.get("earnings_watch") or [])
+                >= len(challenge.get("earnings_watch") or [])
+            ):
+                challenge["earnings_watch"] = market.get("earnings_watch")
+                challenge["earnings_watch_buckets"] = {
+                    "today": (market.get("counts") or {}).get("today", 0),
+                    "this_week": (market.get("counts") or {}).get("this_week", 0),
+                    "next_week": (market.get("counts") or {}).get("next_week", 0),
+                    "post": (market.get("counts") or {}).get("post", 0),
+                    "soon": (market.get("counts") or {}).get("soon", 0),
+                }
+                challenge["counts"] = {
+                    **(challenge.get("counts") or {}),
+                    "earn_today": challenge["earnings_watch_buckets"]["today"],
+                    "earn_this_week": challenge["earnings_watch_buckets"]["this_week"],
+                    "earn_next_week": challenge["earnings_watch_buckets"]["next_week"],
+                }
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("market board unavailable: %s", exc)
+            market = {"error": str(exc), "by_earnings": [], "by_volume": [], "by_score": []}
+
         return jsonify(
             {
                 "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -1576,6 +1680,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 "lottery": lottery,
                 "echo": echo,
                 "challenge": challenge,
+                "market": market,
                 "watch": {"quotes": quotes},
                 "ledger": ledger,
                 "actions": actions,

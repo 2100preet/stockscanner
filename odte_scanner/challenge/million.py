@@ -21,6 +21,7 @@ from odte_scanner.challenge.tracker import hold_period_for
 from odte_scanner.data.universe import (
     FOCUS_DEFAULT,
     dram_memory_universe,
+    liquid_universe,
     market_cap_tier,
     mid_small_universe,
 )
@@ -568,21 +569,21 @@ def build_challenge_board(
     need_mult = float(primary_path["mult_per_flip"] or 1.8)
 
     eligible = _eligible_rows(win_table)
-    # Earnings calendar: hist-eligible + DRAM/memory sleeve + focus + mid/small sample
-    # so "today / this week / next week" is not limited to names that already cleared hist.
+    # Earnings calendar over full liquid universe (+ hist/DRAM/focus first for fetch priority)
     seen_earn: set[str] = set()
     earn_syms: list[str] = []
     for sym in (
         [str(r["symbol"]) for r in eligible[: max_tickets + 12]]
         + dram_memory_universe()
         + list(FOCUS_DEFAULT)
-        + mid_small_universe()[:40]
+        + mid_small_universe()
+        + liquid_universe()
     ):
         key = str(sym).upper()
         if key and key not in seen_earn:
             seen_earn.add(key)
             earn_syms.append(key)
-    max_earn = max(12, int(earnings_max_fetch or 36))
+    max_earn = max(12, int(earnings_max_fetch or 60))
     earn_map = earnings_map_for(
         earn_syms,
         aliases=aliases,
