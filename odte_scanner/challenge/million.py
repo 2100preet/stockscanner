@@ -316,6 +316,26 @@ def build_challenge_board(
                 logger.debug("challenge contract fetch %s: %s", sym, exc)
                 contract = None
 
+        # Fallback zone when Yahoo chain is rate-limited / empty
+        if contract is None and spot and spot > 0:
+            step = 1.0 if spot < 50 else (2.5 if spot < 200 else 5.0)
+            raw = spot * (1.03 if row.get("horizon") == "weekly" else 1.05)
+            strike_zone = round(round(raw / step) * step, 2)
+            dte_zone = 120 if row.get("horizon") == "weekly" else 180
+            contract = {
+                "contract": None,
+                "expiry": f"~{dte_zone}DTE listed",
+                "dte": dte_zone,
+                "strike": strike_zone,
+                "spot": spot,
+                "bid": None,
+                "ask": None,
+                "moneyness_pct": round((strike_zone - spot) / spot * 100.0, 2),
+                "open_interest": None,
+                "volume": None,
+                "suggested_zone": True,
+            }
+
         ask = float(contract["ask"]) if contract and contract.get("ask") else None
         # Size: spend most of bankroll on 1–few contracts (challenge mode)
         contracts_n = 1
@@ -341,6 +361,8 @@ def build_challenge_board(
         )
         if row.get("hit_1pct") is not None:
             thesis += f" Strike-rate ≥1% underlying: {row['hit_1pct']:.0f}%."
+        if contract and contract.get("suggested_zone"):
+            thesis += " Chain quote unavailable (Yahoo limit) — strike/DTE is suggested zone; refresh for live ask."
 
         tickets.append(
             ChallengeTicket(
