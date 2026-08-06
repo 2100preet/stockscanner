@@ -133,6 +133,29 @@ def fetch_live_quote(symbol: str, *, yahoo_symbol: str | None = None) -> LiveQuo
     Falls back to cached daily bars when Yahoo rate-limits live endpoints.
     """
     fetch_sym = yahoo_symbol or symbol
+    # Prefer chart API (crumb session) — more reliable under yfinance 429s
+    try:
+        from odte_scanner.options.yahoo_session import fetch_yahoo_quote
+
+        yq = fetch_yahoo_quote(fetch_sym)
+        if yq and yq.get("last"):
+            last = float(yq["last"])
+            prev = float(yq.get("prev_close") or last)
+            chg = last - prev
+            return LiveQuote(
+                symbol=symbol,
+                last=last,
+                prev_close=prev,
+                change=chg,
+                change_pct=(chg / prev * 100.0) if prev else 0.0,
+                session=str(yq.get("session") or "regular"),
+                asof=str(yq.get("asof") or datetime.now(timezone.utc).isoformat()),
+                day_high=float(yq["day_high"]) if yq.get("day_high") else None,
+                day_low=float(yq["day_low"]) if yq.get("day_low") else None,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("yahoo chart quote path %s: %s", symbol, exc)
+
     try:
         t = yf.Ticker(fetch_sym)
         prev_close = None

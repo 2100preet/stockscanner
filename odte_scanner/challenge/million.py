@@ -42,6 +42,8 @@ class ChallengeTicket:
     spot: float | None
     ask: float | None
     bid: float | None
+    option_last: float | None
+    mark_source: str | None  # ask | last | zone
     moneyness_pct: float | None
     open_interest: int | None
     volume: int | None
@@ -207,8 +209,34 @@ def select_leap_option(
     max_ask: float = 80.0,
     min_oi: int = 50,
 ) -> dict[str, Any] | None:
-    """Pick a liquid swing/LEAP call or put — slight OTM, mid-dated."""
+    """Pick a liquid swing/LEAP call or put — slight OTM, mid-dated.
+
+    Prefers Yahoo crumb options API (more reliable than yfinance under rate limits).
+    """
     right = right.upper()
+    prefer_dte = 180 if max_dte >= 180 else max(min_dte, int((min_dte + max_dte) / 2))
+    try:
+        from odte_scanner.options.yahoo_session import pick_challenge_contract
+
+        picked = pick_challenge_contract(
+            symbol,
+            spot,
+            right=right,
+            yahoo_symbol=yahoo_symbol,
+            min_dte=min_dte,
+            max_dte=max_dte,
+            otm_pct_max=otm_pct_max,
+            itm_pct_max=itm_pct_max,
+            prefer_dte=prefer_dte,
+        )
+        if picked and picked.get("ask") and float(picked["ask"]) <= max_ask:
+            return picked
+        if picked:
+            return picked
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("crumb option pick %s: %s", symbol, exc)
+
+    # Fallback: classic yfinance chain
     fetch_sym = yahoo_symbol or symbol
     try:
         t = yf.Ticker(fetch_sym)
@@ -241,7 +269,6 @@ def select_leap_option(
     if not targets:
         return None
 
-    prefer_dte = 180
     targets.sort(key=lambda x: abs(x[1] - prefer_dte))
     best: dict[str, Any] | None = None
     best_rank = -1e18
@@ -258,31 +285,32 @@ def select_leap_option(
             strike = float(row.get("strike") or 0)
             if strike <= 0:
                 continue
-            # Calls: strike above spot = OTM (+); Puts: strike below spot = OTM (− as moneyness_pct)
             if right == "C":
                 mny = (strike - spot) / spot * 100.0
                 if mny < -itm_pct_max or mny > otm_pct_max:
                     continue
                 otm_target = 3.0
             else:
-                mny = (strike - spot) / spot * 100.0  # negative when OTM put
+                mny = (strike - spot) / spot * 100.0
                 if mny > itm_pct_max or mny < -otm_pct_max:
                     continue
                 otm_target = -3.0
             bid = float(row.get("bid") or 0)
             ask = float(row.get("ask") or 0)
             last = float(row.get("lastPrice") or 0)
+            mark_source = "ask"
             if ask <= 0 and last > 0:
                 ask = last
                 bid = bid or last * 0.95
+                mark_source = "last"
             if ask <= 0 or ask > max_ask:
                 continue
             oi = int(row.get("openInterest") or 0)
             vol = int(row.get("volume") or 0)
-            if oi < min_oi and vol < 20:
+            if oi < min_oi and vol < 20 and mark_source != "last":
                 continue
-            spread = (ask - bid) / ask if ask else 1.0
-            if spread > 0.35:
+            spread = (ask - bid) / ask if ask and bid > 0 else 0.0
+            if spread > 0.45 and mark_source == "ask":
                 continue
             rank = (
                 40.0
@@ -302,12 +330,16 @@ def select_leap_option(
                     "dte": dte,
                     "strike": strike,
                     "spot": spot,
-                    "bid": round(bid, 2),
+                    "bid": round(bid, 2) if bid else None,
                     "ask": round(ask, 2),
+                    "last": round(last, 2) if last else None,
+                    "mark_source": mark_source,
                     "moneyness_pct": round(mny, 3),
                     "open_interest": oi,
                     "volume": vol,
                     "style": "leap" if dte >= 180 else "swing",
+                    "live": True,
+                    "suggested_zone": False,
                 }
     return best
 
@@ -315,6 +347,35 @@ def select_leap_option(
 # Back-compat alias
 def select_leap_call(symbol: str, spot: float, **kwargs: Any) -> dict[str, Any] | None:
     return select_leap_option(symbol, spot, right="C", **kwargs)
+
+
+def _third_friday(year: int, month: int):
+    from calendar import FRIDAY, monthcalendar
+
+    weeks = monthcalendar(year, month)
+    fridays = [w[FRIDAY] for w in weeks if w[FRIDAY] != 0]
+    return datetime(year, month, fridays[2]).date()
+
+
+def _approx_listed_expiry(target_dte: int) -> tuple[str, int]:
+    """Nearest monthly (3rd Friday) expiry around target DTE — used when chain unavailable."""
+    today = datetime.now().date()
+    best = None
+    best_abs = 10**9
+    y, m = today.year, today.month
+    for _ in range(18):
+        d = _third_friday(y, m)
+        dte = (d - today).days
+        if dte >= 21 and abs(dte - target_dte) < best_abs:
+            best_abs = abs(dte - target_dte)
+            best = (d.isoformat(), dte)
+        m += 1
+        if m > 12:
+            m = 1
+            y += 1
+    if best:
+        return best
+    return (f"~{target_dte}DTE", target_dte)
 
 
 def _suggested_zone(spot: float, horizon: str, right: str) -> dict[str, Any]:
@@ -325,15 +386,18 @@ def _suggested_zone(spot: float, horizon: str, right: str) -> dict[str, Any]:
         raw = spot * (0.97 if horizon == "weekly" else 0.95)
     strike_zone = round(round(raw / step) * step, 2)
     dte_zone = 120 if horizon == "weekly" else 180
+    expiry, dte = _approx_listed_expiry(dte_zone)
     return {
         "contract": None,
         "right": right,
-        "expiry": f"~{dte_zone}DTE listed",
-        "dte": dte_zone,
+        "expiry": expiry,
+        "dte": dte,
         "strike": strike_zone,
         "spot": spot,
         "bid": None,
         "ask": None,
+        "last": None,
+        "mark_source": "zone",
         "moneyness_pct": round((strike_zone - spot) / spot * 100.0, 2),
         "open_interest": None,
         "volume": None,
@@ -491,6 +555,7 @@ def build_challenge_board(
 
     tickets: list[ChallengeTicket] = []
     chain_fetches = 0
+    max_chain_fetches = max(8, max_tickets)
     earn_boosts: dict[str, int] = {}
 
     for row in eligible[: max_tickets + 6]:
@@ -533,10 +598,10 @@ def build_challenge_board(
                     break
 
         contract = None
-        if fetch_contracts and spot and spot > 0 and chain_fetches < 4 and not open_t:
+        if fetch_contracts and spot and spot > 0 and chain_fetches < max_chain_fetches and not open_t:
             try:
-                min_dte = 150 if prefer_leap else (60 if horizon == "weekly" else 120)
-                max_dte = 450 if prefer_leap or horizon != "weekly" else 220
+                min_dte = 150 if prefer_leap else (60 if horizon == "weekly" else 90)
+                max_dte = 450 if prefer_leap or horizon != "weekly" else 240
                 contract = select_leap_option(
                     sym,
                     spot,
@@ -545,8 +610,19 @@ def build_challenge_board(
                     min_dte=min_dte,
                     max_dte=max_dte,
                     otm_pct_max=8.0 if prefer_leap or horizon != "weekly" else 6.0,
+                    min_oi=10,
                 )
                 chain_fetches += 1
+                # Prefer live spot from option quote payload when present
+                if contract and contract.get("spot"):
+                    try:
+                        spot = float(contract["spot"])
+                        if contract.get("live"):
+                            spot_source = "live"
+                            live_ok = True
+                            quote_asof = datetime.now(timezone.utc).isoformat()
+                    except Exception:  # noqa: BLE001
+                        pass
             except Exception as exc:  # noqa: BLE001
                 logger.debug("challenge contract fetch %s: %s", sym, exc)
                 contract = None
@@ -554,9 +630,11 @@ def build_challenge_board(
         if contract is None and spot and spot > 0:
             zone_hz = "swing" if prefer_leap else horizon
             contract = _suggested_zone(spot, zone_hz, right)
-            if prefer_leap:
-                contract["dte"] = max(int(contract.get("dte") or 0), 180)
-                contract["expiry"] = f"~{contract['dte']}DTE listed"
+            if prefer_leap and int(contract.get("dte") or 0) < 150:
+                expiry, dte = _approx_listed_expiry(180)
+                contract["expiry"] = expiry
+                contract["dte"] = dte
+            contract["mark_source"] = "zone"
             if open_t:
                 # Prefer live open trade contract fields
                 contract = {
@@ -579,6 +657,11 @@ def build_challenge_board(
 
         ask = float(contract["ask"]) if contract and contract.get("ask") else None
         bid = float(contract["bid"]) if contract and contract.get("bid") else None
+        option_last = float(contract["last"]) if contract and contract.get("last") else None
+        mark_source = (contract or {}).get("mark_source")
+        if ask is None and option_last:
+            ask = option_last
+            mark_source = mark_source or "last"
         contracts_n = 1
         debit = 0.0
         if ask and ask > 0:
@@ -671,6 +754,16 @@ def build_challenge_board(
             reasons.append("No spot yet — cannot size strike until quote/cache lands")
         if ask is None:
             reasons.append("Option ask not live yet — strike/DTE zone only until chain quote returns")
+        elif mark_source == "last":
+            reasons.append(
+                f"Option mark ${ask:.2f} from last trade"
+                + (f" (bid/ask closed)" if bid in (None, 0) else "")
+                + f" · {contract.get('expiry')} K{contract.get('strike')}"
+            )
+        elif mark_source == "ask":
+            reasons.append(
+                f"Live option ask ${ask:.2f} · expiry {contract.get('expiry')} · strike {contract.get('strike')}"
+            )
 
         data_note = {
             "live": "Live tape",
@@ -678,6 +771,10 @@ def build_challenge_board(
             "scan": "Scan last price (not live tape)",
             "none": "No spot data",
         }.get(spot_source, spot_source)
+        if ask is not None and mark_source in {"ask", "last"}:
+            data_note = f"{data_note} · option {mark_source} ${ask:.2f}"
+        elif ask is None:
+            data_note = f"{data_note} · option zone only"
         thesis = recommend_reason + f". Approx hold {hold_approx}. " + " ".join(reasons[:3])
 
         tickets.append(
@@ -699,6 +796,8 @@ def build_challenge_board(
                 spot=spot if spot is not None else (contract or {}).get("spot"),
                 ask=ask,
                 bid=bid,
+                option_last=option_last,
+                mark_source=str(mark_source) if mark_source else None,
                 moneyness_pct=(contract or {}).get("moneyness_pct"),
                 open_interest=(contract or {}).get("open_interest"),
                 volume=(contract or {}).get("volume"),

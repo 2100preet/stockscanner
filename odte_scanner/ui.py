@@ -560,11 +560,11 @@ PAGE = r"""
             <div class="bar"><i style="width:${Math.min(100,t0.hist_win_pct||0)}%"></i></div>
             <div class="ac-meta">
               <div>Approx hold<strong>${holdLbl(t0)}</strong></div>
-              <div>Hold window<strong>${t0.hold_period_label||"—"}</strong></div>
+              <div>Strike / expiry<strong>${t0.strike==null?"—":fmt(t0.strike,2)} · ${t0.expiry||"—"}</strong></div>
+              <div>DTE / contract<strong>${t0.dte??"—"}d · ${t0.contract||"pending"}</strong></div>
+              <div>Opt ${t0.mark_source||"price"} → tgt<strong>${(t0.ask??t0.option_last)==null?"—":"$"+fmt(t0.ask??t0.option_last,2)} → ${t0.target_ask==null?"—":"$"+fmt(t0.target_ask,2)}</strong></div>
+              <div>Strike rate ≥1%/≥2%<strong>${t0.hit_1pct==null?"—":fmt(t0.hit_1pct,0)+"%"} / ${t0.hit_2pct==null?"—":fmt(t0.hit_2pct,0)+"%"}</strong></div>
               <div>Spot (${t0.spot_source||"—"})<strong>${t0.spot==null?"—":"$"+fmt(t0.spot,2)}</strong></div>
-              <div>Strike / DTE<strong>${t0.strike==null?"—":fmt(t0.strike,2)+(t0.right==="P"?"p":"c")} · ${t0.dte??"—"}d</strong></div>
-              <div>Ask → target<strong>${t0.ask==null?"zone only":"$"+fmt(t0.ask,2)} → ${t0.target_ask==null?"—":"$"+fmt(t0.target_ask,2)}</strong></div>
-              <div>Days held<strong>${t0.hold_days==null?"not open":fmt(t0.hold_days,1)+"d"} / max ${t0.hold_max_days||"—"}d</strong></div>
             </div>
             <p class="why" style="margin:.55rem 0 0">${t0.status_detail||""}${t0.data_note?` · ${t0.data_note}`:""}</p>
             ${reasonList(t0)}
@@ -577,17 +577,20 @@ PAGE = r"""
         statusEl.innerHTML = !rows.length
           ? `<div class="empty">No ENTRY/HOLD/EXIT updates yet.</div>`
           : `<table><thead><tr>
-              <th>Status</th><th>Side</th><th>Symbol</th><th>Spot</th><th>Approx hold</th><th>Earn</th><th>Why recommended</th>
+              <th>Status</th><th>Side</th><th>Symbol</th><th>Strike</th><th>Expiry</th><th>Opt $</th><th>Strike rate</th><th>Hold</th><th>Why</th>
             </tr></thead><tbody>${rows.map(t=>{
               const a=(t.action||"WAIT");
               const cls=a==="EXIT"?"sell":(a==="ENTRY"?"buy":(a==="HOLD"?"hold":"wait"));
+              const mark=t.ask??t.option_last;
               return `<tr>
                 <td><span class="badge ${cls}">${a}</span></td>
                 <td class="mono">${t.right==="P"?"PUT":"CALL"}</td>
-                <td><strong>${t.symbol}</strong> ${spotBadge(t)}</td>
-                <td class="mono">${t.spot==null?"—":"$"+fmt(t.spot,2)} <span class="why">${t.spot_source||""}</span></td>
-                <td class="mono"><strong>${holdLbl(t)}</strong>${t.hold_days!=null?` · held ${fmt(t.hold_days,1)}d`:""}</td>
-                <td>${earnBadge(t)}</td>
+                <td><strong>${t.symbol}</strong> ${spotBadge(t)} ${earnBadge(t)}</td>
+                <td class="mono"><strong>${t.strike==null?"—":fmt(t.strike,2)}</strong></td>
+                <td class="mono">${t.expiry||"—"}<div class="why">${t.dte==null?"":t.dte+"d"}</div></td>
+                <td class="mono"><strong>${mark==null?"—":"$"+fmt(mark,2)}</strong><div class="why">${t.mark_source||""}${t.target_ask!=null?" → $"+fmt(t.target_ask,2):""}</div></td>
+                <td class="mono">≥1% ${t.hit_1pct==null?"—":fmt(t.hit_1pct,0)+"%"} · ≥2% ${t.hit_2pct==null?"—":fmt(t.hit_2pct,0)+"%"}</td>
+                <td class="mono"><strong>${holdLbl(t)}</strong></td>
                 <td class="why">${t.recommend_reason||t.status_detail||t.thesis||""}</td>
               </tr>`;
             }).join("")}</tbody></table>`;
@@ -651,20 +654,23 @@ PAGE = r"""
       if (ticketsEl) {
         if (!tickets.length) ticketsEl.innerHTML = `<div class="empty">No tickets.</div>`;
         else ticketsEl.innerHTML = `<table><thead><tr>
-          <th>Status</th><th>Tier</th><th>Side</th><th>Symbol</th><th>Spot</th><th>Approx hold</th><th>Hist</th><th>Ask→tgt</th><th>Reason</th>
+          <th>Status</th><th>Side</th><th>Symbol</th><th>Strike</th><th>Expiry</th><th>Opt price</th><th>Strike rate</th><th>Hist</th><th>Hold</th><th>Reason</th>
         </tr></thead><tbody>${tickets.map(t=>{
           const a=t.action||"WAIT";
           const cls=a==="EXIT"?"sell":(a==="ENTRY"?"buy":(a==="HOLD"?"hold":"wait"));
+          const mark = t.ask!=null?t.ask:t.option_last;
+          const markLbl = t.mark_source==="last"?"last":(t.mark_source==="ask"?"ask":(mark!=null?"mark":"zone"));
           return `<tr>
           <td><span class="badge ${cls}">${a}</span></td>
-          <td><span class="badge ${t.certainty_tier==="perfect"?"golden":(t.certainty_tier==="elite"?"unusual":"aggressive")}">${(t.certainty_tier||"").toUpperCase()}</span></td>
           <td class="mono">${t.right==="P"?"PUT":"CALL"}</td>
-          <td><strong>${t.symbol}</strong> ${spotBadge(t)} ${earnBadge(t)}</td>
-          <td class="mono">${t.spot==null?"—":"$"+fmt(t.spot,2)}<div class="why">${t.data_note||t.spot_source||""}</div></td>
-          <td class="mono"><strong>${holdLbl(t)}</strong><div class="why">${t.hold_period_label||""}</div></td>
-          <td class="mono up"><strong>${fmt(t.hist_win_pct,0)}%</strong> <span class="why">n=${t.hist_samples}</span></td>
-          <td class="mono">${t.ask==null?"zone / no live ask":"$"+fmt(t.ask,2)} → ${t.target_ask==null?"—":"$"+fmt(t.target_ask,2)}<div class="why">${t.strike==null?"—":"K "+fmt(t.strike,2)} · ${t.dte??"—"}d</div></td>
-          <td class="why">${t.recommend_reason||t.status_detail||""}${(t.reasons&&t.reasons.length)?`<div style="margin-top:.2rem;color:var(--muted)">${t.reasons.slice(0,3).join(" · ")}</div>`:""}</td>
+          <td><strong>${t.symbol}</strong> ${spotBadge(t)} ${earnBadge(t)}<div class="why">spot ${t.spot==null?"—":"$"+fmt(t.spot,2)}</div></td>
+          <td class="mono"><strong>${t.strike==null?"—":fmt(t.strike,2)}</strong><div class="why">${t.moneyness_pct==null?"":fmt(t.moneyness_pct,1)+"% mny"}</div></td>
+          <td class="mono"><strong>${t.expiry||"—"}</strong><div class="why">${t.dte==null?"":t.dte+" DTE"} · ${t.contract||"no OCC"}</div></td>
+          <td class="mono"><strong>${mark==null?"—":"$"+fmt(mark,2)}</strong><div class="why">${markLbl}${t.target_ask!=null?" → tgt $"+fmt(t.target_ask,2):""}${t.bid!=null?" · bid "+fmt(t.bid,2):""}</div></td>
+          <td class="mono">≥1% <strong class="up">${t.hit_1pct==null?"—":fmt(t.hit_1pct,0)+"%"}</strong><div class="why">≥2% ${t.hit_2pct==null?"—":fmt(t.hit_2pct,0)+"%"}</div></td>
+          <td class="mono up"><strong>${fmt(t.hist_win_pct,0)}%</strong><div class="why">n=${t.hist_samples}</div></td>
+          <td class="mono"><strong>${holdLbl(t)}</strong></td>
+          <td class="why">${t.recommend_reason||t.status_detail||""}${(t.reasons&&t.reasons.length)?`<div style="margin-top:.2rem;color:var(--muted)">${t.reasons.slice(0,2).join(" · ")}</div>`:""}</td>
         </tr>`;
         }).join("")}</tbody></table>`;
       }
@@ -1317,6 +1323,11 @@ def create_app(config_path: str | None = None) -> Flask:
                 fetch_contracts=bool(actions_cfg.get("challenge_fetch_contracts", True)),
                 fetch_earnings=bool(actions_cfg.get("challenge_fetch_earnings", True)),
             )
+            live_contracts = {
+                (str(t.get("symbol")), str(t.get("right") or "C")): t
+                for t in (challenge.get("tickets") or [])
+                if t.get("ask") is not None or t.get("contract")
+            }
             sync = tracker.sync_from_tickets(
                 challenge.get("tickets") or [],
                 quotes=quotes,
@@ -1326,7 +1337,7 @@ def create_app(config_path: str | None = None) -> Flask:
             )
             challenge["sync"] = sync
             challenge["book"] = sync.get("book") or tracker.book.to_dict()
-            # Rebuild statuses after sync so UI matches ledger
+            # Rebuild statuses after sync; keep live contract quotes from first pass
             challenge = build_challenge_board(
                 win_table=win_table if isinstance(win_table, dict) else None,
                 scores=scan.get("scores") or [],
@@ -1337,9 +1348,60 @@ def create_app(config_path: str | None = None) -> Flask:
                 target_usd=float(actions_cfg.get("challenge_target_usd", 1_000_000)),
                 flips=int(actions_cfg.get("challenge_flips", 12)),
                 max_tickets=int(actions_cfg.get("challenge_max_tickets", 8)),
-                fetch_contracts=False,  # keep second pass cheap
-                fetch_earnings=False,  # reuse cache from first pass
+                fetch_contracts=True,  # disk-cached chains — preserve strike/expiry/ask
+                fetch_earnings=False,
             )
+            for t in challenge.get("tickets") or []:
+                prev = live_contracts.get((str(t.get("symbol")), str(t.get("right") or "C")))
+                if not prev:
+                    continue
+                for key in (
+                    "contract",
+                    "expiry",
+                    "dte",
+                    "strike",
+                    "ask",
+                    "bid",
+                    "option_last",
+                    "mark_source",
+                    "moneyness_pct",
+                    "open_interest",
+                    "volume",
+                    "target_ask",
+                    "debit_usd",
+                    "contracts_for_bankroll",
+                    "spot",
+                    "spot_source",
+                    "live_ok",
+                    "data_note",
+                ):
+                    if t.get(key) in (None, "", "zone") and prev.get(key) not in (None, ""):
+                        t[key] = prev.get(key)
+                # Prefer live ask from first pass when second pass fell back to zone
+                if prev.get("ask") is not None and (
+                    t.get("ask") is None or t.get("mark_source") == "zone"
+                ):
+                    t["ask"] = prev.get("ask")
+                    t["bid"] = prev.get("bid")
+                    t["option_last"] = prev.get("option_last")
+                    t["mark_source"] = prev.get("mark_source") or "ask"
+                    t["contract"] = prev.get("contract") or t.get("contract")
+                    t["expiry"] = prev.get("expiry") or t.get("expiry")
+                    t["dte"] = prev.get("dte") if prev.get("dte") is not None else t.get("dte")
+                    t["strike"] = prev.get("strike") if prev.get("strike") is not None else t.get("strike")
+                    if prev.get("target_ask") is not None:
+                        t["target_ask"] = prev.get("target_ask")
+            # Refresh counts after merge
+            tickets = challenge.get("tickets") or []
+            challenge["counts"] = {
+                **(challenge.get("counts") or {}),
+                "live_ask": sum(1 for t in tickets if t.get("ask") is not None and t.get("mark_source") != "zone"),
+                "live_spot": sum(1 for t in tickets if t.get("spot_source") == "live"),
+                "cache_spot": sum(1 for t in tickets if t.get("spot_source") == "cache"),
+            }
+            challenge["entry"] = [t for t in tickets if t.get("action") == "ENTRY"]
+            challenge["hold"] = [t for t in tickets if t.get("action") == "HOLD"]
+            challenge["exit"] = [t for t in tickets if t.get("action") == "EXIT"]
             challenge["sync"] = sync
             challenge["book"] = tracker.book.to_dict()
         except Exception as exc:  # noqa: BLE001
