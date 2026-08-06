@@ -510,13 +510,23 @@ PAGE = r"""
       const path = ch.path || {};
       const c = ch.counts || {};
       const book = (ch.sync && ch.sync.book) || ch.book || {};
+      const holdLbl = (t) => t.hold_approx_label || (t.hold_ideal_days!=null?`≈${t.hold_ideal_days}d (${t.hold_min_days||"?"}–${t.hold_max_days||"?"}d)`:(t.hold_period_label||"—"));
+      const spotBadge = (t) => {
+        const src=t.spot_source||"none";
+        if (src==="live") return `<span class="badge buy">LIVE</span>`;
+        if (src==="cache") return `<span class="badge wait">CACHE</span>`;
+        if (src==="scan") return `<span class="badge skip">SCAN</span>`;
+        return `<span class="badge sell">NO SPOT</span>`;
+      };
       if (metrics) metrics.innerHTML = [
         m("Sleeve equity", book.equity!=null?`$${Number(book.equity).toLocaleString()}`:`$${(ch.start_usd||1000).toLocaleString()}`),
         m("Target", `$${(ch.target_usd||1000000).toLocaleString()}`, "up"),
         m("Need / flip", path.pct_per_flip==null?"—":`+${fmt(path.pct_per_flip,0)}%`, "up"),
         m("ENTRY / HOLD / EXIT", `${c.entry||0} / ${c.hold||0} / ${c.exit||0}`),
         m("Calls / Puts", `${c.calls||0} / ${c.puts||0}`),
-        m("Mid/Small", `${c.mid_small||0}`),
+        m("Approx hold", (ch.primary && holdLbl(ch.primary)) || "—"),
+        m("Live / cache spot", `${c.live_spot||0} / ${c.cache_spot||0}`),
+        m("Live asks", `${c.live_ask||0}/${c.tickets||0}`),
         m("Pre / Post earn", `${c.pre_earnings||0} / ${c.post_earnings||0}`),
         m("Closed flips", `${book.flips_closed||0} (W${book.wins||0}/L${book.losses||0})`),
       ].join("");
@@ -531,7 +541,7 @@ PAGE = r"""
       const reasonList = (t) => {
         const rs = t.reasons||[];
         if (!rs.length) return t.recommend_reason||t.thesis||"";
-        return `<div class="why"><strong>${t.recommend_reason||""}</strong><ul style="margin:.25rem 0 0;padding-left:1.1rem">${rs.slice(0,6).map(r=>`<li>${r}</li>`).join("")}</ul></div>`;
+        return `<div class="why"><strong>${t.recommend_reason||""}</strong><ul style="margin:.25rem 0 0;padding-left:1.1rem">${rs.slice(0,7).map(r=>`<li>${r}</li>`).join("")}</ul></div>`;
       };
 
       const t0 = ch.primary;
@@ -543,18 +553,20 @@ PAGE = r"""
           const kind = act==="EXIT"?"short":(act==="ENTRY"||act==="HOLD"?"long":"wait");
           primaryEl.innerHTML = `<article class="action-card ${kind}">
             <div class="ac-top">
-              <div class="ac-sym">${t0.symbol} <span class="tag">${t0.right==="P"?"PUT":"CALL"}</span> <span class="tag">${(t0.market_cap_tier||"").replace("_","/")}</span> ${earnBadge(t0)}</div>
+              <div class="ac-sym">${t0.symbol} <span class="tag">${t0.right==="P"?"PUT":"CALL"}</span> <span class="tag">${(t0.market_cap_tier||"").replace("_","/")}</span> ${earnBadge(t0)} ${spotBadge(t0)}</div>
               <div class="ac-dir ${kind}">${act} · ${tier.toUpperCase()}</div>
             </div>
-            <div class="ac-conf">Hist win ${fmt(t0.hist_win_pct,0)}% · n=${t0.hist_samples} · hold ${t0.hold_period_label||"—"}</div>
+            <div class="ac-conf">Hist win ${fmt(t0.hist_win_pct,0)}% · n=${t0.hist_samples} · <strong>approx hold ${holdLbl(t0)}</strong></div>
             <div class="bar"><i style="width:${Math.min(100,t0.hist_win_pct||0)}%"></i></div>
             <div class="ac-meta">
-              <div>Strike<strong>${t0.strike==null?"—":fmt(t0.strike,2)+(t0.right==="P"?"p":"c")}</strong></div>
-              <div>Expiry / DTE<strong>${t0.expiry||"—"} / ${t0.dte??"—"}</strong></div>
-              <div>Ask → target<strong>${t0.ask==null?"—":"$"+fmt(t0.ask,2)} → ${t0.target_ask==null?"—":"$"+fmt(t0.target_ask,2)}</strong></div>
-              <div>Hold days<strong>${t0.hold_days==null?"—":fmt(t0.hold_days,1)+"d"} / max ${t0.hold_max_days||"—"}d</strong></div>
+              <div>Approx hold<strong>${holdLbl(t0)}</strong></div>
+              <div>Hold window<strong>${t0.hold_period_label||"—"}</strong></div>
+              <div>Spot (${t0.spot_source||"—"})<strong>${t0.spot==null?"—":"$"+fmt(t0.spot,2)}</strong></div>
+              <div>Strike / DTE<strong>${t0.strike==null?"—":fmt(t0.strike,2)+(t0.right==="P"?"p":"c")} · ${t0.dte??"—"}d</strong></div>
+              <div>Ask → target<strong>${t0.ask==null?"zone only":"$"+fmt(t0.ask,2)} → ${t0.target_ask==null?"—":"$"+fmt(t0.target_ask,2)}</strong></div>
+              <div>Days held<strong>${t0.hold_days==null?"not open":fmt(t0.hold_days,1)+"d"} / max ${t0.hold_max_days||"—"}d</strong></div>
             </div>
-            <p class="why" style="margin:.55rem 0 0">${t0.status_detail||""}</p>
+            <p class="why" style="margin:.55rem 0 0">${t0.status_detail||""}${t0.data_note?` · ${t0.data_note}`:""}</p>
             ${reasonList(t0)}
           </article>`;
         }
@@ -565,17 +577,17 @@ PAGE = r"""
         statusEl.innerHTML = !rows.length
           ? `<div class="empty">No ENTRY/HOLD/EXIT updates yet.</div>`
           : `<table><thead><tr>
-              <th>Status</th><th>Side</th><th>Symbol</th><th>Earn</th><th>Strike</th><th>Hold</th><th>Why recommended</th>
+              <th>Status</th><th>Side</th><th>Symbol</th><th>Spot</th><th>Approx hold</th><th>Earn</th><th>Why recommended</th>
             </tr></thead><tbody>${rows.map(t=>{
               const a=(t.action||"WAIT");
               const cls=a==="EXIT"?"sell":(a==="ENTRY"?"buy":(a==="HOLD"?"hold":"wait"));
               return `<tr>
                 <td><span class="badge ${cls}">${a}</span></td>
                 <td class="mono">${t.right==="P"?"PUT":"CALL"}</td>
-                <td><strong>${t.symbol}</strong> <span class="tag">${(t.market_cap_tier||"").replace("_","/")}</span></td>
+                <td><strong>${t.symbol}</strong> ${spotBadge(t)}</td>
+                <td class="mono">${t.spot==null?"—":"$"+fmt(t.spot,2)} <span class="why">${t.spot_source||""}</span></td>
+                <td class="mono"><strong>${holdLbl(t)}</strong>${t.hold_days!=null?` · held ${fmt(t.hold_days,1)}d`:""}</td>
                 <td>${earnBadge(t)}</td>
-                <td class="mono">${t.strike==null?"—":fmt(t.strike,2)} · ${t.expiry||"—"}</td>
-                <td class="mono">${t.hold_period_label||"—"}${t.hold_days!=null?` · ${fmt(t.hold_days,1)}d held`:""}</td>
                 <td class="why">${t.recommend_reason||t.status_detail||t.thesis||""}</td>
               </tr>`;
             }).join("")}</tbody></table>`;
@@ -639,7 +651,7 @@ PAGE = r"""
       if (ticketsEl) {
         if (!tickets.length) ticketsEl.innerHTML = `<div class="empty">No tickets.</div>`;
         else ticketsEl.innerHTML = `<table><thead><tr>
-          <th>Status</th><th>Tier</th><th>Side</th><th>Symbol</th><th>Cap</th><th>Earn</th><th>Hist</th><th>Hold</th><th>Ask→tgt</th><th>Reason</th>
+          <th>Status</th><th>Tier</th><th>Side</th><th>Symbol</th><th>Spot</th><th>Approx hold</th><th>Hist</th><th>Ask→tgt</th><th>Reason</th>
         </tr></thead><tbody>${tickets.map(t=>{
           const a=t.action||"WAIT";
           const cls=a==="EXIT"?"sell":(a==="ENTRY"?"buy":(a==="HOLD"?"hold":"wait"));
@@ -647,12 +659,11 @@ PAGE = r"""
           <td><span class="badge ${cls}">${a}</span></td>
           <td><span class="badge ${t.certainty_tier==="perfect"?"golden":(t.certainty_tier==="elite"?"unusual":"aggressive")}">${(t.certainty_tier||"").toUpperCase()}</span></td>
           <td class="mono">${t.right==="P"?"PUT":"CALL"}</td>
-          <td><strong>${t.symbol}</strong></td>
-          <td class="mono">${(t.market_cap_tier||"—").replace("_","/")}</td>
-          <td>${earnBadge(t)}</td>
+          <td><strong>${t.symbol}</strong> ${spotBadge(t)} ${earnBadge(t)}</td>
+          <td class="mono">${t.spot==null?"—":"$"+fmt(t.spot,2)}<div class="why">${t.data_note||t.spot_source||""}</div></td>
+          <td class="mono"><strong>${holdLbl(t)}</strong><div class="why">${t.hold_period_label||""}</div></td>
           <td class="mono up"><strong>${fmt(t.hist_win_pct,0)}%</strong> <span class="why">n=${t.hist_samples}</span></td>
-          <td class="mono">${t.hold_period_label||"—"}</td>
-          <td class="mono">${t.ask==null?"—":"$"+fmt(t.ask,2)} → ${t.target_ask==null?"—":"$"+fmt(t.target_ask,2)}</td>
+          <td class="mono">${t.ask==null?"zone / no live ask":"$"+fmt(t.ask,2)} → ${t.target_ask==null?"—":"$"+fmt(t.target_ask,2)}<div class="why">${t.strike==null?"—":"K "+fmt(t.strike,2)} · ${t.dte??"—"}d</div></td>
           <td class="why">${t.recommend_reason||t.status_detail||""}${(t.reasons&&t.reasons.length)?`<div style="margin-top:.2rem;color:var(--muted)">${t.reasons.slice(0,3).join(" · ")}</div>`:""}</td>
         </tr>`;
         }).join("")}</tbody></table>`;
@@ -1086,6 +1097,17 @@ def create_app(config_path: str | None = None) -> Flask:
         aliases = {s: resolve_yahoo_symbol(s, cfg) for s in syms}
 
         win_table = scan.get("win_rates") or load_win_rate_table()
+        # Merge full cache so challenge can see mid/small hist beyond this scan slice
+        try:
+            cached_wr = load_win_rate_table()
+            if cached_wr and isinstance(win_table, dict):
+                merged_syms = dict(cached_wr.get("symbols") or {})
+                merged_syms.update(win_table.get("symbols") or {})
+                win_table = {**cached_wr, **win_table, "symbols": merged_syms}
+            elif cached_wr and not win_table:
+                win_table = cached_wr
+        except Exception:  # noqa: BLE001
+            pass
         if syms and (
             not win_table
             or not set(syms).issubset(set((win_table.get("symbols") or {}).keys()))
@@ -1097,11 +1119,26 @@ def create_app(config_path: str | None = None) -> Flask:
                 logger.warning("win rates unavailable: %s", exc)
                 win_table = win_table or {}
 
+        # Challenge-eligible symbols need their own live/cache quotes (often outside focus candidates)
+        challenge_syms: list[str] = []
+        try:
+            from odte_scanner.challenge.million import _eligible_rows
+
+            challenge_syms = [
+                str(r["symbol"])
+                for r in _eligible_rows(win_table if isinstance(win_table, dict) else None)[:14]
+            ]
+        except Exception:  # noqa: BLE001
+            challenge_syms = []
+        quote_syms = sorted(set(syms[:20] + challenge_syms))
+        for s in quote_syms:
+            aliases.setdefault(s, resolve_yahoo_symbol(s, cfg))
+
         def _uq(sym: str):
             return sym, fetch_live_quote(sym, yahoo_symbol=aliases.get(sym))
 
-        with ThreadPoolExecutor(max_workers=6) as pool:
-            for sym, q in pool.map(_uq, syms[:20]):
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            for sym, q in pool.map(_uq, quote_syms):
                 if q:
                     quotes[sym] = q.to_dict()
 

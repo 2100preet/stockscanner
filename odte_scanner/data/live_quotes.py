@@ -51,8 +51,87 @@ def _session_label(ts: pd.Timestamp) -> str:
     return "unknown"
 
 
+def _quote_from_daily_cache(symbol: str, *, yahoo_symbol: str | None = None) -> LiveQuote | None:
+    """Fallback spot from local parquet / daily history when Yahoo live endpoints are blocked."""
+    try:
+        from pathlib import Path
+
+        import pandas as pd
+
+        from odte_scanner.data.fetcher import CACHE_DIR, fetch_history
+
+        fetch_sym = yahoo_symbol or symbol
+        safe = str(fetch_sym).replace("^", "IDX_")
+        df = None
+        # Prefer any existing local parquet (avoid Yahoo while rate-limited)
+        if CACHE_DIR.exists():
+            candidates = sorted(
+                CACHE_DIR.glob(f"{safe}_*_1d.parquet"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            for path in candidates:
+                try:
+                    cached = pd.read_parquet(path)
+                    if cached is not None and not cached.empty:
+                        df = cached
+                        break
+                except Exception:  # noqa: BLE001
+                    continue
+
+        if df is None or df.empty:
+            # Last resort: fetcher (may hit network if cache stale/missing)
+            for period in ("3mo", "2y", "6mo"):
+                try:
+                    df = fetch_history(
+                        symbol,
+                        period=period,
+                        interval="1d",
+                        use_cache=True,
+                        cache_max_age_hours=168,
+                        yahoo_symbol=yahoo_symbol,
+                    )
+                except Exception:  # noqa: BLE001
+                    df = None
+                if df is not None and not df.empty:
+                    break
+        if df is None or df.empty:
+            return None
+        last_row = df.iloc[-1]
+        prev_row = df.iloc[-2] if len(df) > 1 else last_row
+        last = float(last_row["Close"])
+        prev_close = float(prev_row["Close"])
+        if last <= 0 or prev_close <= 0:
+            return None
+        asof = str(df.index[-1])
+        chg = last - prev_close
+        return LiveQuote(
+            symbol=symbol,
+            last=last,
+            prev_close=prev_close,
+            change=chg,
+            change_pct=(chg / prev_close) * 100,
+            session="cache",
+            asof=asof,
+            day_high=float(last_row.get("High") or 0) or None,
+            day_low=float(last_row.get("Low") or 0) or None,
+            session_open=float(last_row.get("Open") or 0) or None,
+            session_change=chg,
+            session_change_pct=(chg / prev_close) * 100,
+            mom_5m_pct=None,
+            mom_15m_pct=None,
+            dist_from_day_high_pct=None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("daily cache quote failed for %s: %s", symbol, exc)
+        return None
+
+
 def fetch_live_quote(symbol: str, *, yahoo_symbol: str | None = None) -> LiveQuote | None:
-    """Best-effort last price including extended / overnight bars when Yahoo has them."""
+    """Best-effort last price including extended / overnight bars when Yahoo has them.
+
+    Falls back to cached daily bars when Yahoo rate-limits live endpoints.
+    """
     fetch_sym = yahoo_symbol or symbol
     try:
         t = yf.Ticker(fetch_sym)
@@ -107,7 +186,7 @@ def fetch_live_quote(symbol: str, *, yahoo_symbol: str | None = None) -> LiveQuo
             logger.debug("prepost quote failed for %s: %s", fetch_sym, exc)
 
         if last is None or prev_close is None or prev_close == 0:
-            return None
+            return _quote_from_daily_cache(symbol, yahoo_symbol=yahoo_symbol)
 
         chg = last - prev_close
         sess_chg = (last - session_open) if session_open else None
@@ -134,7 +213,7 @@ def fetch_live_quote(symbol: str, *, yahoo_symbol: str | None = None) -> LiveQuo
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Live quote failed for %s: %s", symbol, exc)
-        return None
+        return _quote_from_daily_cache(symbol, yahoo_symbol=yahoo_symbol)
 
 
 def fetch_live_quotes(

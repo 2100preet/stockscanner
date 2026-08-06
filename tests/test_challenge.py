@@ -91,15 +91,20 @@ def test_challenge_board_picks_perfect_hist():
         assert t["action"] in {"ENTRY", "HOLD", "EXIT", "WAIT"}
         assert t["right"] in {"C", "P"}
         assert t["hold_period_label"]
+        assert t["hold_approx_label"]
+        assert t["approx_hold_days"] > 0
         assert t["hold_min_days"] > 0
         assert t["hold_max_days"] >= t["hold_min_days"]
         assert t["recommend_reason"]
         assert isinstance(t["reasons"], list) and len(t["reasons"]) >= 3
+        assert any("Approx hold" in r for r in t["reasons"])
         assert t["market_cap_tier"]
+        assert t["spot_source"] in {"live", "cache", "scan", "none"}
     assert "hold_periods" in board
     assert board["counts"]["entry"] + board["counts"]["hold"] + board["counts"]["exit"] >= 1
     assert board["counts"]["calls"] + board["counts"]["puts"] == board["counts"]["tickets"]
     assert board["primary"]["recommend_reason"]
+    assert "≈" in board["primary"]["hold_approx_label"]
 
 
 def test_challenge_board_put_side_and_hold_status():

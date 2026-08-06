@@ -50,9 +50,11 @@ class ChallengeTicket:
     target_premium_mult: float
     target_ask: float | None
     hold_period_label: str
+    hold_approx_label: str  # e.g. ≈55d (30–90d)
     hold_min_days: int
     hold_max_days: int
     hold_ideal_days: int
+    approx_hold_days: int
     hold_days: float | None
     trade_id: str | None
     thesis: str
@@ -67,6 +69,10 @@ class ChallengeTicket:
     last_earnings: str | None
     days_to_earnings: int | None
     days_since_earnings: int | None
+    spot_source: str  # live | cache | scan | none
+    quote_asof: str | None
+    live_ok: bool
+    data_note: str
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -495,12 +501,19 @@ def build_challenge_board(
         earn_boosts[sym] = int(earn.get("boost") or 0)
         cap_tier = market_cap_tier(sym)
         spot = None
+        spot_source = "none"
+        quote_asof = q.get("asof")
+        sess = str(q.get("session") or "")
         if q.get("last") is not None:
             spot = float(q["last"])
+            spot_source = "cache" if sess == "cache" else "live"
         elif sc.get("last_price") is not None:
             spot = float(sc["last_price"])
+            spot_source = "scan"
         elif sc.get("entry") is not None:
             spot = float(sc["entry"])
+            spot_source = "scan"
+        live_ok = spot_source == "live"
 
         right = _side_from_tape(score=sc, quote=q)
         horizon = str(row.get("horizon") or "swing")
@@ -562,6 +575,7 @@ def build_challenge_board(
 
         # Refresh hold period with DTE
         hp = hold_period_for(horizon, (contract or {}).get("dte"))
+        hold_approx = f"≈{hp['ideal_days']}d ({hp['min_days']}–{hp['max_days']}d)"
 
         ask = float(contract["ask"]) if contract and contract.get("ask") else None
         bid = float(contract["bid"]) if contract and contract.get("bid") else None
@@ -642,7 +656,29 @@ def build_challenge_board(
             contract=contract,
             action=action,
         )
-        thesis = recommend_reason + ". " + " ".join(reasons[:3])
+        reasons.insert(2, f"Approx hold {hold_approx} before EXIT / roll")
+        if spot_source == "live":
+            reasons.append(f"Live spot ${spot:.2f}" + (f" @ {quote_asof}" if quote_asof else ""))
+        elif spot_source == "cache":
+            reasons.append(
+                f"Cached daily spot ${spot:.2f}"
+                + (f" ({quote_asof})" if quote_asof else "")
+                + " — Yahoo live tape rate-limited"
+            )
+        elif spot_source == "scan":
+            reasons.append(f"Scan spot ${spot:.2f} — refresh live quote when Yahoo allows")
+        else:
+            reasons.append("No spot yet — cannot size strike until quote/cache lands")
+        if ask is None:
+            reasons.append("Option ask not live yet — strike/DTE zone only until chain quote returns")
+
+        data_note = {
+            "live": "Live tape",
+            "cache": "Cached daily (Yahoo live limited)",
+            "scan": "Scan last price (not live tape)",
+            "none": "No spot data",
+        }.get(spot_source, spot_source)
+        thesis = recommend_reason + f". Approx hold {hold_approx}. " + " ".join(reasons[:3])
 
         tickets.append(
             ChallengeTicket(
@@ -671,9 +707,11 @@ def build_challenge_board(
                 target_premium_mult=round(need_mult, 3),
                 target_ask=round(ask * need_mult, 2) if ask else None,
                 hold_period_label=str(hp["label"]),
+                hold_approx_label=hold_approx,
                 hold_min_days=int(hp["min_days"]),
                 hold_max_days=int(hp["max_days"]),
                 hold_ideal_days=int(hp["ideal_days"]),
+                approx_hold_days=int(hp["ideal_days"]),
                 hold_days=hold_days,
                 trade_id=trade_id,
                 thesis=thesis,
@@ -688,6 +726,10 @@ def build_challenge_board(
                 last_earnings=earn.get("last_earnings"),
                 days_to_earnings=earn.get("days_to_earnings"),
                 days_since_earnings=earn.get("days_since_earnings"),
+                spot_source=spot_source,
+                quote_asof=str(quote_asof) if quote_asof else None,
+                live_ok=live_ok,
+                data_note=data_note,
             )
         )
         if len(tickets) >= max_tickets:
@@ -737,6 +779,9 @@ def build_challenge_board(
             "mid_small": sum(1 for t in tickets if t.market_cap_tier in {"mid", "small"}),
             "pre_earnings": sum(1 for t in tickets if t.earnings_window == "pre_earnings"),
             "post_earnings": sum(1 for t in tickets if t.earnings_window == "post_earnings"),
+            "live_spot": sum(1 for t in tickets if t.spot_source == "live"),
+            "cache_spot": sum(1 for t in tickets if t.spot_source == "cache"),
+            "live_ask": sum(1 for t in tickets if t.ask is not None),
         },
         "hold_periods": {
             "weekly": hold_period_for("weekly"),
