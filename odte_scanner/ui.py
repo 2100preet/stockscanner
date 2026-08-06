@@ -76,7 +76,13 @@ PAGE = r"""
     .ac-dir { font-family: "JetBrains Mono", monospace; font-size: .72rem; letter-spacing: .08em; font-weight: 500; }
     .ac-dir.long { color: var(--long); } .ac-dir.wait { color: var(--wait); } .ac-dir.short { color: var(--short); }
     .badge.skip { background: rgba(139,158,148,.14); color: var(--muted); }
+    .badge.golden { background: rgba(224,179,90,.22); color: #f0d48a; }
+    .badge.unusual { background: rgba(126,200,184,.18); color: var(--accent); }
+    .badge.aggressive { background: rgba(62,207,142,.14); color: var(--long); }
     .playbook { display: flex; flex-wrap: wrap; gap: .25rem; margin-top: .45rem; }
+    .echo-grid { display: grid; gap: .85rem; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+    .gex-bar { height: 8px; border-radius: 99px; background: rgba(255,255,255,.06); overflow: hidden; }
+    .gex-bar > i { display: block; height: 100%; background: linear-gradient(90deg, var(--short), var(--wait), var(--long)); }
     .ac-conf { margin: .45rem 0 .2rem; font-size: .8rem; color: var(--muted); }
     .bar { height: 4px; border-radius: 99px; background: rgba(255,255,255,.08); overflow: hidden; margin-bottom: .55rem; }
     .bar > i { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), var(--long)); }
@@ -125,6 +131,7 @@ PAGE = r"""
       <button data-tab="explosive">Explosive</button>
       <button data-tab="weekly">1 Week</button>
       <button data-tab="swing">Swing 1–3M</button>
+      <button data-tab="echo">Echo Desk</button>
       <button data-tab="screener">Screener</button>
       <button data-tab="journal">Journal</button>
     </nav>
@@ -198,6 +205,51 @@ PAGE = r"""
       <div class="cards" id="cardsSwing"></div>
     </section>
 
+    <section class="tabpane" id="tab-echo">
+      <h2>Echo Desk — TradeEcho-style terminal</h2>
+      <p class="lede">
+        Modules inspired by <a href="https://tradeecho.com/" target="_blank" rel="noopener" style="color:var(--accent)">Trade Echo</a>:
+        OptionFlow · DealerEdge (GEX) · Darkpool · AlgoEdge · Pulse · Mirror · Cortex.
+        Built from Yahoo chains + Signal Desk algos — <strong>not affiliated</strong> with Trade Echo; dark pool is unavailable on free data.
+      </p>
+      <div class="metric-row" id="echoMetrics"></div>
+      <div class="panel">
+        <h2>Cortex briefing</h2>
+        <p class="lede" id="echoCortex" style="margin:0">—</p>
+      </div>
+      <div class="echo-grid" style="margin-top:1rem">
+        <div class="panel" style="margin:0">
+          <h2>OptionFlow</h2>
+          <p class="lede" style="margin-top:0;font-size:.76rem">Golden / Unusual / Aggressive tiers from volume, OI, premium notional.</p>
+          <div id="echoFlow" class="empty">—</div>
+        </div>
+        <div class="panel" style="margin:0">
+          <h2>DealerEdge (GEX)</h2>
+          <p class="lede" style="margin-top:0;font-size:.76rem">Call/put walls, flip, HVL from OI + BS gamma proxy.</p>
+          <div id="echoGex" class="empty">—</div>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>Darkpool</h2>
+        <div id="echoDark" class="empty">—</div>
+      </div>
+      <div class="panel">
+        <h2>AlgoEdge channels</h2>
+        <div id="echoAlgo" class="empty">—</div>
+      </div>
+      <div class="echo-grid">
+        <div class="panel" style="margin:0">
+          <h2>Pulse — tape + levels</h2>
+          <div id="echoPulse" class="empty">—</div>
+        </div>
+        <div class="panel" style="margin:0">
+          <h2>Mirror — paper copy desk</h2>
+          <div id="echoMirror" class="empty">—</div>
+        </div>
+      </div>
+      <p class="lede" id="echoDisclaimer" style="font-size:.72rem;margin-top:1rem"></p>
+    </section>
+
     <section class="tabpane" id="tab-screener">
       <h2>Market screener</h2>
       <p class="lede">Ranked liquid universe across horizons. Default <strong>Scan focus</strong> = 46 optionable names; <strong>Scan liquid universe</strong> = ~147 S&amp;P100 + high-volume optionables (Yahoo rate limits block a full-market scan).</p>
@@ -211,7 +263,7 @@ PAGE = r"""
 
     <footer>
       Quality gates require score + multiple confirming algos before a signal counts — fewer trades, higher measured win rates.
-      Win% is underlying direction, not option P&amp;L. Research only — not affiliated with Signa or Intellectia.
+      Win% is underlying direction, not option P&amp;L. Research only — not affiliated with Signa, Intellectia, or Trade Echo.
     </footer>
   </div>
   <script>
@@ -406,6 +458,150 @@ PAGE = r"""
       table.innerHTML = head + list.map(rowHtml).join("") + "</tbody></table>";
     }
 
+    function renderEcho(echo) {
+      const metrics = document.getElementById("echoMetrics");
+      const flowEl = document.getElementById("echoFlow");
+      const gexEl = document.getElementById("echoGex");
+      const darkEl = document.getElementById("echoDark");
+      const algoEl = document.getElementById("echoAlgo");
+      const pulseEl = document.getElementById("echoPulse");
+      const mirrorEl = document.getElementById("echoMirror");
+      const cortexEl = document.getElementById("echoCortex");
+      const disc = document.getElementById("echoDisclaimer");
+      if (!echo || !Object.keys(echo).length) {
+        if (metrics) metrics.innerHTML = "";
+        if (flowEl) flowEl.innerHTML = `<div class="empty">Echo Desk not loaded — wait for snapshot refresh.</div>`;
+        return;
+      }
+      const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
+      const fc = (echo.option_flow && echo.option_flow.counts) || {};
+      const prim = (echo.dealer_edge && echo.dealer_edge.primary) || {};
+      if (metrics) metrics.innerHTML = [
+        m("Symbols", (echo.symbols||[]).length),
+        m("Golden flow", fc.golden||0, "up"),
+        m("Unusual", fc.unusual||0),
+        m("Flow bull/bear", `${fc.bullish||0}/${fc.bearish||0}`),
+        m("GEX regime", prim.regime ? String(prim.regime).replaceAll("_"," ") : "—"),
+        m("Ladders", echo.ladder_count||0),
+      ].join("");
+
+      const cx = echo.cortex || {};
+      if (cortexEl) {
+        cortexEl.innerHTML = `<strong style="color:var(--ink)">${cx.headline||"Echo briefing"}</strong><br/>`
+          + (cx.summary || "")
+          + ((cx.bullets||[]).length ? `<br/><span class="status">${cx.bullets.join(" · ")}</span>` : "");
+      }
+
+      const prints = (echo.option_flow && echo.option_flow.prints) || [];
+      if (flowEl) {
+        if (!prints.length) flowEl.innerHTML = `<div class="empty">No unusual prints — need chain volume on focus names.</div>`;
+        else flowEl.innerHTML = `<table><thead><tr>
+          <th>Tier</th><th>Sym</th><th>Side</th><th>Strike</th><th>Vol</th><th>OI</th><th>Premium</th><th>Score</th>
+        </tr></thead><tbody>${prints.slice(0,18).map(p=>`<tr>
+          <td><span class="badge ${p.tier||"aggressive"}">${(p.tier||"").toUpperCase()}</span></td>
+          <td><strong>${p.symbol}</strong></td>
+          <td class="mono">${p.right}</td>
+          <td class="mono">${fmt(p.strike,2)}</td>
+          <td class="mono">${p.volume??"—"}</td>
+          <td class="mono">${p.open_interest??"—"}</td>
+          <td class="mono">$${fmt((p.premium_notional||0)/1000,1)}k</td>
+          <td class="mono ${p.flow_score>=0?"up":"down"}">${fmt(p.flow_score,0)}</td>
+        </tr>`).join("")}</tbody></table>
+        <p class="lede" style="font-size:.72rem;margin:.4rem 0 0">${echo.option_flow.note||""}</p>`;
+      }
+
+      if (gexEl) {
+        const profiles = (echo.dealer_edge && echo.dealer_edge.profiles) || [];
+        if (!profiles.length) gexEl.innerHTML = `<div class="empty">No GEX profiles yet.</div>`;
+        else {
+          const p = profiles[0];
+          const rows = (p.by_strike||[]).slice(-12);
+          const maxAbs = Math.max(1, ...rows.map(r=>Math.abs(r.gex||0)));
+          gexEl.innerHTML = `
+            <div class="ac-meta" style="margin-bottom:.55rem">
+              <div>Symbol<strong>${p.symbol}</strong></div>
+              <div>Spot<strong>${fmt(p.spot,2)}</strong></div>
+              <div>Flip<strong>${p.flip??"—"}</strong></div>
+              <div>HVL<strong>${p.hvl??"—"}</strong></div>
+              <div>Call wall<strong class="up">${p.call_wall??"—"}</strong></div>
+              <div>Put wall<strong class="down">${p.put_wall??"—"}</strong></div>
+            </div>
+            <table><thead><tr><th>Strike</th><th>Call OI</th><th>Put OI</th><th>GEX</th><th></th></tr></thead>
+            <tbody>${rows.map(r=>{
+              const w = Math.min(100, Math.abs(r.gex||0)/maxAbs*100);
+              return `<tr>
+                <td class="mono">${fmt(r.strike,2)}</td>
+                <td class="mono">${r.call_oi}</td>
+                <td class="mono">${r.put_oi}</td>
+                <td class="mono ${r.gex>=0?"up":"down"}">${fmt(r.gex,0)}</td>
+                <td><div class="gex-bar"><i style="width:${w}%;background:${r.gex>=0?"var(--long)":"var(--short)"}"></i></div></td>
+              </tr>`;
+            }).join("")}</tbody></table>
+            <p class="lede" style="font-size:.72rem;margin:.4rem 0 0">${echo.dealer_edge.note||""}</p>`;
+        }
+      }
+
+      const dp = echo.dark_pool || {};
+      if (darkEl) {
+        darkEl.innerHTML = `<div class="empty">${dp.available===false ? "Unavailable — " : ""}${dp.reason||"—"}${dp.proxy_note?`<br/><span class="status">${dp.proxy_note}</span>`:""}</div>`;
+      }
+
+      const algo = echo.algo_edge || {};
+      const chans = algo.channels || {};
+      if (algoEl) {
+        const names = algo.channel_names || Object.keys(chans);
+        algoEl.innerHTML = names.map(name=>{
+          const rows = chans[name] || [];
+          if (!rows.length) return `<div class="status" style="margin:.35rem 0"><span class="tag">${name}</span> —</div>`;
+          return `<div style="margin:.45rem 0 .7rem"><span class="tag">${name}</span>
+            <table><thead><tr><th>Symbol</th><th>Hz</th><th>Score</th><th>Confirms</th><th>Algos</th></tr></thead>
+            <tbody>${rows.slice(0,6).map(r=>`<tr>
+              <td><strong>${r.symbol}</strong>${r.quality?` <span class="tag">Q</span>`:""}</td>
+              <td class="mono">${r.horizon||"—"}</td>
+              <td class="mono">${fmt(r.ensemble_score,0)}</td>
+              <td class="mono">${r.confirms??"—"}</td>
+              <td class="why">${(r.active_algos||[]).slice(0,4).join(", ")}</td>
+            </tr>`).join("")}</tbody></table></div>`;
+        }).join("") + `<p class="lede" style="font-size:.72rem">${algo.note||""}</p>`;
+      }
+
+      const tape = (echo.pulse && echo.pulse.tape) || [];
+      if (pulseEl) {
+        pulseEl.innerHTML = !tape.length ? `<div class="empty">No tape.</div>` : `<table><thead><tr>
+          <th>Sym</th><th>Last</th><th>Session</th><th>5m</th><th>Entry</th><th>Stop</th><th>Target</th>
+        </tr></thead><tbody>${tape.slice(0,12).map(r=>`<tr>
+          <td><strong>${r.symbol}</strong></td>
+          <td class="mono">${fmt(r.last,2)}</td>
+          <td class="mono ${pctClass(r.session_change_pct)}">${r.session_change_pct==null?"—":fmt(r.session_change_pct,2)+"%"}</td>
+          <td class="mono ${pctClass(r.mom_5m_pct)}">${r.mom_5m_pct==null?"—":fmt(r.mom_5m_pct,2)+"%"}</td>
+          <td class="mono">${fmt(r.entry,2)}</td>
+          <td class="mono">${fmt(r.stop,2)}</td>
+          <td class="mono">${fmt(r.target,2)}</td>
+        </tr>`).join("")}</tbody></table>`;
+      }
+
+      const mir = echo.mirror || {};
+      if (mirrorEl) {
+        const open = mir.open || [];
+        const perf = mir.performance || {};
+        mirrorEl.innerHTML = `
+          <div class="ac-meta" style="margin-bottom:.5rem">
+            <div>Win rate<strong>${perf.win_rate_pct==null?"—":fmt(perf.win_rate_pct,1)+"%"}</strong></div>
+            <div>Open<strong>${open.length}</strong></div>
+            <div>Mode<strong>${mir.mode||"paper"}</strong></div>
+          </div>
+          ${open.length?`<table><thead><tr><th>Sym</th><th>Entry</th><th>Mark</th><th>Unreal%</th></tr></thead>
+          <tbody>${open.slice(0,8).map(t=>`<tr>
+            <td><strong>${t.symbol}</strong></td>
+            <td class="mono">$${fmt(t.entry_ask,2)}</td>
+            <td class="mono">$${fmt(t.mark,2)}</td>
+            <td class="mono ${pctClass(t.unrealized_pct)}">${t.unrealized_pct==null?"—":fmt(t.unrealized_pct,1)+"%"}</td>
+          </tr>`).join("")}</tbody></table>`:`<div class="empty">No open mirrored paper trades.</div>`}
+          <p class="lede" style="font-size:.72rem;margin:.4rem 0 0">${mir.note||""}</p>`;
+      }
+      if (disc) disc.textContent = echo.disclaimer || "";
+    }
+
     function renderScreener(horizons) {
       const el = document.getElementById("screener");
       const hz = horizons || {};
@@ -502,6 +698,7 @@ PAGE = r"""
       renderOptionTable("table0dte", (acts.all||[]).filter(r=>(r.dte_bucket||"0dte")==="0dte" || (r.dte!=null && r.dte<=1)));
       renderOptionTable("tableWeekly", (acts.all||[]).filter(r=>r.dte_bucket==="weekly"));
       renderExplosive(DATA.explosive || [], DATA.lottery || {});
+      renderEcho(DATA.echo || {});
       renderScreener(hz);
       renderInsights(DATA.insights);
       document.getElementById("session").textContent = (DATA.session||"—") + " · " + (DATA.universe_mode||"focus");
@@ -770,9 +967,32 @@ def create_app(config_path: str | None = None) -> Flask:
         )
 
         from odte_scanner.data.universe import liquid_universe
+        from odte_scanner.echo import build_echo_board
 
         focus_size = scan.get("focus_size") or len(scan.get("tickers") or [])
         liquid_size = len(liquid_universe())
+
+        echo = {}
+        try:
+            echo = build_echo_board(
+                scores=scan.get("scores") or [],
+                candidates=refreshed,
+                quotes=quotes,
+                aliases=aliases,
+                insights=insights if isinstance(insights, dict) else None,
+                journal_sync=journal_sync if isinstance(journal_sync, dict) else None,
+                actions=actions,
+                lottery=lottery,
+                max_symbols=int(actions_cfg.get("echo_max_symbols", 8)),
+                max_dte=int((cfg.get("options") or {}).get("max_dte", 5)),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("echo board unavailable: %s", exc)
+            echo = {
+                "error": str(exc),
+                "dark_pool": {"available": False, "reason": "echo board failed to build"},
+                "disclaimer": "Echo Desk temporarily unavailable.",
+            }
 
         return jsonify(
             {
@@ -789,6 +1009,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 "call_candidates": refreshed,
                 "explosive": explosive,
                 "lottery": lottery,
+                "echo": echo,
                 "watch": {"quotes": quotes},
                 "ledger": ledger,
                 "actions": actions,
