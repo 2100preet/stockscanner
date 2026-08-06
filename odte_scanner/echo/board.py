@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from odte_scanner.echo.chain_ladder import fetch_option_ladder
+from odte_scanner.echo.darkpool import build_darkpool_board
 from odte_scanner.echo.flow import build_option_flow
 from odte_scanner.echo.gex import build_dealer_edge
 
@@ -170,6 +171,7 @@ def _build_cortex(
     algo: dict[str, Any],
     insights: dict[str, Any] | None,
     actions: dict[str, Any] | None,
+    dark_pool: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     bits: list[str] = []
     fc = flow.get("counts") or {}
@@ -183,6 +185,19 @@ def _build_cortex(
             f"{prim.get('symbol')} GEX {prim.get('regime')} · flip {prim.get('flip')} · "
             f"call wall {prim.get('call_wall')} / put wall {prim.get('put_wall')}"
         )
+    dp = dark_pool or {}
+    if dp.get("available"):
+        dc = dp.get("counts") or {}
+        bits.append(
+            f"FINRA ATS week {dp.get('week_start')}: {dc.get('symbols', 0)} symbols · "
+            f"{dc.get('surges', 0)} surges / {dc.get('drops', 0)} drops"
+        )
+        if dp.get("surges"):
+            top = dp["surges"][0]
+            sh = int(top.get("shares") or 0)
+            bits.append(
+                f"DP surge {top.get('symbol')} {top.get('surge_ratio')}× ({sh:,} shares)"
+            )
     qn = len((algo.get("channels") or {}).get("quality_stack") or [])
     if qn:
         bits.append(f"{qn} quality algo stacks")
@@ -195,7 +210,7 @@ def _build_cortex(
         "headline": headline,
         "summary": summary,
         "bullets": bits,
-        "note": "Cortex proxy: rule-based briefing from flow + GEX + algos + journal — not an LLM agent.",
+        "note": "Cortex proxy: rule-based briefing from flow + GEX + dark pool + algos — not an LLM agent.",
     }
 
 
@@ -262,6 +277,7 @@ def build_echo_board(
     max_symbols: int = 6,
     max_dte: int = 5,
     fetch_ladders: bool = True,
+    include_darkpool: bool = True,
 ) -> dict[str, Any]:
     scores = scores or []
     candidates = candidates or []
@@ -311,7 +327,40 @@ def build_echo_board(
     algo = _build_algo_edge(scores)
     pulse = _build_pulse(quotes, scores)
     mirror = _build_mirror(insights, journal_sync)
-    cortex = _build_cortex(flow=flow, dealer=dealer, algo=algo, insights=insights, actions=actions)
+
+    # Dark pool: FINRA ATS weekly + Yahoo volume magnets
+    dark_pool: dict[str, Any]
+    if not include_darkpool:
+        dark_pool = {
+            "available": False,
+            "reason": "Dark pool fetch skipped",
+            "source_url": "https://www.finra.org/filing-reporting/otc-transparency",
+        }
+    else:
+        try:
+            from odte_scanner.data.fetcher import fetch_history
+
+            dp_syms = list(dict.fromkeys(symbols + ["SPY", "QQQ", "IWM", "NVDA", "TSLA", "AAPL"]))[:12]
+            hist_map: dict[str, Any] = {}
+            for sym in dp_syms:
+                try:
+                    df = fetch_history(sym, period="3mo", yahoo_symbol=aliases.get(sym))
+                    if df is not None and not df.empty:
+                        hist_map[sym] = df
+                except Exception:  # noqa: BLE001
+                    continue
+            dark_pool = build_darkpool_board(dp_syms, histories=hist_map, quotes=quotes, max_symbols=12)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("dark pool board failed: %s", exc)
+            dark_pool = {
+                "available": False,
+                "reason": f"FINRA ATS fetch failed: {exc}",
+                "source_url": "https://www.finra.org/filing-reporting/otc-transparency",
+            }
+
+    cortex = _build_cortex(
+        flow=flow, dealer=dealer, algo=algo, insights=insights, actions=actions, dark_pool=dark_pool
+    )
 
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -320,11 +369,7 @@ def build_echo_board(
         "ladder_source": ladder_source,
         "option_flow": flow,
         "dealer_edge": dealer,
-        "dark_pool": {
-            "available": False,
-            "reason": "No ATS / FINRA dark-pool feed on free Yahoo — Trade Echo Darkpool requires a paid print source.",
-            "proxy_note": "Use OptionFlow large-premium rows as a weak substitute for block interest only.",
-        },
+        "dark_pool": dark_pool,
         "algo_edge": algo,
         "pulse": pulse,
         "mirror": mirror,

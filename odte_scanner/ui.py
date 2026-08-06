@@ -209,8 +209,8 @@ PAGE = r"""
       <h2>Echo Desk — TradeEcho-style terminal</h2>
       <p class="lede">
         Modules inspired by <a href="https://tradeecho.com/" target="_blank" rel="noopener" style="color:var(--accent)">Trade Echo</a>:
-        OptionFlow · DealerEdge (GEX) · Darkpool · AlgoEdge · Pulse · Mirror · Cortex.
-        Built from Yahoo chains + Signal Desk algos — <strong>not affiliated</strong> with Trade Echo; dark pool is unavailable on free data.
+        OptionFlow · DealerEdge (GEX) · Darkpool (FINRA ATS) · AlgoEdge · Pulse · Mirror · Cortex.
+        Built from Yahoo chains + <a href="https://www.finra.org/filing-reporting/otc-transparency" target="_blank" rel="noopener" style="color:var(--accent)">FINRA OTC Transparency</a> — <strong>not affiliated</strong> with Trade Echo.
       </p>
       <div class="metric-row" id="echoMetrics"></div>
       <div class="panel">
@@ -476,13 +476,14 @@ PAGE = r"""
       const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
       const fc = (echo.option_flow && echo.option_flow.counts) || {};
       const prim = (echo.dealer_edge && echo.dealer_edge.primary) || {};
+      const dpc = (echo.dark_pool && echo.dark_pool.counts) || {};
       if (metrics) metrics.innerHTML = [
         m("Symbols", (echo.symbols||[]).length),
         m("Golden flow", fc.golden||0, "up"),
-        m("Unusual", fc.unusual||0),
+        m("DP surges", dpc.surges||0, (dpc.surges||0)>0?"up":""),
         m("Flow bull/bear", `${fc.bullish||0}/${fc.bearish||0}`),
         m("GEX regime", prim.regime ? String(prim.regime).replaceAll("_"," ") : "—"),
-        m("Ladders", echo.ladder_count||0),
+        m("ATS week", (echo.dark_pool && echo.dark_pool.week_start) || "—"),
       ].join("");
 
       const cx = echo.cortex || {};
@@ -543,7 +544,38 @@ PAGE = r"""
 
       const dp = echo.dark_pool || {};
       if (darkEl) {
-        darkEl.innerHTML = `<div class="empty">${dp.available===false ? "Unavailable — " : ""}${dp.reason||"—"}${dp.proxy_note?`<br/><span class="status">${dp.proxy_note}</span>`:""}</div>`;
+        if (dp.available === false) {
+          darkEl.innerHTML = `<div class="empty">${dp.reason||"Dark pool unavailable."}${dp.source_url?` · <a href="${dp.source_url}" target="_blank" rel="noopener" style="color:var(--accent)">FINRA OTC Transparency</a>`:""}</div>`;
+        } else {
+          const rows = dp.rows || [];
+          const venues = dp.top_venues || [];
+          darkEl.innerHTML = `
+            <p class="lede" style="margin-top:0;font-size:.76rem">
+              Source: <a href="${dp.source_url||"https://www.finra.org/filing-reporting/otc-transparency"}" target="_blank" rel="noopener" style="color:var(--accent)">FINRA ATS weekly</a>
+              · week ${dp.week_start||"—"} · ${dp.delay_note||""}
+            </p>
+            ${rows.length?`<table><thead><tr>
+              <th>Flag</th><th>Sym</th><th>ATS shares</th><th>Trades</th><th>Avg size</th><th>WoW</th><th>Surge</th><th>Levels</th><th>Top venues</th>
+            </tr></thead><tbody>${rows.slice(0,12).map(r=>{
+              const lv=(r.levels||[]).slice(0,4).map(l=>`${l.tag} ${fmt(l.price,2)}`).join(" · ") || "—";
+              const ven=(r.venues||[]).slice(0,3).map(v=>v.name||v.mpid).join(", ") || "—";
+              const flagCls = r.flag==="surge"?"up":(r.flag==="drop"?"down":"");
+              return `<tr>
+                <td><span class="badge ${r.flag==="surge"?"golden":(r.flag==="drop"?"sell":"wait")}">${(r.flag||"").toUpperCase()}</span></td>
+                <td><strong>${r.symbol}</strong></td>
+                <td class="mono">${r.shares==null?"—":Number(r.shares).toLocaleString()}</td>
+                <td class="mono">${r.trades==null?"—":Number(r.trades).toLocaleString()}</td>
+                <td class="mono">${fmt(r.avg_trade_size,0)}</td>
+                <td class="mono ${pctClass(r.wow_pct)}">${r.wow_pct==null?"—":fmt(r.wow_pct,1)+"%"}</td>
+                <td class="mono ${flagCls}">${r.surge_ratio==null?"—":fmt(r.surge_ratio,2)+"×"}</td>
+                <td class="why">${lv}</td>
+                <td class="why">${ven}</td>
+              </tr>`;
+            }).join("")}</tbody></table>`:`<div class="empty">No FINRA ATS rows for focus symbols this week.</div>`}
+            ${venues.length?`<p class="status" style="margin:.55rem 0 .2rem">Top ATS venues (aggregated)</p>
+              <div class="playbook">${venues.slice(0,8).map(v=>`<span class="tag">${v.name}: ${(v.shares||0).toLocaleString()}</span>`).join("")}</div>`:""}
+            <p class="lede" style="font-size:.72rem;margin:.45rem 0 0">${dp.levels_note||""}</p>`;
+        }
       }
 
       const algo = echo.algo_edge || {};

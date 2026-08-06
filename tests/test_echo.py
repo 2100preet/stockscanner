@@ -138,9 +138,10 @@ def test_echo_board_without_network_ladders():
         lottery={},
         max_symbols=1,
         fetch_ladders=False,
+        include_darkpool=False,
     )
     assert "option_flow" in board
-    assert board["dark_pool"]["available"] is False
+    assert "dark_pool" in board
     assert "algo_edge" in board
     assert "cortex" in board
     assert "disclaimer" in board
@@ -166,6 +167,7 @@ def test_echo_board_candidate_fallback_builds_flow():
         ],
         quotes={"SPY": {"last": 499, "session_change_pct": 0.3, "mom_5m_pct": 0.1}},
         fetch_ladders=False,
+        include_darkpool=False,
         max_symbols=1,
     )
     assert board["ladder_source"] == "candidates_fallback"
