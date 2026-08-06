@@ -156,6 +156,12 @@ actions:
   min_hist_win_samples: 5
   lottery_min_score: 62
   lottery_min_confirms: 4
+  # $1k → $1M challenge (swing / LEAP only)
+  challenge_start_usd: 1000
+  challenge_target_usd: 1000000
+  challenge_flips: 12
+  challenge_max_tickets: 8
+  challenge_fetch_contracts: true
 
 options:
   # Look out to ~1 week for best listed call (not only same-day)

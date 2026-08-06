@@ -132,6 +132,7 @@ PAGE = r"""
       <button data-tab="weekly">1 Week</button>
       <button data-tab="swing">Swing 1–3M</button>
       <button data-tab="echo">Echo Desk</button>
+      <button data-tab="challenge">$1k→$1M</button>
       <button data-tab="screener">Screener</button>
       <button data-tab="journal">Journal</button>
     </nav>
@@ -156,6 +157,11 @@ PAGE = r"""
       <div class="panel">
         <h2>Live board (options)</h2>
         <div id="boardMini" class="empty">—</div>
+      </div>
+      <div class="panel">
+        <h2>Dark pool (FINRA ATS) — also on Echo Desk</h2>
+        <p class="lede" style="margin-top:0;font-size:.76rem">Official weekly ATS volume from FINRA OTC Transparency (~2 week delay). Open <strong>Echo Desk → Darkpool</strong> for venues + levels.</p>
+        <div id="darkpoolMini" class="empty">—</div>
       </div>
     </section>
 
@@ -203,6 +209,26 @@ PAGE = r"""
       <h2>Swing — 1 to 3 months</h2>
       <p class="lede">Stage analysis, trend structure, medium RS, dip buys. Win% ≈ 42-session (~2mo) forward return.</p>
       <div class="cards" id="cardsSwing"></div>
+    </section>
+
+    <section class="tabpane" id="tab-challenge">
+      <h2>$1,000 → $1,000,000 challenge</h2>
+      <p class="lede">
+        Swing / LEAP path only — no 0DTE lottery. Tickets must clear a <strong>sure-shot hist filter</strong>
+        (prefer <strong>100% hist win</strong> on quality weekly/swing signals, else ≥80% with n≥5).
+        Compound ~10–15 premium flips. <em>Hist 100% ≠ guaranteed future wins.</em>
+      </p>
+      <div class="metric-row" id="challengeMetrics"></div>
+      <div class="cards" id="challengePrimary"></div>
+      <div class="panel">
+        <h2>Compounding path</h2>
+        <div id="challengePath" class="empty">—</div>
+      </div>
+      <div class="panel">
+        <h2>Recommended tickets — strike · expiry · target</h2>
+        <div id="challengeTickets" class="empty">—</div>
+      </div>
+      <p class="lede" id="challengeDisclaimer" style="font-size:.72rem"></p>
     </section>
 
     <section class="tabpane" id="tab-echo">
@@ -456,6 +482,115 @@ PAGE = r"""
           : head + list.slice(0,4).map(rowHtml).join("") + "</tbody></table>";
       }
       table.innerHTML = head + list.map(rowHtml).join("") + "</tbody></table>";
+    }
+
+    function renderChallenge(ch) {
+      const metrics = document.getElementById("challengeMetrics");
+      const primaryEl = document.getElementById("challengePrimary");
+      const pathEl = document.getElementById("challengePath");
+      const ticketsEl = document.getElementById("challengeTickets");
+      const disc = document.getElementById("challengeDisclaimer");
+      if (!ch || !Object.keys(ch).length) {
+        if (ticketsEl) ticketsEl.innerHTML = `<div class="empty">Challenge board loading…</div>`;
+        return;
+      }
+      const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
+      const path = ch.path || {};
+      const c = ch.counts || {};
+      if (metrics) metrics.innerHTML = [
+        m("Start", `$${(ch.start_usd||1000).toLocaleString()}`),
+        m("Target", `$${(ch.target_usd||1000000).toLocaleString()}`, "up"),
+        m("Flips", path.flips||ch.flips||12),
+        m("Need / flip", path.pct_per_flip==null?"—":`+${fmt(path.pct_per_flip,0)}%`, "up"),
+        m("Perfect tickets", c.perfect||0, (c.perfect||0)>0?"up":""),
+        m("Elite tickets", c.elite||0),
+      ].join("");
+
+      const t0 = ch.primary;
+      if (primaryEl) {
+        if (!t0) primaryEl.innerHTML = `<div class="empty">No sure-shot swing/LEAP cleared the hist filter yet — run a scan.</div>`;
+        else {
+          const tier = t0.certainty_tier||"strong";
+          primaryEl.innerHTML = `<article class="action-card long">
+            <div class="ac-top">
+              <div class="ac-sym">${t0.symbol}</div>
+              <div class="ac-dir long">${tier.toUpperCase()} · ${(t0.horizon||"").toUpperCase()}</div>
+            </div>
+            <div class="ac-conf">Hist win ${fmt(t0.hist_win_pct,0)}% · n=${t0.hist_samples} · strike rate ≥1% ${t0.hit_1pct==null?"—":fmt(t0.hit_1pct,0)+"%"}</div>
+            <div class="bar"><i style="width:${Math.min(100,t0.hist_win_pct||0)}%"></i></div>
+            <div class="ac-meta">
+              <div>Strike<strong>${t0.strike==null?"—":fmt(t0.strike,2)+"c"}</strong></div>
+              <div>Expiry / DTE<strong>${t0.expiry||"—"} / ${t0.dte??"—"}</strong></div>
+              <div>Ask<strong>${t0.ask==null?"—":"$"+fmt(t0.ask,2)}</strong></div>
+              <div>Target ask<strong>${t0.target_ask==null?"—":"$"+fmt(t0.target_ask,2)} (${fmt(t0.target_premium_mult,2)}×)</strong></div>
+              <div>Contracts<strong>${t0.contracts_for_bankroll||1}</strong></div>
+              <div>Debit<strong>${t0.debit_usd?("$"+fmt(t0.debit_usd,0)):"—"}</strong></div>
+            </div>
+            <p class="why" style="margin:.55rem 0 0">${t0.thesis||""}</p>
+          </article>`;
+        }
+      }
+
+      if (pathEl) {
+        const paths = ch.paths || [];
+        pathEl.innerHTML = `
+          <p class="lede" style="margin-top:0">${path.note||""}</p>
+          <table><thead><tr><th>Flips</th><th>Need / flip</th><th>Multiple / flip</th></tr></thead>
+          <tbody>${paths.map(p=>`<tr>
+            <td class="mono">${p.flips}</td>
+            <td class="mono up"><strong>+${fmt(p.pct_per_flip,0)}%</strong></td>
+            <td class="mono">${fmt(p.mult_per_flip,2)}×</td>
+          </tr>`).join("")}</tbody></table>
+          <p class="status" style="margin:.5rem 0 .2rem">Schedule @ ${path.flips||12} flips</p>
+          <table><thead><tr><th>Flip</th><th>Equity</th><th>Gain</th></tr></thead>
+          <tbody>${(path.schedule||[]).map(s=>`<tr>
+            <td class="mono">${s.flip}</td>
+            <td class="mono up">$${Number(s.equity).toLocaleString()}</td>
+            <td class="mono">+${fmt(s.gain_pct,0)}%</td>
+          </tr>`).join("")}</tbody></table>
+          <ul class="lede" style="font-size:.76rem">${(ch.rules||[]).map(r=>`<li>${r}</li>`).join("")}</ul>`;
+      }
+
+      const tickets = ch.tickets || [];
+      if (ticketsEl) {
+        if (!tickets.length) ticketsEl.innerHTML = `<div class="empty">No tickets.</div>`;
+        else ticketsEl.innerHTML = `<table><thead><tr>
+          <th>Tier</th><th>Symbol</th><th>Hz</th><th>Hist win</th><th>n</th><th>Strike rate</th><th>Strike</th><th>Expiry</th><th>DTE</th><th>Ask → target</th><th>Why</th>
+        </tr></thead><tbody>${tickets.map(t=>`<tr>
+          <td><span class="badge ${t.certainty_tier==="perfect"?"golden":(t.certainty_tier==="elite"?"unusual":"aggressive")}">${(t.certainty_tier||"").toUpperCase()}</span></td>
+          <td><strong>${t.symbol}</strong></td>
+          <td class="mono">${t.horizon||"—"}</td>
+          <td class="mono up"><strong>${fmt(t.hist_win_pct,0)}%</strong></td>
+          <td class="mono">${t.hist_samples}</td>
+          <td class="mono">${t.hit_1pct==null?"—":fmt(t.hit_1pct,0)+"% ≥1%"}</td>
+          <td class="mono">${t.strike==null?"—":fmt(t.strike,2)+"c"}</td>
+          <td class="mono">${t.expiry||"—"}</td>
+          <td class="mono">${t.dte??"—"}</td>
+          <td class="mono">${t.ask==null?"—":"$"+fmt(t.ask,2)} → ${t.target_ask==null?"—":"$"+fmt(t.target_ask,2)}</td>
+          <td class="why">${t.thesis||""}</td>
+        </tr>`).join("")}</tbody></table>`;
+      }
+      if (disc) disc.textContent = ch.disclaimer || "";
+    }
+
+    function renderDarkpoolMini(echo) {
+      const el = document.getElementById("darkpoolMini");
+      if (!el) return;
+      const dp = (echo && echo.dark_pool) || {};
+      if (!dp.available) {
+        el.innerHTML = `<div class="empty">${dp.reason || "FINRA ATS not loaded yet — open Echo Desk."}</div>`;
+        return;
+      }
+      const rows = dp.rows || [];
+      el.innerHTML = `<div class="status" style="margin-bottom:.35rem">FINRA week <strong>${dp.week_start||"—"}</strong> · ${dp.delay_note||""}</div>
+        <table><thead><tr><th>Sym</th><th>ATS shares</th><th>WoW</th><th>Surge</th><th>Top venue</th></tr></thead>
+        <tbody>${rows.slice(0,6).map(r=>`<tr>
+          <td><strong>${r.symbol}</strong></td>
+          <td class="mono">${Number(r.shares||0).toLocaleString()}</td>
+          <td class="mono ${pctClass(r.wow_pct)}">${r.wow_pct==null?"—":fmt(r.wow_pct,1)+"%"}</td>
+          <td class="mono">${r.surge_ratio==null?"—":fmt(r.surge_ratio,2)+"×"}</td>
+          <td class="why">${(r.venues&&r.venues[0]&&r.venues[0].name)||"—"}</td>
+        </tr>`).join("")}</tbody></table>`;
     }
 
     function renderEcho(echo) {
@@ -731,6 +866,8 @@ PAGE = r"""
       renderOptionTable("tableWeekly", (acts.all||[]).filter(r=>r.dte_bucket==="weekly"));
       renderExplosive(DATA.explosive || [], DATA.lottery || {});
       renderEcho(DATA.echo || {});
+      renderDarkpoolMini(DATA.echo || {});
+      renderChallenge(DATA.challenge || {});
       renderScreener(hz);
       renderInsights(DATA.insights);
       document.getElementById("session").textContent = (DATA.session||"—") + " · " + (DATA.universe_mode||"focus");
@@ -998,6 +1135,7 @@ def create_app(config_path: str | None = None) -> Flask:
             min_confirms=int(actions_cfg.get("lottery_min_confirms", 4)),
         )
 
+        from odte_scanner.challenge import build_challenge_board
         from odte_scanner.data.universe import liquid_universe
         from odte_scanner.echo import build_echo_board
 
@@ -1026,6 +1164,23 @@ def create_app(config_path: str | None = None) -> Flask:
                 "disclaimer": "Echo Desk temporarily unavailable.",
             }
 
+        challenge = {}
+        try:
+            challenge = build_challenge_board(
+                win_table=win_table if isinstance(win_table, dict) else None,
+                scores=scan.get("scores") or [],
+                quotes=quotes,
+                aliases=aliases,
+                start_usd=float(actions_cfg.get("challenge_start_usd", 1000)),
+                target_usd=float(actions_cfg.get("challenge_target_usd", 1_000_000)),
+                flips=int(actions_cfg.get("challenge_flips", 12)),
+                max_tickets=int(actions_cfg.get("challenge_max_tickets", 8)),
+                fetch_contracts=bool(actions_cfg.get("challenge_fetch_contracts", True)),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("challenge board unavailable: %s", exc)
+            challenge = {"error": str(exc), "tickets": [], "disclaimer": "Challenge board unavailable."}
+
         return jsonify(
             {
                 "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -1042,6 +1197,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 "explosive": explosive,
                 "lottery": lottery,
                 "echo": echo,
+                "challenge": challenge,
                 "watch": {"quotes": quotes},
                 "ledger": ledger,
                 "actions": actions,
