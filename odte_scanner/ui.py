@@ -70,10 +70,13 @@ PAGE = r"""
     .action-card:hover { transform: translateY(-2px); border-color: rgba(62,207,142,.35); }
     .action-card.long { box-shadow: inset 3px 0 0 var(--long); }
     .action-card.wait { box-shadow: inset 3px 0 0 var(--wait); }
+    .action-card.short { box-shadow: inset 3px 0 0 var(--short); }
     .ac-top { display: flex; justify-content: space-between; align-items: baseline; gap: .5rem; }
     .ac-sym { font-family: "Instrument Serif", Georgia, serif; font-size: 1.45rem; }
     .ac-dir { font-family: "JetBrains Mono", monospace; font-size: .72rem; letter-spacing: .08em; font-weight: 500; }
-    .ac-dir.long { color: var(--long); } .ac-dir.wait { color: var(--wait); }
+    .ac-dir.long { color: var(--long); } .ac-dir.wait { color: var(--wait); } .ac-dir.short { color: var(--short); }
+    .badge.skip { background: rgba(139,158,148,.14); color: var(--muted); }
+    .playbook { display: flex; flex-wrap: wrap; gap: .25rem; margin-top: .45rem; }
     .ac-conf { margin: .45rem 0 .2rem; font-size: .8rem; color: var(--muted); }
     .bar { height: 4px; border-radius: 99px; background: rgba(255,255,255,.08); overflow: hidden; margin-bottom: .55rem; }
     .bar > i { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), var(--long)); }
@@ -136,8 +139,8 @@ PAGE = r"""
       <h2>Top action cards</h2>
       <div class="cards" id="overviewCards"></div>
       <div class="panel">
-        <h2>Explosive 0DTE / 1DTE tickets</h2>
-        <p class="lede" style="margin-top:0">Cheap short-dated calls where a +2–5% rip can mean ~300%–10,000% option gains (rare “$6→parabolic” days). Estimates, not guarantees.</p>
+        <h2>Lottery desk — BUY / SELL now</h2>
+        <p class="lede" style="margin-top:0">Convex 0DTE/1DTE tickets gated by tape, liquidity, session timing, and multi-algo quality — not a blind list.</p>
         <div id="explosiveMini" class="empty">—</div>
       </div>
       <div class="panel">
@@ -154,13 +157,29 @@ PAGE = r"""
     </section>
 
     <section class="tabpane" id="tab-explosive">
-      <h2>Explosive calls — 0DTE / 1DTE lottery convexity</h2>
+      <h2>Lottery desk — BUY THIS / SELL THIS now</h2>
       <p class="lede">
-        Screens for inexpensive 0–1 DTE calls with asymmetric upside if the underlying rips.
-        Example class of move: a SPY call near ~$6 that can mark near deep-ITM value on a violent trend day (hundreds–thousands of % on the option — not typical, and premium can go to zero).
+        Convexity scan finds cheap 0–1 DTE calls that can multi-bag on a +2–5% rip.
+        The playbook then decides <strong>BUY NOW</strong> or <strong>SELL NOW</strong> using tape confirm, liquidity, premium band, anti-chase, session timing, and multi-algo underlying quality — same discipline desks use on parabolic 0DTE tickets.
       </p>
       <div class="metric-row" id="explosiveMetrics"></div>
-      <div id="explosiveTable" class="empty">Run a scan to populate explosive tickets.</div>
+      <div class="cards" id="lotteryPrimary"></div>
+      <div class="panel">
+        <h2>BUY NOW lottery</h2>
+        <div id="lotteryBuy" class="empty">No BUY NOW lottery yet — waiting for tape + convexity clears.</div>
+      </div>
+      <div class="panel">
+        <h2>SELL NOW lottery</h2>
+        <div id="lotterySell" class="empty">No open lottery exits.</div>
+      </div>
+      <div class="panel">
+        <h2>WAIT / SKIP (gated — not actionable)</h2>
+        <div id="lotteryWait" class="empty">—</div>
+      </div>
+      <div class="panel">
+        <h2>Convexity candidates (raw scan)</h2>
+        <div id="explosiveTable" class="empty">Run a scan to populate explosive tickets.</div>
+      </div>
     </section>
 
     <section class="tabpane" id="tab-weekly">
@@ -275,26 +294,88 @@ PAGE = r"""
       }).join("")}</tbody></table>`;
     }
 
-    function renderExplosive(rows) {
+    function lotteryCard(r) {
+      const act = (r.action||"WAIT");
+      const kind = act.startsWith("BUY") ? "long" : act.startsWith("SELL") ? "short" : "wait";
+      const tags = (r.playbook||[]).slice(0,6).map(p => `<span class="tag">${p}</span>`).join("");
+      return `<article class="action-card ${kind}">
+        <div class="ac-top">
+          <div class="ac-sym">${r.symbol}</div>
+          <div class="ac-dir ${kind}">${act.replaceAll("_"," ")}</div>
+        </div>
+        <div class="ac-conf">Strength ${fmt(r.strength,0)} · ${r.confirms||0} confirms${r.best_mult!=null?` · ~${fmt(r.best_mult,0)}× upside`:""}</div>
+        <div class="bar"><i style="width:${Math.min(100,r.strength||0)}%"></i></div>
+        <div class="ac-meta">
+          <div>Strike<strong>${r.strike==null?"—":fmt(r.strike,2)+"c"}</strong></div>
+          <div>Ask / Bid<strong>${fmt(r.ask,2)} / ${fmt(r.bid,2)}</strong></div>
+          <div>@+3% / +5%<strong>${fmt(r.mult_at_3pct,1)}× / ${fmt(r.mult_at_5pct,1)}×</strong></div>
+          <div>Lottery score<strong>${fmt(r.lottery_score,0)}</strong></div>
+          <div>Tape 5m / 15m<strong>${r.mom_5m_pct==null?"—":fmt(r.mom_5m_pct,2)+"%"} / ${r.mom_15m_pct==null?"—":fmt(r.mom_15m_pct,2)+"%"}</strong></div>
+          <div>Unreal%<strong>${r.option_unrealized_pct==null?"—":fmt(r.option_unrealized_pct,0)+"%"}</strong></div>
+        </div>
+        <p class="why" style="margin:.55rem 0 0">${r.detail||r.headline||"—"}</p>
+        <div class="playbook">${tags}</div>
+      </article>`;
+    }
+
+    function lotteryActionRows(rows) {
+      if (!rows || !rows.length) return `<div class="empty">None right now.</div>`;
+      return `<table><thead><tr>
+        <th>Action</th><th>Symbol</th><th>Contract</th><th>Ask/Bid</th><th>@+3%</th><th>Strength</th><th>Why</th>
+      </tr></thead><tbody>${rows.map(r=>{
+        const a=(r.action||"WAIT").replaceAll("_"," ");
+        const cls=(r.action||"WAIT").toLowerCase().split("_")[0];
+        return `<tr>
+          <td><span class="badge ${cls}">${a}</span></td>
+          <td><strong>${r.symbol}</strong></td>
+          <td class="mono">${r.strike==null?"—":fmt(r.strike,2)+"c"} ${r.expiry||""} <span class="status">DTE ${r.dte??"—"}</span></td>
+          <td class="mono">${fmt(r.ask,2)} / ${fmt(r.bid,2)}</td>
+          <td class="mono up">${fmt(r.mult_at_3pct,1)}×</td>
+          <td class="mono">${fmt(r.strength,0)}</td>
+          <td class="why">${r.detail||""}${(r.vetoes&&r.vetoes.length)?` · veto: ${r.vetoes.slice(0,2).join("; ")}`:""}</td>
+        </tr>`;
+      }).join("")}</tbody></table>`;
+    }
+
+    function renderExplosive(rows, lottery) {
       const mini = document.getElementById("explosiveMini");
       const table = document.getElementById("explosiveTable");
       const metrics = document.getElementById("explosiveMetrics");
+      const primaryEl = document.getElementById("lotteryPrimary");
+      const buyEl = document.getElementById("lotteryBuy");
+      const sellEl = document.getElementById("lotterySell");
+      const waitEl = document.getElementById("lotteryWait");
       const list = rows || [];
+      const lot = lottery || {};
       const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
+      const counts = lot.counts || {};
+      metrics.innerHTML = [
+        m("BUY NOW", counts.buy_now||0, (counts.buy_now||0)>0?"up":""),
+        m("SELL NOW", counts.sell_now||0, (counts.sell_now||0)>0?"down":""),
+        m("WAIT", counts.wait||0),
+        m("SKIP", counts.skip||0),
+        m("Tickets scanned", list.length),
+        m("Top mult", list[0] ? `${fmt(list[0].best_mult,0)}×` : "—", "up"),
+      ].join("");
+
+      const actionable = [...(lot.sell_now||[]), ...(lot.buy_now||[])].slice(0,4);
+      if (primaryEl) {
+        primaryEl.innerHTML = actionable.length
+          ? actionable.map(lotteryCard).join("")
+          : `<div class="empty">No lottery BUY/SELL cleared the playbook — see WAIT/SKIP for why tickets are gated.</div>`;
+      }
+      if (buyEl) buyEl.innerHTML = lotteryActionRows(lot.buy_now||[]);
+      if (sellEl) sellEl.innerHTML = lotteryActionRows(lot.sell_now||[]);
+      if (waitEl) {
+        const gated = [...(lot.wait||[]), ...(lot.skip||[]).slice(0,8)];
+        waitEl.innerHTML = lotteryActionRows(gated);
+      }
+
       if (!list.length) {
         mini.innerHTML = `<div class="empty">No explosive tickets yet — need cheap 0DTE/1DTE calls with ≥3× convexity on a rip.</div>`;
         table.innerHTML = mini.innerHTML;
-        metrics.innerHTML = "";
         return;
       }
-      const ge10 = list.filter(r => (r.best_mult||0) >= 10).length;
-      const ge30 = list.filter(r => (r.best_mult||0) >= 30).length;
-      metrics.innerHTML = [
-        m("Tickets", list.length),
-        m("≥10× potential", ge10, "up"),
-        m("≥30× potential", ge30, "up"),
-        m("Top mult", `${fmt(list[0].best_mult,0)}×`, "up"),
-      ].join("");
       const rowHtml = (r) => `<tr>
         <td><strong>${r.symbol}</strong> <span class="tag">${r.dte<=0?"0DTE":r.dte+"DTE"}</span></td>
         <td class="mono">${fmt(r.strike,2)}c</td>
@@ -310,7 +391,15 @@ PAGE = r"""
       const head = `<table><thead><tr>
         <th>Symbol</th><th>Strike</th><th>Ask</th><th>OTM%</th><th>On +2%</th><th>On +3%</th><th>On +5%</th><th>Best upside</th><th>Lottery</th><th>Why</th>
       </tr></thead><tbody>`;
-      mini.innerHTML = head + list.slice(0,6).map(rowHtml).join("") + "</tbody></table>";
+      // Overview: actionable lottery first, else top gated tickets
+      if (actionable.length) {
+        mini.innerHTML = actionable.slice(0,3).map(lotteryCard).join("");
+      } else {
+        const topWait = (lot.wait||[]).slice(0,2);
+        mini.innerHTML = topWait.length
+          ? topWait.map(lotteryCard).join("") + `<p class="lede" style="margin-top:.6rem">${lot.playbook_note||""}</p>`
+          : head + list.slice(0,4).map(rowHtml).join("") + "</tbody></table>";
+      }
       table.innerHTML = head + list.map(rowHtml).join("") + "</tbody></table>";
     }
 
@@ -409,14 +498,15 @@ PAGE = r"""
       renderOptionTable("boardMini", (acts.all||[]).slice(0,10));
       renderOptionTable("table0dte", (acts.all||[]).filter(r=>(r.dte_bucket||"0dte")==="0dte" || (r.dte!=null && r.dte<=1)));
       renderOptionTable("tableWeekly", (acts.all||[]).filter(r=>r.dte_bucket==="weekly"));
-      renderExplosive(DATA.explosive || []);
+      renderExplosive(DATA.explosive || [], DATA.lottery || {});
       renderScreener(hz);
       renderInsights(DATA.insights);
       document.getElementById("session").textContent = (DATA.session||"—") + " · " + (DATA.universe_mode||"focus");
       document.getElementById("updated").textContent = "Updated " + (DATA.generated_at||"").replace("T"," ").slice(0,19);
       const c = acts.counts || {};
+      const lc = (DATA.lottery && DATA.lottery.counts) || {};
       document.getElementById("counts").textContent =
-        `BUY ${c.buy_now||0} · SELL ${c.sell_now||0} · WAIT ${c.wait||0} · n=${DATA.universe_size||0}`;
+        `BUY ${c.buy_now||0} · SELL ${c.sell_now||0} · WAIT ${c.wait||0} · LOTTO B/S ${lc.buy_now||0}/${lc.sell_now||0} · n=${DATA.universe_size||0}`;
     }
 
     async function loadAll() {
@@ -579,6 +669,7 @@ def create_app(config_path: str | None = None) -> Flask:
         jcfg = cfg.get("journal") or {}
         insights = None
         journal_sync = None
+        journal = None
         if jcfg.get("enabled", True):
             from odte_scanner.options.live_chain import fetch_live_option_quote
             from odte_scanner.trading.insights import build_insights
@@ -617,6 +708,7 @@ def create_app(config_path: str | None = None) -> Flask:
             insights = build_insights(journal=journal, actions=actions, win_rates=win_table)
 
         from odte_scanner.options.explosive import build_explosive_board
+        from odte_scanner.signals.lottery import build_lottery_board
 
         # Lottery / parabolic 0DTE–1DTE tickets (e.g. cheap calls that can 3×–100× on a rip)
         explosive = build_explosive_board(
@@ -627,6 +719,29 @@ def create_app(config_path: str | None = None) -> Flask:
             enrich_live=True,
             per_symbol=2,
             max_total=24,
+        )
+
+        open_lottery_trades: list[dict] = []
+        if journal is not None:
+            open_lottery_trades.extend(
+                [t.to_dict() for t in journal.book.trades if t.status == "open"]
+            )
+        elif insights and isinstance(insights, dict):
+            open_lottery_trades.extend(insights.get("open_positions") or [])
+        # Also fold paper ledger opens (0DTE-style) for SELL NOW
+        if isinstance(ledger, dict):
+            seen_c = {str(t.get("contract")) for t in open_lottery_trades if t.get("contract")}
+            for t in ledger.get("trades") or []:
+                if t.get("status") == "open" and str(t.get("contract") or "") not in seen_c:
+                    open_lottery_trades.append(t)
+
+        lottery = build_lottery_board(
+            explosive,
+            quotes=quotes,
+            scores=scan.get("scores") or [],
+            open_trades=open_lottery_trades,
+            min_lottery_score=float(actions_cfg.get("lottery_min_score", 62)),
+            min_confirms=int(actions_cfg.get("lottery_min_confirms", 4)),
         )
 
         return jsonify(
@@ -641,6 +756,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 "quality_gates": scan.get("quality_gates") or {},
                 "call_candidates": refreshed,
                 "explosive": explosive,
+                "lottery": lottery,
                 "watch": {"quotes": quotes},
                 "ledger": ledger,
                 "actions": actions,
