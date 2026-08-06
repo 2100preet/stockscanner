@@ -16,9 +16,14 @@ from typing import Any
 import yfinance as yf
 
 from odte_scanner.backtest.win_rates import summarize_hist_win_gate
-from odte_scanner.challenge.earnings import earnings_map_for
+from odte_scanner.challenge.earnings import earnings_map_for, scan_earnings_calendar
 from odte_scanner.challenge.tracker import hold_period_for
-from odte_scanner.data.universe import market_cap_tier
+from odte_scanner.data.universe import (
+    FOCUS_DEFAULT,
+    dram_memory_universe,
+    market_cap_tier,
+    mid_small_universe,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -531,6 +536,7 @@ def build_challenge_board(
     max_tickets: int = 8,
     fetch_contracts: bool = True,
     fetch_earnings: bool = True,
+    earnings_max_fetch: int = 36,
 ) -> dict[str, Any]:
     quotes = quotes or {}
     aliases = aliases or {}
@@ -562,13 +568,33 @@ def build_challenge_board(
     need_mult = float(primary_path["mult_per_flip"] or 1.8)
 
     eligible = _eligible_rows(win_table)
-    # Prefetch earnings for top candidates (cached; skips network when fetch_earnings=False)
-    earn_syms = [str(r["symbol"]) for r in eligible[: max_tickets + 6]]
+    # Earnings calendar: hist-eligible + DRAM/memory sleeve + focus + mid/small sample
+    # so "today / this week / next week" is not limited to names that already cleared hist.
+    seen_earn: set[str] = set()
+    earn_syms: list[str] = []
+    for sym in (
+        [str(r["symbol"]) for r in eligible[: max_tickets + 12]]
+        + dram_memory_universe()
+        + list(FOCUS_DEFAULT)
+        + mid_small_universe()[:40]
+    ):
+        key = str(sym).upper()
+        if key and key not in seen_earn:
+            seen_earn.add(key)
+            earn_syms.append(key)
+    max_earn = max(12, int(earnings_max_fetch or 36))
     earn_map = earnings_map_for(
         earn_syms,
         aliases=aliases,
         fetch=fetch_earnings,
-        max_fetch=min(10, max_tickets + 2),
+        max_fetch=max_earn if fetch_earnings else 0,
+    )
+    # Reuse cache for sorted watch list (today → this week → next week → post → soon)
+    earnings_watch = scan_earnings_calendar(
+        earn_syms,
+        aliases=aliases,
+        fetch=False,
+        max_fetch=0,
     )
 
     tickets: list[ChallengeTicket] = []
@@ -928,7 +954,10 @@ def build_challenge_board(
             rank_action.get(t.action, 9),
             -earn_boosts.get(t.symbol, 0),
             0 if t.certainty_tier == "perfect" else 1 if t.certainty_tier == "elite" else 2,
-            0 if t.market_cap_tier in {"mid", "small"} and t.earnings_window == "post_earnings" else 1,
+            0
+            if t.market_cap_tier in {"mid", "small", "dram_memory"}
+            and t.earnings_window == "post_earnings"
+            else 1,
             -t.hist_win_pct,
             -t.hist_samples,
         )
@@ -937,6 +966,14 @@ def build_challenge_board(
     primary = next((t for t in tickets if t.action in {"EXIT", "ENTRY", "HOLD"}), None)
     if primary is None and tickets:
         primary = tickets[0]
+
+    watch_buckets = {
+        "today": sum(1 for r in earnings_watch if r.get("bucket") == "today"),
+        "this_week": sum(1 for r in earnings_watch if r.get("bucket") == "this_week"),
+        "next_week": sum(1 for r in earnings_watch if r.get("bucket") == "next_week"),
+        "post": sum(1 for r in earnings_watch if r.get("bucket") == "post"),
+        "soon": sum(1 for r in earnings_watch if r.get("bucket") == "soon"),
+    }
 
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -953,6 +990,8 @@ def build_challenge_board(
         "entry": [t.to_dict() for t in tickets if t.action == "ENTRY"],
         "hold": [t.to_dict() for t in tickets if t.action == "HOLD"],
         "exit": [t.to_dict() for t in tickets if t.action == "EXIT"],
+        "earnings_watch": earnings_watch[:40],
+        "earnings_watch_buckets": watch_buckets,
         "counts": {
             "tickets": len(tickets),
             "perfect": sum(1 for t in tickets if t.certainty_tier == "perfect"),
@@ -963,8 +1002,12 @@ def build_challenge_board(
             "calls": sum(1 for t in tickets if t.right == "C"),
             "puts": sum(1 for t in tickets if t.right == "P"),
             "mid_small": sum(1 for t in tickets if t.market_cap_tier in {"mid", "small"}),
+            "dram_memory": sum(1 for t in tickets if t.symbol in set(dram_memory_universe())),
             "pre_earnings": sum(1 for t in tickets if t.earnings_window == "pre_earnings"),
             "post_earnings": sum(1 for t in tickets if t.earnings_window == "post_earnings"),
+            "earn_today": watch_buckets["today"],
+            "earn_this_week": watch_buckets["this_week"],
+            "earn_next_week": watch_buckets["next_week"],
             "live_spot": sum(1 for t in tickets if t.spot_source == "live"),
             "cache_spot": sum(1 for t in tickets if t.spot_source == "cache"),
             "live_ask": sum(1 for t in tickets if t.ask is not None),
@@ -977,16 +1020,20 @@ def build_challenge_board(
         "strategy_notes": {
             "earnings": (
                 "Prefer post-earnings continuation (IV already crushed) for CALL/PUT swings. "
-                "Pre-earnings: LEAP only / caution — short premium gets crushed into the print."
+                "Pre-earnings (today / this week / next week): LEAP only / caution — "
+                "short premium gets crushed into the print. Watch list scans hist-eligible + "
+                "DRAM/memory sleeve + focus names."
             ),
             "universe": (
-                "Liquid mega + mid/small optionables included when they clear the hist-win gate."
+                "Liquid mega + mid/small + DRAM/memory optionables included when they clear "
+                "the hist-win gate; earnings calendar still lists near-term prints without hist."
             ),
         },
         "rules": [
             "Swing / LEAP only — calls and puts (side from ensemble + tape).",
             "Hist-win filter: prefer 100% (n≥3), else ≥80% (n≥5) on weekly/swing quality signals.",
-            "Universe: mega/large + mid/small optionables (IWM sleeve + curated names).",
+            "Universe: mega/large + mid/small + DRAM/memory optionables.",
+            "Earnings watch: today / this week / next week / post-print across challenge + DRAM sleeve.",
             "Earnings: boost post-print continuation; caution/LEAP-only into the print; WAIT on earnings day.",
             "Hold periods: weekly 5–14d · swing 20–60d · LEAP 30–90d — EXIT at target, stop, or max hold.",
             f"Each flip targets ~{primary_path['pct_per_flip']:.0f}% option premium; then EXIT and roll.",

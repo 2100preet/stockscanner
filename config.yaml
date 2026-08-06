@@ -163,6 +163,8 @@ actions:
   challenge_max_tickets: 8
   challenge_fetch_contracts: true
   challenge_fetch_earnings: true
+  # Prefetch earnings for hist-eligible + DRAM/memory + focus (cached ~18h)
+  challenge_earnings_max_fetch: 36
   # Manual Paper ENTER/EXIT in UI (sleeve updates on button click)
   challenge_auto_enter: false
   challenge_auto_exit: false

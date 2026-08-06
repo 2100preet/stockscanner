@@ -2,12 +2,38 @@
 
 Full market scan via Yahoo is rate-limited; we use a curated liquid set (~S&P 100
 + high-volume growth/ETF names) that covers most optionable names traders care about.
-Includes a mid/small-cap optionable sleeve for the $1k→$1M challenge.
+Includes mid/small-cap and DRAM/memory sleeves for the $1k→$1M challenge + earnings watch.
 """
 
 from __future__ import annotations
 
 from typing import Any
+
+# DRAM / memory / semi-equipment thematic sleeve (earnings watch + challenge breadth)
+DRAM_MEMORY_UNIVERSE: list[str] = [
+    "DRAM",
+    "MU",
+    "WDC",
+    "STX",
+    "SNDK",
+    "AMAT",
+    "LRCX",
+    "KLAC",
+    "ENTG",
+    "TER",
+    "ON",
+    "MRVL",
+    "NXPI",
+    "AVGO",
+    "AMD",
+    "NVDA",
+    "TSM",
+    "INTC",
+    "QCOM",
+    "TXN",
+    "SMH",
+    "SOXX",
+]
 
 # Liquid mid / small-cap optionables (challenge + screener breadth)
 MID_SMALL_UNIVERSE: list[str] = [
@@ -45,6 +71,8 @@ LIQUID_UNIVERSE: list[str] = [
     "UNP", "RTX", "LMT", "NOC", "SPGI", "CME", "ICE", "SCHW", "C", "USB",
     # Mid / small sleeve
     *MID_SMALL_UNIVERSE,
+    # DRAM / memory thematic
+    *DRAM_MEMORY_UNIVERSE,
 ]
 
 _ETF = {
@@ -66,8 +94,10 @@ _MID = {
     "NIO", "MARA", "RIOT", "SMCI", "HPE", "PDD", "JD", "SE", "SLB", "OXY", "HAL",
     "F", "GM", "DKNG", "CELH", "PATH", "IOT", "DUOL", "GTLB", "CFLT", "BILL",
     "TOST", "APP", "TTD", "ENPH", "SEDG", "FSLR", "RUN", "ON", "WDC", "STX",
-    "ENTG", "TER", "HIMS", "OSCR", "CVNA", "W", "CHWY",
+    "ENTG", "TER", "HIMS", "OSCR", "CVNA", "W", "CHWY", "DRAM", "SNDK", "NXPI",
 } | (set(MID_SMALL_UNIVERSE) - _SMALL)
+
+_DRAM = frozenset(DRAM_MEMORY_UNIVERSE)
 
 # Focus list stays smaller for 0DTE options chains (rate limits)
 FOCUS_DEFAULT: list[str] = [
@@ -94,12 +124,16 @@ def mid_small_universe() -> list[str]:
     return _dedupe(list(MID_SMALL_UNIVERSE))
 
 
+def dram_memory_universe() -> list[str]:
+    return _dedupe(list(DRAM_MEMORY_UNIVERSE))
+
+
 def liquid_universe() -> list[str]:
     return _dedupe(list(LIQUID_UNIVERSE))
 
 
 def market_cap_tier(symbol: str) -> str:
-    """Return etf | mega_large | mid | small | unknown for challenge reasons."""
+    """Return etf | mega_large | mid | small | dram_memory | unknown for challenge reasons."""
     s = str(symbol).replace(".", "-").upper()
     if s in _ETF:
         return "etf"
@@ -107,9 +141,13 @@ def market_cap_tier(symbol: str) -> str:
         return "small"
     if s in _MID:
         return "mid"
-    # Default known liquid names → mega/large
+    # Known liquid mega/large (before DRAM-only leftovers like niche memory names)
+    if s in set(LIQUID_UNIVERSE) - set(MID_SMALL_UNIVERSE) - _DRAM:
+        return "mega_large"
     if s in set(LIQUID_UNIVERSE) - set(MID_SMALL_UNIVERSE):
         return "mega_large"
+    if s in _DRAM:
+        return "dram_memory"
     return "unknown"
 
 

@@ -1,9 +1,11 @@
-"""Earnings catalyst helper for the $1k→$1M challenge.
+"""Earnings catalyst helper for swing + $1k→$1M challenge.
 
 Strategy bias (research / paper):
 - Prefer **post-earnings** continuation (IV already crushed) for swing/LEAP calls & puts.
-- Treat **pre-earnings** as high-risk for long premium (IV crush) — flag clearly;
-  only keep as LEAP-style holds, never as a short weekly lottery.
+- Treat **pre-earnings** (today → next ~2 weeks) as high-risk for short-dated long premium;
+  flag clearly and prefer LEAP / WAIT into the print.
+- Surface an **earnings watch** list (today / this week / next week) even when a name
+  is not yet a hist-win ENTRY.
 """
 from __future__ import annotations
 
@@ -18,8 +20,10 @@ logger = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CACHE = ROOT / "outputs" / "earnings_cache.json"
 
-PRE_EARNINGS_DAYS = 7
+# this week + next week for swing/challenge awareness
+PRE_EARNINGS_DAYS = 14
 POST_EARNINGS_DAYS = 10
+SOON_EARNINGS_DAYS = 21  # label-only horizon beyond pre window
 
 
 def _today() -> date:
@@ -80,7 +84,10 @@ def fetch_earnings_row(
         try:
             fetched = datetime.fromisoformat(str(hit.get("fetched_at")).replace("Z", "+00:00"))
             age_h = (now - fetched).total_seconds() / 3600.0
-            if age_h <= max_age_hours:
+            # Reuse successes; retry recent failures after 2h
+            if hit.get("available") and age_h <= max_age_hours:
+                return hit
+            if (not hit.get("available")) and age_h < 2.0:
                 return hit
         except Exception:  # noqa: BLE001
             pass
@@ -105,7 +112,6 @@ def fetch_earnings_row(
             today = _today()
             next_d: date | None = None
             last_d: date | None = None
-            # Index is Earnings Date
             for idx in ed.index:
                 d = _parse_day(idx)
                 if d is None:
@@ -141,11 +147,12 @@ def classify_earnings(
     as_of: date | None = None,
     pre_days: int = PRE_EARNINGS_DAYS,
     post_days: int = POST_EARNINGS_DAYS,
+    soon_days: int = SOON_EARNINGS_DAYS,
 ) -> dict[str, Any]:
-    """Classify catalyst window for challenge strategy."""
+    """Classify catalyst window for challenge / swing strategy."""
     as_of = as_of or _today()
     out = {
-        "window": "none",  # none | pre_earnings | post_earnings | earnings_day
+        "window": "none",  # none | earnings_day | pre_earnings | earnings_soon | post_earnings
         "next_earnings": None,
         "last_earnings": None,
         "days_to_earnings": None,
@@ -154,6 +161,7 @@ def classify_earnings(
         "strategy_bias": "neutral",
         "prefer_leap": False,
         "boost": 0,
+        "bucket": None,  # today | this_week | next_week | soon | post | none
     }
     if not row:
         return out
@@ -167,17 +175,37 @@ def classify_earnings(
         out["days_to_earnings"] = days_to
         if days_to == 0:
             out["window"] = "earnings_day"
+            out["bucket"] = "today"
             out["label"] = "Earnings TODAY — IV crush risk extreme for long premium"
             out["strategy_bias"] = "avoid_short_premium"
             out["prefer_leap"] = True
             out["boost"] = -2
             return out
-        if 0 < days_to <= pre_days:
+        if 0 < days_to <= 7:
             out["window"] = "pre_earnings"
-            out["label"] = f"Earnings in {days_to}d ({next_d.isoformat()}) — IV crush risk"
+            out["bucket"] = "this_week"
+            out["label"] = f"Earnings in {days_to}d ({next_d.isoformat()}) — this week · IV crush risk"
             out["strategy_bias"] = "caution_pre"
             out["prefer_leap"] = True
             out["boost"] = -1
+            return out
+        if 7 < days_to <= pre_days:
+            out["window"] = "pre_earnings"
+            out["bucket"] = "next_week"
+            out["label"] = f"Earnings in {days_to}d ({next_d.isoformat()}) — next week · IV crush risk"
+            out["strategy_bias"] = "caution_pre"
+            out["prefer_leap"] = True
+            out["boost"] = -1
+            return out
+        if pre_days < days_to <= soon_days:
+            out["window"] = "earnings_soon"
+            out["bucket"] = "soon"
+            out["label"] = f"Earnings in {days_to}d ({next_d.isoformat()}) — on the radar"
+            out["strategy_bias"] = "watch"
+            out["prefer_leap"] = False
+            out["boost"] = 0
+            # fall through — still check post window first? post takes priority if recent
+            # actually if next is soon, last is usually old — return soon
             return out
 
     if last_d is not None:
@@ -185,6 +213,7 @@ def classify_earnings(
         out["days_since_earnings"] = days_since
         if 0 <= days_since <= post_days:
             out["window"] = "post_earnings"
+            out["bucket"] = "post"
             out["label"] = f"{days_since}d after earnings ({last_d.isoformat()}) — prefer continuation"
             out["strategy_bias"] = "prefer_post"
             out["prefer_leap"] = False
@@ -193,6 +222,7 @@ def classify_earnings(
 
     if next_d is not None and out["days_to_earnings"] is not None:
         out["label"] = f"Next earnings {next_d.isoformat()} ({out['days_to_earnings']}d)"
+        out["bucket"] = "none"
     return out
 
 
@@ -201,21 +231,82 @@ def earnings_map_for(
     *,
     aliases: dict[str, str] | None = None,
     fetch: bool = True,
-    max_fetch: int = 10,
+    max_fetch: int = 24,
     cache_path: str | Path | None = None,
+    force: bool = False,
 ) -> dict[str, dict[str, Any]]:
-    """Build symbol → classified earnings for a short candidate list."""
+    """Build symbol → classified earnings for a candidate list."""
     aliases = aliases or {}
     out: dict[str, dict[str, Any]] = {}
     fetched = 0
     path = Path(cache_path) if cache_path else DEFAULT_CACHE
     cache = _load_cache(path)
     for sym in symbols:
-        key = sym.upper()
+        key = str(sym).upper()
         row = cache.get(key)
-        if fetch and fetched < max_fetch and (row is None or not row.get("available")):
-            row = fetch_earnings_row(key, yahoo_symbol=aliases.get(key), cache_path=path)
+        need = force or row is None or not row.get("available")
+        if fetch and need and fetched < max_fetch:
+            row = fetch_earnings_row(
+                key, yahoo_symbol=aliases.get(key), cache_path=path, force=force
+            )
             fetched += 1
+            cache = _load_cache(path)
         out[key] = classify_earnings(row)
         out[key]["raw"] = row
+        out[key]["symbol"] = key
     return out
+
+
+def scan_earnings_calendar(
+    symbols: list[str],
+    *,
+    aliases: dict[str, str] | None = None,
+    fetch: bool = True,
+    max_fetch: int = 30,
+    within_pre_days: int = PRE_EARNINGS_DAYS,
+    within_post_days: int = POST_EARNINGS_DAYS,
+    within_soon_days: int = SOON_EARNINGS_DAYS,
+) -> list[dict[str, Any]]:
+    """Return near-term earnings rows sorted: today → this week → next week → post → soon."""
+    emap = earnings_map_for(
+        symbols, aliases=aliases, fetch=fetch, max_fetch=max_fetch, force=False
+    )
+    bucket_rank = {"today": 0, "this_week": 1, "next_week": 2, "post": 3, "soon": 4}
+    rows: list[dict[str, Any]] = []
+    for sym, c in emap.items():
+        win = c.get("window") or "none"
+        days_to = c.get("days_to_earnings")
+        days_since = c.get("days_since_earnings")
+        keep = False
+        if win in {"earnings_day", "pre_earnings", "post_earnings", "earnings_soon"}:
+            keep = True
+        elif days_to is not None and 0 <= int(days_to) <= within_soon_days:
+            keep = True
+        elif days_since is not None and 0 <= int(days_since) <= within_post_days:
+            keep = True
+        if not keep:
+            continue
+        rows.append(
+            {
+                "symbol": sym,
+                "window": win,
+                "bucket": c.get("bucket") or "none",
+                "label": c.get("label"),
+                "next_earnings": c.get("next_earnings"),
+                "last_earnings": c.get("last_earnings"),
+                "days_to_earnings": days_to,
+                "days_since_earnings": days_since,
+                "strategy_bias": c.get("strategy_bias"),
+                "prefer_leap": c.get("prefer_leap"),
+                "boost": c.get("boost") or 0,
+            }
+        )
+    rows.sort(
+        key=lambda r: (
+            bucket_rank.get(str(r.get("bucket")), 9),
+            int(r.get("days_to_earnings") if r.get("days_to_earnings") is not None else 999),
+            int(r.get("days_since_earnings") if r.get("days_since_earnings") is not None else 999),
+            r.get("symbol") or "",
+        )
+    )
+    return rows

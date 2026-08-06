@@ -207,14 +207,20 @@ PAGE = r"""
 
     <section class="tabpane" id="tab-swing">
       <h2>Swing — 1 to 3 months</h2>
-      <p class="lede">Stage analysis, trend structure, medium RS, dip buys. Win% ≈ 42-session (~2mo) forward return.</p>
+      <p class="lede">Stage analysis, trend structure, medium RS, dip buys. Win% ≈ 42-session (~2mo) forward return.
+        Near-term earnings (today / this week / next week) shared with the challenge desk below.</p>
       <div class="cards" id="cardsSwing"></div>
+      <div class="panel">
+        <h2>Earnings near you — today / this week / next week</h2>
+        <div id="swingEarningsWatch" class="empty">—</div>
+      </div>
     </section>
 
     <section class="tabpane" id="tab-challenge">
       <h2>$1,000 → $1,000,000 challenge</h2>
       <p class="lede">
-        Swing / LEAP <strong>calls &amp; puts</strong> across mega + <strong>mid/small</strong> optionables.
+        Swing / LEAP <strong>calls &amp; puts</strong> across mega + <strong>mid/small</strong> +
+        <strong>DRAM/memory</strong> optionables.
         Sure-shot hist filter (prefer <strong>100% hist win</strong>, else ≥80% n≥5).
         Status: <strong>ENTRY · HOLD · EXIT</strong> with hold periods. Earnings bias:
         prefer <strong>post-print continuation</strong>; caution/LEAP into the print.
@@ -222,6 +228,14 @@ PAGE = r"""
       </p>
       <div class="metric-row" id="challengeMetrics"></div>
       <div class="cards" id="challengePrimary"></div>
+      <div class="panel">
+        <h2>Earnings near you — today / this week / next week (+ DRAM sleeve)</h2>
+        <p class="lede" style="margin-top:0;font-size:.76rem">
+          Scans hist-eligible names plus DRAM/memory (DRAM, MU, WDC, STX, AMAT…) and focus list.
+          Pre-print → LEAP/WAIT; post-print → prefer continuation.
+        </p>
+        <div id="challengeEarningsWatch" class="empty">—</div>
+      </div>
       <div class="panel">
         <h2>Challenge update — ENTRY / HOLD / EXIT</h2>
         <div id="challengeStatus" class="empty">—</div>
@@ -511,6 +525,8 @@ PAGE = r"""
       const bookEl = document.getElementById("challengeBook");
       const planEl = document.getElementById("challengePlan");
       const disc = document.getElementById("challengeDisclaimer");
+      const earnWatchEl = document.getElementById("challengeEarningsWatch");
+      const swingEarnEl = document.getElementById("swingEarningsWatch");
       if (!ch || !Object.keys(ch).length) {
         if (ticketsEl) ticketsEl.innerHTML = `<div class="empty">Challenge board loading…</div>`;
         return;
@@ -539,17 +555,47 @@ PAGE = r"""
         m("Approx hold", (ch.primary && holdLbl(ch.primary)) || "—"),
         m("Live / cache spot", `${c.live_spot||0} / ${c.cache_spot||0}`),
         m("Live asks", `${c.live_ask||0}/${c.tickets||0}`),
+        m("Earn today / week / next", `${c.earn_today||0} / ${c.earn_this_week||0} / ${c.earn_next_week||0}`),
         m("Pre / Post earn", `${c.pre_earnings||0} / ${c.post_earnings||0}`),
         m("Closed flips", `${book.flips_closed||0} (W${book.wins||0}/L${book.losses||0})`),
       ].join("");
 
       const earnBadge = (t) => {
-        const w = t.earnings_window||"none";
-        if (w==="post_earnings") return `<span class="badge buy">POST-EARN</span>`;
+        const w = t.earnings_window||t.window||"none";
+        const b = t.bucket||"";
+        if (w==="post_earnings"||b==="post") return `<span class="badge buy">POST-EARN</span>`;
+        if (w==="earnings_day"||b==="today") return `<span class="badge sell">TODAY</span>`;
+        if (b==="this_week") return `<span class="badge wait">THIS WEEK</span>`;
+        if (b==="next_week") return `<span class="badge wait">NEXT WEEK</span>`;
         if (w==="pre_earnings") return `<span class="badge wait">PRE-EARN</span>`;
-        if (w==="earnings_day") return `<span class="badge sell">EARN DAY</span>`;
+        if (w==="earnings_soon"||b==="soon") return `<span class="badge skip">SOON</span>`;
         return `<span class="badge skip">—</span>`;
       };
+      const renderEarnWatch = (el) => {
+        if (!el) return;
+        const rows = ch.earnings_watch || [];
+        if (!rows.length) {
+          el.innerHTML = `<div class="empty">No near-term earnings in watch universe yet (cache warming / fetch limit).</div>`;
+          return;
+        }
+        el.innerHTML = `<table><thead><tr>
+          <th>When</th><th>Symbol</th><th>Days</th><th>Date</th><th>Bias</th><th>Note</th>
+        </tr></thead><tbody>${rows.slice(0,24).map(r=>{
+          const bias = r.strategy_bias||"—";
+          const cls = bias==="prefer_post"?"buy":(bias==="caution_pre"||bias==="avoid_short_premium"?"sell":"wait");
+          const days = r.days_to_earnings!=null?r.days_to_earnings+"d to":(r.days_since_earnings!=null?r.days_since_earnings+"d since":"—");
+          return `<tr>
+            <td>${earnBadge(r)}</td>
+            <td><strong>${r.symbol}</strong></td>
+            <td class="mono">${days}</td>
+            <td class="mono">${r.next_earnings||r.last_earnings||"—"}</td>
+            <td><span class="badge ${cls}">${bias}</span>${r.prefer_leap?` <span class="tag">LEAP</span>`:""}</td>
+            <td class="why">${r.label||""}</td>
+          </tr>`;
+        }).join("")}</tbody></table>`;
+      };
+      renderEarnWatch(earnWatchEl);
+      renderEarnWatch(swingEarnEl);
       const reasonList = (t) => {
         const rs = t.reasons||[];
         if (!rs.length) return t.recommend_reason||t.thesis||"";
@@ -1222,18 +1268,22 @@ def create_app(config_path: str | None = None) -> Flask:
                 logger.warning("win rates unavailable: %s", exc)
                 win_table = win_table or {}
 
-        # Challenge-eligible symbols need their own live/cache quotes (often outside focus candidates)
+        # Challenge-eligible + DRAM/memory sleeve need live/cache quotes (often outside focus)
         challenge_syms: list[str] = []
+        dram_syms: list[str] = []
         try:
             from odte_scanner.challenge.million import _eligible_rows
+            from odte_scanner.data.universe import dram_memory_universe
 
             challenge_syms = [
                 str(r["symbol"])
                 for r in _eligible_rows(win_table if isinstance(win_table, dict) else None)[:14]
             ]
+            dram_syms = dram_memory_universe()[:16]
         except Exception:  # noqa: BLE001
             challenge_syms = []
-        quote_syms = sorted(set(syms[:20] + challenge_syms))
+            dram_syms = []
+        quote_syms = sorted(set(syms[:20] + challenge_syms + dram_syms))
         for s in quote_syms:
             aliases.setdefault(s, resolve_yahoo_symbol(s, cfg))
 
@@ -1419,6 +1469,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 max_tickets=int(actions_cfg.get("challenge_max_tickets", 8)),
                 fetch_contracts=bool(actions_cfg.get("challenge_fetch_contracts", True)),
                 fetch_earnings=bool(actions_cfg.get("challenge_fetch_earnings", True)),
+                earnings_max_fetch=int(actions_cfg.get("challenge_earnings_max_fetch", 36)),
             )
             live_contracts = {
                 (str(t.get("symbol")), str(t.get("right") or "C")): t
@@ -1447,6 +1498,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 max_tickets=int(actions_cfg.get("challenge_max_tickets", 8)),
                 fetch_contracts=True,  # disk-cached chains — preserve strike/expiry/ask
                 fetch_earnings=False,
+                earnings_max_fetch=int(actions_cfg.get("challenge_earnings_max_fetch", 36)),
             )
             for t in challenge.get("tickets") or []:
                 prev = live_contracts.get((str(t.get("symbol")), str(t.get("right") or "C")))
