@@ -1,0 +1,243 @@
+# 0DTE / 1DTE bullish call scanner configuration
+# Paper trading by default — set live_trading.enabled: true only with a real broker adapter.
+#
+# Fridays are NOT dropped. prefer_expiry_weekdays includes Mon–Fri.
+# Focus list = names with Mon/Wed and/or every-weekday short-dated expiries.
+
+tickers:
+  # --- Every weekday 0DTE (Mon–Fri daily expirations) ---
+  - SPY
+  - QQQ
+  - IWM
+  - SPX    # Yahoo: ^SPX
+  - XSP    # Yahoo: ^XSP (mini-SPX)
+  # --- Monday + Wednesday short-dated (plus Friday weeklies) ---
+  - GLD
+  - SLV
+  - TLT
+  - SMH
+  - XLF
+  - AAPL
+  - MSFT
+  - NVDA
+  - TSLA
+  - AMD
+  - META
+  - AMZN
+  - GOOGL
+  - AVGO
+  - INTC
+  - MU
+  # --- Wednesday-only short-dated ---
+  - USO
+  - UNG
+  # --- Extra liquid Friday weeklies (kept — Fridays not dropped) ---
+  - NFLX
+  - CRM
+  - ORCL
+  - ADBE
+  - QCOM
+  - AMAT
+  - ARM
+  - PLTR
+  - COIN
+  - MSTR
+  - HOOD
+  - UBER
+  - JPM
+  - BAC
+  - XOM
+  - COST
+  - TSM
+  - DIA
+  - XLK
+  - XLE
+  - SOXX
+  - HYG
+  - EEM
+
+# Yahoo Finance symbol overrides (indexes need ^ prefix for quotes/chains)
+symbol_aliases:
+  SPX: "^SPX"
+  XSP: "^XSP"
+
+expiry_calendars:
+  # Mon–Fri daily short-dated (true everyday 0DTE)
+  everyday:
+    - SPY
+    - QQQ
+    - IWM
+    - SPX
+    - XSP
+  # Mon + Wed short-dated (also trade Friday weeklies — Fridays kept)
+  monday_wednesday:
+    - SPY
+    - QQQ
+    - IWM
+    - SPX
+    - XSP
+    - GLD
+    - SLV
+    - TLT
+    - SMH
+    - XLF
+    - AAPL
+    - MSFT
+    - NVDA
+    - TSLA
+    - AMD
+    - META
+    - AMZN
+    - GOOGL
+    - AVGO
+    - INTC
+    - MU
+  wednesday_only:
+    - USO
+    - UNG
+  friday_weeklies:
+    - NFLX
+    - CRM
+    - ORCL
+    - ADBE
+    - QCOM
+    - AMAT
+    - ARM
+    - PLTR
+    - COIN
+    - MSTR
+    - HOOD
+    - UBER
+    - JPM
+    - BAC
+    - XOM
+    - COST
+    - TSM
+    - DIA
+    - XLK
+    - XLE
+    - SOXX
+    - HYG
+    - EEM
+
+regime:
+  spy: SPY
+  qqq: QQQ
+  vix: "^VIX"
+  spx: SPX
+
+# Universe: focus = options 0DTE list; liquid/screener ≈ S&P100+optionables; all = union
+universe:
+  mode: focus
+  # liquid_tickers: []   # optional override of built-in liquid list
+
+scan:
+  min_score: 62
+  target_move_pct_min: 1.0
+  target_move_pct_max: 2.5
+  prefer_etfs: true
+  lookback_days: 252
+  # Boost Mon/Wed/everyday names on those sessions — do NOT exclude Friday names
+  prefer_mon_wed_calendar: true
+  mon_wed_score_bonus: 4.0
+  mon_wed_candidates_only: false
+  # Keep Friday-weekly names in scores + candidates every day
+  include_friday_weeklies: true
+
+# BUY NOW / SELL NOW thresholds (UI action board)
+actions:
+  buy_score: 72          # align with 0DTE quality gate
+  wait_score: 62         # watchlist / WAIT band
+  sell_score: 48         # open call exits when score cools below this
+  max_chase_pct: 2.5     # if already up this much in-session, prefer WAIT
+
+options:
+  # Look out to ~1 week for best listed call (not only same-day)
+  max_dte: 7
+  # DTE <= this counts as 0DTE / next-day bucket
+  odte_max_dte: 1
+  moneyness: atm_to_otm
+  # Percent OTM allowed (stocks often use $2.5 / $5 strikes)
+  otm_pct_max: 3.0
+  itm_pct_max: 1.5
+  max_ask: 25.0
+  min_open_interest: 50
+  min_volume: 10
+  per_bucket: 1
+  max_candidates_shown: 12
+  prefer_expiry_weekdays: [0, 1, 2, 3, 4]
+
+risk:
+  max_contracts_per_trade: 1
+  max_trades_per_day: 3
+  max_risk_per_trade_usd: 250
+  stop_loss_pct: 50
+  take_profit_pct: 80
+
+paper_trading:
+  enabled: true
+  starting_cash: 5000
+  ledger_path: outputs/paper_ledger.json
+
+# Signal-driven journal (enter on BUY NOW, exit on SELL NOW) — Intellectia-style track record
+journal:
+  enabled: true
+  path: outputs/signal_journal.json
+  starting_cash: 5000
+  auto_enter: true
+  auto_exit: true
+  max_risk_per_trade_usd: 250
+  max_open_trades: 5
+  max_entries_per_day: 5
+
+# Continuous scanner (premarket / overnight / regular). Not every second — rate limits.
+watch:
+  enabled: true
+  interval_sec: 60          # seconds between cycles (minimum enforced: 15)
+  full_scan_every_n: 1      # run full algo+options scan every N cycles
+  quote_top_n: 50           # how many names to pull live/extended quotes for
+  output_dir: outputs/watch
+
+live_trading:
+  enabled: false
+  broker: none
+
+algos:
+  # Legacy flat weights (merged into each horizon as a base)
+  weights:
+    ema_stack: 1.2
+    momentum_breakout: 1.4
+    rsi_bounce: 1.0
+    macd_momentum: 1.1
+    gap_and_go: 1.3
+    relative_strength: 1.2
+    squeeze_release: 1.1
+    vix_regime: 1.0
+    volume_thrust: 1.3
+  # Horizon-specific overrides (Signa/Intellectia-style separate engines)
+  weights_by_horizon:
+    0dte:
+      gap_and_go: 1.5
+      momentum_breakout: 1.5
+      volume_thrust: 1.4
+      vix_regime: 1.2
+    weekly:
+      ema_stack: 1.4
+      macd_momentum: 1.3
+      relative_strength: 1.4
+      pullback_entry: 1.3
+    swing:
+      stage_analysis: 1.6
+      trend_structure: 1.5
+      pullback_entry: 1.5
+      relative_strength_medium: 1.4
+      mean_reversion_bottom: 1.2
+
+backtest:
+  start: "2023-01-01"
+  end: null
+  option_payoff_multiplier: 3.0
+  option_loss_fraction: 0.65
+
+logging:
+  level: INFO

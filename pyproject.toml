@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "odte-scanner"
+version = "0.1.0"
+description = "Multi-algo scanner for bullish 0DTE/1DTE call setups on liquid tickers"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "yfinance>=0.2.40",
+  "pandas>=2.0",
+  "numpy>=1.26",
+  "pyyaml>=6.0",
+  "rich>=13.0",
+  "scikit-learn>=1.4",
+  "ta>=0.11.0",
+  "pyarrow>=14.0",
+  "flask>=3.0",
+]
+
+[project.scripts]
+odte-scanner = "odte_scanner.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["odte_scanner*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
