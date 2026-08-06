@@ -25,6 +25,7 @@ class ActionSignal:
     win_pct: float | None = None
     win_samples: int | None = None
     hit_1pct: float | None = None
+    hit_2pct: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -292,14 +293,21 @@ def _attach_win_stats(sig: ActionSignal, win_table: dict[str, Any] | None) -> Ac
     sig.win_pct = stats.get("win_pct")
     sig.win_samples = int(stats.get("trades") or 0) or None
     sig.hit_1pct = stats.get("hit_1pct")
-    if sig.win_pct is not None and sig.action == "BUY_NOW":
-        # Surface win% in the detail line for the board
-        n = sig.win_samples or 0
-        hit = f", ≥1% hit {sig.hit_1pct:.0f}%" if sig.hit_1pct is not None else ""
-        sig.detail = f"{sig.detail} · hist win {sig.win_pct:.0f}% (n={n}{hit})"
-    elif sig.win_pct is not None and sig.action in {"WAIT", "HOLD"}:
-        n = sig.win_samples or 0
-        sig.detail = f"{sig.detail} · hist win {sig.win_pct:.0f}% (n={n})"
+    sig.hit_2pct = stats.get("hit_2pct")
+    if sig.win_pct is None:
+        return sig
+    # n = sample size: how many historical quality signals this win% is based on
+    n = sig.win_samples or 0
+    parts = [f"hist win {sig.win_pct:.0f}%"]
+    parts.append(f"n={n} samples")
+    if sig.hit_1pct is not None:
+        # "strike rate" ≈ how often the underlying ripped ≥1% after the signal
+        parts.append(f"strike rate ≥1% {sig.hit_1pct:.0f}%")
+    if sig.hit_2pct is not None:
+        parts.append(f"≥2% {sig.hit_2pct:.0f}%")
+    if n and n < 8:
+        parts.append("low sample — treat cautiously")
+    sig.detail = f"{sig.detail} · " + " · ".join(parts)
     return sig
 
 

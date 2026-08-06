@@ -67,4 +67,8 @@ def test_board_includes_win_pct():
     assert board["buy_now_0dte"]
     assert board["buy_now_0dte"][0]["win_pct"] == 66.0
     assert board["buy_now_0dte"][0]["win_samples"] == 50
-    assert "hist win 66%" in board["buy_now_0dte"][0]["detail"]
+    assert board["buy_now_0dte"][0]["hit_1pct"] == 20.0
+    detail = board["buy_now_0dte"][0]["detail"]
+    assert "hist win 66%" in detail
+    assert "n=50 samples" in detail
+    assert "strike rate ≥1% 20%" in detail

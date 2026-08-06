@@ -118,6 +118,7 @@ PAGE = r"""
     <nav class="tabs" id="tabs">
       <button class="active" data-tab="overview">Overview</button>
       <button data-tab="odte">0DTE</button>
+      <button data-tab="explosive">Explosive</button>
       <button data-tab="weekly">1 Week</button>
       <button data-tab="swing">Swing 1–3M</button>
       <button data-tab="screener">Screener</button>
@@ -127,8 +128,18 @@ PAGE = r"""
     <section class="tabpane active" id="tab-overview">
       <div class="metric-row" id="perfCards"></div>
       <p class="lede" id="insightSummary"></p>
+      <p class="lede" id="winLegend" style="font-size:.78rem">
+        <strong>Hist win</strong> = % of past quality signals where the underlying finished green over the horizon.
+        <strong>n</strong> = sample size (how many of those signals). Small n (e.g. 1–5) means the % is fragile.
+        <strong>Strike rate ≥1%</strong> = how often the underlying ripped ≥1% after the signal (better proxy for call payoff than plain win%).
+      </p>
       <h2>Top action cards</h2>
       <div class="cards" id="overviewCards"></div>
+      <div class="panel">
+        <h2>Explosive 0DTE / 1DTE tickets</h2>
+        <p class="lede" style="margin-top:0">Cheap short-dated calls where a +2–5% rip can mean ~300%–10,000% option gains (rare “$6→parabolic” days). Estimates, not guarantees.</p>
+        <div id="explosiveMini" class="empty">—</div>
+      </div>
       <div class="panel">
         <h2>Live board (options)</h2>
         <div id="boardMini" class="empty">—</div>
@@ -137,9 +148,19 @@ PAGE = r"""
 
     <section class="tabpane" id="tab-odte">
       <h2>0DTE — same-day / next-session algos</h2>
-      <p class="lede">Gap-and-go, breakout, volume thrust, VIX regime. Win% = next session green after quality signal.</p>
+      <p class="lede">Gap-and-go, breakout, volume thrust, VIX regime. Win% = next session green after quality signal. Strike rate = ≥1% / ≥2% underlying rip rate.</p>
       <div class="cards" id="cards0dte"></div>
       <div class="panel"><div id="table0dte" class="empty"></div></div>
+    </section>
+
+    <section class="tabpane" id="tab-explosive">
+      <h2>Explosive calls — 0DTE / 1DTE lottery convexity</h2>
+      <p class="lede">
+        Screens for inexpensive 0–1 DTE calls with asymmetric upside if the underlying rips.
+        Example class of move: a SPY call near ~$6 that can mark near deep-ITM value on a violent trend day (hundreds–thousands of % on the option — not typical, and premium can go to zero).
+      </p>
+      <div class="metric-row" id="explosiveMetrics"></div>
+      <div id="explosiveTable" class="empty">Run a scan to populate explosive tickets.</div>
     </section>
 
     <section class="tabpane" id="tab-weekly">
@@ -189,7 +210,7 @@ PAGE = r"""
       const table = DATA.win_rates || {};
       const row = (table.symbols || {})[symbol] || {};
       const s = row[hz] || {};
-      return { pct: s.win_pct, n: s.trades || 0 };
+      return { pct: s.win_pct, n: s.trades || 0, hit1: s.hit_1pct, hit2: s.hit_2pct };
     }
 
     function cardHTML(t, hz) {
@@ -197,6 +218,9 @@ PAGE = r"""
       const conf = Math.round(t.ensemble_score||0);
       const w = winLookup(t.symbol, hz);
       const dir = long ? "LONG" : "WAIT";
+      const winLabel = w.pct==null ? "—" : `${fmt(w.pct,0)}%`;
+      const nLabel = w.pct==null ? "—" : `${w.n} samples`;
+      const strikeRate = w.hit1==null ? "—" : `${fmt(w.hit1,0)}% ≥1%` + (w.hit2==null?"":` / ${fmt(w.hit2,0)}% ≥2%`);
       return `<article class="action-card ${long?"long":"wait"}">
         <div class="ac-top">
           <div class="ac-sym">${t.symbol}</div>
@@ -209,7 +233,9 @@ PAGE = r"""
           <div>Stop<strong>${fmt(t.stop,2)}</strong></div>
           <div>Target<strong>${fmt(t.target,2)}</strong></div>
           <div>R:R<strong>${t.risk_reward==null?"—":fmt(t.risk_reward,1)+":1"}</strong></div>
-          <div>Win%<strong>${w.pct==null?"—":fmt(w.pct,0)+"%"} <span style="color:var(--muted);font-weight:400">n=${w.n}</span></strong></div>
+          <div>Hist win<strong>${winLabel}</strong></div>
+          <div title="Sample size: number of historical quality signals">${w.n < 8 && w.pct!=null ? "n (low)" : "n"}<strong>${nLabel}</strong></div>
+          <div title="How often underlying ripped after signal">Strike rate<strong>${strikeRate}</strong></div>
           <div>Exp move<strong>${fmt(t.expected_move_pct,1)}%</strong></div>
         </div>
         <p class="why" style="margin:.55rem 0 0">${(t.reasons||[]).filter(r=>!r.includes("/")).slice(0,4).join(" · ")||"—"}</p>
@@ -227,22 +253,65 @@ PAGE = r"""
       const el = document.getElementById(elId);
       if (!rows || !rows.length) { el.innerHTML = `<div class="empty">No listed calls in this bucket.</div>`; return; }
       el.innerHTML = `<table><thead><tr>
-        <th>Action</th><th>Symbol</th><th>Strike</th><th>Expiry</th><th>Bid/Ask</th><th>Score</th><th>Win%</th><th>Why</th>
+        <th>Action</th><th>Symbol</th><th>Call strike</th><th>Expiry</th><th>Bid/Ask</th><th>Score</th><th>Hist win</th><th>n</th><th>Strike rate</th><th>Why</th>
       </tr></thead><tbody>${rows.map(r=>{
         const a=(r.action||"WAIT").replace("_"," ");
         const cls=(r.action||"WAIT").toLowerCase().split("_")[0];
-        const win=r.win_pct==null?"—":`${fmt(r.win_pct,0)}% n=${r.win_samples||0}`;
+        const win=r.win_pct==null?"—":`${fmt(r.win_pct,0)}%`;
+        const n=r.win_pct==null?"—":`${r.win_samples||0}`;
+        const sr=r.hit_1pct==null?"—":`${fmt(r.hit_1pct,0)}% ≥1%`+(r.hit_2pct==null?"":` · ${fmt(r.hit_2pct,0)}% ≥2%`);
         return `<tr>
           <td><span class="badge ${cls}">${a}</span></td>
           <td><strong>${r.symbol}</strong></td>
-          <td class="mono">${fmt(r.strike,2)}</td>
+          <td class="mono">${r.strike==null?"—":fmt(r.strike,2)}</td>
           <td class="mono">${r.expiry||"—"} <span class="status">DTE ${r.dte??"—"}</span></td>
           <td class="mono">${fmt(r.bid,2)} / ${fmt(r.ask,2)}</td>
           <td class="mono">${fmt(r.score,0)}</td>
           <td class="mono">${win}</td>
+          <td class="mono" title="Historical sample size">${n}</td>
+          <td class="mono" title="Underlying rip frequency after signal">${sr}</td>
           <td class="why">${r.detail||""}</td>
         </tr>`;
       }).join("")}</tbody></table>`;
+    }
+
+    function renderExplosive(rows) {
+      const mini = document.getElementById("explosiveMini");
+      const table = document.getElementById("explosiveTable");
+      const metrics = document.getElementById("explosiveMetrics");
+      const list = rows || [];
+      const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
+      if (!list.length) {
+        mini.innerHTML = `<div class="empty">No explosive tickets yet — need cheap 0DTE/1DTE calls with ≥3× convexity on a rip.</div>`;
+        table.innerHTML = mini.innerHTML;
+        metrics.innerHTML = "";
+        return;
+      }
+      const ge10 = list.filter(r => (r.best_mult||0) >= 10).length;
+      const ge30 = list.filter(r => (r.best_mult||0) >= 30).length;
+      metrics.innerHTML = [
+        m("Tickets", list.length),
+        m("≥10× potential", ge10, "up"),
+        m("≥30× potential", ge30, "up"),
+        m("Top mult", `${fmt(list[0].best_mult,0)}×`, "up"),
+      ].join("");
+      const rowHtml = (r) => `<tr>
+        <td><strong>${r.symbol}</strong> <span class="tag">${r.dte<=0?"0DTE":r.dte+"DTE"}</span></td>
+        <td class="mono">${fmt(r.strike,2)}c</td>
+        <td class="mono">$${fmt(r.ask,2)}</td>
+        <td class="mono">${fmt(r.moneyness_pct,2)}%</td>
+        <td class="mono up"><strong>${fmt(r.mult_at_2pct,1)}×</strong></td>
+        <td class="mono up">${fmt(r.mult_at_3pct,1)}×</td>
+        <td class="mono up">${fmt(r.mult_at_5pct,1)}×</td>
+        <td class="mono"><strong class="up">+${fmt(r.pct_gain_best,0)}%</strong> on +${fmt(r.best_move_pct,0)}%</td>
+        <td class="mono">${fmt(r.lottery_score,0)}</td>
+        <td class="why">${r.thesis||""}</td>
+      </tr>`;
+      const head = `<table><thead><tr>
+        <th>Symbol</th><th>Strike</th><th>Ask</th><th>OTM%</th><th>On +2%</th><th>On +3%</th><th>On +5%</th><th>Best upside</th><th>Lottery</th><th>Why</th>
+      </tr></thead><tbody>`;
+      mini.innerHTML = head + list.slice(0,6).map(rowHtml).join("") + "</tbody></table>";
+      table.innerHTML = head + list.map(rowHtml).join("") + "</tbody></table>";
     }
 
     function renderScreener(horizons) {
@@ -338,8 +407,9 @@ PAGE = r"""
 
       const acts = DATA.actions || {};
       renderOptionTable("boardMini", (acts.all||[]).slice(0,10));
-      renderOptionTable("table0dte", (acts.all||[]).filter(r=>(r.dte_bucket||"0dte")==="0dte"));
+      renderOptionTable("table0dte", (acts.all||[]).filter(r=>(r.dte_bucket||"0dte")==="0dte" || (r.dte!=null && r.dte<=1)));
       renderOptionTable("tableWeekly", (acts.all||[]).filter(r=>r.dte_bucket==="weekly"));
+      renderExplosive(DATA.explosive || []);
       renderScreener(hz);
       renderInsights(DATA.insights);
       document.getElementById("session").textContent = (DATA.session||"—") + " · " + (DATA.universe_mode||"focus");
@@ -546,6 +616,19 @@ def create_app(config_path: str | None = None) -> Flask:
                 journal.mark_open(marks)
             insights = build_insights(journal=journal, actions=actions, win_rates=win_table)
 
+        from odte_scanner.options.explosive import build_explosive_board
+
+        # Lottery / parabolic 0DTE–1DTE tickets (e.g. cheap calls that can 3×–100× on a rip)
+        explosive = build_explosive_board(
+            refreshed,
+            scores=scan.get("scores") or [],
+            quotes=quotes,
+            aliases=aliases,
+            enrich_live=True,
+            per_symbol=2,
+            max_total=24,
+        )
+
         return jsonify(
             {
                 "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -557,6 +640,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 "action_cards": scan.get("action_cards") or {},
                 "quality_gates": scan.get("quality_gates") or {},
                 "call_candidates": refreshed,
+                "explosive": explosive,
                 "watch": {"quotes": quotes},
                 "ledger": ledger,
                 "actions": actions,
