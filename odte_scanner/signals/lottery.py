@@ -271,14 +271,17 @@ def decide_lottery_entry(
         confirms.append(f"lottery score {lottery_score:.0f}")
 
     n_conf = len(confirms)
-    # Require tape when in regular hours for BUY NOW
+    # Require tape for BUY NOW (5m / 15m impulse or constructive session bid)
     has_tape = any(x.startswith("5m") or x.startswith("15m") or x.startswith("session bid") for x in confirms)
-    if phase in {"regular", "open_drive", "late"} and not has_tape:
+    if not has_tape:
         return LotteryAction(
             action="WAIT",
             strength=lottery_score * 0.7,
             headline=f"WAIT LOTTERY {symbol}",
-            detail="Convex ticket, but no tape confirm yet — wait for 5m/15m reclaim before BUY NOW.",
+            detail=(
+                f"Convex ticket ({n_conf} confirms), but no tape confirm yet "
+                f"(phase {phase}) — wait for 5m/15m reclaim before BUY NOW."
+            ),
             playbook=sorted(set(playbook + ["tape_confirm"])),
             confirms=n_conf,
             vetoes=["missing_tape_confirm"],
