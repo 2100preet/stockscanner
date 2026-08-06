@@ -162,6 +162,12 @@ actions:
   challenge_flips: 12
   challenge_max_tickets: 8
   challenge_fetch_contracts: true
+  challenge_fetch_earnings: true
+  # Manual Paper ENTER/EXIT in UI (sleeve updates on button click)
+  challenge_auto_enter: false
+  challenge_auto_exit: false
+  challenge_max_open: 1
+  challenge_ledger_path: outputs/challenge_ledger.json
 
 options:
   # Look out to ~1 week for best listed call (not only same-day)

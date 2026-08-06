@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -81,9 +81,28 @@ class ChallengeTrade:
     unrealized_pct: float | None = None
     last_action: str = "ENTRY"  # ENTRY | HOLD | EXIT
     last_action_detail: str = ""
+    # Precision fields for sleeve UI / enter-exit plan
+    hist_win_pct: float | None = None
+    hist_samples: int | None = None
+    hit_1pct: float | None = None
+    hit_2pct: float | None = None
+    target_profit_pct: float | None = None
+    target_ask: float | None = None
+    enter_plan: str = ""
+    exit_plan: str = ""
+    hold_approx_label: str = ""
+    certainty_tier: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        d = asdict(self)
+        # Derived helpers for UI
+        tgt = self.target_profit_pct
+        if tgt is None and self.target_premium_mult:
+            tgt = round((self.target_premium_mult - 1.0) * 100.0, 1)
+            d["target_profit_pct"] = tgt
+        if self.target_ask is None and self.entry_ask and self.target_premium_mult:
+            d["target_ask"] = round(self.entry_ask * self.target_premium_mult, 2)
+        return d
 
 
 @dataclass
@@ -124,7 +143,16 @@ class ChallengeTracker:
             return
         try:
             raw = json.loads(self.path.read_text())
-            trades = [ChallengeTrade(**t) for t in raw.get("trades") or []]
+            known = {f.name for f in fields(ChallengeTrade)}
+            trades: list[ChallengeTrade] = []
+            for t in raw.get("trades") or []:
+                if not isinstance(t, dict):
+                    continue
+                payload = {k: v for k, v in t.items() if k in known}
+                try:
+                    trades.append(ChallengeTrade(**payload))
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("skip bad challenge trade: %s", exc)
             self.book = ChallengeBook(
                 starting_cash=float(raw.get("starting_cash") or self.book.starting_cash),
                 cash=float(raw.get("cash") or self.book.starting_cash),
@@ -183,6 +211,20 @@ class ChallengeTracker:
             if cost <= 0 or cost > self.book.cash:
                 return None
 
+        mult = float(ticket.get("target_premium_mult") or 1.78)
+        target_pct = round((mult - 1.0) * 100.0, 1)
+        target_ask = ticket.get("target_ask")
+        if target_ask is None:
+            target_ask = round(ask * mult, 2)
+        side = "CALL" if right == "C" else "PUT"
+        enter_plan = ticket.get("enter_plan") or (
+            f"ENTER {side} now @ ≤${ask:.2f} · {ticket.get('expiry') or '?'} · "
+            f"K{ticket.get('strike')} · hold {hp['label']}"
+        )
+        exit_plan = ticket.get("exit_plan") or (
+            f"EXIT when premium ≥${float(target_ask):.2f} (+{target_pct:.0f}%), "
+            f"or stop −45%, or max hold {hp['max_days']}d"
+        )
         trade = ChallengeTrade(
             id=f"CH-{symbol}{right}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
             symbol=symbol,
@@ -199,12 +241,25 @@ class ChallengeTracker:
             hold_min_days=int(hp["min_days"]),
             hold_max_days=int(hp["max_days"]),
             hold_ideal_days=int(hp["ideal_days"]),
-            target_premium_mult=float(ticket.get("target_premium_mult") or 1.78),
+            target_premium_mult=mult,
             contracts=contracts,
             cost=cost,
             mark=ask,
             last_action="ENTRY",
-            last_action_detail=f"Entered {right} @ ${ask:.2f}",
+            last_action_detail=f"Entered {side} @ ${ask:.2f} · target +{target_pct:.0f}%",
+            hist_win_pct=ticket.get("hist_win_pct"),
+            hist_samples=ticket.get("hist_samples"),
+            hit_1pct=ticket.get("hit_1pct"),
+            hit_2pct=ticket.get("hit_2pct"),
+            target_profit_pct=target_pct,
+            target_ask=float(target_ask) if target_ask is not None else None,
+            enter_plan=str(enter_plan),
+            exit_plan=str(exit_plan),
+            hold_approx_label=str(
+                ticket.get("hold_approx_label")
+                or f"≈{hp['ideal_days']}d ({hp['min_days']}–{hp['max_days']}d)"
+            ),
+            certainty_tier=ticket.get("certainty_tier"),
         )
         self.book.cash -= cost
         self.book.trades.append(trade)
@@ -334,14 +389,36 @@ class ChallengeTracker:
 
         # Evaluate opens first
         for t in list(self.open_trades()):
-            # Prefer mark from matching ticket bid
+            # Prefer mark from matching ticket bid/ask/last
             mark = t.mark
             for tk in tickets:
                 if tk.get("symbol") == t.symbol and str(tk.get("right") or "C").upper() == t.right:
                     if tk.get("bid"):
                         mark = float(tk["bid"])
+                    elif tk.get("option_last"):
+                        mark = float(tk["option_last"])
                     elif tk.get("ask"):
-                        mark = float(tk["ask"]) * 0.95
+                        mark = float(tk["ask"])
+                    # Backfill precision fields if older ledger row
+                    if t.hit_1pct is None and tk.get("hit_1pct") is not None:
+                        t.hit_1pct = tk.get("hit_1pct")
+                        t.hit_2pct = tk.get("hit_2pct")
+                        t.hist_win_pct = tk.get("hist_win_pct")
+                        t.hist_samples = tk.get("hist_samples")
+                    # Never overwrite a stored ENTRY plan with HOLD/WAIT ticket text
+                    if (not t.enter_plan) and tk.get("action") == "ENTRY" and tk.get("enter_plan"):
+                        t.enter_plan = str(tk.get("enter_plan"))
+                    if (not t.exit_plan) and tk.get("exit_plan"):
+                        t.exit_plan = str(tk.get("exit_plan"))
+                    elif t.exit_plan.startswith("Already") or not t.exit_plan:
+                        if tk.get("exit_plan"):
+                            t.exit_plan = str(tk.get("exit_plan"))
+                    if t.target_ask is None and tk.get("target_ask") is not None:
+                        t.target_ask = float(tk["target_ask"])
+                    if t.target_profit_pct is None and t.target_premium_mult:
+                        t.target_profit_pct = round((t.target_premium_mult - 1.0) * 100.0, 1)
+                    if not t.hold_approx_label and tk.get("hold_approx_label"):
+                        t.hold_approx_label = str(tk.get("hold_approx_label"))
                     break
             ev = self.evaluate_open(t, mark=mark, quote=quotes.get(t.symbol))
             holds.append(ev)

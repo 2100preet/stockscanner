@@ -105,6 +105,9 @@ def test_challenge_board_picks_perfect_hist():
     assert board["counts"]["calls"] + board["counts"]["puts"] == board["counts"]["tickets"]
     assert board["primary"]["recommend_reason"]
     assert "≈" in board["primary"]["hold_approx_label"]
+    assert board["primary"]["enter_plan"]
+    assert board["primary"]["exit_plan"]
+    assert board["primary"]["target_profit_pct"] > 50
 
 
 def test_challenge_board_put_side_and_hold_status():

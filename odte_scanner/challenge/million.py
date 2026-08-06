@@ -75,6 +75,9 @@ class ChallengeTicket:
     quote_asof: str | None
     live_ok: bool
     data_note: str
+    enter_plan: str
+    exit_plan: str
+    target_profit_pct: float
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -777,6 +780,43 @@ def build_challenge_board(
             data_note = f"{data_note} · option zone only"
         thesis = recommend_reason + f". Approx hold {hold_approx}. " + " ".join(reasons[:3])
 
+        target_profit_pct = round((need_mult - 1.0) * 100.0, 1)
+        target_ask_val = round(ask * need_mult, 2) if ask else None
+        side_lbl = "CALL" if right == "C" else "PUT"
+        if action == "ENTRY" and ask is not None:
+            enter_plan = (
+                f"ENTER {side_lbl} now @ ≤${ask:.2f} · expiry { (contract or {}).get('expiry') } · "
+                f"strike {(contract or {}).get('strike')} · "
+                f"hist {win:.0f}% (n={n}) · strike-rate ≥1% {row.get('hit_1pct') if row.get('hit_1pct') is not None else '—'}%"
+            )
+        elif action == "ENTRY":
+            enter_plan = (
+                f"ENTER {side_lbl} when live ask prints · expiry {(contract or {}).get('expiry')} · "
+                f"strike {(contract or {}).get('strike')} · hold {hold_approx}"
+            )
+        elif action == "HOLD":
+            enter_plan = (
+                (open_t or {}).get("enter_plan")
+                or (
+                    f"Opened {side_lbl} @ ${float((open_t or {}).get('entry_ask') or ask or 0):.2f} · "
+                    f"{(contract or {}).get('expiry')} K{(contract or {}).get('strike')} · "
+                    f"strike-rate ≥1% {(open_t or {}).get('hit_1pct', row.get('hit_1pct'))}%"
+                )
+            )
+        else:
+            enter_plan = f"WAIT — {status_detail}"
+        if target_ask_val is not None:
+            exit_plan = (
+                f"EXIT at ≥${target_ask_val:.2f} (+{target_profit_pct:.0f}% premium), "
+                f"or stop −45%, or after {hp['max_days']}d max hold "
+                f"(ideal ~{hp['ideal_days']}d). Expiry { (contract or {}).get('expiry') }."
+            )
+        else:
+            exit_plan = (
+                f"EXIT at +{target_profit_pct:.0f}% premium, stop −45%, or max hold {hp['max_days']}d. "
+                f"Expiry {(contract or {}).get('expiry')}."
+            )
+
         tickets.append(
             ChallengeTicket(
                 symbol=sym,
@@ -804,7 +844,7 @@ def build_challenge_board(
                 contracts_for_bankroll=contracts_n,
                 debit_usd=debit,
                 target_premium_mult=round(need_mult, 3),
-                target_ask=round(ask * need_mult, 2) if ask else None,
+                target_ask=target_ask_val,
                 hold_period_label=str(hp["label"]),
                 hold_approx_label=hold_approx,
                 hold_min_days=int(hp["min_days"]),
@@ -829,6 +869,9 @@ def build_challenge_board(
                 quote_asof=str(quote_asof) if quote_asof else None,
                 live_ok=live_ok,
                 data_note=data_note,
+                enter_plan=enter_plan,
+                exit_plan=exit_plan,
+                target_profit_pct=target_profit_pct,
             )
         )
         if len(tickets) >= max_tickets:

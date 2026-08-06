@@ -228,7 +228,15 @@ PAGE = r"""
       </div>
       <div class="panel">
         <h2>Open sleeve &amp; closed flips</h2>
+        <p class="lede" style="margin-top:0;font-size:.76rem">
+          Paper sleeve updates on <strong>Paper ENTER / EXIT</strong>. Each open flip shows strike, expiry,
+          target profit %, strike-rates, and exact EXIT rules.
+        </p>
         <div id="challengeBook" class="empty">—</div>
+      </div>
+      <div class="panel">
+        <h2>When to ENTER / EXIT</h2>
+        <div id="challengePlan" class="empty">—</div>
       </div>
       <div class="panel">
         <h2>Compounding path &amp; hold periods</h2>
@@ -501,6 +509,7 @@ PAGE = r"""
       const ticketsEl = document.getElementById("challengeTickets");
       const statusEl = document.getElementById("challengeStatus");
       const bookEl = document.getElementById("challengeBook");
+      const planEl = document.getElementById("challengePlan");
       const disc = document.getElementById("challengeDisclaimer");
       if (!ch || !Object.keys(ch).length) {
         if (ticketsEl) ticketsEl.innerHTML = `<div class="empty">Challenge board loading…</div>`;
@@ -509,7 +518,10 @@ PAGE = r"""
       const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
       const path = ch.path || {};
       const c = ch.counts || {};
-      const book = (ch.sync && ch.sync.book) || ch.book || {};
+      // Prefer ledger book (always written by API); sync.book is fallback
+      const book = (ch.book && (ch.book.trades || ch.book.cash!=null)) ? ch.book
+                 : ((ch.sync && ch.sync.book) || {});
+      const sync = ch.sync || {};
       const holdLbl = (t) => t.hold_approx_label || (t.hold_ideal_days!=null?`≈${t.hold_ideal_days}d (${t.hold_min_days||"?"}–${t.hold_max_days||"?"}d)`:(t.hold_period_label||"—"));
       const spotBadge = (t) => {
         const src=t.spot_source||"none";
@@ -599,35 +611,98 @@ PAGE = r"""
       if (bookEl) {
         const open=(book.trades||[]).filter(t=>t.status==="open");
         const closed=(book.trades||[]).filter(t=>t.status==="closed").slice(-8).reverse();
+        const cash = book.cash!=null?book.cash:(ch.start_usd||1000);
+        const equity = book.equity!=null?book.equity:cash;
+        const syncNote = (sync.entered&&sync.entered.length)?` · paper entered ${sync.entered.join(", ")}`:"";
+        const syncExit = (sync.exited&&sync.exited.length)?` · paper exited ${sync.exited.join(", ")}`:"";
         bookEl.innerHTML = `
           <div class="ac-meta" style="margin-bottom:.5rem">
-            <div>Cash<strong>$${fmt(book.cash,0)}</strong></div>
-            <div>Equity<strong>$${fmt(book.equity,0)}</strong></div>
-            <div>Flips<strong>${book.flips_closed||0}</strong></div>
+            <div>Cash<strong>$${Number(cash).toLocaleString(undefined,{maximumFractionDigits:0})}</strong></div>
+            <div>Equity<strong>$${Number(equity).toLocaleString(undefined,{maximumFractionDigits:0})}</strong></div>
+            <div>Open flips<strong>${book.open_trades!=null?book.open_trades:open.length}</strong></div>
+            <div>Closed flips<strong>${book.flips_closed||0}</strong></div>
             <div>Win/Loss<strong>${book.wins||0}/${book.losses||0}</strong></div>
           </div>
-          ${open.length?`<div class="status">OPEN</div><table><thead><tr>
-            <th>Action</th><th>Side</th><th>Sym</th><th>Entry</th><th>Mark</th><th>Unreal%</th><th>Held</th><th>Max hold</th>
-          </tr></thead><tbody>${open.map(t=>`<tr>
-            <td><span class="badge ${t.last_action==="EXIT"?"sell":"hold"}">${t.last_action||"HOLD"}</span></td>
-            <td class="mono">${t.right==="P"?"PUT":"CALL"}</td>
-            <td><strong>${t.symbol}</strong></td>
-            <td class="mono">$${fmt(t.entry_ask,2)}</td>
-            <td class="mono">$${fmt(t.mark,2)}</td>
-            <td class="mono ${pctClass(t.unrealized_pct)}">${t.unrealized_pct==null?"—":fmt(t.unrealized_pct,1)+"%"}</td>
-            <td class="mono">${t.hold_days==null?"—":fmt(t.hold_days,1)+"d"}</td>
-            <td class="mono">${t.hold_max_days||"—"}d</td>
-          </tr>`).join("")}</tbody></table>`:`<div class="empty">No open challenge flip.</div>`}
+          <p class="why" style="margin:.2rem 0 .55rem">Sleeve ledger${syncNote}${syncExit || " · refresh after Paper ENTER"}</p>
+          ${open.length?open.map(t=>{
+            const tgtPct = t.target_profit_pct!=null?t.target_profit_pct:(t.target_premium_mult!=null?((t.target_premium_mult-1)*100):null);
+            const tgtAsk = t.target_ask!=null?t.target_ask:(t.entry_ask!=null&&t.target_premium_mult!=null?t.entry_ask*t.target_premium_mult:null);
+            return `<article class="action-card ${t.last_action==="EXIT"?"short":"long"}" style="margin-bottom:.65rem">
+              <div class="ac-top">
+                <div class="ac-sym">${t.symbol} <span class="tag">${t.right==="P"?"PUT":"CALL"}</span>
+                  <span class="badge ${t.last_action==="EXIT"?"sell":"hold"}">${t.last_action||"HOLD"}</span></div>
+                <div class="ac-dir ${t.last_action==="EXIT"?"short":"long"}">${t.hold_approx_label||`max ${t.hold_max_days||"—"}d`}</div>
+              </div>
+              <div class="ac-meta">
+                <div>Strike / expiry<strong>${t.strike==null?"—":fmt(t.strike,2)} · ${t.expiry||"—"}</strong></div>
+                <div>Contract / DTE<strong>${t.contract||"—"} · ${t.dte_at_entry??"—"}d</strong></div>
+                <div>Entry → mark<strong>$${fmt(t.entry_ask,2)} → $${fmt(t.mark,2)}</strong></div>
+                <div>Unrealized / target<strong class="${pctClass(t.unrealized_pct)}">${t.unrealized_pct==null?"—":fmt(t.unrealized_pct,1)+"%"} / ${tgtPct==null?"—":"+"+fmt(tgtPct,0)+"%"}</strong></div>
+                <div>Target ask<strong>${tgtAsk==null?"—":"$"+fmt(tgtAsk,2)}</strong></div>
+                <div>Strike rate ≥1%/≥2%<strong>${t.hit_1pct==null?"—":fmt(t.hit_1pct,0)+"%"} / ${t.hit_2pct==null?"—":fmt(t.hit_2pct,0)+"%"}</strong></div>
+                <div>Hist win<strong>${t.hist_win_pct==null?"—":fmt(t.hist_win_pct,0)+"%"} (n=${t.hist_samples??"—"})</strong></div>
+                <div>Held / max<strong>${t.hold_days==null?"0":fmt(t.hold_days,1)}d / ${t.hold_max_days||"—"}d</strong></div>
+                <div>Contracts / cost<strong>${t.contracts||1} · $${fmt(t.cost,0)}</strong></div>
+              </div>
+              <p class="why" style="margin:.45rem 0 0"><strong>EXIT plan:</strong> ${t.exit_plan||t.last_action_detail||"—"}</p>
+              <p class="why" style="margin:.25rem 0 0"><strong>ENTER was:</strong> ${t.enter_plan||t.entry_reason||"—"}</p>
+              <div class="playbook" style="margin-top:.45rem">
+                <button type="button" class="tag" data-ch-exit="${t.id}">Paper EXIT now</button>
+              </div>
+            </article>`;
+          }).join(""):`<div class="empty">No open challenge flip — click <strong>Paper ENTER</strong> on an ENTRY ticket below.</div>`}
           ${closed.length?`<div class="status" style="margin-top:.7rem">CLOSED</div><table><thead><tr>
-            <th>Side</th><th>Sym</th><th>In→Out</th><th>P&L%</th><th>Held</th><th>Exit</th>
+            <th>Side</th><th>Sym</th><th>Strike</th><th>Expiry</th><th>In→Out</th><th>P&L%</th><th>Held</th><th>Exit reason</th>
           </tr></thead><tbody>${closed.map(t=>`<tr>
             <td class="mono">${t.right==="P"?"PUT":"CALL"}</td>
             <td><strong>${t.symbol}</strong></td>
+            <td class="mono">${t.strike==null?"—":fmt(t.strike,2)}</td>
+            <td class="mono">${t.expiry||"—"}</td>
             <td class="mono">$${fmt(t.entry_ask,2)}→$${fmt(t.exit_bid,2)}</td>
             <td class="mono ${pctClass(t.profit_pct)}">${t.profit_pct==null?"—":fmt(t.profit_pct,1)+"%"}</td>
             <td class="mono">${t.hold_days==null?"—":fmt(t.hold_days,1)+"d"}</td>
             <td class="why">${t.exit_reason||""}</td>
           </tr>`).join("")}</tbody></table>`:""}`;
+        bookEl.querySelectorAll("[data-ch-exit]").forEach(btn=>{
+          btn.addEventListener("click", async ()=>{
+            btn.textContent = "Exiting…";
+            try {
+              const r = await fetch("/api/challenge/exit", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({trade_id: btn.getAttribute("data-ch-exit")})});
+              const j = await r.json();
+              if (!r.ok) throw new Error(j.error||"exit failed");
+              await loadAll();
+            } catch(e){ btn.textContent = "EXIT failed"; alert(e.message||e); }
+          });
+        });
+      }
+
+      if (planEl) {
+        const focus = ch.primary || (ch.tickets||[])[0];
+        if (!focus) planEl.innerHTML = `<div class="empty">No ticket plan yet.</div>`;
+        else {
+          const mark = focus.ask??focus.option_last;
+          planEl.innerHTML = `<div class="ac-meta">
+              <div>Symbol / side<strong>${focus.symbol} ${focus.right==="P"?"PUT":"CALL"}</strong></div>
+              <div>Status<strong>${focus.action||"—"}</strong></div>
+              <div>Strike / expiry<strong>${focus.strike==null?"—":fmt(focus.strike,2)} · ${focus.expiry||"—"} (${focus.dte??"—"}d)</strong></div>
+              <div>Opt mark → target<strong>${mark==null?"—":"$"+fmt(mark,2)} → ${focus.target_ask==null?"—":"$"+fmt(focus.target_ask,2)} (+${fmt(focus.target_profit_pct,0)}%)</strong></div>
+              <div>Strike rate ≥1%/≥2%<strong>${focus.hit_1pct==null?"—":fmt(focus.hit_1pct,0)+"%"} / ${focus.hit_2pct==null?"—":fmt(focus.hit_2pct,0)+"%"}</strong></div>
+              <div>Approx hold<strong>${holdLbl(focus)}</strong></div>
+            </div>
+            <p class="why" style="margin:.55rem 0 0"><strong>ENTER:</strong> ${focus.enter_plan||"—"}</p>
+            <p class="why" style="margin:.35rem 0 0"><strong>EXIT:</strong> ${focus.exit_plan||"—"}</p>
+            ${(focus.action==="ENTRY" && focus.ask!=null && focus.contract)?`<div class="playbook" style="margin-top:.55rem"><button type="button" class="tag" id="chEnterPrimary">Paper ENTER this ticket</button></div>`:""}`;
+          const ent = document.getElementById("chEnterPrimary");
+          if (ent) ent.addEventListener("click", async ()=>{
+            ent.textContent = "Entering…";
+            try {
+              const r = await fetch("/api/challenge/enter", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({symbol: focus.symbol, right: focus.right})});
+              const j = await r.json();
+              if (!r.ok) throw new Error(j.error||"enter failed");
+              await loadAll();
+            } catch(e){ ent.textContent = "ENTER failed"; alert(e.message||e); }
+          });
+        }
       }
 
       if (pathEl) {
@@ -670,9 +745,25 @@ PAGE = r"""
           <td class="mono">≥1% <strong class="up">${t.hit_1pct==null?"—":fmt(t.hit_1pct,0)+"%"}</strong><div class="why">≥2% ${t.hit_2pct==null?"—":fmt(t.hit_2pct,0)+"%"}</div></td>
           <td class="mono up"><strong>${fmt(t.hist_win_pct,0)}%</strong><div class="why">n=${t.hist_samples}</div></td>
           <td class="mono"><strong>${holdLbl(t)}</strong></td>
-          <td class="why">${t.recommend_reason||t.status_detail||""}${(t.reasons&&t.reasons.length)?`<div style="margin-top:.2rem;color:var(--muted)">${t.reasons.slice(0,2).join(" · ")}</div>`:""}</td>
+          <td class="why">${t.recommend_reason||t.status_detail||""}
+            <div style="margin-top:.2rem"><strong>ENTER:</strong> ${t.enter_plan||"—"}</div>
+            <div><strong>EXIT:</strong> ${t.exit_plan||"—"}</div>
+            ${(t.action==="ENTRY"&&t.ask!=null&&t.contract)?`<button type="button" class="tag" data-ch-enter="${t.symbol}|${t.right||"C"}">Paper ENTER</button>`:""}
+          </td>
         </tr>`;
         }).join("")}</tbody></table>`;
+        ticketsEl.querySelectorAll("[data-ch-enter]").forEach(btn=>{
+          btn.addEventListener("click", async ()=>{
+            const [sym, right] = (btn.getAttribute("data-ch-enter")||"").split("|");
+            btn.textContent = "Entering…";
+            try {
+              const r = await fetch("/api/challenge/enter", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({symbol: sym, right})});
+              const j = await r.json();
+              if (!r.ok) throw new Error(j.error||"enter failed");
+              await loadAll();
+            } catch(e){ btn.textContent = "ENTER failed"; alert(e.message||e); }
+          });
+        });
       }
       if (disc) disc.textContent = ch.disclaimer || "";
     }
@@ -1434,6 +1525,118 @@ def create_app(config_path: str | None = None) -> Flask:
                 "win_rates": win_table,
             }
         )
+
+    def _challenge_tracker():
+        from odte_scanner.challenge.tracker import ChallengeTracker
+
+        ch_path = Path(actions_cfg.get("challenge_ledger_path", "outputs/challenge_ledger.json"))
+        if not ch_path.is_absolute():
+            ch_path = ROOT / ch_path
+        return ChallengeTracker(
+            ch_path,
+            starting_cash=float(actions_cfg.get("challenge_start_usd", 1000)),
+        )
+
+    @app.post("/api/challenge/enter")
+    def challenge_enter():
+        """Paper-enter a challenge ticket by symbol/right (uses latest snapshot board)."""
+        from odte_scanner.challenge import build_challenge_board
+        from odte_scanner.calendars import resolve_yahoo_symbol
+        from odte_scanner.data.live_quotes import fetch_live_quote
+
+        body = request.get_json(silent=True) or {}
+        symbol = str(body.get("symbol") or "").upper()
+        right = str(body.get("right") or "C").upper()
+        if not symbol:
+            return jsonify({"ok": False, "error": "symbol required"}), 400
+
+        tracker = _challenge_tracker()
+        if tracker.open_trades() and len(tracker.open_trades()) >= int(actions_cfg.get("challenge_max_open", 1)):
+            return jsonify({"ok": False, "error": "sleeve already has an open flip — EXIT first"}), 409
+
+        scan = _read_json(ROOT / "outputs" / "latest_scan.json") or {}
+        win_table = scan.get("win_rates") or load_win_rate_table() or {}
+        alias = resolve_yahoo_symbol(symbol, cfg)
+        q = fetch_live_quote(symbol, yahoo_symbol=alias)
+        quotes = {symbol: q.to_dict()} if q else {}
+        board = build_challenge_board(
+            win_table=win_table if isinstance(win_table, dict) else None,
+            scores=scan.get("scores") or [],
+            quotes=quotes,
+            aliases={symbol: alias},
+            open_trades=[t.to_dict() for t in tracker.book.trades],
+            start_usd=float(actions_cfg.get("challenge_start_usd", 1000)),
+            target_usd=float(actions_cfg.get("challenge_target_usd", 1_000_000)),
+            flips=int(actions_cfg.get("challenge_flips", 12)),
+            max_tickets=int(actions_cfg.get("challenge_max_tickets", 8)),
+            fetch_contracts=True,
+            fetch_earnings=False,
+        )
+        ticket = next(
+            (
+                t
+                for t in (board.get("tickets") or [])
+                if t.get("symbol") == symbol and str(t.get("right") or "C").upper() == right
+            ),
+            None,
+        )
+        if not ticket:
+            return jsonify({"ok": False, "error": f"no challenge ticket for {symbol} {right}"}), 404
+        # Force ENTRY eligibility for explicit paper enter
+        ticket = dict(ticket)
+        ticket["action"] = "ENTRY"
+        if not ticket.get("ask") or not ticket.get("contract"):
+            return jsonify(
+                {
+                    "ok": False,
+                    "error": "need live option ask + contract before ENTER",
+                    "ticket": {
+                        "symbol": symbol,
+                        "strike": ticket.get("strike"),
+                        "expiry": ticket.get("expiry"),
+                        "ask": ticket.get("ask"),
+                        "contract": ticket.get("contract"),
+                    },
+                }
+            ), 409
+        trade = tracker.enter(ticket, max_open=int(actions_cfg.get("challenge_max_open", 1)))
+        if not trade:
+            return jsonify({"ok": False, "error": "enter rejected (cash/contract/open limit)"}), 409
+        return jsonify({"ok": True, "trade": trade.to_dict(), "book": tracker.book.to_dict()})
+
+    @app.post("/api/challenge/exit")
+    def challenge_exit():
+        body = request.get_json(silent=True) or {}
+        trade_id = str(body.get("trade_id") or "")
+        tracker = _challenge_tracker()
+        trade = next((t for t in tracker.open_trades() if t.id == trade_id), None)
+        if not trade:
+            return jsonify({"ok": False, "error": "open trade not found"}), 404
+        mark = float(body.get("exit_bid") or trade.mark or trade.entry_ask or 0)
+        # Refresh mark from live chain when possible
+        try:
+            from odte_scanner.options.yahoo_session import pick_challenge_contract
+
+            if trade.expiry and trade.strike is not None:
+                live = pick_challenge_contract(
+                    trade.symbol,
+                    float(trade.entry_spot or 0) or 1.0,
+                    right=trade.right,
+                    min_dte=max(1, int(trade.dte_at_entry or 30) - 30),
+                    max_dte=int(trade.dte_at_entry or 200) + 60,
+                    prefer_dte=int(trade.dte_at_entry or 120),
+                )
+                if live and live.get("ask"):
+                    # Prefer matching strike
+                    if abs(float(live.get("strike") or 0) - float(trade.strike)) < 0.02:
+                        mark = float(live.get("bid") or live.get("last") or live.get("ask") or mark)
+        except Exception:  # noqa: BLE001
+            pass
+        reason = body.get("reason") or trade.last_action_detail or "Manual paper EXIT"
+        out = tracker.exit_trade(trade_id, exit_bid=mark, reason=str(reason))
+        if not out:
+            return jsonify({"ok": False, "error": "exit failed"}), 409
+        return jsonify({"ok": True, "trade": out.to_dict(), "book": tracker.book.to_dict()})
 
     @app.post("/api/scan")
     def trigger_scan():
