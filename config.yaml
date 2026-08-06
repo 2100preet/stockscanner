@@ -56,6 +56,7 @@ tickers:
   - HYG
   - EEM
   - SPCX  # SpaceX — recent IPO; include for swing/earnings watch
+  - DDOG  # Datadog — liquid mid; promote to focus for options/earnings
 
 # Yahoo Finance symbol overrides (indexes need ^ prefix for quotes/chains)
 symbol_aliases:
@@ -119,6 +120,7 @@ expiry_calendars:
     - XLE
     - SOXX
     - SPCX
+    - DDOG
     - HYG
     - EEM
 
