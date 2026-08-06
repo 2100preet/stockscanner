@@ -583,7 +583,9 @@ PAGE = r"""
         </tr></thead><tbody>${rows.slice(0,24).map(r=>{
           const bias = r.strategy_bias||"—";
           const cls = bias==="prefer_post"?"buy":(bias==="caution_pre"||bias==="avoid_short_premium"?"sell":"wait");
-          const days = r.days_to_earnings!=null?r.days_to_earnings+"d to":(r.days_since_earnings!=null?r.days_since_earnings+"d since":"—");
+          const days = (r.bucket==="post"||r.window==="post_earnings")
+            ? (r.days_since_earnings!=null?r.days_since_earnings+"d since":"—")
+            : (r.days_to_earnings!=null?r.days_to_earnings+"d to":(r.days_since_earnings!=null?r.days_since_earnings+"d since":"—"));
           return `<tr>
             <td>${earnBadge(r)}</td>
             <td><strong>${r.symbol}</strong></td>
