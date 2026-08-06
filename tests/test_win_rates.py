@@ -30,7 +30,7 @@ def test_board_includes_win_pct():
         "note": "test",
         "symbols": {
             "SPY": {
-                "0dte": {"win_pct": 66.0, "trades": 50, "hit_1pct": 20.0, "forward_days": 1},
+                "0dte": {"win_pct": 82.0, "trades": 50, "wins": 41, "hit_1pct": 20.0, "forward_days": 1},
                 "weekly": {"win_pct": 70.0, "trades": 40, "hit_1pct": 35.0, "forward_days": 5},
                 "swing": {"win_pct": 72.0, "trades": 18, "hit_1pct": 50.0, "forward_days": 42},
             }
@@ -63,12 +63,16 @@ def test_board_includes_win_pct():
         ledger=None,
         buy_score=70,
         win_rate_table=table,
+        require_hist_win=True,
+        min_hist_win_pct=80,
+        min_hist_win_samples=5,
     )
     assert board["buy_now_0dte"]
-    assert board["buy_now_0dte"][0]["win_pct"] == 66.0
+    assert board["buy_now_0dte"][0]["win_pct"] == 82.0
     assert board["buy_now_0dte"][0]["win_samples"] == 50
     assert board["buy_now_0dte"][0]["hit_1pct"] == 20.0
     detail = board["buy_now_0dte"][0]["detail"]
-    assert "hist win 66%" in detail
+    assert "hist win 82%" in detail
     assert "n=50 samples" in detail
     assert "strike rate ≥1% 20%" in detail
+    assert board["hist_win_gate"]["pooled_win_pct"] >= 80

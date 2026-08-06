@@ -150,6 +150,12 @@ actions:
   wait_score: 62         # watchlist / WAIT band
   sell_score: 48         # open call exits when score cools below this
   max_chase_pct: 2.5     # if already up this much in-session, prefer WAIT
+  # Only promote BUY NOW when walk-forward hist win clears the bar
+  require_hist_win: true
+  min_hist_win_pct: 80   # target ≥80% measured win rate on promoted trades
+  min_hist_win_samples: 5
+  lottery_min_score: 62
+  lottery_min_confirms: 4
 
 options:
   # Look out to ~1 week for best listed call (not only same-day)
@@ -238,6 +244,9 @@ backtest:
   end: null
   option_payoff_multiplier: 3.0
   option_loss_fraction: 0.65
+  # High-conviction filter (same bar as live BUY NOW)
+  min_hist_win_pct: 80
+  min_hist_win_samples: 5
 
 logging:
   level: INFO

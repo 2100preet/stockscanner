@@ -1,4 +1,10 @@
-from odte_scanner.signals.actions import build_action_board, decide_entry, decide_exit
+from odte_scanner.signals.actions import (
+    ActionSignal,
+    apply_hist_win_gate,
+    build_action_board,
+    decide_entry,
+    decide_exit,
+)
 
 
 def test_buy_now_requires_short_term_bounce():
@@ -110,6 +116,104 @@ def test_action_board_primary_prefers_sell():
         },
         buy_score=70,
         sell_score=48,
+        require_hist_win=False,
     )
     assert board["primary"]["action"] == "SELL_NOW"
     assert board["counts"]["sell_now"] >= 1
+
+
+def test_hist_win_gate_blocks_sub_80():
+    sig = ActionSignal(
+        action="BUY_NOW",
+        strength=80,
+        headline="BUY NOW QQQ · 0DTE",
+        detail="score ok",
+        symbol="QQQ",
+        win_pct=55.0,
+        win_samples=12,
+        dte_bucket="0dte",
+    )
+    out = apply_hist_win_gate(sig, min_hist_win_pct=80, min_hist_win_samples=5)
+    assert out.action == "WAIT"
+    assert "blocked" in out.detail
+
+
+def test_hist_win_gate_allows_80_plus():
+    sig = ActionSignal(
+        action="BUY_NOW",
+        strength=80,
+        headline="BUY NOW MSFT · 0DTE",
+        detail="score ok",
+        symbol="MSFT",
+        win_pct=85.7,
+        win_samples=7,
+        dte_bucket="0dte",
+    )
+    out = apply_hist_win_gate(sig, min_hist_win_pct=80, min_hist_win_samples=5)
+    assert out.action == "BUY_NOW"
+
+
+def test_board_requires_80_hist_win_for_buy():
+    win_table = {
+        "symbols": {
+            "QQQ": {"0dte": {"win_pct": 55.0, "trades": 10, "wins": 5, "hit_1pct": 20.0}},
+            "MSFT": {"0dte": {"win_pct": 85.7, "trades": 7, "wins": 6, "hit_1pct": 71.4}},
+        }
+    }
+    board = build_action_board(
+        candidates=[
+            {
+                "symbol": "QQQ",
+                "score": 80,
+                "strike": 720,
+                "expiry": "2026-08-05",
+                "ask": 2.0,
+                "bid": 1.9,
+                "contract": "QQQ1",
+                "dte": 0,
+                "dte_bucket": "0dte",
+            },
+            {
+                "symbol": "MSFT",
+                "score": 80,
+                "strike": 420,
+                "expiry": "2026-08-05",
+                "ask": 2.5,
+                "bid": 2.4,
+                "contract": "MSFT1",
+                "dte": 0,
+                "dte_bucket": "0dte",
+            },
+        ],
+        scores=[
+            {"symbol": "QQQ", "ensemble_score": 80},
+            {"symbol": "MSFT", "ensemble_score": 80},
+        ],
+        quotes={
+            "QQQ": {
+                "last": 721,
+                "session_change_pct": 0.2,
+                "mom_5m_pct": 0.15,
+                "mom_15m_pct": 0.2,
+                "dist_from_day_high_pct": -0.05,
+            },
+            "MSFT": {
+                "last": 421,
+                "session_change_pct": 0.3,
+                "mom_5m_pct": 0.12,
+                "mom_15m_pct": 0.18,
+                "dist_from_day_high_pct": -0.08,
+            },
+        },
+        ledger=None,
+        buy_score=70,
+        win_rate_table=win_table,
+        require_hist_win=True,
+        min_hist_win_pct=80,
+        min_hist_win_samples=5,
+    )
+    buy_syms = {b["symbol"] for b in board["buy_now"]}
+    assert "MSFT" in buy_syms
+    assert "QQQ" not in buy_syms
+    assert board["hist_win_gate"]["target_met"] is True
+    assert board["hist_win_gate"]["pooled_win_pct"] >= 80

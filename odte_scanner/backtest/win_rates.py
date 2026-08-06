@@ -245,3 +245,100 @@ def load_win_rate_table(cache_path: str | Path | None = None) -> dict[str, Any] 
         return json.loads(path.read_text())
     except Exception:  # noqa: BLE001
         return None
+
+
+def summarize_hist_win_gate(
+    table: dict[str, Any] | None,
+    *,
+    min_hist_win_pct: float = 80.0,
+    min_hist_win_samples: int = 5,
+    horizons: list[str] | None = None,
+) -> dict[str, Any]:
+    """Pooled backtest stats for symbols that clear the ≥80% hist-win gate.
+
+    By construction, eligible symbol/horizon rows each have win_pct ≥ target and
+    n ≥ min samples. Pooled win% is sample-weighted across those rows — this is
+    the measured win rate of the tradeable set the portal will promote.
+    """
+    horizons = horizons or ["0dte", "weekly", "swing"]
+    eligible: list[dict[str, Any]] = []
+    all_rows: list[dict[str, Any]] = []
+    if not table:
+        return {
+            "eligible_count": 0,
+            "eligible": [],
+            "pooled_win_pct": None,
+            "pooled_trades": 0,
+            "pooled_hit_1pct": None,
+            "ungated_pooled_win_pct": None,
+            "ungated_pooled_trades": 0,
+            "target_met": False,
+            "note": (
+                f"BUY NOW requires hist win ≥{min_hist_win_pct:.0f}% with "
+                f"n≥{min_hist_win_samples} quality signals (walk-forward)."
+            ),
+        }
+
+    for sym, row in (table.get("symbols") or {}).items():
+        for hz in horizons:
+            stats = row.get(hz) or {}
+            n = int(stats.get("trades") or 0)
+            win = stats.get("win_pct")
+            if win is None or n <= 0:
+                continue
+            item = {
+                "symbol": sym,
+                "horizon": hz,
+                "win_pct": float(win),
+                "trades": n,
+                "wins": int(stats.get("wins") or 0),
+                "hit_1pct": stats.get("hit_1pct"),
+                "hit_2pct": stats.get("hit_2pct"),
+                "avg_ret_pct": stats.get("avg_ret_pct"),
+            }
+            all_rows.append(item)
+            if float(win) >= float(min_hist_win_pct) and n >= int(min_hist_win_samples):
+                eligible.append(item)
+
+    def _pool(rows: list[dict[str, Any]]) -> tuple[float | None, int, float | None]:
+        tot_n = sum(int(r["trades"]) for r in rows)
+        if tot_n <= 0:
+            return None, 0, None
+        # Prefer explicit wins count; fall back from win_pct
+        tot_wins = 0
+        hit1_num = 0.0
+        hit1_den = 0
+        for r in rows:
+            n = int(r["trades"])
+            if r.get("wins") is not None:
+                tot_wins += int(r["wins"])
+            else:
+                tot_wins += int(round(float(r["win_pct"]) / 100.0 * n))
+            if r.get("hit_1pct") is not None:
+                hit1_num += float(r["hit_1pct"]) / 100.0 * n
+                hit1_den += n
+        win_pct = round(100.0 * tot_wins / tot_n, 1)
+        hit1 = round(100.0 * hit1_num / hit1_den, 1) if hit1_den else None
+        return win_pct, tot_n, hit1
+
+    pooled_win, pooled_n, pooled_hit1 = _pool(eligible)
+    ungated_win, ungated_n, _ = _pool(all_rows)
+    eligible.sort(key=lambda r: (r["win_pct"], r["trades"]), reverse=True)
+
+    return {
+        "eligible_count": len(eligible),
+        "eligible": eligible[:40],
+        "pooled_win_pct": pooled_win,
+        "pooled_trades": pooled_n,
+        "pooled_hit_1pct": pooled_hit1,
+        "ungated_pooled_win_pct": ungated_win,
+        "ungated_pooled_trades": ungated_n,
+        "target_met": bool(pooled_win is not None and pooled_win >= float(min_hist_win_pct) and pooled_n > 0),
+        "note": (
+            f"BUY NOW requires hist win ≥{min_hist_win_pct:.0f}% with "
+            f"n≥{min_hist_win_samples} quality signals (walk-forward). "
+            f"Eligible pooled win={pooled_win}% on n={pooled_n} "
+            f"(ungated all quality signals={ungated_win}% on n={ungated_n}). "
+            "Underlying direction, not option P&L. Past ≠ future."
+        ),
+    }

@@ -99,10 +99,13 @@ def cmd_scan(args: argparse.Namespace) -> int:
 
 
 def cmd_backtest(args: argparse.Namespace) -> int:
+    from odte_scanner.backtest.win_rates import build_win_rate_table, summarize_hist_win_gate
+
     cfg = load_config(args.config)
     tickers = args.tickers.split(",") if args.tickers else cfg.get("tickers", [])
     bt = cfg.get("backtest", {})
     scan_cfg = cfg.get("scan", {})
+    actions_cfg = cfg.get("actions") or {}
     weights = cfg.get("algos", {}).get("weights", {})
     period = "2y"
     histories = fetch_many(tickers, period=period)
@@ -120,7 +123,7 @@ def cmd_backtest(args: argparse.Namespace) -> int:
         start=args.start or bt.get("start"),
     )
 
-    table = Table(title="Signal Backtest (next-day underlying proxy)")
+    table = Table(title="Signal Backtest (next-day underlying proxy — ungated score filter)")
     table.add_column("Symbol")
     table.add_column("Trades", justify="right")
     table.add_column("Win%", justify="right")
@@ -140,10 +143,52 @@ def cmd_backtest(args: argparse.Namespace) -> int:
             f"{d['expectancy_option_R']:.2f}",
         )
     console.print(table)
+
+    min_win = float(args.min_hist_win or bt.get("min_hist_win_pct") or actions_cfg.get("min_hist_win_pct", 80))
+    min_n = int(args.min_hist_n or bt.get("min_hist_win_samples") or actions_cfg.get("min_hist_win_samples", 5))
+    console.print(f"\n[bold]Building quality walk-forward win table for ≥{min_win:.0f}% gate (n≥{min_n})…[/bold]")
+    win_table = build_win_rate_table(list(tickers), config_path=args.config, force=bool(args.force_win_rates))
+    gate = summarize_hist_win_gate(win_table, min_hist_win_pct=min_win, min_hist_win_samples=min_n)
+
+    gt = Table(title=f"High-conviction gate — hist win ≥{min_win:.0f}% · n≥{min_n}")
+    gt.add_column("Symbol")
+    gt.add_column("Horizon")
+    gt.add_column("Win%", justify="right")
+    gt.add_column("n", justify="right")
+    gt.add_column("Hit≥1%", justify="right")
+    for row in gate.get("eligible") or []:
+        gt.add_row(
+            row["symbol"],
+            row["horizon"],
+            f"{row['win_pct']:.1f}",
+            str(row["trades"]),
+            "—" if row.get("hit_1pct") is None else f"{row['hit_1pct']:.1f}",
+        )
+    console.print(gt)
+    console.print(
+        f"Eligible pooled win [bold green]{gate.get('pooled_win_pct')}%[/bold green] "
+        f"on n={gate.get('pooled_trades')} · ungated quality pool "
+        f"{gate.get('ungated_pooled_win_pct')}% on n={gate.get('ungated_pooled_trades')} · "
+        f"target_met={gate.get('target_met')}"
+    )
+    console.print(f"[dim]{gate.get('note')}[/dim]")
+
     out = Path("outputs/backtest_latest.json")
     out.parent.mkdir(exist_ok=True)
-    out.write_text(json.dumps([r.to_dict() for r in results], indent=2))
+    payload = {
+        "ungated_score_filter": [r.to_dict() for r in results],
+        "hist_win_gate": gate,
+        "min_hist_win_pct": min_win,
+        "min_hist_win_samples": min_n,
+        "tickers": list(tickers),
+        "ticker_count": len(tickers),
+    }
+    out.write_text(json.dumps(payload, indent=2))
     console.print(f"Wrote {out}")
+    # Non-zero exit if gate cannot meet target (so CI / operators notice)
+    if args.require_target and not gate.get("target_met"):
+        console.print("[red]Hist-win gate target not met.[/red]")
+        return 2
     return 0
 
 
@@ -235,6 +280,14 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--tickers", default=None, help="Comma-separated override list")
     b.add_argument("--start", default=None)
     b.add_argument("--min-score", type=float, default=None)
+    b.add_argument("--min-hist-win", type=float, default=None, help="High-conviction hist win%% gate (default 80)")
+    b.add_argument("--min-hist-n", type=int, default=None, help="Min samples for hist-win gate (default 5)")
+    b.add_argument("--force-win-rates", action="store_true", help="Rebuild win-rate cache")
+    b.add_argument(
+        "--require-target",
+        action="store_true",
+        help="Exit 2 if eligible pooled hist win is below the target",
+    )
     b.set_defaults(func=cmd_backtest)
 
     l = sub.add_parser("ledger", help="Show paper trading ledger")

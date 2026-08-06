@@ -113,6 +113,7 @@ PAGE = r"""
       <button id="btnScanWide">Scan liquid universe</button>
       <button id="btnRefresh">Reload</button>
       <span class="pill" id="session">—</span>
+      <span class="pill" id="universePill">—</span>
       <span class="status" id="counts"></span>
       <span class="status" id="updated">Loading…</span>
     </div>
@@ -135,7 +136,9 @@ PAGE = r"""
         <strong>Hist win</strong> = % of past quality signals where the underlying finished green over the horizon.
         <strong>n</strong> = sample size (how many of those signals). Small n (e.g. 1–5) means the % is fragile.
         <strong>Strike rate ≥1%</strong> = how often the underlying ripped ≥1% after the signal (better proxy for call payoff than plain win%).
+        <strong>BUY NOW gate</strong>: only symbols with hist win ≥80% and n≥5 are promoted (see hist-win gate card).
       </p>
+      <div class="metric-row" id="histWinGate"></div>
       <h2>Top action cards</h2>
       <div class="cards" id="overviewCards"></div>
       <div class="panel">
@@ -197,7 +200,7 @@ PAGE = r"""
 
     <section class="tabpane" id="tab-screener">
       <h2>Market screener</h2>
-      <p class="lede">Ranked liquid universe across horizons. Full market scan isn’t practical on free Yahoo limits — this covers ~S&amp;P100 + high-volume optionables. Use “Scan liquid universe” to refresh.</p>
+      <p class="lede">Ranked liquid universe across horizons. Default <strong>Scan focus</strong> = 46 optionable names; <strong>Scan liquid universe</strong> = ~147 S&amp;P100 + high-volume optionables (Yahoo rate limits block a full-market scan).</p>
       <div id="screener" class="empty">Run a liquid scan to populate.</div>
     </section>
 
@@ -502,11 +505,30 @@ PAGE = r"""
       renderScreener(hz);
       renderInsights(DATA.insights);
       document.getElementById("session").textContent = (DATA.session||"—") + " · " + (DATA.universe_mode||"focus");
+      const uniPill = document.getElementById("universePill");
+      if (uniPill) {
+        uniPill.textContent = `Scanning ${DATA.universe_size??"—"} tickers` +
+          (DATA.focus_size!=null ? ` · focus ${DATA.focus_size}` : "") +
+          (DATA.liquid_size!=null ? ` · liquid ${DATA.liquid_size}` : "");
+      }
       document.getElementById("updated").textContent = "Updated " + (DATA.generated_at||"").replace("T"," ").slice(0,19);
       const c = acts.counts || {};
       const lc = (DATA.lottery && DATA.lottery.counts) || {};
       document.getElementById("counts").textContent =
-        `BUY ${c.buy_now||0} · SELL ${c.sell_now||0} · WAIT ${c.wait||0} · LOTTO B/S ${lc.buy_now||0}/${lc.sell_now||0} · n=${DATA.universe_size||0}`;
+        `BUY ${c.buy_now||0} · SELL ${c.sell_now||0} · WAIT ${c.wait||0} · LOTTO B/S ${lc.buy_now||0}/${lc.sell_now||0}`;
+      const gate = acts.hist_win_gate || DATA.hist_win_gate || {};
+      const gateEl = document.getElementById("histWinGate");
+      if (gateEl) {
+        const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
+        const ok = gate.target_met;
+        gateEl.innerHTML = [
+          m("Hist-win gate", gate.require===false ? "off" : `≥${gate.min_hist_win_pct??80}%`),
+          m("Eligible rows", gate.eligible_count??0, (gate.eligible_count||0)>0?"up":""),
+          m("Pooled win (eligible)", gate.pooled_win_pct==null?"—":`${fmt(gate.pooled_win_pct,1)}%`, ok?"up":"down"),
+          m("Pooled n", gate.pooled_trades??0),
+          m("Ungated win", gate.ungated_pooled_win_pct==null?"—":`${fmt(gate.ungated_pooled_win_pct,1)}%`),
+        ].join("");
+      }
     }
 
     async function loadAll() {
@@ -664,6 +686,9 @@ def create_app(config_path: str | None = None) -> Flask:
             take_profit_pct=float(risk.get("take_profit_pct", 80)),
             max_chase_pct=float(actions_cfg.get("max_chase_pct", 2.5)),
             win_rate_table=win_table,
+            min_hist_win_pct=float(actions_cfg.get("min_hist_win_pct", 80)),
+            min_hist_win_samples=int(actions_cfg.get("min_hist_win_samples", 5)),
+            require_hist_win=bool(actions_cfg.get("require_hist_win", True)),
         )
 
         jcfg = cfg.get("journal") or {}
@@ -744,12 +769,19 @@ def create_app(config_path: str | None = None) -> Flask:
             min_confirms=int(actions_cfg.get("lottery_min_confirms", 4)),
         )
 
+        from odte_scanner.data.universe import liquid_universe
+
+        focus_size = scan.get("focus_size") or len(scan.get("tickers") or [])
+        liquid_size = len(liquid_universe())
+
         return jsonify(
             {
                 "generated_at": datetime.now(timezone.utc).isoformat(),
                 "session": scan.get("session_weekday"),
                 "universe_mode": scan.get("universe_mode"),
                 "universe_size": scan.get("universe_size"),
+                "focus_size": focus_size,
+                "liquid_size": liquid_size,
                 "scores": scan.get("scores") or [],
                 "horizons": scan.get("horizons") or {},
                 "action_cards": scan.get("action_cards") or {},
@@ -760,6 +792,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 "watch": {"quotes": quotes},
                 "ledger": ledger,
                 "actions": actions,
+                "hist_win_gate": actions.get("hist_win_gate"),
                 "insights": insights,
                 "journal_sync": journal_sync,
                 "win_rates": win_table,

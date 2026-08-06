@@ -311,6 +311,51 @@ def _attach_win_stats(sig: ActionSignal, win_table: dict[str, Any] | None) -> Ac
     return sig
 
 
+def apply_hist_win_gate(
+    sig: ActionSignal,
+    *,
+    min_hist_win_pct: float = 80.0,
+    min_hist_win_samples: int = 5,
+    require_hist_win: bool = True,
+) -> ActionSignal:
+    """Demote BUY NOW → WAIT unless walk-forward hist win clears the bar.
+
+    This is how the desk targets ≥80% measured win rate on promoted trades:
+    only symbols/horizons that already cleared that bar in backtest are buyable.
+    """
+    if not require_hist_win or sig.action != "BUY_NOW":
+        return sig
+    n = int(sig.win_samples or 0)
+    win = sig.win_pct
+    if win is None:
+        sig.action = "WAIT"
+        sig.headline = sig.headline.replace("BUY NOW", "WAIT", 1)
+        sig.detail = (
+            f"{sig.detail} · blocked: no hist win backtest yet "
+            f"(need ≥{min_hist_win_pct:.0f}% over n≥{min_hist_win_samples})"
+        )
+        sig.strength = min(sig.strength, 45.0)
+        return sig
+    if n < min_hist_win_samples:
+        sig.action = "WAIT"
+        sig.headline = sig.headline.replace("BUY NOW", "WAIT", 1)
+        sig.detail = (
+            f"{sig.detail} · blocked: hist n={n} < {min_hist_win_samples} "
+            f"(need ≥{min_hist_win_pct:.0f}% win)"
+        )
+        sig.strength = min(sig.strength, 48.0)
+        return sig
+    if float(win) < float(min_hist_win_pct):
+        sig.action = "WAIT"
+        sig.headline = sig.headline.replace("BUY NOW", "WAIT", 1)
+        sig.detail = (
+            f"{sig.detail} · blocked: hist win {win:.0f}% < {min_hist_win_pct:.0f}% target"
+        )
+        sig.strength = min(sig.strength, 50.0)
+        return sig
+    return sig
+
+
 def build_action_board(
     *,
     candidates: list[dict[str, Any]],
@@ -324,6 +369,9 @@ def build_action_board(
     take_profit_pct: float = 80.0,
     max_chase_pct: float = 2.5,
     win_rate_table: dict[str, Any] | None = None,
+    min_hist_win_pct: float = 80.0,
+    min_hist_win_samples: int = 5,
+    require_hist_win: bool = True,
 ) -> dict[str, Any]:
     score_by_symbol = {
         str(s.get("symbol")): float(s.get("ensemble_score") or 0) for s in scores or []
@@ -364,6 +412,12 @@ def build_action_board(
             require_live_confirm=True,
         )
         sig = _attach_win_stats(sig, win_rate_table)
+        sig = apply_hist_win_gate(
+            sig,
+            min_hist_win_pct=min_hist_win_pct,
+            min_hist_win_samples=min_hist_win_samples,
+            require_hist_win=require_hist_win,
+        )
         if sig.action == "BUY_NOW":
             buys.append(sig)
         elif sig.action == "HOLD":
@@ -371,10 +425,10 @@ def build_action_board(
         else:
             waits.append(sig)
 
-    # Rank buys by strength then historical win%
-    buys.sort(key=lambda s: (s.strength, s.win_pct or 0), reverse=True)
+    # Rank buys by historical win% then strength
+    buys.sort(key=lambda s: (s.win_pct or 0, s.strength), reverse=True)
     sells.sort(key=lambda s: s.strength, reverse=True)
-    waits.sort(key=lambda s: s.strength, reverse=True)
+    waits.sort(key=lambda s: (s.win_pct or 0, s.strength), reverse=True)
 
     buy_0dte = [s for s in buys if (s.dte_bucket or "0dte") == "0dte"]
     buy_weekly = [s for s in buys if (s.dte_bucket or "") == "weekly"]
@@ -395,6 +449,14 @@ def build_action_board(
     elif waits:
         primary = waits[0]
 
+    from odte_scanner.backtest.win_rates import summarize_hist_win_gate
+
+    gate_summary = summarize_hist_win_gate(
+        win_rate_table,
+        min_hist_win_pct=min_hist_win_pct,
+        min_hist_win_samples=min_hist_win_samples,
+    )
+
     return {
         "primary": primary.to_dict() if primary else None,
         "all": [s.to_dict() for s in all_signals],
@@ -405,6 +467,12 @@ def build_action_board(
         "hold": [s.to_dict() for s in holds],
         "wait": [s.to_dict() for s in waits],
         "win_rates_note": (win_rate_table or {}).get("note"),
+        "hist_win_gate": {
+            "require": require_hist_win,
+            "min_hist_win_pct": min_hist_win_pct,
+            "min_hist_win_samples": min_hist_win_samples,
+            **gate_summary,
+        },
         "counts": {
             "buy_now": len(buys),
             "buy_now_0dte": len(buy_0dte),
