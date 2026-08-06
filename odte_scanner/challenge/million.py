@@ -25,6 +25,7 @@ from odte_scanner.data.universe import (
     market_cap_tier,
     mid_small_universe,
 )
+from odte_scanner.options.walls import WALL_EXIT_BUFFER_USD, fetch_walls_for_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,18 @@ class ChallengeTicket:
     enter_plan: str
     exit_plan: str
     target_profit_pct: float
+    # OI walls (dealer supply/demand magnets) + soft exit $0.10 before wall
+    call_wall: float | None
+    put_wall: float | None
+    call_wall_oi: int | None
+    put_wall_oi: int | None
+    primary_wall: float | None
+    primary_wall_side: str | None
+    soft_exit: float | None
+    wall_buffer_usd: float
+    wall_exit_hint: str
+    gex_flip: float | None
+    gex_regime: str | None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -538,6 +551,9 @@ def build_challenge_board(
     fetch_contracts: bool = True,
     fetch_earnings: bool = True,
     earnings_max_fetch: int = 36,
+    fetch_walls: bool = True,
+    wall_buffer_usd: float = WALL_EXIT_BUFFER_USD,
+    walls_map: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     quotes = quotes or {}
     aliases = aliases or {}
@@ -601,7 +617,10 @@ def build_challenge_board(
     tickets: list[ChallengeTicket] = []
     chain_fetches = 0
     max_chain_fetches = max(8, max_tickets)
+    wall_fetches = 0
+    max_wall_fetches = max(8, max_tickets)
     earn_boosts: dict[str, int] = {}
+    walls_map = dict(walls_map or {})
 
     for row in eligible[: max_tickets + 6]:
         sym = str(row["symbol"])
@@ -854,6 +873,56 @@ def build_challenge_board(
         target_profit_pct = round((need_mult - 1.0) * 100.0, 1)
         target_ask_val = round(ask * need_mult, 2) if ask else None
         side_lbl = "CALL" if right == "C" else "PUT"
+
+        # Call / put OI walls → soft underlying EXIT $0.10 before the wall
+        walls = walls_map.get(sym) or {}
+        if (fetch_walls or walls) and (
+            not walls.get("primary_wall")
+            or walls.get("primary_wall_side") != ("put" if right == "P" else "call")
+        ):
+            if fetch_walls and wall_fetches < max_wall_fetches:
+                prefer = int((contract or {}).get("dte") or 21)
+                prefer = max(5, min(45, prefer if prefer <= 45 else 21))
+                walls = fetch_walls_for_symbol(
+                    sym,
+                    spot=spot,
+                    right=right,
+                    yahoo_symbol=aliases.get(sym),
+                    prefer_dte=prefer,
+                    max_dte=45,
+                    buffer_usd=wall_buffer_usd,
+                )
+                wall_fetches += 1
+                walls_map[sym] = walls
+            elif walls:
+                # Re-map soft exit for this ticket's side using cached walls
+                from odte_scanner.options.walls import wall_exit_levels
+
+                walls = {
+                    **walls,
+                    **wall_exit_levels(
+                        right=right,
+                        spot=spot or walls.get("spot"),
+                        call_wall=walls.get("call_wall"),
+                        put_wall=walls.get("put_wall"),
+                        call_wall_oi=walls.get("call_wall_oi"),
+                        put_wall_oi=walls.get("put_wall_oi"),
+                        buffer_usd=wall_buffer_usd,
+                    ),
+                }
+        if walls.get("exit_hint") and walls.get("primary_wall") is not None:
+            reasons.append(walls["exit_hint"])
+            if walls.get("call_wall") is not None:
+                reasons.append(
+                    f"Call wall ${float(walls['call_wall']):.2f}"
+                    + (f" OI {int(walls['call_wall_oi']):,}" if walls.get("call_wall_oi") else "")
+                )
+            if walls.get("put_wall") is not None:
+                reasons.append(
+                    f"Put wall ${float(walls['put_wall']):.2f}"
+                    + (f" OI {int(walls['put_wall_oi']):,}" if walls.get("put_wall_oi") else "")
+                )
+
         if action == "ENTRY" and ask is not None:
             enter_plan = (
                 f"ENTER {side_lbl} now @ ≤${ask:.2f} · expiry { (contract or {}).get('expiry') } · "
@@ -876,16 +945,24 @@ def build_challenge_board(
             )
         else:
             enter_plan = f"WAIT — {status_detail}"
+        wall_exit_bit = ""
+        if walls.get("soft_exit") is not None and walls.get("primary_wall") is not None:
+            wall_exit_bit = (
+                f" Soft underlying EXIT ${float(walls['soft_exit']):.2f} "
+                f"(${float(wall_buffer_usd):.2f} before {walls.get('primary_wall_side')} wall "
+                f"${float(walls['primary_wall']):.2f})."
+            )
         if target_ask_val is not None:
             exit_plan = (
                 f"EXIT at ≥${target_ask_val:.2f} (+{target_profit_pct:.0f}% premium), "
                 f"or stop −45%, or after {hp['max_days']}d max hold "
-                f"(ideal ~{hp['ideal_days']}d). Expiry { (contract or {}).get('expiry') }."
+                f"(ideal ~{hp['ideal_days']}d). Expiry {(contract or {}).get('expiry')}."
+                f"{wall_exit_bit}"
             )
         else:
             exit_plan = (
                 f"EXIT at +{target_profit_pct:.0f}% premium, stop −45%, or max hold {hp['max_days']}d. "
-                f"Expiry {(contract or {}).get('expiry')}."
+                f"Expiry {(contract or {}).get('expiry')}.{wall_exit_bit}"
             )
 
         tickets.append(
@@ -943,6 +1020,17 @@ def build_challenge_board(
                 enter_plan=enter_plan,
                 exit_plan=exit_plan,
                 target_profit_pct=target_profit_pct,
+                call_wall=walls.get("call_wall"),
+                put_wall=walls.get("put_wall"),
+                call_wall_oi=walls.get("call_wall_oi"),
+                put_wall_oi=walls.get("put_wall_oi"),
+                primary_wall=walls.get("primary_wall"),
+                primary_wall_side=walls.get("primary_wall_side"),
+                soft_exit=walls.get("soft_exit"),
+                wall_buffer_usd=float(walls.get("wall_buffer_usd") or wall_buffer_usd),
+                wall_exit_hint=str(walls.get("exit_hint") or ""),
+                gex_flip=walls.get("flip"),
+                gex_regime=walls.get("regime"),
             )
         )
         if len(tickets) >= max_tickets:
@@ -1018,12 +1106,18 @@ def build_challenge_board(
             "swing": hold_period_for("swing"),
             "leap": hold_period_for("leap", 200),
         },
+        "walls_map": walls_map,
         "strategy_notes": {
             "earnings": (
                 "Prefer post-earnings continuation (IV already crushed) for CALL/PUT swings. "
                 "Pre-earnings (today / this week / next week): LEAP only / caution — "
                 "short premium gets crushed into the print. Watch list scans hist-eligible + "
                 "DRAM/memory sleeve + focus names."
+            ),
+            "walls": (
+                f"Call wall = max call OI ≥ spot; put wall = max put OI ≤ spot. "
+                f"Soft EXIT on the underlying ${wall_buffer_usd:.2f} before the primary wall "
+                f"(calls: wall−buffer · puts: wall+buffer) — take profit before dealer defense."
             ),
             "universe": (
                 "Liquid mega + mid/small + DRAM/memory optionables included when they clear "
@@ -1036,6 +1130,7 @@ def build_challenge_board(
             "Universe: mega/large + mid/small + DRAM/memory optionables.",
             "Earnings watch: today / this week / next week / post-print across challenge + DRAM sleeve.",
             "Earnings: boost post-print continuation; caution/LEAP-only into the print; WAIT on earnings day.",
+            f"OI walls: soft EXIT ${wall_buffer_usd:.2f} before call wall (long calls) or put wall (long puts).",
             "Hold periods: weekly 5–14d · swing 20–60d · LEAP 30–90d — EXIT at target, stop, or max hold.",
             f"Each flip targets ~{primary_path['pct_per_flip']:.0f}% option premium; then EXIT and roll.",
             "Status updates: ENTRY (new), HOLD (open inside window), EXIT (target/stop/time).",

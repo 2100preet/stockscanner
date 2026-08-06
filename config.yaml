@@ -175,6 +175,9 @@ actions:
   challenge_ledger_path: outputs/challenge_ledger.json
   challenge_min_option_volume: 25
   challenge_min_option_oi: 200
+  # Soft EXIT on underlying = wall ± this buffer (call wall − buffer / put wall + buffer)
+  wall_exit_buffer_usd: 0.10
+  challenge_fetch_walls: true
 
 options:
   # Look out to ~1 week for best listed call (not only same-day)

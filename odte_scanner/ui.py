@@ -356,14 +356,32 @@ PAGE = r"""
       return { pct: s.win_pct, n: s.trades || 0, hit1: s.hit_1pct, hit2: s.hit_2pct };
     }
 
+    function wallLookup(symbol) {
+      const m = (DATA.walls_by_symbol || {})[symbol] || {};
+      return m;
+    }
+    function wallMeta(t) {
+      const w = t.call_wall!=null || t.put_wall!=null ? t : wallLookup(t.symbol);
+      const callW = w.call_wall, putW = w.put_wall;
+      const soft = w.soft_exit;
+      const side = w.primary_wall_side || (t.right==="P"?"put":"call");
+      if (callW==null && putW==null) return "";
+      return `
+          <div title="Max call OI ≥ spot">Call wall<strong class="up">${callW==null?"—":fmt(callW,2)}</strong></div>
+          <div title="Max put OI ≤ spot">Put wall<strong class="down">${putW==null?"—":fmt(putW,2)}</strong></div>
+          <div title="Take profit on underlying before OI wall">Soft EXIT<strong class="up">${soft==null?"—":"$"+fmt(soft,2)}</strong></div>
+          <div>Wall side<strong>${side||"—"}</strong></div>`;
+    }
     function cardHTML(t, hz) {
       const long = t.quality || (t.ensemble_score||0) >= 70;
       const conf = Math.round(t.ensemble_score||0);
       const w = winLookup(t.symbol, hz);
+      const walls = wallLookup(t.symbol);
       const dir = long ? "LONG" : "WAIT";
       const winLabel = w.pct==null ? "—" : `${fmt(w.pct,0)}%`;
       const nLabel = w.pct==null ? "—" : `${w.n} samples`;
       const strikeRate = w.hit1==null ? "—" : `${fmt(w.hit1,0)}% ≥1%` + (w.hit2==null?"":` / ${fmt(w.hit2,0)}% ≥2%`);
+      const softHint = walls.exit_hint || walls.wall_exit_hint || "";
       return `<article class="action-card ${long?"long":"wait"}">
         <div class="ac-top">
           <div class="ac-sym">${t.symbol}</div>
@@ -380,8 +398,10 @@ PAGE = r"""
           <div title="Sample size: number of historical quality signals">${w.n < 8 && w.pct!=null ? "n (low)" : "n"}<strong>${nLabel}</strong></div>
           <div title="How often underlying ripped after signal">Strike rate<strong>${strikeRate}</strong></div>
           <div>Exp move<strong>${fmt(t.expected_move_pct,1)}%</strong></div>
+          ${wallMeta({...t, ...walls})}
         </div>
         <p class="why" style="margin:.55rem 0 0">${(t.reasons||[]).filter(r=>!r.includes("/")).slice(0,4).join(" · ")||"—"}</p>
+        ${softHint?`<p class="why" style="margin:.35rem 0 0"><strong>Wall EXIT:</strong> ${softHint}</p>`:""}
       </article>`;
     }
 
@@ -637,6 +657,9 @@ PAGE = r"""
               <div>Opt ${t0.mark_source||"price"} → tgt<strong>${(t0.ask??t0.option_last)==null?"—":"$"+fmt(t0.ask??t0.option_last,2)} → ${t0.target_ask==null?"—":"$"+fmt(t0.target_ask,2)}</strong></div>
               <div>Strike rate ≥1%/≥2%<strong>${t0.hit_1pct==null?"—":fmt(t0.hit_1pct,0)+"%"} / ${t0.hit_2pct==null?"—":fmt(t0.hit_2pct,0)+"%"}</strong></div>
               <div>Spot (${t0.spot_source||"—"})<strong>${t0.spot==null?"—":"$"+fmt(t0.spot,2)}</strong></div>
+              <div>Call wall<strong class="up">${t0.call_wall==null?"—":fmt(t0.call_wall,2)}</strong></div>
+              <div>Put wall<strong class="down">${t0.put_wall==null?"—":fmt(t0.put_wall,2)}</strong></div>
+              <div title="Underlying take-profit before OI wall">Soft EXIT<strong class="up">${t0.soft_exit==null?"—":"$"+fmt(t0.soft_exit,2)}</strong></div>
             </div>
             <p class="why" style="margin:.55rem 0 0">${t0.status_detail||""}${t0.data_note?` · ${t0.data_note}`:""}</p>
             ${reasonList(t0)}
@@ -649,7 +672,7 @@ PAGE = r"""
         statusEl.innerHTML = !rows.length
           ? `<div class="empty">No ENTRY/HOLD/EXIT updates yet.</div>`
           : `<table><thead><tr>
-              <th>Status</th><th>Side</th><th>Symbol</th><th>Strike</th><th>Expiry</th><th>Vol/OI</th><th>Opt $</th><th>Strike rate</th><th>Hold</th><th>Why</th>
+              <th>Status</th><th>Side</th><th>Symbol</th><th>Strike</th><th>Call/Put wall</th><th>Soft EXIT</th><th>Vol/OI</th><th>Opt $</th><th>Hold</th><th>Why</th>
             </tr></thead><tbody>${rows.map(t=>{
               const a=(t.action||"WAIT");
               const cls=a==="EXIT"?"sell":(a==="ENTRY"?"buy":(a==="HOLD"?"hold":"wait"));
@@ -659,13 +682,13 @@ PAGE = r"""
                 <td><span class="badge ${cls}">${a}</span></td>
                 <td class="mono">${t.right==="P"?"PUT":"CALL"}</td>
                 <td><strong>${t.symbol}</strong> ${spotBadge(t)} ${earnBadge(t)}</td>
-                <td class="mono"><strong>${t.strike==null?"—":fmt(t.strike,2)}</strong></td>
-                <td class="mono">${t.expiry||"—"}<div class="why">${t.dte==null?"":t.dte+"d"}</div></td>
+                <td class="mono"><strong>${t.strike==null?"—":fmt(t.strike,2)}</strong><div class="why">${t.expiry||""}</div></td>
+                <td class="mono"><span class="up">${t.call_wall==null?"—":fmt(t.call_wall,2)}</span> / <span class="down">${t.put_wall==null?"—":fmt(t.put_wall,2)}</span></td>
+                <td class="mono up"><strong>${t.soft_exit==null?"—":"$"+fmt(t.soft_exit,2)}</strong><div class="why">${t.primary_wall_side||""} wall${t.wall_buffer_usd!=null?" −$"+fmt(t.wall_buffer_usd,2):""}</div></td>
                 <td class="mono ${liqBad?"down":"up"}">${t.volume==null?"—":Number(t.volume).toLocaleString()} / ${t.open_interest==null?"—":Number(t.open_interest).toLocaleString()}</td>
                 <td class="mono"><strong>${mark==null?"—":"$"+fmt(mark,2)}</strong><div class="why">${t.mark_source||""}${t.target_ask!=null?" → $"+fmt(t.target_ask,2):""}</div></td>
-                <td class="mono">≥1% ${t.hit_1pct==null?"—":fmt(t.hit_1pct,0)+"%"} · ≥2% ${t.hit_2pct==null?"—":fmt(t.hit_2pct,0)+"%"}</td>
                 <td class="mono"><strong>${holdLbl(t)}</strong></td>
-                <td class="why">${t.recommend_reason||t.status_detail||t.thesis||""}</td>
+                <td class="why">${t.recommend_reason||t.status_detail||t.thesis||""}${t.wall_exit_hint?`<div><strong>Wall:</strong> ${t.wall_exit_hint}</div>`:""}</td>
               </tr>`;
             }).join("")}</tbody></table>`;
       }
@@ -791,7 +814,7 @@ PAGE = r"""
       if (ticketsEl) {
         if (!tickets.length) ticketsEl.innerHTML = `<div class="empty">No tickets.</div>`;
         else ticketsEl.innerHTML = `<table><thead><tr>
-          <th>Status</th><th>Side</th><th>Symbol</th><th>Strike</th><th>Expiry</th><th>Vol / OI</th><th>Opt price</th><th>Strike rate</th><th>Hist</th><th>Hold</th><th>Reason</th>
+          <th>Status</th><th>Side</th><th>Symbol</th><th>Strike</th><th>Call/Put wall</th><th>Soft EXIT</th><th>Vol / OI</th><th>Opt price</th><th>Hist</th><th>Hold</th><th>Reason</th>
         </tr></thead><tbody>${tickets.map(t=>{
           const a=t.action||"WAIT";
           const cls=a==="EXIT"?"sell":(a==="ENTRY"?"buy":(a==="HOLD"?"hold":"wait"));
@@ -803,11 +826,11 @@ PAGE = r"""
           <td><span class="badge ${cls}">${a}</span></td>
           <td class="mono">${t.right==="P"?"PUT":"CALL"}</td>
           <td><strong>${t.symbol}</strong> ${spotBadge(t)} ${earnBadge(t)}<div class="why">spot ${t.spot==null?"—":"$"+fmt(t.spot,2)}</div></td>
-          <td class="mono"><strong>${t.strike==null?"—":fmt(t.strike,2)}</strong><div class="why">${t.moneyness_pct==null?"":fmt(t.moneyness_pct,1)+"% mny"}</div></td>
-          <td class="mono"><strong>${t.expiry||"—"}</strong><div class="why">${t.dte==null?"":t.dte+" DTE"} · ${t.contract||"no OCC"}</div></td>
+          <td class="mono"><strong>${t.strike==null?"—":fmt(t.strike,2)}</strong><div class="why">${t.expiry||"—"} · ${t.dte==null?"":t.dte+"d"}</div></td>
+          <td class="mono"><span class="up">${t.call_wall==null?"—":fmt(t.call_wall,2)}</span> / <span class="down">${t.put_wall==null?"—":fmt(t.put_wall,2)}</span></td>
+          <td class="mono up"><strong>${t.soft_exit==null?"—":"$"+fmt(t.soft_exit,2)}</strong><div class="why">${t.wall_exit_hint||""}</div></td>
           <td class="mono ${liqBad?"down":"up"}"><strong>${vol==null?"—":Number(vol).toLocaleString()}</strong><div class="why">OI ${oi==null?"—":Number(oi).toLocaleString()}${liqBad?" · illiquid":""}</div></td>
-          <td class="mono"><strong>${mark==null?"—":"$"+fmt(mark,2)}</strong><div class="why">${markLbl}${t.target_ask!=null?" → tgt $"+fmt(t.target_ask,2):""}${t.bid!=null?" · bid "+fmt(t.bid,2):""}</div></td>
-          <td class="mono">≥1% <strong class="up">${t.hit_1pct==null?"—":fmt(t.hit_1pct,0)+"%"}</strong><div class="why">≥2% ${t.hit_2pct==null?"—":fmt(t.hit_2pct,0)+"%"}</div></td>
+          <td class="mono"><strong>${mark==null?"—":"$"+fmt(mark,2)}</strong><div class="why">${markLbl}${t.target_ask!=null?" → tgt $"+fmt(t.target_ask,2):""}</div></td>
           <td class="mono up"><strong>${fmt(t.hist_win_pct,0)}%</strong><div class="why">n=${t.hist_samples}</div></td>
           <td class="mono"><strong>${holdLbl(t)}</strong></td>
           <td class="why">${t.recommend_reason||t.status_detail||""}
@@ -1085,26 +1108,26 @@ PAGE = r"""
         el.innerHTML = `<div class="empty">No screener data yet — wait for snapshot / run Scan liquid. ${mkt.note||""}</div>`;
         return;
       }
-      el.innerHTML = `<p class="lede" style="margin-top:0;font-size:.72rem">${mkt.note||""}</p>
+      el.innerHTML = `<p class="lede" style="margin-top:0;font-size:.72rem">${mkt.note||""} Soft EXIT = $0.10 before call/put OI wall when available.</p>
         <table><thead><tr>
-          <th>Earn</th><th>Symbol</th><th>Last</th><th>Chg%</th><th>Day vol</th><th>Rel vol</th><th>Days</th><th>Swing score</th><th>Hist swing</th><th>Bias</th>
+          <th>Earn</th><th>Symbol</th><th>Last</th><th>Day vol</th><th>Rel vol</th><th>Call/Put wall</th><th>Soft EXIT</th><th>Swing</th><th>Bias</th>
         </tr></thead><tbody>${rows.slice(0,80).map(r=>{
-          const days = (r.bucket==="post"||r.earnings_window==="post_earnings")
-            ? (r.days_since_earnings!=null?r.days_since_earnings+"d since":"—")
-            : (r.days_to_earnings!=null?r.days_to_earnings+"d to":"—");
+          const walls = wallLookup(r.symbol);
+          const callW = r.call_wall??walls.call_wall;
+          const putW = r.put_wall??walls.put_wall;
+          const soft = r.soft_exit??walls.soft_exit;
           const bias = r.strategy_bias||"—";
           const bcls = bias==="prefer_post"?"buy":(bias==="caution_pre"||bias==="avoid_short_premium"?"sell":"wait");
           return `<tr>
             <td>${earnBadge(r)}</td>
-            <td><strong>${r.symbol}</strong>${r.in_focus?` <span class="tag">focus</span>`:""}<div class="why">${(r.tier||"").replace("_","/")}</div></td>
-            <td class="mono">${r.last==null?"—":fmt(r.last,2)}</td>
-            <td class="mono ${pctClass(r.change_pct)}">${r.change_pct==null?"—":fmt(r.change_pct,1)+"%"}</td>
+            <td><strong>${r.symbol}</strong>${r.in_focus?` <span class="tag">focus</span>`:""}</td>
+            <td class="mono">${r.last==null?"—":fmt(r.last,2)}<div class="why ${pctClass(r.change_pct)}">${r.change_pct==null?"":fmt(r.change_pct,1)+"%"}</div></td>
             <td class="mono">${r.day_volume==null?"—":Number(r.day_volume).toLocaleString()}</td>
             <td class="mono ${Number(r.rel_volume||0)>=1.5?"up":""}">${r.rel_volume==null?"—":fmt(r.rel_volume,2)+"×"}</td>
-            <td class="mono">${days}<div class="why">${r.next_earnings||r.last_earnings||""}</div></td>
+            <td class="mono"><span class="up">${callW==null?"—":fmt(callW,2)}</span> / <span class="down">${putW==null?"—":fmt(putW,2)}</span></td>
+            <td class="mono up"><strong>${soft==null?"—":"$"+fmt(soft,2)}</strong></td>
             <td class="mono ${r.quality?"up":""}">${r.swing_score==null?"—":fmt(r.swing_score,0)}</td>
-            <td class="mono">${r.hist_swing_win==null?"—":fmt(r.hist_swing_win,0)+"%"}${r.hist_swing_n!=null?` <span class="why">n=${r.hist_swing_n}</span>`:""}</td>
-            <td><span class="badge ${bcls}">${bias}</span>${r.prefer_leap?` <span class="tag">LEAP</span>`:""}<div class="why">${r.earnings_label||""}</div></td>
+            <td><span class="badge ${bcls}">${bias}</span><div class="why">${r.wall_exit_hint||walls.exit_hint||r.earnings_label||""}</div></td>
           </tr>`;
         }).join("")}</tbody></table>`;
     }
@@ -1523,6 +1546,32 @@ def create_app(config_path: str | None = None) -> Flask:
                 tracker.evaluate_open(t, mark=t.mark, quote=quotes.get(t.symbol))
             tracker.save()
 
+            # Seed walls from Echo DealerEdge profiles (already fetched ladders)
+            echo_walls: dict[str, dict] = {}
+            try:
+                from odte_scanner.options.walls import wall_exit_levels
+
+                for p in ((echo.get("dealer_edge") or {}).get("profiles") or []):
+                    sym = str(p.get("symbol") or "").upper()
+                    if not sym:
+                        continue
+                    echo_walls[sym] = {
+                        **wall_exit_levels(
+                            right="C",
+                            spot=p.get("spot"),
+                            call_wall=p.get("call_wall"),
+                            put_wall=p.get("put_wall"),
+                            buffer_usd=float(actions_cfg.get("wall_exit_buffer_usd", 0.10)),
+                        ),
+                        "flip": p.get("flip"),
+                        "regime": p.get("regime"),
+                        "expiry": p.get("expiry"),
+                        "dte": p.get("dte"),
+                        "source": "echo_gex",
+                    }
+            except Exception:  # noqa: BLE001
+                echo_walls = {}
+
             challenge = build_challenge_board(
                 win_table=win_table if isinstance(win_table, dict) else None,
                 scores=scan.get("scores") or [],
@@ -1536,11 +1585,14 @@ def create_app(config_path: str | None = None) -> Flask:
                 fetch_contracts=bool(actions_cfg.get("challenge_fetch_contracts", True)),
                 fetch_earnings=bool(actions_cfg.get("challenge_fetch_earnings", True)),
                 earnings_max_fetch=int(actions_cfg.get("challenge_earnings_max_fetch", 36)),
+                fetch_walls=bool(actions_cfg.get("challenge_fetch_walls", True)),
+                wall_buffer_usd=float(actions_cfg.get("wall_exit_buffer_usd", 0.10)),
+                walls_map=echo_walls,
             )
             live_contracts = {
                 (str(t.get("symbol")), str(t.get("right") or "C")): t
                 for t in (challenge.get("tickets") or [])
-                if t.get("ask") is not None or t.get("contract")
+                if t.get("ask") is not None or t.get("contract") or t.get("call_wall") is not None
             }
             sync = tracker.sync_from_tickets(
                 challenge.get("tickets") or [],
@@ -1565,6 +1617,9 @@ def create_app(config_path: str | None = None) -> Flask:
                 fetch_contracts=True,  # disk-cached chains — preserve strike/expiry/ask
                 fetch_earnings=False,
                 earnings_max_fetch=int(actions_cfg.get("challenge_earnings_max_fetch", 36)),
+                fetch_walls=False,
+                wall_buffer_usd=float(actions_cfg.get("wall_exit_buffer_usd", 0.10)),
+                walls_map=challenge.get("walls_map") or echo_walls,
             )
             for t in challenge.get("tickets") or []:
                 prev = live_contracts.get((str(t.get("symbol")), str(t.get("right") or "C")))
@@ -1585,6 +1640,19 @@ def create_app(config_path: str | None = None) -> Flask:
                     "target_ask",
                     "debit_usd",
                     "contracts_for_bankroll",
+                    "call_wall",
+                    "put_wall",
+                    "call_wall_oi",
+                    "put_wall_oi",
+                    "primary_wall",
+                    "primary_wall_side",
+                    "soft_exit",
+                    "wall_buffer_usd",
+                    "wall_exit_hint",
+                    "gex_flip",
+                    "gex_regime",
+                    "exit_plan",
+                    "reasons",
                     "spot",
                     "spot_source",
                     "live_ok",
@@ -1663,6 +1731,75 @@ def create_app(config_path: str | None = None) -> Flask:
             logger.warning("market board unavailable: %s", exc)
             market = {"error": str(exc), "by_earnings": [], "by_volume": [], "by_score": []}
 
+        # Unified walls map for all recommended surfaces (challenge + echo + action cards)
+        walls_by_symbol: dict[str, dict] = {}
+        try:
+            from odte_scanner.options.walls import wall_exit_levels
+
+            for p in ((echo.get("dealer_edge") or {}).get("profiles") or []):
+                sym = str(p.get("symbol") or "").upper()
+                if not sym:
+                    continue
+                walls_by_symbol[sym] = {
+                    **wall_exit_levels(
+                        right="C",
+                        spot=p.get("spot"),
+                        call_wall=p.get("call_wall"),
+                        put_wall=p.get("put_wall"),
+                        buffer_usd=float(actions_cfg.get("wall_exit_buffer_usd", 0.10)),
+                    ),
+                    "flip": p.get("flip"),
+                    "regime": p.get("regime"),
+                    "exit_hint": None,
+                    "source": "echo_gex",
+                }
+                walls_by_symbol[sym]["exit_hint"] = walls_by_symbol[sym].get("exit_hint")
+            for t in (challenge.get("tickets") or []):
+                sym = str(t.get("symbol") or "").upper()
+                if not sym or t.get("call_wall") is None and t.get("put_wall") is None:
+                    continue
+                walls_by_symbol[sym] = {
+                    "call_wall": t.get("call_wall"),
+                    "put_wall": t.get("put_wall"),
+                    "call_wall_oi": t.get("call_wall_oi"),
+                    "put_wall_oi": t.get("put_wall_oi"),
+                    "primary_wall": t.get("primary_wall"),
+                    "primary_wall_side": t.get("primary_wall_side"),
+                    "soft_exit": t.get("soft_exit"),
+                    "wall_buffer_usd": t.get("wall_buffer_usd"),
+                    "exit_hint": t.get("wall_exit_hint"),
+                    "wall_exit_hint": t.get("wall_exit_hint"),
+                    "flip": t.get("gex_flip"),
+                    "regime": t.get("gex_regime"),
+                    "source": "challenge",
+                }
+            # Soft-exit hint for long bias on action-card names using call wall
+            for sym, w in list(walls_by_symbol.items()):
+                if w.get("soft_exit") is None and w.get("call_wall") is not None:
+                    refreshed_w = wall_exit_levels(
+                        right="C",
+                        spot=None,
+                        call_wall=w.get("call_wall"),
+                        put_wall=w.get("put_wall"),
+                        call_wall_oi=w.get("call_wall_oi"),
+                        put_wall_oi=w.get("put_wall_oi"),
+                        buffer_usd=float(actions_cfg.get("wall_exit_buffer_usd", 0.10)),
+                    )
+                    walls_by_symbol[sym] = {**w, **refreshed_w, "exit_hint": refreshed_w.get("exit_hint")}
+            # Attach walls onto market board rows for Screener
+            for key in ("by_earnings", "by_volume", "by_score"):
+                for row in market.get(key) or []:
+                    w = walls_by_symbol.get(str(row.get("symbol") or "").upper())
+                    if not w:
+                        continue
+                    row["call_wall"] = w.get("call_wall")
+                    row["put_wall"] = w.get("put_wall")
+                    row["soft_exit"] = w.get("soft_exit")
+                    row["wall_exit_hint"] = w.get("exit_hint") or w.get("wall_exit_hint")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("walls_by_symbol merge failed: %s", exc)
+            walls_by_symbol = {}
+
         return jsonify(
             {
                 "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -1681,6 +1818,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 "echo": echo,
                 "challenge": challenge,
                 "market": market,
+                "walls_by_symbol": walls_by_symbol,
                 "watch": {"quotes": quotes},
                 "ledger": ledger,
                 "actions": actions,
