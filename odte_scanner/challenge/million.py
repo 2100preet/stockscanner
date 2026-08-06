@@ -1,7 +1,7 @@
-"""$1,000 → $1,000,000 challenge path via swing / LEAP call flips.
+"""$1,000 → $1,000,000 challenge path via swing / LEAP calls & puts.
 
-Selects high hist-win names and recommends strike + expiry tickets sized so
-~10–15 compounded premium doubles/near-doubles can theoretically path to $1M.
+Selects high hist-win names, recommends strike + expiry, hold period, and
+ENTRY / HOLD / EXIT status for both calls and puts.
 
 IMPORTANT: "100% filter" means *historical* quality-signal win rate on the
 underlying — not a guarantee of future option P&L. Options can go to zero.
@@ -16,6 +16,7 @@ from typing import Any
 import yfinance as yf
 
 from odte_scanner.backtest.win_rates import summarize_hist_win_gate
+from odte_scanner.challenge.tracker import hold_period_for
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,8 @@ logger = logging.getLogger(__name__)
 class ChallengeTicket:
     symbol: str
     horizon: str
+    right: str  # C | P
+    action: str  # ENTRY | HOLD | EXIT | WAIT
     hist_win_pct: float
     hist_samples: int
     hit_1pct: float | None
@@ -44,8 +47,15 @@ class ChallengeTicket:
     debit_usd: float
     target_premium_mult: float
     target_ask: float | None
+    hold_period_label: str
+    hold_min_days: int
+    hold_max_days: int
+    hold_ideal_days: int
+    hold_days: float | None
+    trade_id: str | None
     thesis: str
     certainty_tier: str  # perfect | elite | strong
+    status_detail: str
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -116,7 +126,6 @@ def _eligible_rows(
             if key not in seen:
                 rows.append(r)
                 seen.add(key)
-    # Prefer swing, then higher n / win
     rows.sort(
         key=lambda r: (
             0 if r.get("horizon") == "swing" else 1,
@@ -128,10 +137,51 @@ def _eligible_rows(
     return rows
 
 
-def select_leap_call(
+def _side_from_tape(
+    *,
+    score: dict[str, Any] | None,
+    quote: dict[str, Any] | None,
+) -> str:
+    """Return C (call) or P (put) from ensemble + live tape."""
+    sc = score or {}
+    q = quote or {}
+    ens = float(sc.get("ensemble_score") or 0)
+    bullish = sc.get("bullish")
+    if bullish is None:
+        bullish = ens >= 62
+    mom5 = q.get("mom_5m_pct")
+    live = q.get("session_change_pct")
+    if live is None:
+        live = q.get("change_pct")
+
+    bear_votes = 0
+    bull_votes = 0
+    if bullish:
+        bull_votes += 1
+    else:
+        bear_votes += 1
+    if ens >= 70:
+        bull_votes += 1
+    elif ens and ens < 48:
+        bear_votes += 1
+    if mom5 is not None:
+        if float(mom5) <= -0.15:
+            bear_votes += 1
+        elif float(mom5) >= 0.12:
+            bull_votes += 1
+    if live is not None:
+        if float(live) <= -1.0:
+            bear_votes += 1
+        elif float(live) >= 0.6:
+            bull_votes += 1
+    return "P" if bear_votes > bull_votes else "C"
+
+
+def select_leap_option(
     symbol: str,
     spot: float,
     *,
+    right: str = "C",
     yahoo_symbol: str | None = None,
     min_dte: int = 90,
     max_dte: int = 450,
@@ -140,7 +190,8 @@ def select_leap_call(
     max_ask: float = 80.0,
     min_oi: int = 50,
 ) -> dict[str, Any] | None:
-    """Pick a liquid swing/LEAP call — slight OTM, mid-dated."""
+    """Pick a liquid swing/LEAP call or put — slight OTM, mid-dated."""
+    right = right.upper()
     fetch_sym = yahoo_symbol or symbol
     try:
         t = yf.Ticker(fetch_sym)
@@ -162,7 +213,6 @@ def select_leap_call(
         if min_dte <= dte <= max_dte:
             targets.append((exp, dte))
     if not targets:
-        # widen if needed
         for exp in exps:
             try:
                 d = datetime.strptime(exp, "%Y-%m-%d").date()
@@ -174,26 +224,34 @@ def select_leap_call(
     if not targets:
         return None
 
-    # Prefer ~180 DTE (6 months) for LEAP-style swing
-    targets.sort(key=lambda x: abs(x[1] - 180))
+    prefer_dte = 180
+    targets.sort(key=lambda x: abs(x[1] - prefer_dte))
     best: dict[str, Any] | None = None
     best_rank = -1e18
 
     for expiry, dte in targets[:6]:
         try:
             chain = t.option_chain(expiry)
-            calls = chain.calls
+            table = chain.calls if right == "C" else chain.puts
         except Exception:  # noqa: BLE001
             continue
-        if calls is None or calls.empty:
+        if table is None or table.empty:
             continue
-        for _, row in calls.iterrows():
+        for _, row in table.iterrows():
             strike = float(row.get("strike") or 0)
             if strike <= 0:
                 continue
-            mny = (strike - spot) / spot * 100.0
-            if mny < -itm_pct_max or mny > otm_pct_max:
-                continue
+            # Calls: strike above spot = OTM (+); Puts: strike below spot = OTM (− as moneyness_pct)
+            if right == "C":
+                mny = (strike - spot) / spot * 100.0
+                if mny < -itm_pct_max or mny > otm_pct_max:
+                    continue
+                otm_target = 3.0
+            else:
+                mny = (strike - spot) / spot * 100.0  # negative when OTM put
+                if mny > itm_pct_max or mny < -otm_pct_max:
+                    continue
+                otm_target = -3.0
             bid = float(row.get("bid") or 0)
             ask = float(row.get("ask") or 0)
             last = float(row.get("lastPrice") or 0)
@@ -209,11 +267,10 @@ def select_leap_call(
             spread = (ask - bid) / ask if ask else 1.0
             if spread > 0.35:
                 continue
-            # Rank: near 3% OTM, high OI, closer to 180 DTE, tight spread
             rank = (
                 40.0
-                - abs(mny - 3.0) * 4.0
-                - abs(dte - 180) * 0.05
+                - abs(mny - otm_target) * 4.0
+                - abs(dte - prefer_dte) * 0.05
                 - spread * 30.0
                 + min(20.0, oi / 500.0)
                 + min(10.0, vol / 100.0)
@@ -222,6 +279,7 @@ def select_leap_call(
                 best_rank = rank
                 best = {
                     "symbol": symbol,
+                    "right": right,
                     "contract": str(row.get("contractSymbol") or ""),
                     "expiry": expiry,
                     "dte": dte,
@@ -237,12 +295,42 @@ def select_leap_call(
     return best
 
 
+# Back-compat alias
+def select_leap_call(symbol: str, spot: float, **kwargs: Any) -> dict[str, Any] | None:
+    return select_leap_option(symbol, spot, right="C", **kwargs)
+
+
+def _suggested_zone(spot: float, horizon: str, right: str) -> dict[str, Any]:
+    step = 1.0 if spot < 50 else (2.5 if spot < 200 else 5.0)
+    if right == "C":
+        raw = spot * (1.03 if horizon == "weekly" else 1.05)
+    else:
+        raw = spot * (0.97 if horizon == "weekly" else 0.95)
+    strike_zone = round(round(raw / step) * step, 2)
+    dte_zone = 120 if horizon == "weekly" else 180
+    return {
+        "contract": None,
+        "right": right,
+        "expiry": f"~{dte_zone}DTE listed",
+        "dte": dte_zone,
+        "strike": strike_zone,
+        "spot": spot,
+        "bid": None,
+        "ask": None,
+        "moneyness_pct": round((strike_zone - spot) / spot * 100.0, 2),
+        "open_interest": None,
+        "volume": None,
+        "suggested_zone": True,
+    }
+
+
 def build_challenge_board(
     *,
     win_table: dict[str, Any] | None,
     scores: list[dict[str, Any]] | None = None,
     quotes: dict[str, dict[str, Any]] | None = None,
     aliases: dict[str, str] | None = None,
+    open_trades: list[dict[str, Any]] | None = None,
     start_usd: float = 1000.0,
     target_usd: float = 1_000_000.0,
     flips: int = 12,
@@ -252,23 +340,27 @@ def build_challenge_board(
     quotes = quotes or {}
     aliases = aliases or {}
     scores = scores or []
+    open_trades = open_trades or []
+    open_map = {
+        (str(t.get("symbol")), str(t.get("right") or "C").upper()): t
+        for t in open_trades
+        if t.get("status", "open") == "open"
+    }
+
     score_map: dict[str, dict[str, Any]] = {}
     for s in scores:
         sym = str(s.get("symbol") or "")
         hz = str(s.get("horizon") or "")
         if not sym:
             continue
-        # prefer matching horizon, else best score
         prev = score_map.get(sym)
-        if prev is None or hz in {"swing", "weekly"} or float(s.get("ensemble_score") or 0) > float(
-            prev.get("ensemble_score") or 0
+        if prev is None or hz == "swing" or (
+            prev.get("_hz") != "swing"
+            and float(s.get("ensemble_score") or 0) >= float(prev.get("ensemble_score") or 0)
         ):
-            if prev is None or hz == "swing" or (
-                prev.get("_hz") != "swing" and float(s.get("ensemble_score") or 0) >= float(prev.get("ensemble_score") or 0)
-            ):
-                row = dict(s)
-                row["_hz"] = hz
-                score_map[sym] = row
+            row = dict(s)
+            row["_hz"] = hz
+            score_map[sym] = row
 
     paths = path_table(start_usd, target_usd)
     primary_path = compound_path(start_usd=start_usd, target_usd=target_usd, flips=flips)
@@ -276,77 +368,90 @@ def build_challenge_board(
 
     eligible = _eligible_rows(win_table)
     tickets: list[ChallengeTicket] = []
+    chain_fetches = 0
 
-    for row in eligible[: max_tickets + 4]:
+    for row in eligible[: max_tickets + 6]:
         sym = str(row["symbol"])
-        spot = None
         q = quotes.get(sym) or {}
+        sc = score_map.get(sym) or {}
+        spot = None
         if q.get("last") is not None:
             spot = float(q["last"])
-        sc = score_map.get(sym) or {}
-        if spot is None and sc.get("last_price") is not None:
+        elif sc.get("last_price") is not None:
             spot = float(sc["last_price"])
-        if spot is None and sc.get("entry") is not None:
+        elif sc.get("entry") is not None:
             spot = float(sc["entry"])
 
+        right = _side_from_tape(score=sc, quote=q)
+        horizon = str(row.get("horizon") or "swing")
+        hp = hold_period_for(horizon, None)
+
+        open_t = open_map.get((sym, right))
+        # Also match opposite-side open → manage that first
+        if open_t is None:
+            for rtry in ("C", "P"):
+                if (sym, rtry) in open_map:
+                    open_t = open_map[(sym, rtry)]
+                    right = rtry
+                    break
+
         contract = None
-        # Limit live chain hits (Yahoo rate limits) — top names only
-        if fetch_contracts and spot and spot > 0 and len(tickets) < 4:
+        if fetch_contracts and spot and spot > 0 and chain_fetches < 4 and not open_t:
             try:
-                # Weekly hist → prefer ~90-180 DTE; swing hist → LEAP window
-                if row.get("horizon") == "weekly":
-                    contract = select_leap_call(
+                if horizon == "weekly":
+                    contract = select_leap_option(
                         sym,
                         spot,
+                        right=right,
                         yahoo_symbol=aliases.get(sym),
                         min_dte=60,
                         max_dte=220,
                         otm_pct_max=6.0,
                     )
                 else:
-                    contract = select_leap_call(
+                    contract = select_leap_option(
                         sym,
                         spot,
+                        right=right,
                         yahoo_symbol=aliases.get(sym),
                         min_dte=120,
                         max_dte=450,
                         otm_pct_max=8.0,
                     )
+                chain_fetches += 1
             except Exception as exc:  # noqa: BLE001
                 logger.debug("challenge contract fetch %s: %s", sym, exc)
                 contract = None
 
-        # Fallback zone when Yahoo chain is rate-limited / empty
         if contract is None and spot and spot > 0:
-            step = 1.0 if spot < 50 else (2.5 if spot < 200 else 5.0)
-            raw = spot * (1.03 if row.get("horizon") == "weekly" else 1.05)
-            strike_zone = round(round(raw / step) * step, 2)
-            dte_zone = 120 if row.get("horizon") == "weekly" else 180
-            contract = {
-                "contract": None,
-                "expiry": f"~{dte_zone}DTE listed",
-                "dte": dte_zone,
-                "strike": strike_zone,
-                "spot": spot,
-                "bid": None,
-                "ask": None,
-                "moneyness_pct": round((strike_zone - spot) / spot * 100.0, 2),
-                "open_interest": None,
-                "volume": None,
-                "suggested_zone": True,
-            }
+            contract = _suggested_zone(spot, horizon, right)
+            if open_t:
+                # Prefer live open trade contract fields
+                contract = {
+                    "contract": open_t.get("contract"),
+                    "right": open_t.get("right") or right,
+                    "expiry": open_t.get("expiry"),
+                    "dte": open_t.get("dte_at_entry"),
+                    "strike": open_t.get("strike"),
+                    "spot": spot,
+                    "bid": open_t.get("mark") or open_t.get("exit_bid"),
+                    "ask": open_t.get("entry_ask"),
+                    "moneyness_pct": None,
+                    "open_interest": None,
+                    "volume": None,
+                }
+
+        # Refresh hold period with DTE
+        hp = hold_period_for(horizon, (contract or {}).get("dte"))
 
         ask = float(contract["ask"]) if contract and contract.get("ask") else None
-        # Size: spend most of bankroll on 1–few contracts (challenge mode)
+        bid = float(contract["bid"]) if contract and contract.get("bid") else None
         contracts_n = 1
         debit = 0.0
         if ask and ask > 0:
             max_contracts = max(1, int(start_usd // (ask * 100)))
             contracts_n = min(max_contracts, 5) if max_contracts else 1
-            if contracts_n < 1:
-                contracts_n = 1
             debit = round(ask * 100 * contracts_n, 2)
-            # If one contract > bankroll, still show ticket as "need larger bankroll / scale"
             if debit > start_usd and ask * 100 <= start_usd * 1.05:
                 contracts_n = 1
                 debit = round(ask * 100, 2)
@@ -354,20 +459,68 @@ def build_challenge_board(
         win = float(row.get("win_pct") or 0)
         n = int(row.get("trades") or 0)
         tier = _tier(win, n)
+
+        # Status: ENTRY / HOLD / EXIT / WAIT
+        action = "ENTRY"
+        status_detail = "New challenge ticket — enter when ask is live."
+        hold_days = None
+        trade_id = None
+        if open_t:
+            trade_id = open_t.get("id")
+            hold_days = open_t.get("hold_days")
+            mark = open_t.get("mark") or bid or ask
+            entry = float(open_t.get("entry_ask") or 0)
+            unreal = None
+            if mark and entry:
+                unreal = (float(mark) - entry) / entry * 100.0
+            target_pct = (need_mult - 1.0) * 100.0
+            days = float(hold_days or 0)
+            max_d = int(open_t.get("hold_max_days") or hp["max_days"])
+            min_d = int(open_t.get("hold_min_days") or hp["min_days"])
+            action = "HOLD"
+            status_detail = f"Open {right} — holding {days:.1f}d / max {max_d}d"
+            if unreal is not None and unreal >= target_pct:
+                action = "EXIT"
+                status_detail = f"EXIT — target +{unreal:.0f}% hit"
+            elif unreal is not None and unreal <= -45:
+                action = "EXIT"
+                status_detail = f"EXIT — stop {unreal:.0f}%"
+            elif days >= max_d:
+                action = "EXIT"
+                status_detail = f"EXIT — max hold {max_d}d"
+            elif open_t.get("last_action") == "EXIT":
+                action = "EXIT"
+                status_detail = open_t.get("last_action_detail") or "EXIT"
+            elif days < min_d:
+                status_detail += f" · min hold {min_d}d not reached"
+            if open_t.get("last_action") == "HOLD" and open_t.get("last_action_detail"):
+                status_detail = str(open_t.get("last_action_detail"))
+        elif len(open_map) > 0:
+            # Already in another challenge trade
+            action = "WAIT"
+            status_detail = "WAIT — challenge sleeve already has an open flip (max 1)"
+        elif ask is None:
+            # Still an ENTRY recommendation (strike/DTE zone) until live ask lands
+            action = "ENTRY"
+            status_detail = "ENTRY — confirm live ask before fill (hold window set)"
+
+        side_lbl = "CALL" if right == "C" else "PUT"
         thesis = (
-            f"{'PERFECT' if tier=='perfect' else tier.upper()} hist filter: "
-            f"{row.get('horizon')} quality signals won {win:.0f}% (n={n}). "
-            f"Challenge target ≈{need_mult:.2f}× premium (~{primary_path['pct_per_flip']:.0f}%) then roll."
+            f"{'PERFECT' if tier == 'perfect' else tier.upper()} hist · {side_lbl} · "
+            f"{horizon} quality win {win:.0f}% (n={n}). "
+            f"Hold {hp['label']}. Target ≈{need_mult:.2f}× premium then EXIT & roll."
         )
         if row.get("hit_1pct") is not None:
-            thesis += f" Strike-rate ≥1% underlying: {row['hit_1pct']:.0f}%."
+            thesis += f" Strike-rate ≥1%: {row['hit_1pct']:.0f}%."
         if contract and contract.get("suggested_zone"):
-            thesis += " Chain quote unavailable (Yahoo limit) — strike/DTE is suggested zone; refresh for live ask."
+            thesis += " Chain quote unavailable — strike/DTE suggested zone."
 
         tickets.append(
             ChallengeTicket(
                 symbol=sym,
-                horizon=str(row.get("horizon")),
+                horizon=horizon,
+                right=right,
+                action=action,
                 hist_win_pct=win,
                 hist_samples=n,
                 hit_1pct=row.get("hit_1pct"),
@@ -380,7 +533,7 @@ def build_challenge_board(
                 strike=(contract or {}).get("strike"),
                 spot=spot if spot is not None else (contract or {}).get("spot"),
                 ask=ask,
-                bid=(contract or {}).get("bid"),
+                bid=bid,
                 moneyness_pct=(contract or {}).get("moneyness_pct"),
                 open_interest=(contract or {}).get("open_interest"),
                 volume=(contract or {}).get("volume"),
@@ -388,24 +541,35 @@ def build_challenge_board(
                 debit_usd=debit,
                 target_premium_mult=round(need_mult, 3),
                 target_ask=round(ask * need_mult, 2) if ask else None,
+                hold_period_label=str(hp["label"]),
+                hold_min_days=int(hp["min_days"]),
+                hold_max_days=int(hp["max_days"]),
+                hold_ideal_days=int(hp["ideal_days"]),
+                hold_days=hold_days,
+                trade_id=trade_id,
                 thesis=thesis,
                 certainty_tier=tier,
+                status_detail=status_detail,
             )
         )
         if len(tickets) >= max_tickets:
             break
 
-    # Rank perfect first
+    # Rank: EXIT first (manage risk), then ENTRY, HOLD, WAIT; certainty within
+    rank_action = {"EXIT": 0, "ENTRY": 1, "HOLD": 2, "WAIT": 3}
     tickets.sort(
         key=lambda t: (
+            rank_action.get(t.action, 9),
             0 if t.certainty_tier == "perfect" else 1 if t.certainty_tier == "elite" else 2,
             -t.hist_win_pct,
             -t.hist_samples,
-            -(t.ensemble_score or 0),
         )
     )
 
-    perfect_n = sum(1 for t in tickets if t.certainty_tier == "perfect")
+    primary = next((t for t in tickets if t.action in {"EXIT", "ENTRY", "HOLD"}), None)
+    if primary is None and tickets:
+        primary = tickets[0]
+
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "start_usd": start_usd,
@@ -413,30 +577,40 @@ def build_challenge_board(
         "flips": flips,
         "path": primary_path,
         "paths": [
-            {
-                "flips": p["flips"],
-                "pct_per_flip": p["pct_per_flip"],
-                "mult_per_flip": p["mult_per_flip"],
-            }
+            {"flips": p["flips"], "pct_per_flip": p["pct_per_flip"], "mult_per_flip": p["mult_per_flip"]}
             for p in paths
         ],
         "tickets": [t.to_dict() for t in tickets],
-        "primary": tickets[0].to_dict() if tickets else None,
+        "primary": primary.to_dict() if primary else None,
+        "entry": [t.to_dict() for t in tickets if t.action == "ENTRY"],
+        "hold": [t.to_dict() for t in tickets if t.action == "HOLD"],
+        "exit": [t.to_dict() for t in tickets if t.action == "EXIT"],
         "counts": {
             "tickets": len(tickets),
-            "perfect": perfect_n,
+            "perfect": sum(1 for t in tickets if t.certainty_tier == "perfect"),
             "elite": sum(1 for t in tickets if t.certainty_tier == "elite"),
+            "entry": sum(1 for t in tickets if t.action == "ENTRY"),
+            "hold": sum(1 for t in tickets if t.action == "HOLD"),
+            "exit": sum(1 for t in tickets if t.action == "EXIT"),
+            "calls": sum(1 for t in tickets if t.right == "C"),
+            "puts": sum(1 for t in tickets if t.right == "P"),
+        },
+        "hold_periods": {
+            "weekly": hold_period_for("weekly"),
+            "swing": hold_period_for("swing"),
+            "leap": hold_period_for("leap", 200),
         },
         "rules": [
-            "Only swing / LEAP calls (not 0DTE lottery).",
-            "Ticket must clear hist-win filter: prefer 100% (n≥3), else ≥80% (n≥5) on weekly/swing quality signals.",
-            f"Each flip targets ~{primary_path['pct_per_flip']:.0f}% option premium gain; take profit and roll — do not revenge-trade losers.",
-            "Risk only the challenge bankroll sleeve; max 1 ticket at a time.",
-            "Historical underlying direction ≠ option P&L. Past results ≠ future. Research / paper only.",
+            "Swing / LEAP only — calls and puts allowed (side from ensemble + tape).",
+            "Hist-win filter: prefer 100% (n≥3), else ≥80% (n≥5) on weekly/swing quality signals.",
+            "Hold periods: weekly 5–14d · swing 20–60d · LEAP 30–90d — EXIT at target, stop, or max hold.",
+            f"Each flip targets ~{primary_path['pct_per_flip']:.0f}% option premium; then EXIT and roll.",
+            "Status updates: ENTRY (new), HOLD (open inside window), EXIT (target/stop/time).",
+            "Max 1 open challenge flip at a time. Research / paper only.",
         ],
         "disclaimer": (
             "No strategy has a guaranteed 100% future win rate. "
-            "'Perfect' means the walk-forward sample for that symbol/horizon was 100% on quality signals "
-            "(often small n). Options can expire worthless. Not financial advice."
+            "'Perfect' means the walk-forward sample was 100% on quality signals (often small n). "
+            "Options can expire worthless. Not financial advice."
         ),
     }

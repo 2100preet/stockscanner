@@ -214,18 +214,26 @@ PAGE = r"""
     <section class="tabpane" id="tab-challenge">
       <h2>$1,000 → $1,000,000 challenge</h2>
       <p class="lede">
-        Swing / LEAP path only — no 0DTE lottery. Tickets must clear a <strong>sure-shot hist filter</strong>
-        (prefer <strong>100% hist win</strong> on quality weekly/swing signals, else ≥80% with n≥5).
-        Compound ~10–15 premium flips. <em>Hist 100% ≠ guaranteed future wins.</em>
+        Swing / LEAP <strong>calls &amp; puts</strong> — no 0DTE lottery. Sure-shot hist filter
+        (prefer <strong>100% hist win</strong>, else ≥80% n≥5). Status updates: <strong>ENTRY · HOLD · EXIT</strong>
+        with hold periods. Compound ~10–15 premium flips. <em>Hist 100% ≠ guaranteed future wins.</em>
       </p>
       <div class="metric-row" id="challengeMetrics"></div>
       <div class="cards" id="challengePrimary"></div>
       <div class="panel">
-        <h2>Compounding path</h2>
+        <h2>Challenge update — ENTRY / HOLD / EXIT</h2>
+        <div id="challengeStatus" class="empty">—</div>
+      </div>
+      <div class="panel">
+        <h2>Open sleeve &amp; closed flips</h2>
+        <div id="challengeBook" class="empty">—</div>
+      </div>
+      <div class="panel">
+        <h2>Compounding path &amp; hold periods</h2>
         <div id="challengePath" class="empty">—</div>
       </div>
       <div class="panel">
-        <h2>Recommended tickets — strike · expiry · target</h2>
+        <h2>Recommended tickets — side · strike · expiry · hold · status</h2>
         <div id="challengeTickets" class="empty">—</div>
       </div>
       <p class="lede" id="challengeDisclaimer" style="font-size:.72rem"></p>
@@ -489,6 +497,8 @@ PAGE = r"""
       const primaryEl = document.getElementById("challengePrimary");
       const pathEl = document.getElementById("challengePath");
       const ticketsEl = document.getElementById("challengeTickets");
+      const statusEl = document.getElementById("challengeStatus");
+      const bookEl = document.getElementById("challengeBook");
       const disc = document.getElementById("challengeDisclaimer");
       if (!ch || !Object.keys(ch).length) {
         if (ticketsEl) ticketsEl.innerHTML = `<div class="empty">Challenge board loading…</div>`;
@@ -497,13 +507,14 @@ PAGE = r"""
       const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
       const path = ch.path || {};
       const c = ch.counts || {};
+      const book = (ch.sync && ch.sync.book) || ch.book || {};
       if (metrics) metrics.innerHTML = [
-        m("Start", `$${(ch.start_usd||1000).toLocaleString()}`),
+        m("Sleeve equity", book.equity!=null?`$${Number(book.equity).toLocaleString()}`:`$${(ch.start_usd||1000).toLocaleString()}`),
         m("Target", `$${(ch.target_usd||1000000).toLocaleString()}`, "up"),
-        m("Flips", path.flips||ch.flips||12),
         m("Need / flip", path.pct_per_flip==null?"—":`+${fmt(path.pct_per_flip,0)}%`, "up"),
-        m("Perfect tickets", c.perfect||0, (c.perfect||0)>0?"up":""),
-        m("Elite tickets", c.elite||0),
+        m("ENTRY / HOLD / EXIT", `${c.entry||0} / ${c.hold||0} / ${c.exit||0}`),
+        m("Calls / Puts", `${c.calls||0} / ${c.puts||0}`),
+        m("Closed flips", `${book.flips_closed||0} (W${book.wins||0}/L${book.losses||0})`),
       ].join("");
 
       const t0 = ch.primary;
@@ -511,42 +522,98 @@ PAGE = r"""
         if (!t0) primaryEl.innerHTML = `<div class="empty">No sure-shot swing/LEAP cleared the hist filter yet — run a scan.</div>`;
         else {
           const tier = t0.certainty_tier||"strong";
-          primaryEl.innerHTML = `<article class="action-card long">
+          const act = t0.action||"WAIT";
+          const kind = act==="EXIT"?"short":(act==="ENTRY"||act==="HOLD"?"long":"wait");
+          primaryEl.innerHTML = `<article class="action-card ${kind}">
             <div class="ac-top">
-              <div class="ac-sym">${t0.symbol}</div>
-              <div class="ac-dir long">${tier.toUpperCase()} · ${(t0.horizon||"").toUpperCase()}</div>
+              <div class="ac-sym">${t0.symbol} <span class="tag">${t0.right==="P"?"PUT":"CALL"}</span></div>
+              <div class="ac-dir ${kind}">${act} · ${tier.toUpperCase()}</div>
             </div>
-            <div class="ac-conf">Hist win ${fmt(t0.hist_win_pct,0)}% · n=${t0.hist_samples} · strike rate ≥1% ${t0.hit_1pct==null?"—":fmt(t0.hit_1pct,0)+"%"}</div>
+            <div class="ac-conf">Hist win ${fmt(t0.hist_win_pct,0)}% · n=${t0.hist_samples} · hold ${t0.hold_period_label||"—"}</div>
             <div class="bar"><i style="width:${Math.min(100,t0.hist_win_pct||0)}%"></i></div>
             <div class="ac-meta">
-              <div>Strike<strong>${t0.strike==null?"—":fmt(t0.strike,2)+"c"}</strong></div>
+              <div>Strike<strong>${t0.strike==null?"—":fmt(t0.strike,2)+(t0.right==="P"?"p":"c")}</strong></div>
               <div>Expiry / DTE<strong>${t0.expiry||"—"} / ${t0.dte??"—"}</strong></div>
-              <div>Ask<strong>${t0.ask==null?"—":"$"+fmt(t0.ask,2)}</strong></div>
-              <div>Target ask<strong>${t0.target_ask==null?"—":"$"+fmt(t0.target_ask,2)} (${fmt(t0.target_premium_mult,2)}×)</strong></div>
-              <div>Contracts<strong>${t0.contracts_for_bankroll||1}</strong></div>
-              <div>Debit<strong>${t0.debit_usd?("$"+fmt(t0.debit_usd,0)):"—"}</strong></div>
+              <div>Ask → target<strong>${t0.ask==null?"—":"$"+fmt(t0.ask,2)} → ${t0.target_ask==null?"—":"$"+fmt(t0.target_ask,2)}</strong></div>
+              <div>Hold days<strong>${t0.hold_days==null?"—":fmt(t0.hold_days,1)+"d"} / max ${t0.hold_max_days||"—"}d</strong></div>
             </div>
-            <p class="why" style="margin:.55rem 0 0">${t0.thesis||""}</p>
+            <p class="why" style="margin:.55rem 0 0">${t0.status_detail||""} · ${t0.thesis||""}</p>
           </article>`;
         }
       }
 
+      if (statusEl) {
+        const rows = [...(ch.exit||[]), ...(ch.hold||[]), ...(ch.entry||[])].slice(0,12);
+        statusEl.innerHTML = !rows.length
+          ? `<div class="empty">No ENTRY/HOLD/EXIT updates yet.</div>`
+          : `<table><thead><tr>
+              <th>Status</th><th>Side</th><th>Symbol</th><th>Strike</th><th>Expiry</th><th>Hold</th><th>Ask/Bid</th><th>Detail</th>
+            </tr></thead><tbody>${rows.map(t=>{
+              const a=(t.action||"WAIT");
+              const cls=a==="EXIT"?"sell":(a==="ENTRY"?"buy":(a==="HOLD"?"hold":"wait"));
+              return `<tr>
+                <td><span class="badge ${cls}">${a}</span></td>
+                <td class="mono">${t.right==="P"?"PUT":"CALL"}</td>
+                <td><strong>${t.symbol}</strong></td>
+                <td class="mono">${t.strike==null?"—":fmt(t.strike,2)}</td>
+                <td class="mono">${t.expiry||"—"}</td>
+                <td class="mono">${t.hold_period_label||"—"}${t.hold_days!=null?` · ${fmt(t.hold_days,1)}d held`:""}</td>
+                <td class="mono">${fmt(t.ask,2)} / ${fmt(t.bid,2)}</td>
+                <td class="why">${t.status_detail||t.thesis||""}</td>
+              </tr>`;
+            }).join("")}</tbody></table>`;
+      }
+
+      if (bookEl) {
+        const open=(book.trades||[]).filter(t=>t.status==="open");
+        const closed=(book.trades||[]).filter(t=>t.status==="closed").slice(-8).reverse();
+        bookEl.innerHTML = `
+          <div class="ac-meta" style="margin-bottom:.5rem">
+            <div>Cash<strong>$${fmt(book.cash,0)}</strong></div>
+            <div>Equity<strong>$${fmt(book.equity,0)}</strong></div>
+            <div>Flips<strong>${book.flips_closed||0}</strong></div>
+            <div>Win/Loss<strong>${book.wins||0}/${book.losses||0}</strong></div>
+          </div>
+          ${open.length?`<div class="status">OPEN</div><table><thead><tr>
+            <th>Action</th><th>Side</th><th>Sym</th><th>Entry</th><th>Mark</th><th>Unreal%</th><th>Held</th><th>Max hold</th>
+          </tr></thead><tbody>${open.map(t=>`<tr>
+            <td><span class="badge ${t.last_action==="EXIT"?"sell":"hold"}">${t.last_action||"HOLD"}</span></td>
+            <td class="mono">${t.right==="P"?"PUT":"CALL"}</td>
+            <td><strong>${t.symbol}</strong></td>
+            <td class="mono">$${fmt(t.entry_ask,2)}</td>
+            <td class="mono">$${fmt(t.mark,2)}</td>
+            <td class="mono ${pctClass(t.unrealized_pct)}">${t.unrealized_pct==null?"—":fmt(t.unrealized_pct,1)+"%"}</td>
+            <td class="mono">${t.hold_days==null?"—":fmt(t.hold_days,1)+"d"}</td>
+            <td class="mono">${t.hold_max_days||"—"}d</td>
+          </tr>`).join("")}</tbody></table>`:`<div class="empty">No open challenge flip.</div>`}
+          ${closed.length?`<div class="status" style="margin-top:.7rem">CLOSED</div><table><thead><tr>
+            <th>Side</th><th>Sym</th><th>In→Out</th><th>P&L%</th><th>Held</th><th>Exit</th>
+          </tr></thead><tbody>${closed.map(t=>`<tr>
+            <td class="mono">${t.right==="P"?"PUT":"CALL"}</td>
+            <td><strong>${t.symbol}</strong></td>
+            <td class="mono">$${fmt(t.entry_ask,2)}→$${fmt(t.exit_bid,2)}</td>
+            <td class="mono ${pctClass(t.profit_pct)}">${t.profit_pct==null?"—":fmt(t.profit_pct,1)+"%"}</td>
+            <td class="mono">${t.hold_days==null?"—":fmt(t.hold_days,1)+"d"}</td>
+            <td class="why">${t.exit_reason||""}</td>
+          </tr>`).join("")}</tbody></table>`:""}`;
+      }
+
       if (pathEl) {
         const paths = ch.paths || [];
+        const hp = ch.hold_periods || {};
         pathEl.innerHTML = `
           <p class="lede" style="margin-top:0">${path.note||""}</p>
+          <div class="playbook" style="margin-bottom:.55rem">
+            ${["weekly","swing","leap"].map(k=>{
+              const h=hp[k]||{};
+              return `<span class="tag">${k}: ${h.label||"—"}</span>`;
+            }).join("")}
+          </div>
           <table><thead><tr><th>Flips</th><th>Need / flip</th><th>Multiple / flip</th></tr></thead>
           <tbody>${paths.map(p=>`<tr>
             <td class="mono">${p.flips}</td>
             <td class="mono up"><strong>+${fmt(p.pct_per_flip,0)}%</strong></td>
             <td class="mono">${fmt(p.mult_per_flip,2)}×</td>
-          </tr>`).join("")}</tbody></table>
-          <p class="status" style="margin:.5rem 0 .2rem">Schedule @ ${path.flips||12} flips</p>
-          <table><thead><tr><th>Flip</th><th>Equity</th><th>Gain</th></tr></thead>
-          <tbody>${(path.schedule||[]).map(s=>`<tr>
-            <td class="mono">${s.flip}</td>
-            <td class="mono up">$${Number(s.equity).toLocaleString()}</td>
-            <td class="mono">+${fmt(s.gain_pct,0)}%</td>
           </tr>`).join("")}</tbody></table>
           <ul class="lede" style="font-size:.76rem">${(ch.rules||[]).map(r=>`<li>${r}</li>`).join("")}</ul>`;
       }
@@ -555,20 +622,24 @@ PAGE = r"""
       if (ticketsEl) {
         if (!tickets.length) ticketsEl.innerHTML = `<div class="empty">No tickets.</div>`;
         else ticketsEl.innerHTML = `<table><thead><tr>
-          <th>Tier</th><th>Symbol</th><th>Hz</th><th>Hist win</th><th>n</th><th>Strike rate</th><th>Strike</th><th>Expiry</th><th>DTE</th><th>Ask → target</th><th>Why</th>
-        </tr></thead><tbody>${tickets.map(t=>`<tr>
+          <th>Status</th><th>Tier</th><th>Side</th><th>Symbol</th><th>Hist</th><th>n</th><th>Strike</th><th>Expiry</th><th>Hold</th><th>Ask→tgt</th><th>Update</th>
+        </tr></thead><tbody>${tickets.map(t=>{
+          const a=t.action||"WAIT";
+          const cls=a==="EXIT"?"sell":(a==="ENTRY"?"buy":(a==="HOLD"?"hold":"wait"));
+          return `<tr>
+          <td><span class="badge ${cls}">${a}</span></td>
           <td><span class="badge ${t.certainty_tier==="perfect"?"golden":(t.certainty_tier==="elite"?"unusual":"aggressive")}">${(t.certainty_tier||"").toUpperCase()}</span></td>
+          <td class="mono">${t.right==="P"?"PUT":"CALL"}</td>
           <td><strong>${t.symbol}</strong></td>
-          <td class="mono">${t.horizon||"—"}</td>
           <td class="mono up"><strong>${fmt(t.hist_win_pct,0)}%</strong></td>
           <td class="mono">${t.hist_samples}</td>
-          <td class="mono">${t.hit_1pct==null?"—":fmt(t.hit_1pct,0)+"% ≥1%"}</td>
-          <td class="mono">${t.strike==null?"—":fmt(t.strike,2)+"c"}</td>
+          <td class="mono">${t.strike==null?"—":fmt(t.strike,2)}</td>
           <td class="mono">${t.expiry||"—"}</td>
-          <td class="mono">${t.dte??"—"}</td>
+          <td class="mono">${t.hold_period_label||"—"}</td>
           <td class="mono">${t.ask==null?"—":"$"+fmt(t.ask,2)} → ${t.target_ask==null?"—":"$"+fmt(t.target_ask,2)}</td>
-          <td class="why">${t.thesis||""}</td>
-        </tr>`).join("")}</tbody></table>`;
+          <td class="why">${t.status_detail||""}</td>
+        </tr>`;
+        }).join("")}</tbody></table>`;
       }
       if (disc) disc.textContent = ch.disclaimer || "";
     }
@@ -1166,17 +1237,56 @@ def create_app(config_path: str | None = None) -> Flask:
 
         challenge = {}
         try:
+            from odte_scanner.challenge.tracker import ChallengeTracker
+
+            ch_path = Path(actions_cfg.get("challenge_ledger_path", "outputs/challenge_ledger.json"))
+            if not ch_path.is_absolute():
+                ch_path = ROOT / ch_path
+            tracker = ChallengeTracker(
+                ch_path,
+                starting_cash=float(actions_cfg.get("challenge_start_usd", 1000)),
+            )
+            # Pre-evaluate opens so board sees HOLD/EXIT
+            for t in tracker.open_trades():
+                tracker.evaluate_open(t, mark=t.mark, quote=quotes.get(t.symbol))
+            tracker.save()
+
             challenge = build_challenge_board(
                 win_table=win_table if isinstance(win_table, dict) else None,
                 scores=scan.get("scores") or [],
                 quotes=quotes,
                 aliases=aliases,
+                open_trades=[t.to_dict() for t in tracker.book.trades],
                 start_usd=float(actions_cfg.get("challenge_start_usd", 1000)),
                 target_usd=float(actions_cfg.get("challenge_target_usd", 1_000_000)),
                 flips=int(actions_cfg.get("challenge_flips", 12)),
                 max_tickets=int(actions_cfg.get("challenge_max_tickets", 8)),
                 fetch_contracts=bool(actions_cfg.get("challenge_fetch_contracts", True)),
             )
+            sync = tracker.sync_from_tickets(
+                challenge.get("tickets") or [],
+                quotes=quotes,
+                auto_enter=bool(actions_cfg.get("challenge_auto_enter", True)),
+                auto_exit=bool(actions_cfg.get("challenge_auto_exit", True)),
+                max_open=int(actions_cfg.get("challenge_max_open", 1)),
+            )
+            challenge["sync"] = sync
+            challenge["book"] = sync.get("book") or tracker.book.to_dict()
+            # Rebuild statuses after sync so UI matches ledger
+            challenge = build_challenge_board(
+                win_table=win_table if isinstance(win_table, dict) else None,
+                scores=scan.get("scores") or [],
+                quotes=quotes,
+                aliases=aliases,
+                open_trades=[t.to_dict() for t in tracker.book.trades],
+                start_usd=float(actions_cfg.get("challenge_start_usd", 1000)),
+                target_usd=float(actions_cfg.get("challenge_target_usd", 1_000_000)),
+                flips=int(actions_cfg.get("challenge_flips", 12)),
+                max_tickets=int(actions_cfg.get("challenge_max_tickets", 8)),
+                fetch_contracts=False,  # keep second pass cheap
+            )
+            challenge["sync"] = sync
+            challenge["book"] = tracker.book.to_dict()
         except Exception as exc:  # noqa: BLE001
             logger.warning("challenge board unavailable: %s", exc)
             challenge = {"error": str(exc), "tickets": [], "disclaimer": "Challenge board unavailable."}
