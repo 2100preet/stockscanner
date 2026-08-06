@@ -16,7 +16,9 @@ from typing import Any
 import yfinance as yf
 
 from odte_scanner.backtest.win_rates import summarize_hist_win_gate
+from odte_scanner.challenge.earnings import earnings_map_for
 from odte_scanner.challenge.tracker import hold_period_for
+from odte_scanner.data.universe import market_cap_tier
 
 logger = logging.getLogger(__name__)
 
@@ -54,8 +56,17 @@ class ChallengeTicket:
     hold_days: float | None
     trade_id: str | None
     thesis: str
+    recommend_reason: str
+    reasons: list[str]
     certainty_tier: str  # perfect | elite | strong
     status_detail: str
+    market_cap_tier: str
+    earnings_window: str
+    earnings_label: str
+    next_earnings: str | None
+    last_earnings: str | None
+    days_to_earnings: int | None
+    days_since_earnings: int | None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -324,6 +335,101 @@ def _suggested_zone(spot: float, horizon: str, right: str) -> dict[str, Any]:
     }
 
 
+def _side_reason(right: str, score: dict[str, Any], quote: dict[str, Any]) -> str:
+    ens = score.get("ensemble_score")
+    mom5 = quote.get("mom_5m_pct")
+    live = quote.get("session_change_pct")
+    if live is None:
+        live = quote.get("change_pct")
+    bits = []
+    if ens is not None:
+        bits.append(f"ensemble {float(ens):.0f}")
+    if score.get("bullish") is True:
+        bits.append("bullish quality")
+    elif score.get("bullish") is False:
+        bits.append("bearish quality")
+    if mom5 is not None:
+        bits.append(f"5m {float(mom5):+.2f}%")
+    if live is not None:
+        bits.append(f"session {float(live):+.2f}%")
+    side = "CALL" if right == "C" else "PUT"
+    return f"{side} from tape ({', '.join(bits) or 'default bias'})"
+
+
+def _build_reasons(
+    *,
+    tier: str,
+    win: float,
+    n: int,
+    right: str,
+    horizon: str,
+    hp: dict[str, Any],
+    need_mult: float,
+    score: dict[str, Any],
+    quote: dict[str, Any],
+    row: dict[str, Any],
+    cap_tier: str,
+    earn: dict[str, Any],
+    contract: dict[str, Any] | None,
+    action: str,
+) -> tuple[str, list[str]]:
+    reasons: list[str] = []
+    reasons.append(
+        f"{'PERFECT' if tier == 'perfect' else tier.upper()} hist-win {win:.0f}% "
+        f"(n={n}) on {horizon} quality signals"
+    )
+    reasons.append(_side_reason(right, score, quote))
+    reasons.append(f"Hold window {hp['label']} — EXIT at ~{need_mult:.2f}× premium, stop, or max hold")
+    if row.get("hit_1pct") is not None:
+        reasons.append(f"Underlying strike-rate ≥1%: {float(row['hit_1pct']):.0f}%")
+    if row.get("hit_2pct") is not None:
+        reasons.append(f"Underlying strike-rate ≥2%: {float(row['hit_2pct']):.0f}%")
+    if score.get("quality"):
+        reasons.append("Live quality gate confirmed on scan")
+    if score.get("reasons"):
+        for r in list(score.get("reasons") or [])[:2]:
+            reasons.append(f"Scan: {r}")
+
+    cap_lbl = {
+        "mega_large": "Mega/large-cap liquidity",
+        "mid": "Mid-cap — larger move potential, still optionable",
+        "small": "Small-cap — high beta / wider risk; size carefully",
+        "etf": "Liquid ETF — cleaner tape, lower single-name gap risk",
+    }.get(cap_tier, "Cap tier unknown")
+    reasons.append(cap_lbl)
+
+    window = earn.get("window") or "none"
+    if window == "post_earnings":
+        reasons.append(
+            f"Post-earnings catalyst: {earn.get('label')} — prefer directional continuation "
+            f"{'CALL' if right == 'C' else 'PUT'} after IV crush"
+        )
+    elif window == "pre_earnings":
+        reasons.append(
+            f"Pre-earnings caution: {earn.get('label')} — prefer LEAP DTE; avoid short weekly lottery"
+        )
+    elif window == "earnings_day":
+        reasons.append(f"Earnings day risk: {earn.get('label')}")
+    elif earn.get("next_earnings"):
+        reasons.append(f"Next earnings {earn.get('next_earnings')} (not inside pre/post window)")
+
+    if contract and contract.get("suggested_zone"):
+        reasons.append("Chain quote unavailable — strike/DTE is a suggested zone")
+    if action == "WAIT":
+        reasons.append("Sleeve already has an open flip — WAIT before new ENTRY")
+
+    # One-line headline reason
+    headline_bits = [f"{tier.upper()} {win:.0f}% hist (n={n})", "CALL" if right == "C" else "PUT"]
+    if window == "post_earnings":
+        headline_bits.append("post-earnings continuation")
+    elif window == "pre_earnings":
+        headline_bits.append("pre-earnings LEAP only")
+    if cap_tier in {"mid", "small"}:
+        headline_bits.append(f"{cap_tier}-cap")
+    headline_bits.append(f"hold {hp['label']}")
+    return " · ".join(headline_bits), reasons
+
+
 def build_challenge_board(
     *,
     win_table: dict[str, Any] | None,
@@ -336,6 +442,7 @@ def build_challenge_board(
     flips: int = 12,
     max_tickets: int = 8,
     fetch_contracts: bool = True,
+    fetch_earnings: bool = True,
 ) -> dict[str, Any]:
     quotes = quotes or {}
     aliases = aliases or {}
@@ -367,13 +474,26 @@ def build_challenge_board(
     need_mult = float(primary_path["mult_per_flip"] or 1.8)
 
     eligible = _eligible_rows(win_table)
+    # Prefetch earnings for top candidates (cached; skips network when fetch_earnings=False)
+    earn_syms = [str(r["symbol"]) for r in eligible[: max_tickets + 6]]
+    earn_map = earnings_map_for(
+        earn_syms,
+        aliases=aliases,
+        fetch=fetch_earnings,
+        max_fetch=min(10, max_tickets + 2),
+    )
+
     tickets: list[ChallengeTicket] = []
     chain_fetches = 0
+    earn_boosts: dict[str, int] = {}
 
     for row in eligible[: max_tickets + 6]:
         sym = str(row["symbol"])
         q = quotes.get(sym) or {}
         sc = score_map.get(sym) or {}
+        earn = earn_map.get(sym) or {}
+        earn_boosts[sym] = int(earn.get("boost") or 0)
+        cap_tier = market_cap_tier(sym)
         spot = None
         if q.get("last") is not None:
             spot = float(q["last"])
@@ -384,7 +504,11 @@ def build_challenge_board(
 
         right = _side_from_tape(score=sc, quote=q)
         horizon = str(row.get("horizon") or "swing")
-        hp = hold_period_for(horizon, None)
+        # Pre-earnings / earnings day → force longer-dated LEAP style
+        prefer_leap = bool(earn.get("prefer_leap"))
+        if prefer_leap and horizon == "weekly":
+            horizon = "swing"
+        hp = hold_period_for(horizon, 200 if prefer_leap else None)
 
         open_t = open_map.get((sym, right))
         # Also match opposite-side open → manage that first
@@ -398,33 +522,28 @@ def build_challenge_board(
         contract = None
         if fetch_contracts and spot and spot > 0 and chain_fetches < 4 and not open_t:
             try:
-                if horizon == "weekly":
-                    contract = select_leap_option(
-                        sym,
-                        spot,
-                        right=right,
-                        yahoo_symbol=aliases.get(sym),
-                        min_dte=60,
-                        max_dte=220,
-                        otm_pct_max=6.0,
-                    )
-                else:
-                    contract = select_leap_option(
-                        sym,
-                        spot,
-                        right=right,
-                        yahoo_symbol=aliases.get(sym),
-                        min_dte=120,
-                        max_dte=450,
-                        otm_pct_max=8.0,
-                    )
+                min_dte = 150 if prefer_leap else (60 if horizon == "weekly" else 120)
+                max_dte = 450 if prefer_leap or horizon != "weekly" else 220
+                contract = select_leap_option(
+                    sym,
+                    spot,
+                    right=right,
+                    yahoo_symbol=aliases.get(sym),
+                    min_dte=min_dte,
+                    max_dte=max_dte,
+                    otm_pct_max=8.0 if prefer_leap or horizon != "weekly" else 6.0,
+                )
                 chain_fetches += 1
             except Exception as exc:  # noqa: BLE001
                 logger.debug("challenge contract fetch %s: %s", sym, exc)
                 contract = None
 
         if contract is None and spot and spot > 0:
-            contract = _suggested_zone(spot, horizon, right)
+            zone_hz = "swing" if prefer_leap else horizon
+            contract = _suggested_zone(spot, zone_hz, right)
+            if prefer_leap:
+                contract["dte"] = max(int(contract.get("dte") or 0), 180)
+                contract["expiry"] = f"~{contract['dte']}DTE listed"
             if open_t:
                 # Prefer live open trade contract fields
                 contract = {
@@ -496,24 +615,34 @@ def build_challenge_board(
             if open_t.get("last_action") == "HOLD" and open_t.get("last_action_detail"):
                 status_detail = str(open_t.get("last_action_detail"))
         elif len(open_map) > 0:
-            # Already in another challenge trade
             action = "WAIT"
             status_detail = "WAIT — challenge sleeve already has an open flip (max 1)"
+        elif (earn.get("window") == "earnings_day") and not open_t:
+            action = "WAIT"
+            status_detail = "WAIT — earnings day; skip new long-premium ENTRY"
         elif ask is None:
-            # Still an ENTRY recommendation (strike/DTE zone) until live ask lands
             action = "ENTRY"
             status_detail = "ENTRY — confirm live ask before fill (hold window set)"
+            if earn.get("window") == "pre_earnings":
+                status_detail = "ENTRY (LEAP) — earnings nearing; confirm ask & accept IV risk"
 
-        side_lbl = "CALL" if right == "C" else "PUT"
-        thesis = (
-            f"{'PERFECT' if tier == 'perfect' else tier.upper()} hist · {side_lbl} · "
-            f"{horizon} quality win {win:.0f}% (n={n}). "
-            f"Hold {hp['label']}. Target ≈{need_mult:.2f}× premium then EXIT & roll."
+        recommend_reason, reasons = _build_reasons(
+            tier=tier,
+            win=win,
+            n=n,
+            right=right,
+            horizon=horizon,
+            hp=hp,
+            need_mult=need_mult,
+            score=sc,
+            quote=q,
+            row=row,
+            cap_tier=cap_tier,
+            earn=earn,
+            contract=contract,
+            action=action,
         )
-        if row.get("hit_1pct") is not None:
-            thesis += f" Strike-rate ≥1%: {row['hit_1pct']:.0f}%."
-        if contract and contract.get("suggested_zone"):
-            thesis += " Chain quote unavailable — strike/DTE suggested zone."
+        thesis = recommend_reason + ". " + " ".join(reasons[:3])
 
         tickets.append(
             ChallengeTicket(
@@ -548,19 +677,30 @@ def build_challenge_board(
                 hold_days=hold_days,
                 trade_id=trade_id,
                 thesis=thesis,
+                recommend_reason=recommend_reason,
+                reasons=reasons,
                 certainty_tier=tier,
                 status_detail=status_detail,
+                market_cap_tier=cap_tier,
+                earnings_window=str(earn.get("window") or "none"),
+                earnings_label=str(earn.get("label") or ""),
+                next_earnings=earn.get("next_earnings"),
+                last_earnings=earn.get("last_earnings"),
+                days_to_earnings=earn.get("days_to_earnings"),
+                days_since_earnings=earn.get("days_since_earnings"),
             )
         )
         if len(tickets) >= max_tickets:
             break
 
-    # Rank: EXIT first (manage risk), then ENTRY, HOLD, WAIT; certainty within
+    # Rank: EXIT first, then earnings boost, certainty, hist
     rank_action = {"EXIT": 0, "ENTRY": 1, "HOLD": 2, "WAIT": 3}
     tickets.sort(
         key=lambda t: (
             rank_action.get(t.action, 9),
+            -earn_boosts.get(t.symbol, 0),
             0 if t.certainty_tier == "perfect" else 1 if t.certainty_tier == "elite" else 2,
+            0 if t.market_cap_tier in {"mid", "small"} and t.earnings_window == "post_earnings" else 1,
             -t.hist_win_pct,
             -t.hist_samples,
         )
@@ -594,15 +734,29 @@ def build_challenge_board(
             "exit": sum(1 for t in tickets if t.action == "EXIT"),
             "calls": sum(1 for t in tickets if t.right == "C"),
             "puts": sum(1 for t in tickets if t.right == "P"),
+            "mid_small": sum(1 for t in tickets if t.market_cap_tier in {"mid", "small"}),
+            "pre_earnings": sum(1 for t in tickets if t.earnings_window == "pre_earnings"),
+            "post_earnings": sum(1 for t in tickets if t.earnings_window == "post_earnings"),
         },
         "hold_periods": {
             "weekly": hold_period_for("weekly"),
             "swing": hold_period_for("swing"),
             "leap": hold_period_for("leap", 200),
         },
+        "strategy_notes": {
+            "earnings": (
+                "Prefer post-earnings continuation (IV already crushed) for CALL/PUT swings. "
+                "Pre-earnings: LEAP only / caution — short premium gets crushed into the print."
+            ),
+            "universe": (
+                "Liquid mega + mid/small optionables included when they clear the hist-win gate."
+            ),
+        },
         "rules": [
-            "Swing / LEAP only — calls and puts allowed (side from ensemble + tape).",
+            "Swing / LEAP only — calls and puts (side from ensemble + tape).",
             "Hist-win filter: prefer 100% (n≥3), else ≥80% (n≥5) on weekly/swing quality signals.",
+            "Universe: mega/large + mid/small optionables (IWM sleeve + curated names).",
+            "Earnings: boost post-print continuation; caution/LEAP-only into the print; WAIT on earnings day.",
             "Hold periods: weekly 5–14d · swing 20–60d · LEAP 30–90d — EXIT at target, stop, or max hold.",
             f"Each flip targets ~{primary_path['pct_per_flip']:.0f}% option premium; then EXIT and roll.",
             "Status updates: ENTRY (new), HOLD (open inside window), EXIT (target/stop/time).",
@@ -611,6 +765,7 @@ def build_challenge_board(
         "disclaimer": (
             "No strategy has a guaranteed 100% future win rate. "
             "'Perfect' means the walk-forward sample was 100% on quality signals (often small n). "
-            "Options can expire worthless. Not financial advice."
+            "Earnings moves and IV crush can wipe long premium. Options can expire worthless. "
+            "Not financial advice."
         ),
     }

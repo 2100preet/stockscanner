@@ -127,6 +127,7 @@ def build_win_rate_table(
     cache.parent.mkdir(parents=True, exist_ok=True)
     horizons = horizons or list(HORIZON_FORWARD.keys())
 
+    cached_raw: dict[str, Any] | None = None
     if cache.exists() and not force:
         try:
             raw = json.loads(cache.read_text())
@@ -140,8 +141,18 @@ def build_win_rate_table(
             has_swing = "swing" in sample
             if age_h <= max_age_hours and set(symbols).issubset(have) and has_swing:
                 return raw
+            if age_h <= max_age_hours and has_swing:
+                cached_raw = raw
         except Exception:  # noqa: BLE001
             pass
+
+    # Only compute missing symbols when a fresh-enough cache already exists
+    need = list(symbols)
+    if cached_raw is not None:
+        have = set((cached_raw.get("symbols") or {}).keys())
+        need = [s for s in symbols if s not in have]
+        if not need:
+            return cached_raw
 
     scan_cfg = cfg.get("scan") or {}
     actions_cfg = cfg.get("actions") or {}
@@ -152,12 +163,12 @@ def build_win_rate_table(
     aliases = {str(k).upper(): str(v) for k, v in (cfg.get("symbol_aliases") or {}).items()}
     regime = cfg.get("regime") or {}
 
-    histories = fetch_many(symbols, period="2y", aliases=aliases)
+    histories = fetch_many(need, period="2y", aliases=aliases)
     spy = fetch_history(regime.get("spy", "SPY"), period="2y")
     vix = fetch_history(regime.get("vix", "^VIX"), period="2y", yahoo_symbol=regime.get("vix", "^VIX"))
 
-    out_syms: dict[str, Any] = {}
-    for sym in symbols:
+    out_syms: dict[str, Any] = dict((cached_raw or {}).get("symbols") or {})
+    for sym in need:
         df = histories.get(sym)
         if df is None or df.empty:
             out_syms[sym] = {hz: {"trades": 0, "win_pct": None} for hz in horizons}

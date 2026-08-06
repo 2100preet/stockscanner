@@ -2,11 +2,25 @@
 
 Full market scan via Yahoo is rate-limited; we use a curated liquid set (~S&P 100
 + high-volume growth/ETF names) that covers most optionable names traders care about.
+Includes a mid/small-cap optionable sleeve for the $1k→$1M challenge.
 """
 
 from __future__ import annotations
 
 from typing import Any
+
+# Liquid mid / small-cap optionables (challenge + screener breadth)
+MID_SMALL_UNIVERSE: list[str] = [
+    # Mid-cap growth / thematic
+    "DKNG", "CELH", "PATH", "IOT", "DUOL", "GTLB", "CFLT", "BILL", "TOST", "APP",
+    "TTD", "MDB", "ENPH", "SEDG", "FSLR", "RUN", "CHPT", "BLNK", "WOLF", "ON",
+    "MRVL", "WDC", "STX", "ENTG", "TER", "KLAC", "LRCX", "CDNS", "SNPS", "ANET",
+    # Small / high-beta optionables
+    "IONQ", "RGTI", "QBTS", "ASTS", "JOBY", "RKLB", "LUNR", "OKLO", "SMR", "BE",
+    "HIMS", "OSCR", "CLOV", "RXRX", "CRSP", "NTLA", "BEAM", "DNA", "TEM", "TDOC",
+    "SOUN", "BBAI", "AI", "PLUG", "FCEL", "SPCE", "OPEN", "CVNA", "W", "CHWY",
+    "PTON", "BYND", "SPWR", "LAZR", "VLDR", "NKLA", "GOEV", "FFIE",
+]
 
 # S&P 100-ish + liquid optionables / ETFs commonly on Signa/Intellectia screens
 LIQUID_UNIVERSE: list[str] = [
@@ -29,7 +43,31 @@ LIQUID_UNIVERSE: list[str] = [
     # Energy / cyclicals / others
     "COP", "SLB", "OXY", "HAL", "F", "GM", "NKE", "LULU", "DE", "HON",
     "UNP", "RTX", "LMT", "NOC", "SPGI", "CME", "ICE", "SCHW", "C", "USB",
+    # Mid / small sleeve
+    *MID_SMALL_UNIVERSE,
 ]
+
+_ETF = {
+    "SPY", "QQQ", "IWM", "DIA", "XLK", "XLF", "XLE", "XBI", "SMH", "SOXX",
+    "GLD", "SLV", "TLT", "HYG", "EEM", "USO", "UNG",
+}
+
+# Explicit small-cap sleeve (rest of MID_SMALL_UNIVERSE treated as mid)
+_SMALL = {
+    "IONQ", "RGTI", "QBTS", "ASTS", "JOBY", "RKLB", "LUNR", "OKLO", "SMR", "BE",
+    "CLOV", "RXRX", "CRSP", "NTLA", "BEAM", "DNA", "TEM", "TDOC",
+    "SOUN", "BBAI", "AI", "PLUG", "FCEL", "SPCE", "OPEN", "PTON", "BYND",
+    "SPWR", "LAZR", "VLDR", "NKLA", "GOEV", "FFIE", "CHPT", "BLNK", "WOLF",
+}
+
+_MID = {
+    "COIN", "MSTR", "HOOD", "LYFT", "SQ", "NET", "DDOG", "MDB", "ZS", "OKTA",
+    "ROKU", "SNAP", "PINS", "RBLX", "U", "SOFI", "AFRM", "UPST", "RIVN", "LCID",
+    "NIO", "MARA", "RIOT", "SMCI", "HPE", "PDD", "JD", "SE", "SLB", "OXY", "HAL",
+    "F", "GM", "DKNG", "CELH", "PATH", "IOT", "DUOL", "GTLB", "CFLT", "BILL",
+    "TOST", "APP", "TTD", "ENPH", "SEDG", "FSLR", "RUN", "ON", "WDC", "STX",
+    "ENTG", "TER", "HIMS", "OSCR", "CVNA", "W", "CHWY",
+} | (set(MID_SMALL_UNIVERSE) - _SMALL)
 
 # Focus list stays smaller for 0DTE options chains (rate limits)
 FOCUS_DEFAULT: list[str] = [
@@ -41,15 +79,38 @@ FOCUS_DEFAULT: list[str] = [
 ]
 
 
-def liquid_universe() -> list[str]:
+def _dedupe(symbols: list[str]) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
-    for s in LIQUID_UNIVERSE:
-        u = s.upper()
-        if u not in seen:
+    for s in symbols:
+        u = str(s).replace(".", "-").upper()
+        if u and u not in seen:
             seen.add(u)
             out.append(u)
     return out
+
+
+def mid_small_universe() -> list[str]:
+    return _dedupe(list(MID_SMALL_UNIVERSE))
+
+
+def liquid_universe() -> list[str]:
+    return _dedupe(list(LIQUID_UNIVERSE))
+
+
+def market_cap_tier(symbol: str) -> str:
+    """Return etf | mega_large | mid | small | unknown for challenge reasons."""
+    s = str(symbol).replace(".", "-").upper()
+    if s in _ETF:
+        return "etf"
+    if s in _SMALL:
+        return "small"
+    if s in _MID:
+        return "mid"
+    # Default known liquid names → mega/large
+    if s in set(LIQUID_UNIVERSE) - set(MID_SMALL_UNIVERSE):
+        return "mega_large"
+    return "unknown"
 
 
 def resolve_scan_universe(cfg: dict[str, Any], *, mode: str | None = None) -> list[str]:
@@ -72,11 +133,5 @@ def resolve_scan_universe(cfg: dict[str, Any], *, mode: str | None = None) -> li
     if mode in ("liquid", "screener"):
         return liquid
     if mode == "all":
-        seen: set[str] = set()
-        out: list[str] = []
-        for s in focus + liquid:
-            if s not in seen:
-                seen.add(s)
-                out.append(s)
-        return out
+        return _dedupe(focus + liquid)
     return focus

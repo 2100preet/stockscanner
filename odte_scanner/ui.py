@@ -214,9 +214,11 @@ PAGE = r"""
     <section class="tabpane" id="tab-challenge">
       <h2>$1,000 → $1,000,000 challenge</h2>
       <p class="lede">
-        Swing / LEAP <strong>calls &amp; puts</strong> — no 0DTE lottery. Sure-shot hist filter
-        (prefer <strong>100% hist win</strong>, else ≥80% n≥5). Status updates: <strong>ENTRY · HOLD · EXIT</strong>
-        with hold periods. Compound ~10–15 premium flips. <em>Hist 100% ≠ guaranteed future wins.</em>
+        Swing / LEAP <strong>calls &amp; puts</strong> across mega + <strong>mid/small</strong> optionables.
+        Sure-shot hist filter (prefer <strong>100% hist win</strong>, else ≥80% n≥5).
+        Status: <strong>ENTRY · HOLD · EXIT</strong> with hold periods. Earnings bias:
+        prefer <strong>post-print continuation</strong>; caution/LEAP into the print.
+        <em>Hist 100% ≠ guaranteed future wins.</em>
       </p>
       <div class="metric-row" id="challengeMetrics"></div>
       <div class="cards" id="challengePrimary"></div>
@@ -514,8 +516,23 @@ PAGE = r"""
         m("Need / flip", path.pct_per_flip==null?"—":`+${fmt(path.pct_per_flip,0)}%`, "up"),
         m("ENTRY / HOLD / EXIT", `${c.entry||0} / ${c.hold||0} / ${c.exit||0}`),
         m("Calls / Puts", `${c.calls||0} / ${c.puts||0}`),
+        m("Mid/Small", `${c.mid_small||0}`),
+        m("Pre / Post earn", `${c.pre_earnings||0} / ${c.post_earnings||0}`),
         m("Closed flips", `${book.flips_closed||0} (W${book.wins||0}/L${book.losses||0})`),
       ].join("");
+
+      const earnBadge = (t) => {
+        const w = t.earnings_window||"none";
+        if (w==="post_earnings") return `<span class="badge buy">POST-EARN</span>`;
+        if (w==="pre_earnings") return `<span class="badge wait">PRE-EARN</span>`;
+        if (w==="earnings_day") return `<span class="badge sell">EARN DAY</span>`;
+        return `<span class="badge skip">—</span>`;
+      };
+      const reasonList = (t) => {
+        const rs = t.reasons||[];
+        if (!rs.length) return t.recommend_reason||t.thesis||"";
+        return `<div class="why"><strong>${t.recommend_reason||""}</strong><ul style="margin:.25rem 0 0;padding-left:1.1rem">${rs.slice(0,6).map(r=>`<li>${r}</li>`).join("")}</ul></div>`;
+      };
 
       const t0 = ch.primary;
       if (primaryEl) {
@@ -526,7 +543,7 @@ PAGE = r"""
           const kind = act==="EXIT"?"short":(act==="ENTRY"||act==="HOLD"?"long":"wait");
           primaryEl.innerHTML = `<article class="action-card ${kind}">
             <div class="ac-top">
-              <div class="ac-sym">${t0.symbol} <span class="tag">${t0.right==="P"?"PUT":"CALL"}</span></div>
+              <div class="ac-sym">${t0.symbol} <span class="tag">${t0.right==="P"?"PUT":"CALL"}</span> <span class="tag">${(t0.market_cap_tier||"").replace("_","/")}</span> ${earnBadge(t0)}</div>
               <div class="ac-dir ${kind}">${act} · ${tier.toUpperCase()}</div>
             </div>
             <div class="ac-conf">Hist win ${fmt(t0.hist_win_pct,0)}% · n=${t0.hist_samples} · hold ${t0.hold_period_label||"—"}</div>
@@ -537,7 +554,8 @@ PAGE = r"""
               <div>Ask → target<strong>${t0.ask==null?"—":"$"+fmt(t0.ask,2)} → ${t0.target_ask==null?"—":"$"+fmt(t0.target_ask,2)}</strong></div>
               <div>Hold days<strong>${t0.hold_days==null?"—":fmt(t0.hold_days,1)+"d"} / max ${t0.hold_max_days||"—"}d</strong></div>
             </div>
-            <p class="why" style="margin:.55rem 0 0">${t0.status_detail||""} · ${t0.thesis||""}</p>
+            <p class="why" style="margin:.55rem 0 0">${t0.status_detail||""}</p>
+            ${reasonList(t0)}
           </article>`;
         }
       }
@@ -547,19 +565,18 @@ PAGE = r"""
         statusEl.innerHTML = !rows.length
           ? `<div class="empty">No ENTRY/HOLD/EXIT updates yet.</div>`
           : `<table><thead><tr>
-              <th>Status</th><th>Side</th><th>Symbol</th><th>Strike</th><th>Expiry</th><th>Hold</th><th>Ask/Bid</th><th>Detail</th>
+              <th>Status</th><th>Side</th><th>Symbol</th><th>Earn</th><th>Strike</th><th>Hold</th><th>Why recommended</th>
             </tr></thead><tbody>${rows.map(t=>{
               const a=(t.action||"WAIT");
               const cls=a==="EXIT"?"sell":(a==="ENTRY"?"buy":(a==="HOLD"?"hold":"wait"));
               return `<tr>
                 <td><span class="badge ${cls}">${a}</span></td>
                 <td class="mono">${t.right==="P"?"PUT":"CALL"}</td>
-                <td><strong>${t.symbol}</strong></td>
-                <td class="mono">${t.strike==null?"—":fmt(t.strike,2)}</td>
-                <td class="mono">${t.expiry||"—"}</td>
+                <td><strong>${t.symbol}</strong> <span class="tag">${(t.market_cap_tier||"").replace("_","/")}</span></td>
+                <td>${earnBadge(t)}</td>
+                <td class="mono">${t.strike==null?"—":fmt(t.strike,2)} · ${t.expiry||"—"}</td>
                 <td class="mono">${t.hold_period_label||"—"}${t.hold_days!=null?` · ${fmt(t.hold_days,1)}d held`:""}</td>
-                <td class="mono">${fmt(t.ask,2)} / ${fmt(t.bid,2)}</td>
-                <td class="why">${t.status_detail||t.thesis||""}</td>
+                <td class="why">${t.recommend_reason||t.status_detail||t.thesis||""}</td>
               </tr>`;
             }).join("")}</tbody></table>`;
       }
@@ -622,7 +639,7 @@ PAGE = r"""
       if (ticketsEl) {
         if (!tickets.length) ticketsEl.innerHTML = `<div class="empty">No tickets.</div>`;
         else ticketsEl.innerHTML = `<table><thead><tr>
-          <th>Status</th><th>Tier</th><th>Side</th><th>Symbol</th><th>Hist</th><th>n</th><th>Strike</th><th>Expiry</th><th>Hold</th><th>Ask→tgt</th><th>Update</th>
+          <th>Status</th><th>Tier</th><th>Side</th><th>Symbol</th><th>Cap</th><th>Earn</th><th>Hist</th><th>Hold</th><th>Ask→tgt</th><th>Reason</th>
         </tr></thead><tbody>${tickets.map(t=>{
           const a=t.action||"WAIT";
           const cls=a==="EXIT"?"sell":(a==="ENTRY"?"buy":(a==="HOLD"?"hold":"wait"));
@@ -631,13 +648,12 @@ PAGE = r"""
           <td><span class="badge ${t.certainty_tier==="perfect"?"golden":(t.certainty_tier==="elite"?"unusual":"aggressive")}">${(t.certainty_tier||"").toUpperCase()}</span></td>
           <td class="mono">${t.right==="P"?"PUT":"CALL"}</td>
           <td><strong>${t.symbol}</strong></td>
-          <td class="mono up"><strong>${fmt(t.hist_win_pct,0)}%</strong></td>
-          <td class="mono">${t.hist_samples}</td>
-          <td class="mono">${t.strike==null?"—":fmt(t.strike,2)}</td>
-          <td class="mono">${t.expiry||"—"}</td>
+          <td class="mono">${(t.market_cap_tier||"—").replace("_","/")}</td>
+          <td>${earnBadge(t)}</td>
+          <td class="mono up"><strong>${fmt(t.hist_win_pct,0)}%</strong> <span class="why">n=${t.hist_samples}</span></td>
           <td class="mono">${t.hold_period_label||"—"}</td>
           <td class="mono">${t.ask==null?"—":"$"+fmt(t.ask,2)} → ${t.target_ask==null?"—":"$"+fmt(t.target_ask,2)}</td>
-          <td class="why">${t.status_detail||""}</td>
+          <td class="why">${t.recommend_reason||t.status_detail||""}${(t.reasons&&t.reasons.length)?`<div style="margin-top:.2rem;color:var(--muted)">${t.reasons.slice(0,3).join(" · ")}</div>`:""}</td>
         </tr>`;
         }).join("")}</tbody></table>`;
       }
@@ -1262,6 +1278,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 flips=int(actions_cfg.get("challenge_flips", 12)),
                 max_tickets=int(actions_cfg.get("challenge_max_tickets", 8)),
                 fetch_contracts=bool(actions_cfg.get("challenge_fetch_contracts", True)),
+                fetch_earnings=bool(actions_cfg.get("challenge_fetch_earnings", True)),
             )
             sync = tracker.sync_from_tickets(
                 challenge.get("tickets") or [],
@@ -1284,6 +1301,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 flips=int(actions_cfg.get("challenge_flips", 12)),
                 max_tickets=int(actions_cfg.get("challenge_max_tickets", 8)),
                 fetch_contracts=False,  # keep second pass cheap
+                fetch_earnings=False,  # reuse cache from first pass
             )
             challenge["sync"] = sync
             challenge["book"] = tracker.book.to_dict()

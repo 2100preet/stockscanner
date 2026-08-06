@@ -75,6 +75,7 @@ def test_challenge_board_picks_perfect_hist():
         ],
         quotes={"JPM": {"last": 200}, "SLV": {"last": 28}},
         fetch_contracts=False,
+        fetch_earnings=False,
         flips=12,
     )
     assert board["path"]["flips"] == 12
@@ -92,9 +93,13 @@ def test_challenge_board_picks_perfect_hist():
         assert t["hold_period_label"]
         assert t["hold_min_days"] > 0
         assert t["hold_max_days"] >= t["hold_min_days"]
+        assert t["recommend_reason"]
+        assert isinstance(t["reasons"], list) and len(t["reasons"]) >= 3
+        assert t["market_cap_tier"]
     assert "hold_periods" in board
     assert board["counts"]["entry"] + board["counts"]["hold"] + board["counts"]["exit"] >= 1
     assert board["counts"]["calls"] + board["counts"]["puts"] == board["counts"]["tickets"]
+    assert board["primary"]["recommend_reason"]
 
 
 def test_challenge_board_put_side_and_hold_status():
@@ -125,14 +130,47 @@ def test_challenge_board_put_side_and_hold_status():
         ],
         quotes={"XOM": {"last": 110, "mom_5m_pct": -0.4, "session_change_pct": -1.8}},
         fetch_contracts=False,
+        fetch_earnings=False,
         flips=12,
     )
     assert board["tickets"]
     t0 = board["tickets"][0]
     assert t0["right"] == "P"
     assert t0["action"] == "ENTRY"
-    assert "PUT" in t0["thesis"]
+    assert "PUT" in t0["recommend_reason"]
+    assert any("PUT" in r or "tape" in r for r in t0["reasons"])
     assert t0["hold_period_label"]
+    assert t0["market_cap_tier"] == "mega_large"
+
+
+def test_challenge_board_midcap_reasons():
+    win_table = {
+        "symbols": {
+            "DKNG": {
+                "swing": {
+                    "win_pct": 100.0,
+                    "trades": 5,
+                    "wins": 5,
+                    "hit_1pct": 80.0,
+                    "hit_2pct": 60.0,
+                }
+            }
+        }
+    }
+    board = build_challenge_board(
+        win_table=win_table,
+        scores=[
+            {"symbol": "DKNG", "horizon": "swing", "ensemble_score": 74, "quality": True, "last_price": 40}
+        ],
+        quotes={"DKNG": {"last": 40, "mom_5m_pct": 0.2}},
+        fetch_contracts=False,
+        fetch_earnings=False,
+        flips=12,
+    )
+    t0 = board["tickets"][0]
+    assert t0["symbol"] == "DKNG"
+    assert t0["market_cap_tier"] == "mid"
+    assert any("Mid-cap" in r for r in t0["reasons"])
 
 
 def test_challenge_board_hold_and_exit_from_open_trade(tmp_path):
@@ -171,6 +209,7 @@ def test_challenge_board_hold_and_exit_from_open_trade(tmp_path):
         quotes={"AAPL": {"last": 190}},
         open_trades=open_trades,
         fetch_contracts=False,
+        fetch_earnings=False,
         flips=12,
     )
     t0 = board["primary"]

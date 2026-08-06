@@ -213,10 +213,13 @@ def run_scan(
     try:
         from odte_scanner.backtest.win_rates import build_win_rate_table
 
+        from odte_scanner.data.universe import mid_small_universe
+
         wr_syms = sorted(
             {c.symbol for c in top}
             | {c["symbol"] for c in swing_cards[:8]}
             | set(focus[:15])
+            | set(mid_small_universe()[:10])  # challenge mid/small hist breadth
         )
         win_table = build_win_rate_table(wr_syms, config_path=config_path)
         report["win_rates"] = win_table
