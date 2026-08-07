@@ -1296,8 +1296,16 @@ PAGE = r"""
     document.getElementById("btnRefresh").onclick = loadAll;
     document.getElementById("btnScan").onclick = () => runScan("focus");
     document.getElementById("btnScanWide").onclick = () => runScan("liquid");
+    let _loading = false;
+    const _origLoad = loadAll;
+    loadAll = async function() {
+      if (_loading) return;
+      _loading = true;
+      try { await _origLoad(); } finally { _loading = false; }
+    };
     loadAll();
-    setInterval(loadAll, 15000);
+    // Snapshot is expensive (Yahoo); refresh once a minute, never overlap
+    setInterval(loadAll, 60000);
   </script>
 </body>
 </html>
@@ -1374,16 +1382,13 @@ def create_app(config_path: str | None = None) -> Flask:
                 win_table = cached_wr
         except Exception:  # noqa: BLE001
             pass
-        if syms and (
-            not win_table
-            or not set(syms).issubset(set((win_table.get("symbols") or {}).keys()))
-            or "swing" not in next(iter((win_table.get("symbols") or {}).values()), {})
-        ):
+        # Prefer scan/disk win rates — rebuilding here blocks the UI for minutes
+        if not win_table:
             try:
-                win_table = build_win_rate_table(syms[:20], config_path=cfg_path)
+                win_table = load_win_rate_table() or {}
             except Exception as exc:  # noqa: BLE001
                 logger.warning("win rates unavailable: %s", exc)
-                win_table = win_table or {}
+                win_table = {}
 
         # Challenge-eligible + DRAM/memory sleeve need live/cache quotes (often outside focus)
         challenge_syms: list[str] = []
@@ -1395,18 +1400,19 @@ def create_app(config_path: str | None = None) -> Flask:
             # Only pull challenge/DRAM live quotes when we already have scan scores —
             # otherwise empty first paint waits minutes on Yahoo and the UI aborts.
             has_scan_scores = bool(scan.get("scores"))
+            # Cap live quote fan-out — full challenge/DRAM sleeves make snapshot >3 min
             challenge_syms = [
                 str(r["symbol"])
-                for r in _eligible_rows(win_table if isinstance(win_table, dict) else None)[:14]
+                for r in _eligible_rows(win_table if isinstance(win_table, dict) else None)[:6]
             ] if has_scan_scores else []
-            dram_syms = dram_memory_universe()[:16] if has_scan_scores else []
+            dram_syms = dram_memory_universe()[:4] if has_scan_scores else []
             # Aliases for full liquid universe (earnings/volume board — no extra quotes)
             for s in liquid_universe():
                 aliases.setdefault(s, resolve_yahoo_symbol(s, cfg))
         except Exception:  # noqa: BLE001
             challenge_syms = []
             dram_syms = []
-        quote_syms = sorted(set(syms[:20] + challenge_syms + dram_syms))
+        quote_syms = sorted(set(syms[:8]))  # keep snapshot interactive; skip DRAM/challenge fan-out
         for s in quote_syms:
             aliases.setdefault(s, resolve_yahoo_symbol(s, cfg))
 
@@ -1421,12 +1427,10 @@ def create_app(config_path: str | None = None) -> Flask:
         refreshed: list[dict] = []
 
         def _refresh(item: dict) -> dict:
+            # Use scan-time option fields; live chain refresh is too slow for UI paint
+            out = dict(item)
+            out["quote_stale"] = True
             sym = str(item.get("symbol"))
-            try:
-                out = refresh_candidate_quote(item, yahoo_symbol=aliases.get(sym))
-            except Exception:  # noqa: BLE001
-                out = dict(item)
-                out["quote_stale"] = True
             q = quotes.get(sym)
             if q:
                 out["live_change_pct"] = q.get("session_change_pct", q.get("change_pct"))
@@ -1507,7 +1511,7 @@ def create_app(config_path: str | None = None) -> Flask:
             scores=scan.get("scores") or [],
             quotes=quotes,
             aliases=aliases,
-            enrich_live=True,
+            enrich_live=False,  # live option enrich is too slow for interactive snapshot
             per_symbol=2,
             max_total=24,
         )
@@ -1555,6 +1559,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 lottery=lottery,
                 max_symbols=int(actions_cfg.get("echo_max_symbols", 6)),
                 max_dte=int((cfg.get("options") or {}).get("max_dte", 5)),
+                fetch_ladders=False,  # Yahoo ladders block snapshot for minutes
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("echo board unavailable: %s", exc)
@@ -1616,10 +1621,11 @@ def create_app(config_path: str | None = None) -> Flask:
                 target_usd=float(actions_cfg.get("challenge_target_usd", 1_000_000)),
                 flips=int(actions_cfg.get("challenge_flips", 12)),
                 max_tickets=int(actions_cfg.get("challenge_max_tickets", 8)),
-                fetch_contracts=bool(actions_cfg.get("challenge_fetch_contracts", True)),
-                fetch_earnings=bool(actions_cfg.get("challenge_fetch_earnings", True)),
+                # Snapshot must stay interactive — use disk cache only (no Yahoo fan-out)
+                fetch_contracts=False,
+                fetch_earnings=False,
                 earnings_max_fetch=int(actions_cfg.get("challenge_earnings_max_fetch", 36)),
-                fetch_walls=bool(actions_cfg.get("challenge_fetch_walls", True)),
+                fetch_walls=False,
                 wall_buffer_usd=float(actions_cfg.get("wall_exit_buffer_usd", 0.10)),
                 walls_map=echo_walls,
             )
@@ -1637,7 +1643,7 @@ def create_app(config_path: str | None = None) -> Flask:
             )
             challenge["sync"] = sync
             challenge["book"] = sync.get("book") or tracker.book.to_dict()
-            # Rebuild statuses after sync; keep live contract quotes from first pass
+            # Rebuild statuses after sync; keep prior contract fields when present
             challenge = build_challenge_board(
                 win_table=win_table if isinstance(win_table, dict) else None,
                 scores=scan.get("scores") or [],
@@ -1648,7 +1654,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 target_usd=float(actions_cfg.get("challenge_target_usd", 1_000_000)),
                 flips=int(actions_cfg.get("challenge_flips", 12)),
                 max_tickets=int(actions_cfg.get("challenge_max_tickets", 8)),
-                fetch_contracts=True,  # disk-cached chains — preserve strike/expiry/ask
+                fetch_contracts=False,
                 fetch_earnings=False,
                 earnings_max_fetch=int(actions_cfg.get("challenge_earnings_max_fetch", 36)),
                 fetch_walls=False,
@@ -1733,7 +1739,8 @@ def create_app(config_path: str | None = None) -> Flask:
                 scores=scan.get("scores") or [],
                 quotes=quotes,
                 aliases=aliases,
-                fetch_earnings=bool(actions_cfg.get("challenge_fetch_earnings", True)),
+                # Earnings cache only — live Yahoo warm on every snapshot starves the UI
+                fetch_earnings=False,
                 earnings_max_fetch=int(
                     actions_cfg.get(
                         "market_board_earnings_max_fetch",
