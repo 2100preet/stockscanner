@@ -1236,12 +1236,21 @@ PAGE = r"""
       note.textContent = "Refreshing…";
       try {
         const ctrl = new AbortController();
-        const t = setTimeout(() => ctrl.abort(), 50000);
+        // Snapshot can take 1–3 min (Yahoo quotes + earnings warm); don't abort early
+        const t = setTimeout(() => ctrl.abort(), 180000);
         const res = await fetch("/api/snapshot", { signal: ctrl.signal });
         clearTimeout(t);
+        if (!res.ok) throw new Error("HTTP " + res.status);
         DATA = await res.json();
         paint();
-        note.style.display = "none";
+        const n = (DATA.scores||[]).length;
+        const focus = DATA.focus_size ?? 0;
+        if (!n && !focus) {
+          note.style.display = "block";
+          note.textContent = "No scan yet — tap Scan focus (or Scan liquid) to load data.";
+        } else {
+          note.style.display = "none";
+        }
       } catch (e) {
         note.textContent = "Load failed: " + (e.message||e);
       }
@@ -1252,9 +1261,31 @@ PAGE = r"""
       btn.disabled = true;
       const label = btn.textContent;
       btn.textContent = "Scanning…";
+      const note = document.getElementById("loadNote");
+      note.style.display = "block";
       try {
-        await fetch("/api/scan?mode=" + encodeURIComponent(mode||"focus"), { method: "POST" });
-        await new Promise(r => setTimeout(r, mode==="liquid" ? 20000 : 10000));
+        const start = await fetch("/api/scan?mode=" + encodeURIComponent(mode||"focus"), { method: "POST" });
+        const body = await start.json().catch(() => ({}));
+        if (!start.ok) {
+          note.textContent = body.error || ("Scan failed HTTP " + start.status);
+          return;
+        }
+        // Poll until latest scan appears / scan lock frees (liquid can take several minutes)
+        const maxWaitMs = mode==="liquid" ? 12*60*1000 : 6*60*1000;
+        const startedAt = Date.now();
+        let ready = false;
+        while (Date.now() - startedAt < maxWaitMs) {
+          const elapsed = Math.round((Date.now() - startedAt)/1000);
+          note.textContent = `Scanning ${mode||"focus"}… ${elapsed}s (Yahoo can be slow)`;
+          await new Promise(r => setTimeout(r, 5000));
+          try {
+            const st = await fetch("/api/scan_status");
+            const info = await st.json();
+            if (info && info.ready) { ready = true; break; }
+            if (info && info.running === false && info.has_scan) { ready = true; break; }
+          } catch (_) { /* keep waiting */ }
+        }
+        if (!ready) note.textContent = "Scan still running — tap Reload in a minute.";
         await loadAll();
       } finally {
         btn.disabled = false;
@@ -1361,11 +1392,14 @@ def create_app(config_path: str | None = None) -> Flask:
             from odte_scanner.challenge.million import _eligible_rows
             from odte_scanner.data.universe import dram_memory_universe, liquid_universe
 
+            # Only pull challenge/DRAM live quotes when we already have scan scores —
+            # otherwise empty first paint waits minutes on Yahoo and the UI aborts.
+            has_scan_scores = bool(scan.get("scores"))
             challenge_syms = [
                 str(r["symbol"])
                 for r in _eligible_rows(win_table if isinstance(win_table, dict) else None)[:14]
-            ]
-            dram_syms = dram_memory_universe()[:16]
+            ] if has_scan_scores else []
+            dram_syms = dram_memory_universe()[:16] if has_scan_scores else []
             # Aliases for full liquid universe (earnings/volume board — no extra quotes)
             for s in liquid_universe():
                 aliases.setdefault(s, resolve_yahoo_symbol(s, cfg))
@@ -1940,6 +1974,21 @@ def create_app(config_path: str | None = None) -> Flask:
         if not out:
             return jsonify({"ok": False, "error": "exit failed"}), 409
         return jsonify({"ok": True, "trade": out.to_dict(), "book": tracker.book.to_dict()})
+
+    @app.get("/api/scan_status")
+    def scan_status():
+        latest = ROOT / "outputs" / "latest_scan.json"
+        has_scan = latest.exists() and latest.stat().st_size > 50
+        mtime = latest.stat().st_mtime if has_scan else None
+        running = scan_lock.locked()
+        return jsonify(
+            {
+                "running": running,
+                "has_scan": has_scan,
+                "ready": has_scan and not running,
+                "latest_mtime": mtime,
+            }
+        )
 
     @app.post("/api/scan")
     def trigger_scan():
