@@ -170,6 +170,10 @@ PAGE = r"""
       <p class="lede">Gap-and-go, breakout, volume thrust, VIX regime. Win% = next session green after quality signal. Strike rate = ≥1% / ≥2% underlying rip rate.</p>
       <div class="cards" id="cards0dte"></div>
       <div class="panel"><div id="table0dte" class="empty"></div></div>
+      <div class="panel">
+        <h2>Recommendation log — 0DTE entry / exit / P&amp;L</h2>
+        <div id="odteRecLog" class="empty">—</div>
+      </div>
     </section>
 
     <section class="tabpane" id="tab-explosive">
@@ -193,6 +197,13 @@ PAGE = r"""
         <div id="lotteryWait" class="empty">—</div>
       </div>
       <div class="panel">
+        <h2>Recommendation log — entry / exit / P&amp;L</h2>
+        <p class="lede" style="margin-top:0;font-size:.76rem">
+          Persistent history of lottery BUY NOW / SELL NOW. Yesterday’s picks stay here even when they drop off the live board.
+        </p>
+        <div id="lotteryRecLog" class="empty">—</div>
+      </div>
+      <div class="panel">
         <h2>Convexity candidates (raw scan)</h2>
         <div id="explosiveTable" class="empty">Run a scan to populate explosive tickets.</div>
       </div>
@@ -203,6 +214,10 @@ PAGE = r"""
       <p class="lede">EMA stack, MACD, RS, pullback entries. Win% ≈ 5-session forward return.</p>
       <div class="cards" id="cardsWeekly"></div>
       <div class="panel"><div id="tableWeekly" class="empty"></div></div>
+      <div class="panel">
+        <h2>Recommendation log — weekly entry / exit / P&amp;L</h2>
+        <div id="weeklyRecLog" class="empty">—</div>
+      </div>
     </section>
 
     <section class="tabpane" id="tab-swing">
@@ -213,6 +228,10 @@ PAGE = r"""
       <div class="panel">
         <h2>Earnings near you — today / this week / next week</h2>
         <div id="swingEarningsWatch" class="empty">—</div>
+      </div>
+      <div class="panel">
+        <h2>Recommendation log — swing entry / exit / P&amp;L</h2>
+        <div id="swingRecLog" class="empty">—</div>
       </div>
     </section>
 
@@ -259,6 +278,14 @@ PAGE = r"""
       <div class="panel">
         <h2>Recommended tickets — side · strike · expiry · hold · status</h2>
         <div id="challengeTickets" class="empty">—</div>
+      </div>
+      <div class="panel">
+        <h2>Recommendation log — entry / exit / P&amp;L</h2>
+        <p class="lede" style="margin-top:0;font-size:.76rem">
+          Keeps challenge ENTRY / EXIT history even when a name drops off today’s ticket list
+          (rank / hist-win / liquidity shifts). Open = still recommended or waiting for EXIT.
+        </p>
+        <div id="challengeRecLog" class="empty">—</div>
       </div>
       <p class="lede" id="challengeDisclaimer" style="font-size:.72rem"></p>
     </section>
@@ -327,7 +354,20 @@ PAGE = r"""
 
     <section class="tabpane" id="tab-journal">
       <h2>Journal &amp; insights</h2>
-      <div id="journal" class="empty">No journal trades yet.</div>
+      <div class="panel">
+        <h2>Paper journal (auto BUY/SELL NOW fills)</h2>
+        <div id="journal" class="empty">No journal trades yet.</div>
+      </div>
+      <div class="panel">
+        <h2>Recommendation logger — all sections</h2>
+        <p class="lede" style="margin-top:0;font-size:.76rem">
+          Cross-desk history: lottery · challenge · 0DTE · weekly · swing.
+          Records recommended entry time/price and exit + estimated P&amp;L (1 contract).
+          Names stay logged after they leave today’s live board.
+        </p>
+        <div class="metric-row" id="recLogMetrics"></div>
+        <div id="recLogAll" class="empty">—</div>
+      </div>
     </section>
 
     <footer>
@@ -481,6 +521,77 @@ PAGE = r"""
       }).join("")}</tbody></table>`;
     }
 
+    function renderRecLog(elId, board, emptyMsg) {
+      const el = document.getElementById(elId);
+      if (!el) return;
+      const open = (board && board.open_recs) || [];
+      const closed = (board && board.closed_recs) || [];
+      if (!open.length && !closed.length) {
+        el.innerHTML = `<div class="empty">${emptyMsg||"No recommendations logged yet."}</div>`;
+        return;
+      }
+      const rowOpen = (r) => `<tr>
+        <td><strong>${r.symbol}</strong> <span class="tag">${r.right||"C"}</span>
+          ${r.on_board?"":'<span class="badge wait">OFF BOARD</span>'}</td>
+        <td class="mono">${r.open_action||"ENTRY"}</td>
+        <td class="mono">${(r.recommended_at||"").slice(0,16)}</td>
+        <td class="mono">${r.entry_price==null?"—":"$"+fmt(r.entry_price,2)}</td>
+        <td class="mono">${(r.last_recommended_at||"").slice(0,16)}</td>
+        <td class="why">${r.headline||r.reason||""}</td>
+      </tr>`;
+      const rowClosed = (r) => `<tr>
+        <td><strong>${r.symbol}</strong> <span class="tag">${r.right||"C"}</span></td>
+        <td class="mono">${(r.recommended_at||"").slice(0,10)}→${(r.closed_at||"").slice(0,10)}</td>
+        <td class="mono">${r.entry_price==null?"—":"$"+fmt(r.entry_price,2)}→${r.exit_price==null?"—":"$"+fmt(r.exit_price,2)}</td>
+        <td class="mono ${pctClass(r.profit_pct)}"><strong>${r.profit_pct==null?"—":fmt(r.profit_pct,1)+"%"}</strong></td>
+        <td class="mono ${pctClass(r.pnl_usd)}">${r.pnl_usd==null?"—":"$"+fmt(r.pnl_usd,2)}</td>
+        <td class="why">${r.close_action||"EXIT"} · ${r.exit_reason||r.reason||""}</td>
+      </tr>`;
+      let html = "";
+      if (open.length) {
+        html += `<div class="status" style="margin:.2rem 0">OPEN / STILL TRACKING (${open.length})</div>
+          <table><thead><tr>
+            <th>Symbol</th><th>Action</th><th>First entry</th><th>Entry $</th><th>Last seen</th><th>Why</th>
+          </tr></thead><tbody>${open.map(rowOpen).join("")}</tbody></table>`;
+      }
+      if (closed.length) {
+        html += `<div class="status" style="margin:.8rem 0 .2rem">CLOSED — EXIT / P&amp;L (${closed.length})</div>
+          <table><thead><tr>
+            <th>Symbol</th><th>In→Out</th><th>Prices</th><th>Profit%</th><th>P&amp;L</th><th>Exit</th>
+          </tr></thead><tbody>${closed.map(rowClosed).join("")}</tbody></table>`;
+      }
+      el.innerHTML = html;
+    }
+
+    function renderRecLogAll(rec) {
+      const metrics = document.getElementById("recLogMetrics");
+      const allEl = document.getElementById("recLogAll");
+      if (!rec) {
+        if (allEl) allEl.innerHTML = `<div class="empty">Recommendation log empty.</div>`;
+        return;
+      }
+      const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
+      if (metrics) metrics.innerHTML = [
+        m("Open recs", rec.open??0),
+        m("Closed", rec.closed??0),
+        m("Wins", rec.wins??0, "up"),
+        m("Losses", rec.losses??0, "down"),
+        m("Closed P&L", rec.closed_pnl_usd==null?"—":`$${fmt(rec.closed_pnl_usd,2)}`, pctClass(rec.closed_pnl_usd)),
+      ].join("");
+      const by = rec.by_section || {};
+      // Prefer combined all list
+      renderRecLog("recLogAll", {
+        open_recs: (rec.open_recs || (rec.all||[]).filter(r=>r.status==="open")),
+        closed_recs: (rec.closed_recs || (rec.all||[]).filter(r=>r.status==="closed")),
+      }, "No recommendations logged yet — appear after BUY NOW / ENTRY pulses.");
+      // Section panels
+      renderRecLog("lotteryRecLog", by.lottery || rec.lottery, "No lottery recommendations logged yet.");
+      renderRecLog("challengeRecLog", by.challenge || rec.challenge, "No challenge recommendations logged yet.");
+      renderRecLog("odteRecLog", by.odte || rec.odte, "No 0DTE recommendations logged yet.");
+      renderRecLog("weeklyRecLog", by.weekly || rec.weekly, "No weekly recommendations logged yet.");
+      renderRecLog("swingRecLog", by.swing || rec.swing, "No swing recommendations logged yet.");
+    }
+
     function renderExplosive(rows, lottery) {
       const mini = document.getElementById("explosiveMini");
       const table = document.getElementById("explosiveTable");
@@ -545,6 +656,8 @@ PAGE = r"""
           : head + list.slice(0,4).map(rowHtml).join("") + "</tbody></table>";
       }
       table.innerHTML = head + list.map(rowHtml).join("") + "</tbody></table>";
+      const rec = (DATA.rec_log && DATA.rec_log.by_section && DATA.rec_log.by_section.lottery) || (DATA.rec_log && DATA.rec_log.lottery);
+      renderRecLog("lotteryRecLog", rec, "No lottery recommendations logged yet.");
     }
 
     function renderChallenge(ch) {
@@ -854,6 +967,8 @@ PAGE = r"""
         });
       }
       if (disc) disc.textContent = ch.disclaimer || "";
+      const rec = (DATA.rec_log && DATA.rec_log.by_section && DATA.rec_log.by_section.challenge) || (DATA.rec_log && DATA.rec_log.challenge);
+      renderRecLog("challengeRecLog", rec, "No challenge recommendations logged yet.");
     }
 
     function renderDarkpoolMini(echo) {
@@ -1203,6 +1318,7 @@ PAGE = r"""
       renderChallenge(DATA.challenge || {});
       renderScreener(hz, DATA.market || {});
       renderInsights(DATA.insights);
+      renderRecLogAll(DATA.rec_log || {});
       document.getElementById("session").textContent = (DATA.session||"—") + " · " + (DATA.universe_mode||"focus");
       const uniPill = document.getElementById("universePill");
       if (uniPill) {
@@ -1841,6 +1957,41 @@ def create_app(config_path: str | None = None) -> Flask:
             logger.debug("walls_by_symbol merge failed: %s", exc)
             walls_by_symbol = {}
 
+        # Persist recommendation history (lottery / challenge / 0DTE / weekly / swing)
+        rec_log_payload: dict = {}
+        try:
+            from odte_scanner.trading.rec_log import RecommendationLog
+
+            rec_path = Path(actions_cfg.get("rec_log_path", "outputs/recommendation_log.json"))
+            if not rec_path.is_absolute():
+                rec_path = ROOT / rec_path
+            rlog = RecommendationLog(rec_path)
+            rlog.sync_all(
+                lottery=lottery,
+                challenge=challenge,
+                actions=actions,
+                action_cards=scan.get("action_cards") or {},
+            )
+            by_section = {
+                "lottery": rlog.board(section="lottery", limit=30),
+                "challenge": rlog.board(section="challenge", limit=30),
+                "odte": rlog.board(section="odte", limit=30),
+                "weekly": rlog.board(section="weekly", limit=30),
+                "swing": rlog.board(section="swing", limit=30),
+            }
+            rec_log_payload = {
+                **rlog.board(limit=50),
+                "by_section": by_section,
+                "lottery": by_section["lottery"],
+                "challenge": by_section["challenge"],
+                "odte": by_section["odte"],
+                "weekly": by_section["weekly"],
+                "swing": by_section["swing"],
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("recommendation log unavailable: %s", exc)
+            rec_log_payload = {"error": str(exc), "open_recs": [], "closed_recs": [], "by_section": {}}
+
         return jsonify(
             {
                 "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -1867,6 +2018,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 "insights": insights,
                 "journal_sync": journal_sync,
                 "win_rates": win_table,
+                "rec_log": rec_log_payload,
             }
         )
 
