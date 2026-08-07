@@ -229,8 +229,28 @@ watch:
   output_dir: outputs/watch
 
 live_trading:
-  enabled: false
-  broker: none
+  enabled: false          # master switch — keep false until Webull keys are set
+  broker: webull
+  dry_run: true           # log + deep-link only; no broker submit
+  sandbox: true           # Webull OpenAPI sandbox host when live
+  region: us
+  # Credentials via env (preferred): WEBULL_APP_KEY, WEBULL_APP_SECRET, WEBULL_ACCOUNT_ID
+  app_key: null
+  app_secret: null
+  account_id: null
+  ledger_path: outputs/webull_orders.json
+  # “100% win rate” live gate = historical perfect quality filter (NOT a future guarantee)
+  require_perfect_hist: true
+  min_hist_win_pct: 100
+  min_hist_win_samples: 3
+  max_contracts: 1
+  max_orders_per_sync: 3
+  desks:
+    lottery: true         # 0DTE/1DTE convex BUY/SELL NOW
+    odte: true
+    weekly: true
+    swing: true
+    challenge: true       # ENTRY/EXIT calls & puts
 
 algos:
   # Legacy flat weights (merged into each horizon as a base)

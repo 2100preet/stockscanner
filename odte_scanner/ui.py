@@ -359,6 +359,23 @@ PAGE = r"""
         <div id="journal" class="empty">No journal trades yet.</div>
       </div>
       <div class="panel">
+        <h2>Webull auto-trade bridge</h2>
+        <p class="lede" style="margin-top:0;font-size:.76rem">
+          Routes lottery / 0DTE / weekly / swing / challenge option tickets to Webull by desk type.
+          Live gate: <strong>100% hist-win</strong> (n≥3) — historical filter only, <em>not</em> a future guarantee.
+          Default is <strong>dry-run</strong> (deep-link + order log). Set env
+          <code>WEBULL_APP_KEY</code> / <code>WEBULL_APP_SECRET</code> / <code>WEBULL_ACCOUNT_ID</code>
+          and <code>live_trading.enabled</code> to submit via OpenAPI.
+        </p>
+        <div class="toolbar" style="margin:.4rem 0">
+          <button type="button" class="primary" id="btnWebullSync">Sync → Webull (dry-run / live)</button>
+          <a class="pill" id="webullHelp" href="https://developer.webull.com/apis/docs/sdk.md" target="_blank" rel="noopener">OpenAPI docs</a>
+        </div>
+        <div class="metric-row" id="webullMetrics"></div>
+        <div id="webullOrders" class="empty">No Webull orders staged yet.</div>
+        <p class="lede" id="webullDisclaimer" style="font-size:.72rem;margin-top:.5rem"></p>
+      </div>
+      <div class="panel">
         <h2>Recommendation logger — all sections</h2>
         <p class="lede" style="margin-top:0;font-size:.76rem">
           Cross-desk history: lottery · challenge · 0DTE · weekly · swing.
@@ -1247,6 +1264,65 @@ PAGE = r"""
         }).join("")}</tbody></table>`;
     }
 
+    function renderWebull(wb) {
+      const metrics = document.getElementById("webullMetrics");
+      const ordersEl = document.getElementById("webullOrders");
+      const disc = document.getElementById("webullDisclaimer");
+      if (!metrics) return;
+      const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
+      const st = wb.status || wb.broker || {};
+      metrics.innerHTML = [
+        m("Bridge", st.enabled ? (st.dry_run?"DRY-RUN":"LIVE") : "OFF", st.enabled?(st.dry_run?"wait":"up"):"down"),
+        m("Ready live", st.ready_live?"yes":"no", st.ready_live?"up":""),
+        m("SDK", st.sdk_available?"installed":"missing"),
+        m("Keys", (st.has_app_key&&st.has_app_secret&&st.has_account_id)?"set":"env needed"),
+        m("Perfect gate", wb.require_perfect_hist===false?"off":`${wb.min_hist_win_pct??100}% n≥${wb.min_hist_win_samples??3}`),
+        m("Last sync in", wb.submitted_n??0, "up"),
+        m("Last sync skip", wb.skipped_n??0),
+      ].join("");
+      if (disc) disc.textContent = wb.disclaimer || st.disclaimer || "";
+      const rows = wb.recent || wb.orders || [];
+      if (!rows.length) {
+        ordersEl.innerHTML = `<div class="empty">No staged Webull orders. Tap Sync when BUY NOW / ENTRY clears the 100% hist-win gate.</div>`;
+        return;
+      }
+      ordersEl.innerHTML = `<table><thead><tr>
+        <th>Desk</th><th>Side</th><th>Symbol</th><th>Contract</th><th>Limit</th><th>Hist</th><th>Status</th><th>Webull</th>
+      </tr></thead><tbody>
+      ${rows.slice(0,25).map(o=>`<tr>
+        <td class="tag">${o.desk||"—"}</td>
+        <td class="mono">${o.action||"—"}</td>
+        <td><strong>${o.symbol}</strong> ${o.right||"C"}</td>
+        <td class="mono">${o.contract||((o.strike!=null?o.strike:"")+" "+(o.expiry||""))}</td>
+        <td class="mono">${o.limit_price==null?"—":"$"+fmt(o.limit_price,2)}</td>
+        <td class="mono">${o.hist_win_pct==null?"—":fmt(o.hist_win_pct,0)+"%"}${(o.hist_samples!=null?` n=${o.hist_samples}`:"")}</td>
+        <td><span class="badge ${o.status==="dry_run"||o.status==="submitted"?"buy":(o.status==="skipped"?"wait":"skip")}">${o.status||"—"}</span>
+          <div class="why">${o.error||o.reason||""}</div></td>
+        <td>${o.deep_link?`<a href="${o.deep_link}" target="_blank" rel="noopener">Open</a>`:"—"}</td>
+      </tr>`).join("")}
+      </tbody></table>`;
+    }
+
+    async function syncWebull() {
+      const btn = document.getElementById("btnWebullSync");
+      if (btn) { btn.disabled = true; btn.textContent = "Syncing…"; }
+      try {
+        const res = await fetch("/api/webull/sync", { method: "POST" });
+        const body = await res.json();
+        DATA.webull = body;
+        renderWebull(body);
+        const note = document.getElementById("loadNote");
+        if (note) {
+          note.style.display = "block";
+          note.textContent = `Webull sync: ${body.submitted_n||0} staged/dry-run, ${body.skipped_n||0} skipped (100% gate)`;
+        }
+      } catch (e) {
+        alert("Webull sync failed: " + (e.message||e));
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = "Sync → Webull (dry-run / live)"; }
+      }
+    }
+
     function renderInsights(ins) {
       const cards = document.getElementById("perfCards");
       const sum = document.getElementById("insightSummary");
@@ -1319,6 +1395,7 @@ PAGE = r"""
       renderScreener(hz, DATA.market || {});
       renderInsights(DATA.insights);
       renderRecLogAll(DATA.rec_log || {});
+      renderWebull(DATA.webull || {});
       document.getElementById("session").textContent = (DATA.session||"—") + " · " + (DATA.universe_mode||"focus");
       const uniPill = document.getElementById("universePill");
       if (uniPill) {
@@ -1412,6 +1489,8 @@ PAGE = r"""
     document.getElementById("btnRefresh").onclick = loadAll;
     document.getElementById("btnScan").onclick = () => runScan("focus");
     document.getElementById("btnScanWide").onclick = () => runScan("liquid");
+    const btnWb = document.getElementById("btnWebullSync");
+    if (btnWb) btnWb.onclick = syncWebull;
     let _loading = false;
     const _origLoad = loadAll;
     loadAll = async function() {
@@ -2019,6 +2098,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 "journal_sync": journal_sync,
                 "win_rates": win_table,
                 "rec_log": rec_log_payload,
+                "webull": _webull_status_payload(),
             }
         )
 
@@ -2175,6 +2255,111 @@ def create_app(config_path: str | None = None) -> Flask:
 
         threading.Thread(target=_job, daemon=True).start()
         return jsonify({"ok": True, "started": True, "mode": mode})
+
+    def _webull_bundle():
+        from odte_scanner.trading.auto_trader import AutoTrader
+        from odte_scanner.trading.webull import WebullBroker
+
+        lt = cfg.get("live_trading") or {}
+        ledger = Path(lt.get("ledger_path", "outputs/webull_orders.json"))
+        if not ledger.is_absolute():
+            ledger = ROOT / ledger
+        broker = WebullBroker(
+            enabled=bool(lt.get("enabled", False)),
+            dry_run=bool(lt.get("dry_run", True)),
+            region=str(lt.get("region") or "us"),
+            sandbox=bool(lt.get("sandbox", True)),
+            account_id=lt.get("account_id"),
+            app_key=lt.get("app_key"),
+            app_secret=lt.get("app_secret"),
+            ledger_path=ledger,
+        )
+        desk_cfg = dict(lt.get("desks") or {})
+        if not desk_cfg:
+            desk_cfg = {
+                "lottery": True,
+                "odte": True,
+                "weekly": True,
+                "swing": True,
+                "challenge": True,
+            }
+        trader = AutoTrader(
+            broker,
+            require_perfect_hist=bool(lt.get("require_perfect_hist", True)),
+            min_hist_win_pct=float(lt.get("min_hist_win_pct", 100)),
+            min_hist_win_samples=int(lt.get("min_hist_win_samples", 3)),
+            desks=desk_cfg,
+            max_contracts=int(lt.get("max_contracts", 1)),
+            max_orders_per_sync=int(lt.get("max_orders_per_sync", 3)),
+        )
+        return broker, trader
+
+    def _webull_status_payload() -> dict:
+        try:
+            broker, trader = _webull_bundle()
+            st = broker.status()
+            return {
+                "status": st,
+                "broker": st,
+                "require_perfect_hist": trader.require_perfect_hist,
+                "min_hist_win_pct": trader.min_hist_win_pct,
+                "min_hist_win_samples": trader.min_hist_win_samples,
+                "desks": trader.desks,
+                "recent": broker.recent(20),
+                "submitted_n": 0,
+                "skipped_n": 0,
+                "disclaimer": st.get("disclaimer"),
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("webull status failed: %s", exc)
+            return {"error": str(exc), "status": {"enabled": False}, "recent": []}
+
+    @app.get("/api/webull/status")
+    def webull_status():
+        return jsonify(_webull_status_payload())
+
+    @app.post("/api/webull/sync")
+    def webull_sync():
+        """Route current lottery / actions / challenge tickets to Webull (dry-run by default)."""
+        broker, trader = _webull_bundle()
+        scan = _read_json(ROOT / "outputs" / "latest_scan.json") or {}
+        # Prefer live snapshot boards when available via lightweight rebuild fields on disk
+        # Rebuild actions/lottery/challenge from last snapshot cache if present
+        snap_cache = _read_json(ROOT / "outputs" / "ui_snapshot_cache.json") or {}
+        actions = snap_cache.get("actions") if isinstance(snap_cache, dict) else None
+        lottery = snap_cache.get("lottery") if isinstance(snap_cache, dict) else None
+        challenge = snap_cache.get("challenge") if isinstance(snap_cache, dict) else None
+        # Fallback: construct minimal actions from scan call candidates (no live tape)
+        if not actions:
+            actions = {"buy_now": [], "sell_now": []}
+        if not lottery:
+            lottery = {"buy_now": [], "sell_now": []}
+        if not challenge:
+            challenge = {"entry": [], "exit": [], "tickets": []}
+        # Enrich buy candidates from scan call list with win rates for gate
+        try:
+            from odte_scanner.backtest.win_rates import load_win_rate_table, lookup_win_stats
+
+            wr = scan.get("win_rates") or load_win_rate_table() or {}
+            if not (actions.get("buy_now") or actions.get("sell_now")):
+                for c in (scan.get("call_candidates_0dte") or [])[:8]:
+                    stats = lookup_win_stats(wr, c.get("symbol"), "0dte")
+                    actions.setdefault("buy_now", []).append(
+                        {
+                            **c,
+                            "action": "BUY_NOW",
+                            "dte_bucket": "0dte",
+                            "hist_win_pct": stats.get("win_pct"),
+                            "hist_samples": stats.get("trades"),
+                            "win_pct": stats.get("win_pct"),
+                            "win_samples": stats.get("trades"),
+                        }
+                    )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("webull sync enrich failed: %s", exc)
+
+        out = trader.sync(actions=actions, lottery=lottery, challenge=challenge)
+        return jsonify(out)
 
     return app
 
