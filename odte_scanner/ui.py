@@ -442,6 +442,31 @@ PAGE = r"""
     let DATA = {};
     const fmt = (n, d=2) => (n==null || Number.isNaN(Number(n))) ? "—" : Number(n).toFixed(d);
     const pctClass = (n) => (n||0) >= 0 ? "up" : "down";
+    /** Format ISO/UTC timestamps in US Central (CST/CDT). */
+    function fmtCST(iso, withSeconds=false) {
+      if (iso == null || iso === "") return "—";
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) {
+        const s = String(iso);
+        return s.length >= 16 ? s.slice(0, 16) : s;
+      }
+      const opts = {
+        timeZone: "America/Chicago",
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+        hour12: true,
+        timeZoneName: "short",
+      };
+      if (withSeconds) opts.second = "2-digit";
+      try {
+        return new Intl.DateTimeFormat("en-US", opts).format(d);
+      } catch (_) {
+        return d.toISOString();
+      }
+    }
 
     document.querySelectorAll("#tabs button").forEach(btn => {
       btn.onclick = () => {
@@ -593,35 +618,49 @@ PAGE = r"""
         el.innerHTML = `<div class="empty">${emptyMsg||"No recommendations logged yet."}</div>`;
         return;
       }
-      const rowOpen = (r) => `<tr>
-        <td><strong>${r.symbol}</strong> <span class="tag">${r.right||"C"}</span>
-          ${r.on_board?"":'<span class="badge wait">OFF BOARD</span>'}</td>
-        <td class="mono">${r.open_action||"ENTRY"}</td>
-        <td class="mono">${(r.recommended_at||"").slice(0,16)}</td>
-        <td class="mono">${r.entry_price==null?"—":"$"+fmt(r.entry_price,2)}</td>
-        <td class="mono">${(r.last_recommended_at||"").slice(0,16)}</td>
-        <td class="why">${r.headline||r.reason||""}</td>
-      </tr>`;
-      const rowClosed = (r) => `<tr>
-        <td><strong>${r.symbol}</strong> <span class="tag">${r.right||"C"}</span></td>
-        <td class="mono">${(r.recommended_at||"").slice(0,10)}→${(r.closed_at||"").slice(0,10)}</td>
-        <td class="mono">${r.entry_price==null?"—":"$"+fmt(r.entry_price,2)}→${r.exit_price==null?"—":"$"+fmt(r.exit_price,2)}</td>
-        <td class="mono ${pctClass(r.profit_pct)}"><strong>${r.profit_pct==null?"—":fmt(r.profit_pct,1)+"%"}</strong></td>
-        <td class="mono ${pctClass(r.pnl_usd)}">${r.pnl_usd==null?"—":"$"+fmt(r.pnl_usd,2)}</td>
-        <td class="why">${r.close_action||"EXIT"} · ${r.exit_reason||r.reason||""}</td>
-      </tr>`;
+      const strikeTxt = (r) => {
+        if (r.strike == null) return "—";
+        const side = (r.right || "C") === "P" ? "p" : "c";
+        return `${Number(r.strike).toFixed(Number(r.strike) % 1 ? 2 : 0)}${side}`;
+      };
+      const cardOpen = (r) => `<article class="action-card long">
+        <div class="ac-top">
+          <div class="ac-sym">${r.symbol} <span class="tag">${r.section||""}</span></div>
+          <div class="ac-dir long">${r.open_action||"ENTRY"}${r.on_board?"":" · OFF BOARD"}</div>
+        </div>
+        <div class="ac-meta">
+          <div>Strike / expiry<strong>${strikeTxt(r)} · ${r.expiry||"—"}${r.dte!=null?` (${r.dte}DTE)`:""}</strong></div>
+          <div>Entry $<strong>${r.entry_price==null?"—":"$"+fmt(r.entry_price,2)}</strong></div>
+          <div>First entry (CST)<strong>${fmtCST(r.recommended_at)}</strong></div>
+          <div>Last seen (CST)<strong>${fmtCST(r.last_recommended_at||r.recommended_at)}</strong></div>
+          <div>Contract<strong class="mono" style="font-size:.72rem">${r.contract||"—"}</strong></div>
+          <div>Status<strong>${r.on_board?"On board":"Off board"}</strong></div>
+        </div>
+        <p class="why" style="margin:.45rem 0 0">${r.headline||r.reason||""}</p>
+      </article>`;
+      const cardClosed = (r) => `<article class="action-card ${((r.profit_pct||0)>=0)?"long":"short"}">
+        <div class="ac-top">
+          <div class="ac-sym">${r.symbol} <span class="tag">${r.section||""}</span></div>
+          <div class="ac-dir ${((r.profit_pct||0)>=0)?"long":"short"}">${r.close_action||"EXIT"}</div>
+        </div>
+        <div class="ac-meta">
+          <div>Strike / expiry<strong>${strikeTxt(r)} · ${r.expiry||"—"}</strong></div>
+          <div>In → out $<strong>${r.entry_price==null?"—":"$"+fmt(r.entry_price,2)} → ${r.exit_price==null?"—":"$"+fmt(r.exit_price,2)}</strong></div>
+          <div>Entry (CST)<strong>${fmtCST(r.recommended_at)}</strong></div>
+          <div>Exit (CST)<strong>${fmtCST(r.closed_at)}</strong></div>
+          <div>Profit %<strong class="${pctClass(r.profit_pct)}">${r.profit_pct==null?"—":fmt(r.profit_pct,1)+"%"}</strong></div>
+          <div>P&amp;L (1ct)<strong class="${pctClass(r.pnl_usd)}">${r.pnl_usd==null?"—":"$"+fmt(r.pnl_usd,2)}</strong></div>
+        </div>
+        <p class="why" style="margin:.45rem 0 0">${r.exit_reason||r.reason||r.headline||""}</p>
+      </article>`;
       let html = "";
       if (open.length) {
-        html += `<div class="status" style="margin:.2rem 0">OPEN / STILL TRACKING (${open.length})</div>
-          <table><thead><tr>
-            <th>Symbol</th><th>Action</th><th>First entry</th><th>Entry $</th><th>Last seen</th><th>Why</th>
-          </tr></thead><tbody>${open.map(rowOpen).join("")}</tbody></table>`;
+        html += `<div class="status" style="margin:.2rem 0 .45rem">OPEN / STILL TRACKING (${open.length}) · times in CST</div>
+          <div class="cards">${open.map(cardOpen).join("")}</div>`;
       }
       if (closed.length) {
-        html += `<div class="status" style="margin:.8rem 0 .2rem">CLOSED — EXIT / P&amp;L (${closed.length})</div>
-          <table><thead><tr>
-            <th>Symbol</th><th>In→Out</th><th>Prices</th><th>Profit%</th><th>P&amp;L</th><th>Exit</th>
-          </tr></thead><tbody>${closed.map(rowClosed).join("")}</tbody></table>`;
+        html += `<div class="status" style="margin:.9rem 0 .45rem">CLOSED — EXIT / P&amp;L (${closed.length}) · times in CST</div>
+          <div class="cards">${closed.map(cardClosed).join("")}</div>`;
       }
       el.innerHTML = html;
     }
@@ -895,6 +934,7 @@ PAGE = r"""
                 <div class="ac-dir ${t.last_action==="EXIT"?"short":"long"}">${t.hold_approx_label||`max ${t.hold_max_days||"—"}d`}</div>
               </div>
               <div class="ac-meta">
+                <div>Entered (CST)<strong>${fmtCST(t.entered_at)}</strong></div>
                 <div>Strike / expiry<strong>${t.strike==null?"—":fmt(t.strike,2)} · ${t.expiry||"—"}</strong></div>
                 <div>Contract / DTE<strong>${t.contract||"—"} · ${t.dte_at_entry??"—"}d</strong></div>
                 <div>Entry → mark<strong>$${fmt(t.entry_ask,2)} → $${fmt(t.mark,2)}</strong></div>
@@ -912,18 +952,21 @@ PAGE = r"""
               </div>
             </article>`;
           }).join(""):`<div class="empty">No open challenge flip — click <strong>Paper ENTER</strong> on an ENTRY ticket below.</div>`}
-          ${closed.length?`<div class="status" style="margin-top:.7rem">CLOSED</div><table><thead><tr>
-            <th>Side</th><th>Sym</th><th>Strike</th><th>Expiry</th><th>In→Out</th><th>P&L%</th><th>Held</th><th>Exit reason</th>
-          </tr></thead><tbody>${closed.map(t=>`<tr>
-            <td class="mono">${t.right==="P"?"PUT":"CALL"}</td>
-            <td><strong>${t.symbol}</strong></td>
-            <td class="mono">${t.strike==null?"—":fmt(t.strike,2)}</td>
-            <td class="mono">${t.expiry||"—"}</td>
-            <td class="mono">$${fmt(t.entry_ask,2)}→$${fmt(t.exit_bid,2)}</td>
-            <td class="mono ${pctClass(t.profit_pct)}">${t.profit_pct==null?"—":fmt(t.profit_pct,1)+"%"}</td>
-            <td class="mono">${t.hold_days==null?"—":fmt(t.hold_days,1)+"d"}</td>
-            <td class="why">${t.exit_reason||""}</td>
-          </tr>`).join("")}</tbody></table>`:""}`;
+          ${closed.length?`<div class="status" style="margin-top:.7rem">CLOSED · times in CST</div><div class="cards">${closed.map(t=>`<article class="action-card ${((t.profit_pct||0)>=0)?"long":"short"}">
+            <div class="ac-top">
+              <div class="ac-sym">${t.symbol} <span class="tag">${t.right==="P"?"PUT":"CALL"}</span></div>
+              <div class="ac-dir ${((t.profit_pct||0)>=0)?"long":"short"}">EXIT</div>
+            </div>
+            <div class="ac-meta">
+              <div>Entry (CST)<strong>${fmtCST(t.entered_at)}</strong></div>
+              <div>Exit (CST)<strong>${fmtCST(t.exited_at||t.closed_at)}</strong></div>
+              <div>Strike / expiry<strong>${t.strike==null?"—":fmt(t.strike,2)} · ${t.expiry||"—"}</strong></div>
+              <div>In → out $<strong>$${fmt(t.entry_ask,2)} → $${fmt(t.exit_bid,2)}</strong></div>
+              <div>P&amp;L %<strong class="${pctClass(t.profit_pct)}">${t.profit_pct==null?"—":fmt(t.profit_pct,1)+"%"}</strong></div>
+              <div>Held<strong>${t.hold_days==null?"—":fmt(t.hold_days,1)+"d"}</strong></div>
+            </div>
+            <p class="why" style="margin:.45rem 0 0">${t.exit_reason||""}</p>
+          </article>`).join("")}</div>`:""}`;
         bookEl.querySelectorAll("[data-ch-exit]").forEach(btn=>{
           btn.addEventListener("click", async ()=>{
             btn.textContent = "Exiting…";
@@ -1388,23 +1431,38 @@ PAGE = r"""
       const open = ins.open_positions||[], closed = ins.closed_trades||[];
       let html="";
       if (open.length) {
-        html += `<div class="status" style="margin:.3rem 0">OPEN</div><table><thead><tr>
-          <th>Symbol</th><th>Entered</th><th>Entry</th><th>Mark</th><th>Unreal%</th><th>Why</th></tr></thead><tbody>
-          ${open.map(t=>`<tr><td><strong>${t.symbol}</strong></td>
-          <td class="mono">${(t.entered_at||"").slice(0,16)}</td>
-          <td class="mono">$${fmt(t.entry_ask,2)}</td><td class="mono">$${fmt(t.mark,2)}</td>
-          <td class="mono ${pctClass(t.unrealized_pct)}">${t.unrealized_pct==null?"—":fmt(t.unrealized_pct,1)+"%"}</td>
-          <td class="why">${t.entry_reason||""}</td></tr>`).join("")}</tbody></table>`;
+        html += `<div class="status" style="margin:.3rem 0 .45rem">OPEN · times in CST</div>
+          <div class="cards">${open.map(t=>`<article class="action-card wait">
+            <div class="ac-top">
+              <div class="ac-sym">${t.symbol}</div>
+              <div class="ac-dir wait">OPEN</div>
+            </div>
+            <div class="ac-meta">
+              <div>Entered (CST)<strong>${fmtCST(t.entered_at)}</strong></div>
+              <div>Entry → mark<strong>$${fmt(t.entry_ask,2)} → $${fmt(t.mark,2)}</strong></div>
+              <div>Unreal %<strong class="${pctClass(t.unrealized_pct)}">${t.unrealized_pct==null?"—":fmt(t.unrealized_pct,1)+"%"}</strong></div>
+              <div>Contract<strong class="mono" style="font-size:.72rem">${t.contract||"—"}</strong></div>
+            </div>
+            <p class="why" style="margin:.45rem 0 0">${t.entry_reason||""}</p>
+          </article>`).join("")}</div>`;
       }
       if (closed.length) {
-        html += `<div class="status" style="margin:.8rem 0 .3rem">CLOSED</div><table><thead><tr>
-          <th>Symbol</th><th>In→Out</th><th>Profit%</th><th>P&L</th><th>Hold</th><th>Exit</th></tr></thead><tbody>
-          ${closed.map(t=>`<tr><td><strong>${t.symbol}</strong></td>
-          <td class="mono">$${fmt(t.entry_ask,2)}→$${fmt(t.exit_bid,2)}</td>
-          <td class="mono ${pctClass(t.profit_pct)}"><strong>${fmt(t.profit_pct,1)}%</strong></td>
-          <td class="mono ${pctClass(t.pnl_usd)}">$${fmt(t.pnl_usd,2)}</td>
-          <td class="mono">${fmt(t.hold_minutes,0)}m</td>
-          <td class="why">${t.exit_reason||""}</td></tr>`).join("")}</tbody></table>`;
+        html += `<div class="status" style="margin:.9rem 0 .45rem">CLOSED · times in CST</div>
+          <div class="cards">${closed.map(t=>`<article class="action-card ${((t.profit_pct||0)>=0)?"long":"short"}">
+            <div class="ac-top">
+              <div class="ac-sym">${t.symbol}</div>
+              <div class="ac-dir ${((t.profit_pct||0)>=0)?"long":"short"}">EXIT</div>
+            </div>
+            <div class="ac-meta">
+              <div>Entry (CST)<strong>${fmtCST(t.entered_at)}</strong></div>
+              <div>Exit (CST)<strong>${fmtCST(t.exited_at||t.closed_at)}</strong></div>
+              <div>In → out $<strong>$${fmt(t.entry_ask,2)} → $${fmt(t.exit_bid,2)}</strong></div>
+              <div>Profit % / P&amp;L<strong class="${pctClass(t.profit_pct)}">${fmt(t.profit_pct,1)}% · $${fmt(t.pnl_usd,2)}</strong></div>
+              <div>Hold<strong>${fmt(t.hold_minutes,0)}m</strong></div>
+              <div>Contract<strong class="mono" style="font-size:.72rem">${t.contract||"—"}</strong></div>
+            </div>
+            <p class="why" style="margin:.45rem 0 0">${t.exit_reason||""}</p>
+          </article>`).join("")}</div>`;
       }
       journal.innerHTML = html || `<div class="empty">No journal trades yet.</div>`;
     }
@@ -1582,7 +1640,7 @@ PAGE = r"""
           (DATA.focus_size!=null ? ` · focus ${DATA.focus_size}` : "") +
           (DATA.liquid_size!=null ? ` · liquid ${DATA.liquid_size}` : "");
       }
-      document.getElementById("updated").textContent = "Updated " + (DATA.generated_at||"").replace("T"," ").slice(0,19);
+      document.getElementById("updated").textContent = "Updated " + fmtCST(DATA.generated_at, true);
       const c = acts.counts || {};
       const lc = (DATA.lottery && DATA.lottery.counts) || {};
       document.getElementById("counts").textContent =
