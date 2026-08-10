@@ -45,18 +45,27 @@ python -m odte_scanner ui
 
 ## Always-on (24×7) hosting
 
-Cursor cloud agents, `trycloudflare` quick tunnels, and `*.agent.cvm.dev` port links are **ephemeral** — they die when the agent sleeps or the VM recycles. This agent **cannot** keep a public URL forever without a real host account.
+**Public desk (GitHub Pages — uses your GitHub only):**  
+https://2100preet.github.io/stockscanner/
 
-**Fastest path (you click once):**
+Actions runs a focus scan on a weekday schedule and publishes a **read-only** snapshot. Tap **Actions → Signal Desk Pages → Run workflow** to refresh now. Scan / Webull buttons need a live Flask host.
 
-1. [Railway → New Project → Deploy from GitHub](https://railway.app/new) → `2100preet/stockscanner` (Dockerfile / `railway.toml` included)
-2. Or [Render → New Web Service](https://render.com/) → same repo (`render.yaml` included)
-3. Open the generated `*.up.railway.app` / `*.onrender.com` URL — that stays up without Cursor
+Cursor cloud agents and free tunnels (`trycloudflare`, `localhost.run`) are **ephemeral** — they die when the agent sleeps.
+
+**Interactive 24×7 Flask (Railway / Render):**
+
+1. [Railway → New Project → Deploy from GitHub](https://railway.app/new) → `2100preet/stockscanner` (`Dockerfile` / `railway.toml`)
+2. Or [Render → New Web Service](https://render.com/) → same repo (`render.yaml`)
 
 ```bash
 # Local Docker
 docker build -t signal-desk .
 docker run -p 8787:8787 -e PORT=8787 -v signal-desk-data:/app/outputs signal-desk
+```
+
+```bash
+# Build the Pages site locally
+python -m odte_scanner export-pages --out site
 ```
 
 Mount a volume on `/app/outputs` so journals and recommendation logs persist.

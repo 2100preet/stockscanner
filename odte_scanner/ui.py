@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 import sys
 import threading
@@ -1516,6 +1517,16 @@ def _read_json(path: Path) -> dict | list | None:
         return None
 
 
+def _snapshot_offline() -> bool:
+    """Disk-only snapshot for GitHub Pages export (no live Yahoo fan-out)."""
+    if os.environ.get("SIGNAL_DESK_OFFLINE", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return True
+    try:
+        return str(request.args.get("offline") or "").strip().lower() in {"1", "true", "yes", "on"}
+    except RuntimeError:
+        return False
+
+
 def create_app(config_path: str | None = None) -> Flask:
     cfg_path = str(config_path or ROOT / "config.yaml")
     cfg = load_config(cfg_path)
@@ -1534,6 +1545,7 @@ def create_app(config_path: str | None = None) -> Flask:
         from odte_scanner.data.live_quotes import fetch_live_quote
         from odte_scanner.options.live_chain import refresh_candidate_quote
 
+        offline = _snapshot_offline()
         scan = _read_json(ROOT / "outputs" / "latest_scan.json") or {}
         watch = _read_json(ROOT / "outputs" / "watch" / "latest_watch.json")
         ledger_path = Path(cfg.get("paper_trading", {}).get("ledger_path", "outputs/paper_ledger.json"))
@@ -1607,17 +1619,18 @@ def create_app(config_path: str | None = None) -> Flask:
         except Exception:  # noqa: BLE001
             challenge_syms = []
             dram_syms = []
-        quote_syms = sorted(set(syms[:8]))  # keep snapshot interactive; skip DRAM/challenge fan-out
+        quote_syms = [] if offline else sorted(set(syms[:8]))  # keep snapshot interactive; skip DRAM/challenge fan-out
         for s in quote_syms:
             aliases.setdefault(s, resolve_yahoo_symbol(s, cfg))
 
         def _uq(sym: str):
             return sym, fetch_live_quote(sym, yahoo_symbol=aliases.get(sym))
 
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            for sym, q in pool.map(_uq, quote_syms):
-                if q:
-                    quotes[sym] = q.to_dict()
+        if quote_syms:
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                for sym, q in pool.map(_uq, quote_syms):
+                    if q:
+                        quotes[sym] = q.to_dict()
 
         refreshed: list[dict] = []
 
@@ -1678,21 +1691,22 @@ def create_app(config_path: str | None = None) -> Flask:
                 auto_exit=bool(jcfg.get("auto_exit", True)),
             )
             marks: dict[str, float] = {}
-            for t in journal.book.trades:
-                if t.status != "open":
-                    continue
-                if t.expiry and t.strike is not None:
-                    q = fetch_live_option_quote(
-                        t.symbol,
-                        t.expiry,
-                        float(t.strike),
-                        yahoo_symbol=aliases.get(t.symbol) or resolve_yahoo_symbol(t.symbol, cfg),
-                    )
-                    if q:
-                        if q.bid > 0 and q.ask > 0:
-                            marks[t.contract] = (q.bid + q.ask) / 2
-                        else:
-                            marks[t.contract] = q.bid if q.bid > 0 else (q.ask or 0)
+            if not offline:
+                for t in journal.book.trades:
+                    if t.status != "open":
+                        continue
+                    if t.expiry and t.strike is not None:
+                        q = fetch_live_option_quote(
+                            t.symbol,
+                            t.expiry,
+                            float(t.strike),
+                            yahoo_symbol=aliases.get(t.symbol) or resolve_yahoo_symbol(t.symbol, cfg),
+                        )
+                        if q:
+                            if q.bid > 0 and q.ask > 0:
+                                marks[t.contract] = (q.bid + q.ask) / 2
+                            else:
+                                marks[t.contract] = q.bid if q.bid > 0 else (q.ask or 0)
             if marks:
                 journal.mark_open(marks)
             insights = build_insights(journal=journal, actions=actions, win_rates=win_table)
@@ -2074,6 +2088,8 @@ def create_app(config_path: str | None = None) -> Flask:
         return jsonify(
             {
                 "generated_at": datetime.now(timezone.utc).isoformat(),
+                "offline": offline,
+                "host": "github-pages" if offline else "live",
                 "session": scan.get("session_weekday"),
                 "universe_mode": scan.get("universe_mode"),
                 "universe_size": scan.get("universe_size"),

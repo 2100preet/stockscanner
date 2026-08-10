@@ -228,6 +228,15 @@ def cmd_ui(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_export_pages(args: argparse.Namespace) -> int:
+    from odte_scanner.pages_export import export_pages
+
+    out = export_pages(out_dir=args.out, config_path=args.config)
+    console.print(f"[green]GitHub Pages site written[/green] → {out}")
+    console.print(f"  open {out / 'index.html'} or deploy via Actions")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="odte-scanner",
@@ -275,6 +284,13 @@ def build_parser() -> argparse.ArgumentParser:
     u.add_argument("--host", default="0.0.0.0")
     u.add_argument("--port", type=int, default=8787)
     u.set_defaults(func=cmd_ui)
+
+    ep = sub.add_parser(
+        "export-pages",
+        help="Build a static GitHub Pages site (read-only snapshot from outputs/)",
+    )
+    ep.add_argument("--out", default="site", help="Output directory (default: site)")
+    ep.set_defaults(func=cmd_export_pages)
 
     b = sub.add_parser("backtest", help="Walk-forward backtest of ensemble signals")
     b.add_argument("--tickers", default=None, help="Comma-separated override list")
