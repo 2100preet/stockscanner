@@ -154,8 +154,19 @@ def select_calls(
             if ask <= 0 or ask > max_ask:
                 continue
 
-            vol = int(row.get("volume") or 0)
-            oi = int(row.get("openInterest") or 0)
+            def _safe_int(v: object, default: int = 0) -> int:
+                try:
+                    if v is None:
+                        return default
+                    f = float(v)
+                    if f != f:  # NaN
+                        return default
+                    return int(f)
+                except (TypeError, ValueError):
+                    return default
+
+            vol = _safe_int(row.get("volume"))
+            oi = _safe_int(row.get("openInterest"))
             mid = (bid + ask) / 2 if bid > 0 else ask
             spread = (ask - bid) / ask if ask else 1.0
             # Skip absurd spreads (often bad quotes)
