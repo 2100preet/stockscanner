@@ -213,9 +213,17 @@ PAGE = r"""
 
     <section class="tabpane" id="tab-odte">
       <h2>0DTE — same-day / next-session algos</h2>
-      <p class="lede">Gap-and-go, breakout, volume thrust, VIX regime. Win% = next session green after quality signal. Strike rate = ≥1% / ≥2% underlying rip rate.</p>
+      <p class="lede">Gap-and-go, breakout, volume thrust, VIX regime. Win% = next session green after quality signal. Strike rate = ≥1% / ≥2% underlying rip rate.
+        Paper <strong>BUY NOW / SELL NOW</strong> fills update cash, equity, and P&amp;L on each ENTRY / EXIT.</p>
       <div class="cards" id="cards0dte"></div>
       <div class="panel"><div id="table0dte" class="empty"></div></div>
+      <div class="panel">
+        <h2>0DTE paper journal — ENTRY / EXIT / P&amp;L</h2>
+        <p class="lede" style="margin-top:0;font-size:.76rem">
+          Auto fills from BUY NOW → SELL NOW. Cash before→after and realized P&amp;L on every flip (full ledger on Journal tab).
+        </p>
+        <div id="odteJournal" class="empty">No 0DTE journal fills yet.</div>
+      </div>
       <div class="panel">
         <h2>Recommendation log — 0DTE entry / exit / P&amp;L</h2>
         <div id="odteRecLog" class="empty">—</div>
@@ -399,9 +407,17 @@ PAGE = r"""
 
     <section class="tabpane" id="tab-journal">
       <h2>Journal &amp; insights</h2>
+      <p class="lede">
+        0DTE / weekly <strong>BUY NOW → SELL NOW</strong> paper fills. After each ENTRY / EXIT the sleeve
+        <strong>cash &amp; equity balance</strong> and <strong>P&amp;L %</strong> update — same discipline as the challenge desk.
+      </p>
       <div class="panel">
         <h2>Paper journal (auto BUY/SELL NOW fills)</h2>
         <div id="journal" class="empty">No journal trades yet.</div>
+      </div>
+      <div class="panel">
+        <h2>Balance after ENTRY / EXIT (CST)</h2>
+        <div id="journalBalanceLog" class="empty">No ENTRY/EXIT yet — balance updates after BUY NOW / SELL NOW fills.</div>
       </div>
       <div class="panel">
         <h2>Webull auto-trade bridge</h2>
@@ -1480,16 +1496,24 @@ PAGE = r"""
       const cards = document.getElementById("perfCards");
       const sum = document.getElementById("insightSummary");
       const journal = document.getElementById("journal");
-      if (!ins) { cards.innerHTML=""; sum.textContent=""; return; }
+      const balEl = document.getElementById("journalBalanceLog");
+      if (!ins) {
+        if (cards) cards.innerHTML="";
+        if (sum) sum.textContent="";
+        if (balEl) balEl.innerHTML = `<div class="empty">No ENTRY/EXIT yet.</div>`;
+        return;
+      }
       const p = ins.performance || {};
       const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
       cards.innerHTML = [
         m("Journal win rate", p.win_rate_pct==null?"—":`${fmt(p.win_rate_pct,1)}%`),
         m("Avg profit%", p.avg_profit_pct==null?"—":`${fmt(p.avg_profit_pct,1)}%`, pctClass(p.avg_profit_pct)),
+        m("Realized P&L", p.realized_pnl_usd==null?"—":`$${fmt(p.realized_pnl_usd,2)}`, pctClass(p.realized_pnl_usd)),
+        m("Cash", p.cash==null?"—":`$${fmt(p.cash,0)}`),
+        m("Equity", p.equity==null?"—":`$${fmt(p.equity,0)}`, pctClass(p.return_pct)),
         m("Account", p.return_pct==null?"—":`${fmt(p.return_pct,2)}%`, pctClass(p.return_pct)),
-        m("Universe", DATA.universe_size||"—"),
-        m("Quality 0DTE", (DATA.action_cards&&DATA.action_cards["0dte_quality"]||[]).length),
-        m("Quality swing", (DATA.action_cards&&DATA.action_cards.swing_quality||[]).length),
+        m("Open / closed", `${p.open_trades||0} / ${p.closed_trades||0}`),
+        m("W / L", `${p.wins||0} / ${p.losses||0}`),
       ].join("");
       sum.textContent = ins.summary || "";
       const open = ins.open_positions||[], closed = ins.closed_trades||[];
@@ -1498,39 +1522,107 @@ PAGE = r"""
         html += `<div class="status" style="margin:.3rem 0 .45rem">OPEN · times in CST</div>
           <div class="cards">${open.map(t=>`<article class="action-card wait">
             <div class="ac-top">
-              <div class="ac-sym">${t.symbol}</div>
+              <div class="ac-sym">${t.symbol} ${t.dte_bucket?`<span class="tag">${t.dte_bucket}</span>`:""}</div>
               <div class="ac-dir wait">OPEN</div>
             </div>
             <div class="ac-meta">
               <div>Entered (CST)<strong>${fmtCST(t.entered_at)}</strong></div>
+              <div>Strike / expiry<strong>${t.strike==null?"—":fmt(t.strike,2)} · ${t.expiry||"—"}</strong></div>
               <div>Entry → mark<strong>$${fmt(t.entry_ask,2)} → $${fmt(t.mark,2)}</strong></div>
-              <div>Unreal %<strong class="${pctClass(t.unrealized_pct)}">${t.unrealized_pct==null?"—":fmt(t.unrealized_pct,1)+"%"}</strong></div>
+              <div>Unreal % / $<strong class="${pctClass(t.unrealized_pct)}">${t.unrealized_pct==null?"—":fmt(t.unrealized_pct,1)+"%"} · ${t.unrealized_pnl_usd==null?"—":"$"+fmt(t.unrealized_pnl_usd,2)}</strong></div>
+              <div>Contracts / cost<strong>${t.contracts||1} · $${fmt(t.cost,0)}</strong></div>
+              <div>Cash before → after<strong>$${fmt(t.cash_before,0)} → $${fmt(t.cash_after,0)}</strong></div>
+              <div>Balance (equity)<strong class="up">$${fmt(t.equity_after!=null?t.equity_after:p.equity,0)}</strong></div>
               <div>Contract<strong class="mono" style="font-size:.72rem">${t.contract||"—"}</strong></div>
               ${levelsMeta(t)}
             </div>
             <p class="why" style="margin:.45rem 0 0">${t.entry_reason||""}</p>
+            ${t.balance_note?`<p class="why" style="margin:.25rem 0 0"><strong>Balance:</strong> ${t.balance_note}</p>`:""}
           </article>`).join("")}</div>`;
       }
       if (closed.length) {
-        html += `<div class="status" style="margin:.9rem 0 .45rem">CLOSED · times in CST</div>
+        html += `<div class="status" style="margin:.9rem 0 .45rem">CLOSED · EXIT / P&amp;L · times in CST</div>
           <div class="cards">${closed.map(t=>`<article class="action-card ${((t.profit_pct||0)>=0)?"long":"short"}">
             <div class="ac-top">
-              <div class="ac-sym">${t.symbol}</div>
+              <div class="ac-sym">${t.symbol} ${t.dte_bucket?`<span class="tag">${t.dte_bucket}</span>`:""}</div>
               <div class="ac-dir ${((t.profit_pct||0)>=0)?"long":"short"}">EXIT</div>
             </div>
             <div class="ac-meta">
               <div>Entry (CST)<strong>${fmtCST(t.entered_at)}</strong></div>
               <div>Exit (CST)<strong>${fmtCST(t.exited_at||t.closed_at)}</strong></div>
+              <div>Strike / expiry<strong>${t.strike==null?"—":fmt(t.strike,2)} · ${t.expiry||"—"}</strong></div>
               <div>In → out $<strong>$${fmt(t.entry_ask,2)} → $${fmt(t.exit_bid,2)}</strong></div>
               <div>Profit % / P&amp;L<strong class="${pctClass(t.profit_pct)}">${fmt(t.profit_pct,1)}% · $${fmt(t.pnl_usd,2)}</strong></div>
               <div>Hold<strong>${fmt(t.hold_minutes,0)}m</strong></div>
+              <div>Cash before → after<strong>$${fmt(t.cash_before,0)} → $${fmt(t.cash_after,0)}</strong></div>
+              <div>Balance after EXIT<strong class="up">$${fmt(t.equity_after!=null?t.equity_after:t.cash_after,0)}</strong></div>
               <div>Contract<strong class="mono" style="font-size:.72rem">${t.contract||"—"}</strong></div>
               ${levelsMeta(t)}
             </div>
             <p class="why" style="margin:.45rem 0 0">${t.exit_reason||""}</p>
+            ${t.balance_note?`<p class="why" style="margin:.25rem 0 0"><strong>Balance:</strong> ${t.balance_note}</p>`:""}
           </article>`).join("")}</div>`;
       }
       journal.innerHTML = html || `<div class="empty">No journal trades yet.</div>`;
+
+      if (balEl) {
+        const balLog = ins.balance_log || [];
+        balEl.innerHTML = balLog.length
+          ? `<table><thead><tr><th>When</th><th>Action</th><th>Sym</th><th>Bucket</th><th>Cash before</th><th>Cash after</th><th>Equity after</th><th>P&amp;L</th></tr></thead>
+            <tbody>${balLog.slice().reverse().slice(0,24).map(e=>`<tr>
+              <td class="mono">${fmtCST(e.at)}</td>
+              <td><span class="badge ${e.action==="EXIT"?"sell":"buy"}">${e.action}</span></td>
+              <td><strong>${e.symbol||"—"}</strong></td>
+              <td class="mono">${e.dte_bucket||"—"}</td>
+              <td class="mono">$${fmt(e.cash_before,0)}</td>
+              <td class="mono"><strong>$${fmt(e.cash_after,0)}</strong></td>
+              <td class="mono up">$${fmt(e.equity_after,0)}</td>
+              <td class="mono ${pctClass(e.pnl_usd)}">${e.pnl_usd==null?"—":"$"+fmt(e.pnl_usd,2)}${e.profit_pct==null?"":" · "+fmt(e.profit_pct,1)+"%"}</td>
+            </tr>`).join("")}</tbody></table>`
+          : `<div class="empty">No ENTRY/EXIT yet — balance updates after BUY NOW / SELL NOW fills.</div>`;
+      }
+
+      const odteJ = document.getElementById("odteJournal");
+      if (odteJ) {
+        const is0 = (t) => {
+          const b = String(t.dte_bucket||"").toLowerCase();
+          return !b || b === "0dte" || b === "0" || b === "1dte";
+        };
+        const oOpen = open.filter(is0);
+        const oClosed = closed.filter(is0);
+        let ohtml = "";
+        if (oOpen.length) {
+          ohtml += `<div class="status" style="margin:.2rem 0 .4rem">OPEN 0DTE</div><div class="cards">${oOpen.map(t=>`<article class="action-card wait">
+            <div class="ac-top"><div class="ac-sym">${t.symbol}</div><div class="ac-dir wait">ENTRY</div></div>
+            <div class="ac-meta">
+              <div>Entered (CST)<strong>${fmtCST(t.entered_at)}</strong></div>
+              <div>Strike / expiry<strong>${t.strike==null?"—":fmt(t.strike,2)} · ${t.expiry||"—"}</strong></div>
+              <div>Entry → mark<strong>$${fmt(t.entry_ask,2)} → $${fmt(t.mark,2)}</strong></div>
+              <div>Unreal % / $<strong class="${pctClass(t.unrealized_pct)}">${t.unrealized_pct==null?"—":fmt(t.unrealized_pct,1)+"%"} · ${t.unrealized_pnl_usd==null?"—":"$"+fmt(t.unrealized_pnl_usd,2)}</strong></div>
+              <div>Cash before → after<strong>$${fmt(t.cash_before,0)} → $${fmt(t.cash_after,0)}</strong></div>
+              <div>Balance (equity)<strong class="up">$${fmt(t.equity_after!=null?t.equity_after:p.equity,0)}</strong></div>
+              ${levelsMeta(t)}
+            </div>
+            ${t.balance_note?`<p class="why" style="margin:.35rem 0 0"><strong>Balance:</strong> ${t.balance_note}</p>`:""}
+          </article>`).join("")}</div>`;
+        }
+        if (oClosed.length) {
+          ohtml += `<div class="status" style="margin:.75rem 0 .4rem">CLOSED 0DTE · P&amp;L</div><div class="cards">${oClosed.map(t=>`<article class="action-card ${((t.profit_pct||0)>=0)?"long":"short"}">
+            <div class="ac-top"><div class="ac-sym">${t.symbol}</div><div class="ac-dir ${((t.profit_pct||0)>=0)?"long":"short"}">EXIT</div></div>
+            <div class="ac-meta">
+              <div>Entry (CST)<strong>${fmtCST(t.entered_at)}</strong></div>
+              <div>Exit (CST)<strong>${fmtCST(t.exited_at||t.closed_at)}</strong></div>
+              <div>In → out $<strong>$${fmt(t.entry_ask,2)} → $${fmt(t.exit_bid,2)}</strong></div>
+              <div>Profit % / P&amp;L<strong class="${pctClass(t.profit_pct)}">${fmt(t.profit_pct,1)}% · $${fmt(t.pnl_usd,2)}</strong></div>
+              <div>Cash before → after<strong>$${fmt(t.cash_before,0)} → $${fmt(t.cash_after,0)}</strong></div>
+              <div>Balance after EXIT<strong class="up">$${fmt(t.equity_after!=null?t.equity_after:t.cash_after,0)}</strong></div>
+              ${levelsMeta(t)}
+            </div>
+            ${t.balance_note?`<p class="why" style="margin:.35rem 0 0"><strong>Balance:</strong> ${t.balance_note}</p>`:""}
+          </article>`).join("")}</div>`;
+        }
+        odteJ.innerHTML = ohtml || `<div class="empty">No 0DTE journal fills yet — appear after BUY NOW / SELL NOW.</div>`;
+      }
     }
 
     function renderMustTradeBanner() {

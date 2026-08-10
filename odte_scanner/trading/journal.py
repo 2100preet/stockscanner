@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -45,6 +45,11 @@ class JournalTrade:
     mark: float | None = None
     unrealized_pnl_usd: float | None = None
     unrealized_pct: float | None = None
+    # Cash / equity snapshot at enter or exit (challenge-style)
+    cash_before: float | None = None
+    cash_after: float | None = None
+    equity_after: float | None = None
+    balance_note: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -55,6 +60,7 @@ class TradeJournal:
     starting_cash: float
     cash: float
     trades: list[JournalTrade] = field(default_factory=list)
+    balance_log: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         open_mtm = sum(
@@ -67,6 +73,7 @@ class TradeJournal:
             "open_trades": sum(1 for t in self.trades if t.status == "open"),
             "closed_trades": sum(1 for t in self.trades if t.status == "closed"),
             "trades": [t.to_dict() for t in self.trades],
+            "balance_log": list(self.balance_log[-40:]),
         }
 
 
@@ -74,6 +81,7 @@ class SignalJournal:
     """
     Paper journal driven by BUY NOW / SELL NOW suggestions.
     Profit% = (exit - entry) / entry on the option premium.
+    Each enter/exit records cash before→after, equity, and P&L like the challenge sleeve.
     """
 
     def __init__(self, path: str | Path, starting_cash: float = 5000.0):
@@ -82,10 +90,21 @@ class SignalJournal:
         self.starting_cash = starting_cash
         if self.path.exists():
             raw = json.loads(self.path.read_text())
+            known = {f.name for f in fields(JournalTrade)}
+            trades: list[JournalTrade] = []
+            for t in raw.get("trades") or []:
+                if not isinstance(t, dict):
+                    continue
+                payload = {k: v for k, v in t.items() if k in known}
+                try:
+                    trades.append(JournalTrade(**payload))
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("skip bad journal trade: %s", exc)
             self.book = TradeJournal(
                 starting_cash=float(raw.get("starting_cash", starting_cash)),
                 cash=float(raw.get("cash", starting_cash)),
-                trades=[JournalTrade(**t) for t in raw.get("trades", [])],
+                trades=trades,
+                balance_log=list(raw.get("balance_log") or []),
             )
         else:
             self.book = TradeJournal(starting_cash=starting_cash, cash=starting_cash)
@@ -130,6 +149,7 @@ class SignalJournal:
             logger.info("Journal skip %s cost $%.2f", symbol, cost)
             return None
 
+        cash_before = round(self.book.cash, 2)
         trade = JournalTrade(
             id=f"{symbol}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
             symbol=symbol,
@@ -145,11 +165,41 @@ class SignalJournal:
             contracts=contracts,
             cost=cost,
             mark=ask,
+            cash_before=cash_before,
         )
         self.book.cash -= cost
+        cash_after = round(self.book.cash, 2)
+        equity_after = round(cash_after + ask * 100 * contracts, 2)
+        trade.cash_after = cash_after
+        trade.equity_after = equity_after
+        trade.balance_note = (
+            f"Balance after ENTRY: cash ${cash_after:,.2f} · sleeve equity ${equity_after:,.2f} "
+            f"(was ${cash_before:,.2f})"
+        )
         self.book.trades.append(trade)
+        self.book.balance_log.append(
+            {
+                "at": trade.entered_at,
+                "action": "ENTRY",
+                "symbol": symbol,
+                "dte_bucket": trade.dte_bucket,
+                "trade_id": trade.id,
+                "cash_before": cash_before,
+                "cash_after": cash_after,
+                "equity_after": equity_after,
+                "debit_usd": cost,
+                "pnl_usd": None,
+            }
+        )
         self.save()
-        logger.info("JOURNAL ENTER %s %s @ %.2f", symbol, contract, ask)
+        logger.info(
+            "JOURNAL ENTER %s %s @ %.2f cash $%.2f→$%.2f",
+            symbol,
+            contract,
+            ask,
+            cash_before,
+            cash_after,
+        )
         return trade
 
     def exit_trade(
@@ -165,6 +215,7 @@ class SignalJournal:
                 continue
             bid = max(0.0, float(exit_bid))
             proceeds = bid * 100 * t.contracts
+            cash_before = round(self.book.cash, 2)
             t.exit_bid = bid
             t.proceeds = proceeds
             t.pnl_usd = round(proceeds - t.cost, 2)
@@ -182,14 +233,42 @@ class SignalJournal:
             t.mark = bid
             t.unrealized_pnl_usd = None
             t.unrealized_pct = None
+            t.cash_before = cash_before
             self.book.cash += proceeds
+            cash_after = round(self.book.cash, 2)
+            t.cash_after = cash_after
+            t.equity_after = cash_after
+            t.balance_note = (
+                f"Balance after EXIT: cash/equity ${cash_after:,.2f} "
+                f"(was cash ${cash_before:,.2f} + open mark) · P&L ${t.pnl_usd:,.2f} "
+                f"({t.profit_pct:+.1f}%)" if t.profit_pct is not None else
+                f"Balance after EXIT: cash/equity ${cash_after:,.2f} · P&L ${t.pnl_usd:,.2f}"
+            )
+            self.book.balance_log.append(
+                {
+                    "at": t.exited_at,
+                    "action": "EXIT",
+                    "symbol": t.symbol,
+                    "dte_bucket": t.dte_bucket,
+                    "trade_id": t.id,
+                    "cash_before": cash_before,
+                    "cash_after": cash_after,
+                    "equity_after": cash_after,
+                    "debit_usd": None,
+                    "pnl_usd": t.pnl_usd,
+                    "profit_pct": t.profit_pct,
+                    "proceeds": proceeds,
+                }
+            )
             self.save()
             logger.info(
-                "JOURNAL EXIT %s @ %.2f pnl=$%.2f (%.1f%%)",
+                "JOURNAL EXIT %s @ %.2f pnl=$%.2f (%.1f%%) cash $%.2f→$%.2f",
                 t.symbol,
                 bid,
                 t.pnl_usd or 0,
                 t.profit_pct or 0,
+                cash_before,
+                cash_after,
             )
             return t
         return None
@@ -230,6 +309,15 @@ class SignalJournal:
             t.mark = float(px)
             t.unrealized_pnl_usd = round((t.mark - t.entry_ask) * 100 * t.contracts, 2)
             t.unrealized_pct = round(((t.mark - t.entry_ask) / t.entry_ask) * 100, 2) if t.entry_ask else None
+            # Keep equity_after current while open (cash + mark)
+            t.equity_after = round(
+                self.book.cash + sum(
+                    (x.mark or x.entry_ask) * 100 * x.contracts
+                    for x in self.book.trades
+                    if x.status == "open"
+                ),
+                2,
+            )
             changed = True
         if changed:
             self.save()
@@ -263,6 +351,8 @@ class SignalJournal:
                     "equity": round(equity, 2),
                     "event": f"exit {t.symbol}",
                     "profit_pct": t.profit_pct,
+                    "pnl_usd": t.pnl_usd,
+                    "cash_after": t.cash_after,
                 }
             )
 
@@ -283,6 +373,7 @@ class SignalJournal:
             "best_trade_pct": max((t.profit_pct or 0) for t in closed) if closed else None,
             "worst_trade_pct": min((t.profit_pct or 0) for t in closed) if closed else None,
             "equity_curve": curve,
+            "balance_log": list(self.book.balance_log[-40:]),
             "open": [t.to_dict() for t in open_t],
             "closed": [t.to_dict() for t in sorted(closed, key=lambda x: x.exited_at or "", reverse=True)],
         }
