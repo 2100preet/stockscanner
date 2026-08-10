@@ -1,0 +1,83 @@
+name: Signal Desk Pages
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekdays, roughly US market hours (UTC)
+    - cron: "15,45 13-20 * * 1-5"
+  push:
+    branches:
+      - main
+      - cursor/ddog-focus-universe-4571
+    paths:
+      - "odte_scanner/**"
+      - "config.yaml"
+      - "requirements.txt"
+      - ".github/workflows/signal-desk-pages.yml"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -e .
+
+      - name: Focus scan
+        id: scan
+        continue-on-error: true
+        run: python -m odte_scanner scan --universe focus --no-paper
+        env:
+          PYTHONUNBUFFERED: "1"
+
+      - name: Export static site
+        run: |
+          mkdir -p outputs
+          python -m odte_scanner export-pages --out site
+          test -f site/index.html
+          test -f site/data/snapshot.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          meta = json.loads(Path("site/meta.json").read_text())
+          print("scores:", meta.get("scores"), "at", meta.get("generated_at"))
+          snap = json.loads(Path("site/data/snapshot.json").read_text())
+          assert "scores" in snap
+          PY
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

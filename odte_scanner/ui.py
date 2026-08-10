@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 import sys
 import threading
@@ -108,6 +109,50 @@ PAGE = r"""
     .panel { margin-top: 1.1rem; }
     footer { margin-top: 1.6rem; color: var(--muted); font-size: .72rem; line-height: 1.45; }
     .loading { color: var(--wait); font-family: "JetBrains Mono", monospace; font-size: .8rem; }
+    .pulse-banner {
+      display: none; margin: 0 0 .95rem; border-radius: .9rem; overflow: hidden;
+      border: 1px solid rgba(62,207,142,.35);
+      background:
+        linear-gradient(105deg, rgba(62,207,142,.18), rgba(18,28,24,.55) 42%, rgba(255,107,90,.12));
+      box-shadow: 0 10px 28px rgba(0,0,0,.28);
+    }
+    .pulse-banner.active { display: block; animation: fade .3s ease; }
+    .pulse-banner .pb-head {
+      display: flex; flex-wrap: wrap; gap: .45rem .75rem; align-items: baseline;
+      justify-content: space-between; padding: .7rem 1rem .35rem;
+      border-bottom: 1px solid var(--line);
+    }
+    .pulse-banner .pb-title {
+      font-family: "Instrument Serif", Georgia, serif; font-size: 1.35rem; letter-spacing: -.02em; margin: 0;
+    }
+    .pulse-banner .pb-title em { color: var(--long); font-style: italic; }
+    .pulse-banner .pb-sub { color: var(--muted); font-size: .72rem; max-width: 36rem; }
+    .pulse-banner .pb-grid {
+      display: grid; gap: .55rem; padding: .75rem 1rem 1rem;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    }
+    .pulse-card {
+      border: 1px solid var(--line); border-radius: .7rem; padding: .7rem .8rem;
+      background: rgba(8,16,14,.55);
+    }
+    .pulse-card.must { box-shadow: inset 3px 0 0 var(--long); }
+    .pulse-card.exit { box-shadow: inset 3px 0 0 var(--short); }
+    .pulse-card .pc-top { display: flex; justify-content: space-between; gap: .5rem; align-items: baseline; }
+    .pulse-card .pc-sym { font-family: "Instrument Serif", Georgia, serif; font-size: 1.35rem; }
+    .pulse-card .pc-tag {
+      font-family: "JetBrains Mono", monospace; font-size: .68rem; letter-spacing: .06em;
+      font-weight: 500;
+    }
+    .pulse-card .pc-tag.must { color: var(--long); }
+    .pulse-card .pc-tag.exit { color: var(--short); }
+    .pulse-card .pc-meta {
+      display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .25rem .55rem;
+      margin-top: .45rem; font-size: .78rem;
+    }
+    .pulse-card .pc-meta strong { color: var(--ink); font-weight: 600; }
+    .pulse-card .pc-meta span { color: var(--muted); }
+    .pulse-card .pc-why { margin: .4rem 0 0; color: var(--muted); font-size: .72rem; line-height: 1.35; }
+    .pulse-empty { padding: .85rem 1rem 1rem; color: var(--muted); font-size: .8rem; }
   </style>
 </head>
 <body>
@@ -123,6 +168,7 @@ PAGE = r"""
       <span class="status" id="counts"></span>
       <span class="status" id="updated">Loading…</span>
     </div>
+    <div id="mustTradeBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="loadNote" class="loading" style="display:none;margin-bottom:.6rem"></div>
 
     <nav class="tabs" id="tabs">
@@ -170,6 +216,10 @@ PAGE = r"""
       <p class="lede">Gap-and-go, breakout, volume thrust, VIX regime. Win% = next session green after quality signal. Strike rate = ≥1% / ≥2% underlying rip rate.</p>
       <div class="cards" id="cards0dte"></div>
       <div class="panel"><div id="table0dte" class="empty"></div></div>
+      <div class="panel">
+        <h2>Recommendation log — 0DTE entry / exit / P&amp;L</h2>
+        <div id="odteRecLog" class="empty">—</div>
+      </div>
     </section>
 
     <section class="tabpane" id="tab-explosive">
@@ -193,6 +243,13 @@ PAGE = r"""
         <div id="lotteryWait" class="empty">—</div>
       </div>
       <div class="panel">
+        <h2>Recommendation log — entry / exit / P&amp;L</h2>
+        <p class="lede" style="margin-top:0;font-size:.76rem">
+          Persistent history of lottery BUY NOW / SELL NOW. Yesterday’s picks stay here even when they drop off the live board.
+        </p>
+        <div id="lotteryRecLog" class="empty">—</div>
+      </div>
+      <div class="panel">
         <h2>Convexity candidates (raw scan)</h2>
         <div id="explosiveTable" class="empty">Run a scan to populate explosive tickets.</div>
       </div>
@@ -203,6 +260,10 @@ PAGE = r"""
       <p class="lede">EMA stack, MACD, RS, pullback entries. Win% ≈ 5-session forward return.</p>
       <div class="cards" id="cardsWeekly"></div>
       <div class="panel"><div id="tableWeekly" class="empty"></div></div>
+      <div class="panel">
+        <h2>Recommendation log — weekly entry / exit / P&amp;L</h2>
+        <div id="weeklyRecLog" class="empty">—</div>
+      </div>
     </section>
 
     <section class="tabpane" id="tab-swing">
@@ -214,17 +275,20 @@ PAGE = r"""
         <h2>Earnings near you — today / this week / next week</h2>
         <div id="swingEarningsWatch" class="empty">—</div>
       </div>
+      <div class="panel">
+        <h2>Recommendation log — swing entry / exit / P&amp;L</h2>
+        <div id="swingRecLog" class="empty">—</div>
+      </div>
     </section>
 
     <section class="tabpane" id="tab-challenge">
       <h2>$1,000 → $1,000,000 challenge</h2>
       <p class="lede">
-        Swing / LEAP <strong>calls &amp; puts</strong> across mega + <strong>mid/small</strong> +
-        <strong>DRAM/memory</strong> optionables.
-        Sure-shot hist filter (prefer <strong>100% hist win</strong>, else ≥80% n≥5).
-        Status: <strong>ENTRY · HOLD · EXIT</strong> with hold periods. Earnings bias:
-        prefer <strong>post-print continuation</strong>; caution/LEAP into the print.
-        <em>Hist 100% ≠ guaranteed future wins.</em>
+        Path includes a <strong>4-month → $500k</strong> pace (prefer <strong>weekly-style</strong> tickets)
+        on the way to $1M. Sure-shot hist filter (prefer <strong>100% hist win</strong>, else ≥80% n≥5).
+        Status: <strong>ENTRY · HOLD · EXIT</strong>. After each Paper ENTER/EXIT the sleeve
+        <strong>cash &amp; equity balance</strong> updates so you know where you are.
+        <em>Hist 100% ≠ guaranteed future wins — options can go to zero.</em>
       </p>
       <div class="metric-row" id="challengeMetrics"></div>
       <div class="cards" id="challengePrimary"></div>
@@ -259,6 +323,14 @@ PAGE = r"""
       <div class="panel">
         <h2>Recommended tickets — side · strike · expiry · hold · status</h2>
         <div id="challengeTickets" class="empty">—</div>
+      </div>
+      <div class="panel">
+        <h2>Recommendation log — entry / exit / P&amp;L</h2>
+        <p class="lede" style="margin-top:0;font-size:.76rem">
+          Keeps challenge ENTRY / EXIT history even when a name drops off today’s ticket list
+          (rank / hist-win / liquidity shifts). Open = still recommended or waiting for EXIT.
+        </p>
+        <div id="challengeRecLog" class="empty">—</div>
       </div>
       <p class="lede" id="challengeDisclaimer" style="font-size:.72rem"></p>
     </section>
@@ -327,7 +399,37 @@ PAGE = r"""
 
     <section class="tabpane" id="tab-journal">
       <h2>Journal &amp; insights</h2>
-      <div id="journal" class="empty">No journal trades yet.</div>
+      <div class="panel">
+        <h2>Paper journal (auto BUY/SELL NOW fills)</h2>
+        <div id="journal" class="empty">No journal trades yet.</div>
+      </div>
+      <div class="panel">
+        <h2>Webull auto-trade bridge</h2>
+        <p class="lede" style="margin-top:0;font-size:.76rem">
+          Routes lottery / 0DTE / weekly / swing / challenge option tickets to Webull by desk type.
+          Live gate: <strong>100% hist-win</strong> (n≥3) — historical filter only, <em>not</em> a future guarantee.
+          Default is <strong>dry-run</strong> (deep-link + order log). Set env
+          <code>WEBULL_APP_KEY</code> / <code>WEBULL_APP_SECRET</code> / <code>WEBULL_ACCOUNT_ID</code>
+          and <code>live_trading.enabled</code> to submit via OpenAPI.
+        </p>
+        <div class="toolbar" style="margin:.4rem 0">
+          <button type="button" class="primary" id="btnWebullSync">Sync → Webull (dry-run / live)</button>
+          <a class="pill" id="webullHelp" href="https://developer.webull.com/apis/docs/sdk.md" target="_blank" rel="noopener">OpenAPI docs</a>
+        </div>
+        <div class="metric-row" id="webullMetrics"></div>
+        <div id="webullOrders" class="empty">No Webull orders staged yet.</div>
+        <p class="lede" id="webullDisclaimer" style="font-size:.72rem;margin-top:.5rem"></p>
+      </div>
+      <div class="panel">
+        <h2>Recommendation logger — all sections</h2>
+        <p class="lede" style="margin-top:0;font-size:.76rem">
+          Cross-desk history: lottery · challenge · 0DTE · weekly · swing.
+          Records recommended entry time/price and exit + estimated P&amp;L (1 contract).
+          Names stay logged after they leave today’s live board.
+        </p>
+        <div class="metric-row" id="recLogMetrics"></div>
+        <div id="recLogAll" class="empty">—</div>
+      </div>
     </section>
 
     <footer>
@@ -339,6 +441,31 @@ PAGE = r"""
     let DATA = {};
     const fmt = (n, d=2) => (n==null || Number.isNaN(Number(n))) ? "—" : Number(n).toFixed(d);
     const pctClass = (n) => (n||0) >= 0 ? "up" : "down";
+    /** Format ISO/UTC timestamps in US Central (CST/CDT). */
+    function fmtCST(iso, withSeconds=false) {
+      if (iso == null || iso === "") return "—";
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) {
+        const s = String(iso);
+        return s.length >= 16 ? s.slice(0, 16) : s;
+      }
+      const opts = {
+        timeZone: "America/Chicago",
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+        hour12: true,
+        timeZoneName: "short",
+      };
+      if (withSeconds) opts.second = "2-digit";
+      try {
+        return new Intl.DateTimeFormat("en-US", opts).format(d);
+      } catch (_) {
+        return d.toISOString();
+      }
+    }
 
     document.querySelectorAll("#tabs button").forEach(btn => {
       btn.onclick = () => {
@@ -357,20 +484,51 @@ PAGE = r"""
     }
 
     function wallLookup(symbol) {
-      const m = (DATA.walls_by_symbol || {})[symbol] || {};
+      const m = (DATA.walls_by_symbol || {})[String(symbol || "").toUpperCase()] || {};
       return m;
     }
-    function wallMeta(t) {
-      const w = t.call_wall!=null || t.put_wall!=null ? t : wallLookup(t.symbol);
-      const callW = w.call_wall, putW = w.put_wall;
-      const soft = w.soft_exit;
-      const side = w.primary_wall_side || (t.right==="P"?"put":"call");
-      if (callW==null && putW==null) return "";
+    function spotLookup(symbol, row) {
+      const r = row || {};
+      const direct = r.spot ?? r.live_last ?? r.live_spot ?? r.entry_spot ?? r.last_price ?? r.entry;
+      if (direct != null && direct !== "" && !Number.isNaN(Number(direct))) return Number(direct);
+      const sym = String(symbol || r.symbol || "").toUpperCase();
+      if (!sym) return null;
+      const sc = (DATA.scores || []).find(s => String(s.symbol || "").toUpperCase() === sym);
+      if (sc) {
+        const v = sc.last_price ?? sc.entry;
+        if (v != null && !Number.isNaN(Number(v))) return Number(v);
+      }
+      const q = ((DATA.watch || {}).quotes || {})[sym] || {};
+      if (q.last != null && !Number.isNaN(Number(q.last))) return Number(q.last);
+      // Challenge / market boards sometimes carry spot under aliases
+      for (const bucket of ["entry", "hold", "exit", "tickets"]) {
+        const rows = ((DATA.challenge || {})[bucket]) || [];
+        const hit = rows.find(x => String(x.symbol || "").toUpperCase() === sym && x.spot != null);
+        if (hit) return Number(hit.spot);
+      }
+      return null;
+    }
+    /** Spot (scan) + call/put walls + soft EXIT — always shown on recommend tiles. */
+    function levelsMeta(t) {
+      const row = t || {};
+      const sym = String(row.symbol || "").toUpperCase();
+      const walls = wallLookup(sym);
+      const callW = row.call_wall ?? walls.call_wall;
+      const putW = row.put_wall ?? walls.put_wall;
+      let soft = row.soft_exit ?? walls.soft_exit;
+      if (soft == null && callW != null && !Number.isNaN(Number(callW))) {
+        soft = Number(callW) - Number(row.wall_buffer_usd ?? walls.wall_buffer_usd ?? 0.10);
+      }
+      const spot = spotLookup(sym, row);
       return `
+          <div>Spot (scan)<strong>${spot==null?"—":"$"+fmt(spot,2)}</strong></div>
           <div title="Max call OI ≥ spot">Call wall<strong class="up">${callW==null?"—":fmt(callW,2)}</strong></div>
           <div title="Max put OI ≤ spot">Put wall<strong class="down">${putW==null?"—":fmt(putW,2)}</strong></div>
-          <div title="Take profit on underlying before OI wall">Soft EXIT<strong class="up">${soft==null?"—":"$"+fmt(soft,2)}</strong></div>
-          <div>Wall side<strong>${side||"—"}</strong></div>`;
+          <div title="Take profit on underlying before OI wall">Soft EXIT<strong class="up">${soft==null?"—":"$"+fmt(soft,2)}</strong></div>`;
+    }
+    function wallMeta(t) {
+      // Back-compat alias — prefer levelsMeta on recommend tiles
+      return levelsMeta(t);
     }
     function cardHTML(t, hz) {
       const long = t.quality || (t.ensemble_score||0) >= 70;
@@ -398,7 +556,7 @@ PAGE = r"""
           <div title="Sample size: number of historical quality signals">${w.n < 8 && w.pct!=null ? "n (low)" : "n"}<strong>${nLabel}</strong></div>
           <div title="How often underlying ripped after signal">Strike rate<strong>${strikeRate}</strong></div>
           <div>Exp move<strong>${fmt(t.expected_move_pct,1)}%</strong></div>
-          ${wallMeta({...t, ...walls})}
+          ${levelsMeta({...t, ...walls})}
         </div>
         <p class="why" style="margin:.55rem 0 0">${(t.reasons||[]).filter(r=>!r.includes("/")).slice(0,4).join(" · ")||"—"}</p>
         ${softHint?`<p class="why" style="margin:.35rem 0 0"><strong>Wall EXIT:</strong> ${softHint}</p>`:""}
@@ -456,6 +614,7 @@ PAGE = r"""
           <div>Lottery score<strong>${fmt(r.lottery_score,0)}</strong></div>
           <div>Tape 5m / 15m<strong>${r.mom_5m_pct==null?"—":fmt(r.mom_5m_pct,2)+"%"} / ${r.mom_15m_pct==null?"—":fmt(r.mom_15m_pct,2)+"%"}</strong></div>
           <div>Unreal%<strong>${r.option_unrealized_pct==null?"—":fmt(r.option_unrealized_pct,0)+"%"}</strong></div>
+          ${levelsMeta(r)}
         </div>
         <p class="why" style="margin:.55rem 0 0">${r.detail||r.headline||"—"}</p>
         <div class="playbook">${tags}</div>
@@ -479,6 +638,93 @@ PAGE = r"""
           <td class="why">${r.detail||""}${(r.vetoes&&r.vetoes.length)?` · veto: ${r.vetoes.slice(0,2).join("; ")}`:""}</td>
         </tr>`;
       }).join("")}</tbody></table>`;
+    }
+
+    function renderRecLog(elId, board, emptyMsg) {
+      const el = document.getElementById(elId);
+      if (!el) return;
+      const open = (board && board.open_recs) || [];
+      const closed = (board && board.closed_recs) || [];
+      if (!open.length && !closed.length) {
+        el.innerHTML = `<div class="empty">${emptyMsg||"No recommendations logged yet."}</div>`;
+        return;
+      }
+      const strikeTxt = (r) => {
+        if (r.strike == null) return "—";
+        const side = (r.right || "C") === "P" ? "p" : "c";
+        return `${Number(r.strike).toFixed(Number(r.strike) % 1 ? 2 : 0)}${side}`;
+      };
+      const cardOpen = (r) => `<article class="action-card long">
+        <div class="ac-top">
+          <div class="ac-sym">${r.symbol} <span class="tag">${r.section||""}</span></div>
+          <div class="ac-dir long">${r.open_action||"ENTRY"}${r.on_board?"":" · OFF BOARD"}</div>
+        </div>
+        <div class="ac-meta">
+          <div>Strike / expiry<strong>${strikeTxt(r)} · ${r.expiry||"—"}${r.dte!=null?` (${r.dte}DTE)`:""}</strong></div>
+          <div>Entry $<strong>${r.entry_price==null?"—":"$"+fmt(r.entry_price,2)}</strong></div>
+          <div>First entry (CST)<strong>${fmtCST(r.recommended_at)}</strong></div>
+          <div>Last seen (CST)<strong>${fmtCST(r.last_recommended_at||r.recommended_at)}</strong></div>
+          <div>Contract<strong class="mono" style="font-size:.72rem">${r.contract||"—"}</strong></div>
+          <div>Status<strong>${r.on_board?"On board":"Off board"}</strong></div>
+          ${levelsMeta(r)}
+        </div>
+        <p class="why" style="margin:.45rem 0 0">${r.headline||r.reason||""}</p>
+      </article>`;
+      const cardClosed = (r) => `<article class="action-card ${((r.profit_pct||0)>=0)?"long":"short"}">
+        <div class="ac-top">
+          <div class="ac-sym">${r.symbol} <span class="tag">${r.section||""}</span></div>
+          <div class="ac-dir ${((r.profit_pct||0)>=0)?"long":"short"}">${r.close_action||"EXIT"}</div>
+        </div>
+        <div class="ac-meta">
+          <div>Strike / expiry<strong>${strikeTxt(r)} · ${r.expiry||"—"}</strong></div>
+          <div>In → out $<strong>${r.entry_price==null?"—":"$"+fmt(r.entry_price,2)} → ${r.exit_price==null?"—":"$"+fmt(r.exit_price,2)}</strong></div>
+          <div>Entry (CST)<strong>${fmtCST(r.recommended_at)}</strong></div>
+          <div>Exit (CST)<strong>${fmtCST(r.closed_at)}</strong></div>
+          <div>Profit %<strong class="${pctClass(r.profit_pct)}">${r.profit_pct==null?"—":fmt(r.profit_pct,1)+"%"}</strong></div>
+          <div>P&amp;L (1ct)<strong class="${pctClass(r.pnl_usd)}">${r.pnl_usd==null?"—":"$"+fmt(r.pnl_usd,2)}</strong></div>
+          ${levelsMeta(r)}
+        </div>
+        <p class="why" style="margin:.45rem 0 0">${r.exit_reason||r.reason||r.headline||""}</p>
+      </article>`;
+      let html = "";
+      if (open.length) {
+        html += `<div class="status" style="margin:.2rem 0 .45rem">OPEN / STILL TRACKING (${open.length}) · times in CST</div>
+          <div class="cards">${open.map(cardOpen).join("")}</div>`;
+      }
+      if (closed.length) {
+        html += `<div class="status" style="margin:.9rem 0 .45rem">CLOSED — EXIT / P&amp;L (${closed.length}) · times in CST</div>
+          <div class="cards">${closed.map(cardClosed).join("")}</div>`;
+      }
+      el.innerHTML = html;
+    }
+
+    function renderRecLogAll(rec) {
+      const metrics = document.getElementById("recLogMetrics");
+      const allEl = document.getElementById("recLogAll");
+      if (!rec) {
+        if (allEl) allEl.innerHTML = `<div class="empty">Recommendation log empty.</div>`;
+        return;
+      }
+      const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
+      if (metrics) metrics.innerHTML = [
+        m("Open recs", rec.open??0),
+        m("Closed", rec.closed??0),
+        m("Wins", rec.wins??0, "up"),
+        m("Losses", rec.losses??0, "down"),
+        m("Closed P&L", rec.closed_pnl_usd==null?"—":`$${fmt(rec.closed_pnl_usd,2)}`, pctClass(rec.closed_pnl_usd)),
+      ].join("");
+      const by = rec.by_section || {};
+      // Prefer combined all list
+      renderRecLog("recLogAll", {
+        open_recs: (rec.open_recs || (rec.all||[]).filter(r=>r.status==="open")),
+        closed_recs: (rec.closed_recs || (rec.all||[]).filter(r=>r.status==="closed")),
+      }, "No recommendations logged yet — appear after BUY NOW / ENTRY pulses.");
+      // Section panels
+      renderRecLog("lotteryRecLog", by.lottery || rec.lottery, "No lottery recommendations logged yet.");
+      renderRecLog("challengeRecLog", by.challenge || rec.challenge, "No challenge recommendations logged yet.");
+      renderRecLog("odteRecLog", by.odte || rec.odte, "No 0DTE recommendations logged yet.");
+      renderRecLog("weeklyRecLog", by.weekly || rec.weekly, "No weekly recommendations logged yet.");
+      renderRecLog("swingRecLog", by.swing || rec.swing, "No swing recommendations logged yet.");
     }
 
     function renderExplosive(rows, lottery) {
@@ -545,6 +791,8 @@ PAGE = r"""
           : head + list.slice(0,4).map(rowHtml).join("") + "</tbody></table>";
       }
       table.innerHTML = head + list.map(rowHtml).join("") + "</tbody></table>";
+      const rec = (DATA.rec_log && DATA.rec_log.by_section && DATA.rec_log.by_section.lottery) || (DATA.rec_log && DATA.rec_log.lottery);
+      renderRecLog("lotteryRecLog", rec, "No lottery recommendations logged yet.");
     }
 
     function renderChallenge(ch) {
@@ -564,6 +812,8 @@ PAGE = r"""
       }
       const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
       const path = ch.path || {};
+      const pace = ch.pace || {};
+      const paceM = pace.milestone || {};
       const c = ch.counts || {};
       // Prefer ledger book (always written by API); sync.book is fallback
       const book = (ch.book && (ch.book.trades || ch.book.cash!=null)) ? ch.book
@@ -578,17 +828,16 @@ PAGE = r"""
         return `<span class="badge sell">NO SPOT</span>`;
       };
       if (metrics) metrics.innerHTML = [
-        m("Sleeve equity", book.equity!=null?`$${Number(book.equity).toLocaleString()}`:`$${(ch.start_usd||1000).toLocaleString()}`),
-        m("Target", `$${(ch.target_usd||1000000).toLocaleString()}`, "up"),
-        m("Need / flip", path.pct_per_flip==null?"—":`+${fmt(path.pct_per_flip,0)}%`, "up"),
+        m("Sleeve cash", book.cash!=null?`$${Number(book.cash).toLocaleString(undefined,{maximumFractionDigits:0})}`:"—"),
+        m("Sleeve equity", book.equity!=null?`$${Number(book.equity).toLocaleString(undefined,{maximumFractionDigits:0})}`:`$${(ch.start_usd||1000).toLocaleString()}`),
+        m("→ $500k", book.milestone_500k_pct!=null?`${fmt(book.milestone_500k_pct,2)}%`:(book.equity!=null?`${fmt((book.equity/500000)*100,2)}%`:"—"), "up"),
+        m("→ $1M", book.progress_pct!=null?`${fmt(book.progress_pct,3)}%`:"—", "up"),
+        m("4mo need / flip", paceM.pct_per_flip==null?"—":`+${fmt(paceM.pct_per_flip,0)}%`, "up"),
+        m("Classic need / flip", path.pct_per_flip==null?"—":`+${fmt(path.pct_per_flip,0)}%`),
+        m("4mo fits", `${c.fits_4mo_500k||0} / weekly ${c.weekly_pace||0}`),
         m("ENTRY / HOLD / EXIT", `${c.entry||0} / ${c.hold||0} / ${c.exit||0}`),
-        m("Calls / Puts", `${c.calls||0} / ${c.puts||0}`),
-        m("Approx hold", (ch.primary && holdLbl(ch.primary)) || "—"),
-        m("Live / cache spot", `${c.live_spot||0} / ${c.cache_spot||0}`),
-        m("Live asks", `${c.live_ask||0}/${c.tickets||0}`),
-        m("Earn today / week / next", `${c.earn_today||0} / ${c.earn_this_week||0} / ${c.earn_next_week||0}`),
-        m("Pre / Post earn", `${c.pre_earnings||0} / ${c.post_earnings||0}`),
         m("Closed flips", `${book.flips_closed||0} (W${book.wins||0}/L${book.losses||0})`),
+        m("Earn today / week", `${c.earn_today||0} / ${c.earn_this_week||0}`),
       ].join("");
 
       const earnBadge = (t) => {
@@ -644,7 +893,7 @@ PAGE = r"""
           const kind = act==="EXIT"?"short":(act==="ENTRY"||act==="HOLD"?"long":"wait");
           primaryEl.innerHTML = `<article class="action-card ${kind}">
             <div class="ac-top">
-              <div class="ac-sym">${t0.symbol} <span class="tag">${t0.right==="P"?"PUT":"CALL"}</span> <span class="tag">${(t0.market_cap_tier||"").replace("_","/")}</span> ${earnBadge(t0)} ${spotBadge(t0)}</div>
+              <div class="ac-sym">${t0.symbol} <span class="tag">${t0.right==="P"?"PUT":"CALL"}</span> <span class="tag">${(t0.market_cap_tier||"").replace("_","/")}</span> ${earnBadge(t0)} ${spotBadge(t0)}${t0.fits_4mo_500k?` <span class="badge buy">4MO $500k</span>`:""}</div>
               <div class="ac-dir ${kind}">${act} · ${tier.toUpperCase()}</div>
             </div>
             <div class="ac-conf">Hist win ${fmt(t0.hist_win_pct,0)}% · n=${t0.hist_samples} · <strong>approx hold ${holdLbl(t0)}</strong></div>
@@ -656,10 +905,7 @@ PAGE = r"""
               <div>DTE / contract<strong>${t0.dte??"—"}d · ${t0.contract||"pending"}</strong></div>
               <div>Opt ${t0.mark_source||"price"} → tgt<strong>${(t0.ask??t0.option_last)==null?"—":"$"+fmt(t0.ask??t0.option_last,2)} → ${t0.target_ask==null?"—":"$"+fmt(t0.target_ask,2)}</strong></div>
               <div>Strike rate ≥1%/≥2%<strong>${t0.hit_1pct==null?"—":fmt(t0.hit_1pct,0)+"%"} / ${t0.hit_2pct==null?"—":fmt(t0.hit_2pct,0)+"%"}</strong></div>
-              <div>Spot (${t0.spot_source||"—"})<strong>${t0.spot==null?"—":"$"+fmt(t0.spot,2)}</strong></div>
-              <div>Call wall<strong class="up">${t0.call_wall==null?"—":fmt(t0.call_wall,2)}</strong></div>
-              <div>Put wall<strong class="down">${t0.put_wall==null?"—":fmt(t0.put_wall,2)}</strong></div>
-              <div title="Underlying take-profit before OI wall">Soft EXIT<strong class="up">${t0.soft_exit==null?"—":"$"+fmt(t0.soft_exit,2)}</strong></div>
+              ${levelsMeta(t0)}
             </div>
             <p class="why" style="margin:.55rem 0 0">${t0.status_detail||""}${t0.data_note?` · ${t0.data_note}`:""}</p>
             ${reasonList(t0)}
@@ -719,6 +965,7 @@ PAGE = r"""
                 <div class="ac-dir ${t.last_action==="EXIT"?"short":"long"}">${t.hold_approx_label||`max ${t.hold_max_days||"—"}d`}</div>
               </div>
               <div class="ac-meta">
+                <div>Entered (CST)<strong>${fmtCST(t.entered_at)}</strong></div>
                 <div>Strike / expiry<strong>${t.strike==null?"—":fmt(t.strike,2)} · ${t.expiry||"—"}</strong></div>
                 <div>Contract / DTE<strong>${t.contract||"—"} · ${t.dte_at_entry??"—"}d</strong></div>
                 <div>Entry → mark<strong>$${fmt(t.entry_ask,2)} → $${fmt(t.mark,2)}</strong></div>
@@ -728,26 +975,37 @@ PAGE = r"""
                 <div>Hist win<strong>${t.hist_win_pct==null?"—":fmt(t.hist_win_pct,0)+"%"} (n=${t.hist_samples??"—"})</strong></div>
                 <div>Held / max<strong>${t.hold_days==null?"0":fmt(t.hold_days,1)}d / ${t.hold_max_days||"—"}d</strong></div>
                 <div>Contracts / cost<strong>${t.contracts||1} · $${fmt(t.cost,0)}</strong></div>
+                <div>Cash before → after<strong>$${fmt(t.cash_before,0)} → $${fmt(t.cash_after,0)}</strong></div>
+                <div>Balance (equity)<strong class="up">$${fmt(t.equity_after!=null?t.equity_after:book.equity,0)}</strong></div>
+                ${levelsMeta(t)}
               </div>
               <p class="why" style="margin:.45rem 0 0"><strong>EXIT plan:</strong> ${t.exit_plan||t.last_action_detail||"—"}</p>
               <p class="why" style="margin:.25rem 0 0"><strong>ENTER was:</strong> ${t.enter_plan||t.entry_reason||"—"}</p>
+              ${t.balance_note?`<p class="why" style="margin:.25rem 0 0"><strong>Balance:</strong> ${t.balance_note}</p>`:""}
               <div class="playbook" style="margin-top:.45rem">
                 <button type="button" class="tag" data-ch-exit="${t.id}">Paper EXIT now</button>
               </div>
             </article>`;
           }).join(""):`<div class="empty">No open challenge flip — click <strong>Paper ENTER</strong> on an ENTRY ticket below.</div>`}
-          ${closed.length?`<div class="status" style="margin-top:.7rem">CLOSED</div><table><thead><tr>
-            <th>Side</th><th>Sym</th><th>Strike</th><th>Expiry</th><th>In→Out</th><th>P&L%</th><th>Held</th><th>Exit reason</th>
-          </tr></thead><tbody>${closed.map(t=>`<tr>
-            <td class="mono">${t.right==="P"?"PUT":"CALL"}</td>
-            <td><strong>${t.symbol}</strong></td>
-            <td class="mono">${t.strike==null?"—":fmt(t.strike,2)}</td>
-            <td class="mono">${t.expiry||"—"}</td>
-            <td class="mono">$${fmt(t.entry_ask,2)}→$${fmt(t.exit_bid,2)}</td>
-            <td class="mono ${pctClass(t.profit_pct)}">${t.profit_pct==null?"—":fmt(t.profit_pct,1)+"%"}</td>
-            <td class="mono">${t.hold_days==null?"—":fmt(t.hold_days,1)+"d"}</td>
-            <td class="why">${t.exit_reason||""}</td>
-          </tr>`).join("")}</tbody></table>`:""}`;
+          ${closed.length?`<div class="status" style="margin-top:.7rem">CLOSED · times in CST</div><div class="cards">${closed.map(t=>`<article class="action-card ${((t.profit_pct||0)>=0)?"long":"short"}">
+            <div class="ac-top">
+              <div class="ac-sym">${t.symbol} <span class="tag">${t.right==="P"?"PUT":"CALL"}</span></div>
+              <div class="ac-dir ${((t.profit_pct||0)>=0)?"long":"short"}">EXIT</div>
+            </div>
+            <div class="ac-meta">
+              <div>Entry (CST)<strong>${fmtCST(t.entered_at)}</strong></div>
+              <div>Exit (CST)<strong>${fmtCST(t.exited_at||t.closed_at)}</strong></div>
+              <div>Strike / expiry<strong>${t.strike==null?"—":fmt(t.strike,2)} · ${t.expiry||"—"}</strong></div>
+              <div>In → out $<strong>$${fmt(t.entry_ask,2)} → $${fmt(t.exit_bid,2)}</strong></div>
+              <div>P&amp;L % / $<strong class="${pctClass(t.profit_pct)}">${t.profit_pct==null?"—":fmt(t.profit_pct,1)+"%"} · ${t.pnl_usd==null?"—":"$"+fmt(t.pnl_usd,2)}</strong></div>
+              <div>Held<strong>${t.hold_days==null?"—":fmt(t.hold_days,1)+"d"}</strong></div>
+              <div>Cash before → after<strong>$${fmt(t.cash_before,0)} → $${fmt(t.cash_after,0)}</strong></div>
+              <div>Balance after EXIT<strong class="up">$${fmt(t.equity_after!=null?t.equity_after:t.cash_after,0)}</strong></div>
+              ${levelsMeta(t)}
+            </div>
+            <p class="why" style="margin:.45rem 0 0">${t.exit_reason||""}</p>
+            ${t.balance_note?`<p class="why" style="margin:.25rem 0 0"><strong>Balance:</strong> ${t.balance_note}</p>`:""}
+          </article>`).join("")}</div>`:""}`;
         bookEl.querySelectorAll("[data-ch-exit]").forEach(btn=>{
           btn.addEventListener("click", async ()=>{
             btn.textContent = "Exiting…";
@@ -773,6 +1031,7 @@ PAGE = r"""
               <div>Opt mark → target<strong>${mark==null?"—":"$"+fmt(mark,2)} → ${focus.target_ask==null?"—":"$"+fmt(focus.target_ask,2)} (+${fmt(focus.target_profit_pct,0)}%)</strong></div>
               <div>Strike rate ≥1%/≥2%<strong>${focus.hit_1pct==null?"—":fmt(focus.hit_1pct,0)+"%"} / ${focus.hit_2pct==null?"—":fmt(focus.hit_2pct,0)+"%"}</strong></div>
               <div>Approx hold<strong>${holdLbl(focus)}</strong></div>
+              ${levelsMeta(focus)}
             </div>
             <p class="why" style="margin:.55rem 0 0"><strong>ENTER:</strong> ${focus.enter_plan||"—"}</p>
             <p class="why" style="margin:.35rem 0 0"><strong>EXIT:</strong> ${focus.exit_plan||"—"}</p>
@@ -793,20 +1052,44 @@ PAGE = r"""
       if (pathEl) {
         const paths = ch.paths || [];
         const hp = ch.hold_periods || {};
+        const sched = pace.schedule || path.schedule || [];
+        const balLog = book.balance_log || [];
         pathEl.innerHTML = `
-          <p class="lede" style="margin-top:0">${path.note||""}</p>
+          <p class="lede" style="margin-top:0"><strong>4-month → $500k pace:</strong> ${pace.note||"—"}</p>
+          <p class="lede" style="margin-top:.35rem">${path.note||""}</p>
           <div class="playbook" style="margin-bottom:.55rem">
             ${["weekly","swing","leap"].map(k=>{
               const h=hp[k]||{};
               return `<span class="tag">${k}: ${h.label||"—"}</span>`;
             }).join("")}
+            <span class="tag">Prefer weekly for 4mo/$500k</span>
           </div>
+          <div class="status" style="margin:.2rem 0 .4rem">4mo compound schedule (weekly ~${pace.ideal_hold_days||8}d holds)</div>
+          <table><thead><tr><th>Flip</th><th>Months</th><th>Equity</th><th>Milestone</th></tr></thead>
+          <tbody>${(sched.slice(0,16)).map(s=>`<tr>
+            <td class="mono">${s.flip}</td>
+            <td class="mono">${s.months_elapsed==null?"—":fmt(s.months_elapsed,1)}</td>
+            <td class="mono up"><strong>$${Number(s.equity||0).toLocaleString()}</strong></td>
+            <td class="why">${s.hit_target?"$1M":(s.hit_milestone?"$500k":"—")}</td>
+          </tr>`).join("")||`<tr><td colspan="4" class="empty">No pace schedule</td></tr>`}</tbody></table>
+          <div class="status" style="margin:.75rem 0 .4rem">Classic path flip counts</div>
           <table><thead><tr><th>Flips</th><th>Need / flip</th><th>Multiple / flip</th></tr></thead>
           <tbody>${paths.map(p=>`<tr>
             <td class="mono">${p.flips}</td>
             <td class="mono up"><strong>+${fmt(p.pct_per_flip,0)}%</strong></td>
             <td class="mono">${fmt(p.mult_per_flip,2)}×</td>
           </tr>`).join("")}</tbody></table>
+          <div class="status" style="margin:.75rem 0 .4rem">Balance after ENTRY / EXIT (CST)</div>
+          ${balLog.length?`<table><thead><tr><th>When</th><th>Action</th><th>Sym</th><th>Cash before</th><th>Cash after</th><th>Equity after</th><th>P&amp;L</th></tr></thead>
+            <tbody>${balLog.slice().reverse().slice(0,20).map(e=>`<tr>
+              <td class="mono">${fmtCST(e.at)}</td>
+              <td><span class="badge ${e.action==="EXIT"?"sell":"buy"}">${e.action}</span></td>
+              <td><strong>${e.symbol||"—"}</strong></td>
+              <td class="mono">$${fmt(e.cash_before,0)}</td>
+              <td class="mono"><strong>$${fmt(e.cash_after,0)}</strong></td>
+              <td class="mono up">$${fmt(e.equity_after,0)}</td>
+              <td class="mono ${pctClass(e.pnl_usd)}">${e.pnl_usd==null?"—":"$"+fmt(e.pnl_usd,2)}</td>
+            </tr>`).join("")}</tbody></table>`:`<div class="empty">No ENTRY/EXIT yet — balance updates after Paper ENTER / EXIT.</div>`}
           <ul class="lede" style="font-size:.76rem">${(ch.rules||[]).map(r=>`<li>${r}</li>`).join("")}</ul>`;
       }
 
@@ -825,7 +1108,7 @@ PAGE = r"""
           return `<tr>
           <td><span class="badge ${cls}">${a}</span></td>
           <td class="mono">${t.right==="P"?"PUT":"CALL"}</td>
-          <td><strong>${t.symbol}</strong> ${spotBadge(t)} ${earnBadge(t)}<div class="why">spot ${t.spot==null?"—":"$"+fmt(t.spot,2)}</div></td>
+          <td><strong>${t.symbol}</strong> ${spotBadge(t)} ${earnBadge(t)}${t.fits_4mo_500k?` <span class="badge buy">4MO $500k</span>`:""}${t.pace_style==="weekly"?` <span class="tag">weekly pace</span>`:""}<div class="why">spot ${t.spot==null?"—":"$"+fmt(t.spot,2)}</div></td>
           <td class="mono"><strong>${t.strike==null?"—":fmt(t.strike,2)}</strong><div class="why">${t.expiry||"—"} · ${t.dte==null?"":t.dte+"d"}</div></td>
           <td class="mono"><span class="up">${t.call_wall==null?"—":fmt(t.call_wall,2)}</span> / <span class="down">${t.put_wall==null?"—":fmt(t.put_wall,2)}</span></td>
           <td class="mono up"><strong>${t.soft_exit==null?"—":"$"+fmt(t.soft_exit,2)}</strong><div class="why">${t.wall_exit_hint||""}</div></td>
@@ -854,6 +1137,8 @@ PAGE = r"""
         });
       }
       if (disc) disc.textContent = ch.disclaimer || "";
+      const rec = (DATA.rec_log && DATA.rec_log.by_section && DATA.rec_log.by_section.challenge) || (DATA.rec_log && DATA.rec_log.challenge);
+      renderRecLog("challengeRecLog", rec, "No challenge recommendations logged yet.");
     }
 
     function renderDarkpoolMini(echo) {
@@ -1132,6 +1417,65 @@ PAGE = r"""
         }).join("")}</tbody></table>`;
     }
 
+    function renderWebull(wb) {
+      const metrics = document.getElementById("webullMetrics");
+      const ordersEl = document.getElementById("webullOrders");
+      const disc = document.getElementById("webullDisclaimer");
+      if (!metrics) return;
+      const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
+      const st = wb.status || wb.broker || {};
+      metrics.innerHTML = [
+        m("Bridge", st.enabled ? (st.dry_run?"DRY-RUN":"LIVE") : "OFF", st.enabled?(st.dry_run?"wait":"up"):"down"),
+        m("Ready live", st.ready_live?"yes":"no", st.ready_live?"up":""),
+        m("SDK", st.sdk_available?"installed":"missing"),
+        m("Keys", (st.has_app_key&&st.has_app_secret&&st.has_account_id)?"set":"env needed"),
+        m("Perfect gate", wb.require_perfect_hist===false?"off":`${wb.min_hist_win_pct??100}% n≥${wb.min_hist_win_samples??3}`),
+        m("Last sync in", wb.submitted_n??0, "up"),
+        m("Last sync skip", wb.skipped_n??0),
+      ].join("");
+      if (disc) disc.textContent = wb.disclaimer || st.disclaimer || "";
+      const rows = wb.recent || wb.orders || [];
+      if (!rows.length) {
+        ordersEl.innerHTML = `<div class="empty">No staged Webull orders. Tap Sync when BUY NOW / ENTRY clears the 100% hist-win gate.</div>`;
+        return;
+      }
+      ordersEl.innerHTML = `<table><thead><tr>
+        <th>Desk</th><th>Side</th><th>Symbol</th><th>Contract</th><th>Limit</th><th>Hist</th><th>Status</th><th>Webull</th>
+      </tr></thead><tbody>
+      ${rows.slice(0,25).map(o=>`<tr>
+        <td class="tag">${o.desk||"—"}</td>
+        <td class="mono">${o.action||"—"}</td>
+        <td><strong>${o.symbol}</strong> ${o.right||"C"}</td>
+        <td class="mono">${o.contract||((o.strike!=null?o.strike:"")+" "+(o.expiry||""))}</td>
+        <td class="mono">${o.limit_price==null?"—":"$"+fmt(o.limit_price,2)}</td>
+        <td class="mono">${o.hist_win_pct==null?"—":fmt(o.hist_win_pct,0)+"%"}${(o.hist_samples!=null?` n=${o.hist_samples}`:"")}</td>
+        <td><span class="badge ${o.status==="dry_run"||o.status==="submitted"?"buy":(o.status==="skipped"?"wait":"skip")}">${o.status||"—"}</span>
+          <div class="why">${o.error||o.reason||""}</div></td>
+        <td>${o.deep_link?`<a href="${o.deep_link}" target="_blank" rel="noopener">Open</a>`:"—"}</td>
+      </tr>`).join("")}
+      </tbody></table>`;
+    }
+
+    async function syncWebull() {
+      const btn = document.getElementById("btnWebullSync");
+      if (btn) { btn.disabled = true; btn.textContent = "Syncing…"; }
+      try {
+        const res = await fetch("/api/webull/sync", { method: "POST" });
+        const body = await res.json();
+        DATA.webull = body;
+        renderWebull(body);
+        const note = document.getElementById("loadNote");
+        if (note) {
+          note.style.display = "block";
+          note.textContent = `Webull sync: ${body.submitted_n||0} staged/dry-run, ${body.skipped_n||0} skipped (100% gate)`;
+        }
+      } catch (e) {
+        alert("Webull sync failed: " + (e.message||e));
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = "Sync → Webull (dry-run / live)"; }
+      }
+    }
+
     function renderInsights(ins) {
       const cards = document.getElementById("perfCards");
       const sum = document.getElementById("insightSummary");
@@ -1151,28 +1495,189 @@ PAGE = r"""
       const open = ins.open_positions||[], closed = ins.closed_trades||[];
       let html="";
       if (open.length) {
-        html += `<div class="status" style="margin:.3rem 0">OPEN</div><table><thead><tr>
-          <th>Symbol</th><th>Entered</th><th>Entry</th><th>Mark</th><th>Unreal%</th><th>Why</th></tr></thead><tbody>
-          ${open.map(t=>`<tr><td><strong>${t.symbol}</strong></td>
-          <td class="mono">${(t.entered_at||"").slice(0,16)}</td>
-          <td class="mono">$${fmt(t.entry_ask,2)}</td><td class="mono">$${fmt(t.mark,2)}</td>
-          <td class="mono ${pctClass(t.unrealized_pct)}">${t.unrealized_pct==null?"—":fmt(t.unrealized_pct,1)+"%"}</td>
-          <td class="why">${t.entry_reason||""}</td></tr>`).join("")}</tbody></table>`;
+        html += `<div class="status" style="margin:.3rem 0 .45rem">OPEN · times in CST</div>
+          <div class="cards">${open.map(t=>`<article class="action-card wait">
+            <div class="ac-top">
+              <div class="ac-sym">${t.symbol}</div>
+              <div class="ac-dir wait">OPEN</div>
+            </div>
+            <div class="ac-meta">
+              <div>Entered (CST)<strong>${fmtCST(t.entered_at)}</strong></div>
+              <div>Entry → mark<strong>$${fmt(t.entry_ask,2)} → $${fmt(t.mark,2)}</strong></div>
+              <div>Unreal %<strong class="${pctClass(t.unrealized_pct)}">${t.unrealized_pct==null?"—":fmt(t.unrealized_pct,1)+"%"}</strong></div>
+              <div>Contract<strong class="mono" style="font-size:.72rem">${t.contract||"—"}</strong></div>
+              ${levelsMeta(t)}
+            </div>
+            <p class="why" style="margin:.45rem 0 0">${t.entry_reason||""}</p>
+          </article>`).join("")}</div>`;
       }
       if (closed.length) {
-        html += `<div class="status" style="margin:.8rem 0 .3rem">CLOSED</div><table><thead><tr>
-          <th>Symbol</th><th>In→Out</th><th>Profit%</th><th>P&L</th><th>Hold</th><th>Exit</th></tr></thead><tbody>
-          ${closed.map(t=>`<tr><td><strong>${t.symbol}</strong></td>
-          <td class="mono">$${fmt(t.entry_ask,2)}→$${fmt(t.exit_bid,2)}</td>
-          <td class="mono ${pctClass(t.profit_pct)}"><strong>${fmt(t.profit_pct,1)}%</strong></td>
-          <td class="mono ${pctClass(t.pnl_usd)}">$${fmt(t.pnl_usd,2)}</td>
-          <td class="mono">${fmt(t.hold_minutes,0)}m</td>
-          <td class="why">${t.exit_reason||""}</td></tr>`).join("")}</tbody></table>`;
+        html += `<div class="status" style="margin:.9rem 0 .45rem">CLOSED · times in CST</div>
+          <div class="cards">${closed.map(t=>`<article class="action-card ${((t.profit_pct||0)>=0)?"long":"short"}">
+            <div class="ac-top">
+              <div class="ac-sym">${t.symbol}</div>
+              <div class="ac-dir ${((t.profit_pct||0)>=0)?"long":"short"}">EXIT</div>
+            </div>
+            <div class="ac-meta">
+              <div>Entry (CST)<strong>${fmtCST(t.entered_at)}</strong></div>
+              <div>Exit (CST)<strong>${fmtCST(t.exited_at||t.closed_at)}</strong></div>
+              <div>In → out $<strong>$${fmt(t.entry_ask,2)} → $${fmt(t.exit_bid,2)}</strong></div>
+              <div>Profit % / P&amp;L<strong class="${pctClass(t.profit_pct)}">${fmt(t.profit_pct,1)}% · $${fmt(t.pnl_usd,2)}</strong></div>
+              <div>Hold<strong>${fmt(t.hold_minutes,0)}m</strong></div>
+              <div>Contract<strong class="mono" style="font-size:.72rem">${t.contract||"—"}</strong></div>
+              ${levelsMeta(t)}
+            </div>
+            <p class="why" style="margin:.45rem 0 0">${t.exit_reason||""}</p>
+          </article>`).join("")}</div>`;
       }
       journal.innerHTML = html || `<div class="empty">No journal trades yet.</div>`;
     }
 
+    function renderMustTradeBanner() {
+      const el = document.getElementById("mustTradeBanner");
+      if (!el) return;
+      const acts = DATA.actions || {};
+      const lot = DATA.lottery || {};
+      const ch = DATA.challenge || {};
+      const must = [];
+      const exits = [];
+      const seenMust = new Set();
+      const seenExit = new Set();
+
+      const pushMust = (row, desk) => {
+        if (!row) return;
+        const sym = String(row.symbol || "").toUpperCase();
+        if (!sym) return;
+        const strike = row.strike;
+        const expiry = row.expiry || "—";
+        const key = `${sym}|${strike}|${expiry}|${row.contract || ""}`;
+        if (seenMust.has(key)) return;
+        seenMust.add(key);
+        const win = row.win_pct ?? row.hist_win_pct;
+        const n = row.win_samples ?? row.hist_samples;
+        const hit1 = row.hit_1pct;
+        must.push({
+          desk,
+          symbol: sym,
+          strike,
+          expiry,
+          dte: row.dte,
+          ask: row.ask,
+          contract: row.contract,
+          win_pct: win,
+          win_samples: n,
+          hit_1pct: hit1,
+          hit_2pct: row.hit_2pct,
+          certainty: row.certainty_tier,
+          score: row.score ?? row.ensemble_score ?? row.lottery_score ?? row.strength,
+          detail: row.headline || row.detail || row.recommend_reason || row.thesis || "",
+          right: row.right || "C",
+          spot: row.spot ?? row.live_last ?? row.live_spot ?? row.entry_spot ?? row.last_price,
+          call_wall: row.call_wall,
+          put_wall: row.put_wall,
+          soft_exit: row.soft_exit,
+          wall_buffer_usd: row.wall_buffer_usd,
+        });
+      };
+      const pushExit = (row, desk) => {
+        if (!row) return;
+        const sym = String(row.symbol || "").toUpperCase();
+        if (!sym) return;
+        const strike = row.strike;
+        const expiry = row.expiry || "—";
+        const key = `${sym}|${strike}|${expiry}|${row.contract || row.id || ""}`;
+        if (seenExit.has(key)) return;
+        seenExit.add(key);
+        exits.push({
+          desk,
+          symbol: sym,
+          strike,
+          expiry,
+          dte: row.dte,
+          ask: row.ask ?? row.bid ?? row.mark,
+          contract: row.contract,
+          win_pct: row.win_pct ?? row.hist_win_pct,
+          win_samples: row.win_samples ?? row.hist_samples,
+          hit_1pct: row.hit_1pct,
+          detail: row.exit_plan || row.wall_exit_hint || row.detail || row.headline || row.last_action_detail || "Exit now",
+          right: row.right || "C",
+          spot: row.spot ?? row.live_last ?? row.live_spot ?? row.entry_spot ?? row.last_price,
+          call_wall: row.call_wall,
+          put_wall: row.put_wall,
+          soft_exit: row.soft_exit,
+          wall_buffer_usd: row.wall_buffer_usd,
+        });
+      };
+
+      (acts.buy_now || []).forEach(r => pushMust(r, "Options"));
+      (lot.buy_now || []).forEach(r => pushMust(r, "Explosive"));
+      (ch.entry || []).forEach(r => pushMust(r, "Challenge"));
+      // Prefer perfect/elite hist certainty first
+      must.sort((a, b) => {
+        const tier = (t) => t === "perfect" ? 0 : t === "elite" ? 1 : 2;
+        const tw = (Number(b.win_pct) || 0) - (Number(a.win_pct) || 0);
+        if (tier(a.certainty) !== tier(b.certainty)) return tier(a.certainty) - tier(b.certainty);
+        if (tw) return tw;
+        return (Number(b.hit_1pct) || 0) - (Number(a.hit_1pct) || 0);
+      });
+
+      (acts.sell_now || []).forEach(r => pushExit(r, "Options"));
+      (lot.sell_now || []).forEach(r => pushExit(r, "Explosive"));
+      (ch.exit || []).forEach(r => pushExit(r, "Challenge"));
+
+      const topMust = must.slice(0, 4);
+      const topExit = exits.slice(0, 4);
+      if (!topMust.length && !topExit.length) {
+        el.classList.remove("active");
+        el.innerHTML = "";
+        return;
+      }
+
+      const card = (row, kind) => {
+        const tag = kind === "must" ? "MUST TRADE" : "EXIT NOW";
+        const strikeTxt = row.strike == null ? "—" : `${Number(row.strike).toFixed(Number(row.strike) % 1 ? 2 : 0)}${(row.right || "C") === "P" ? "p" : "c"}`;
+        const dteTxt = row.dte == null ? "" : ` · ${row.dte}DTE`;
+        const winTxt = row.win_pct == null ? "—" : `${fmt(row.win_pct, 0)}%`;
+        const nTxt = row.win_samples == null ? "" : ` n=${row.win_samples}`;
+        const srTxt = row.hit_1pct == null ? "—" : `${fmt(row.hit_1pct, 0)}%`;
+        const askTxt = row.ask == null ? "—" : `$${fmt(row.ask, 2)}`;
+        return `<div class="pulse-card ${kind}">
+          <div class="pc-top">
+            <div class="pc-sym">${row.symbol}</div>
+            <div class="pc-tag ${kind}">${tag} · ${row.desk}</div>
+          </div>
+          <div class="pc-meta">
+            <div><span>Strike</span><br><strong>${strikeTxt}</strong></div>
+            <div><span>Expiry</span><br><strong>${row.expiry || "—"}${dteTxt}</strong></div>
+            <div><span>Hist win</span><br><strong class="up">${winTxt}</strong><span>${nTxt}</span></div>
+            <div><span>Strike rate ≥1%</span><br><strong>${srTxt}</strong></div>
+            <div><span>${kind === "must" ? "Ask" : "Mark"}</span><br><strong>${askTxt}</strong></div>
+            <div><span>Contract</span><br><strong class="mono" style="font-size:.72rem">${row.contract || "—"}</strong></div>
+            ${levelsMeta(row)}
+          </div>
+          <p class="pc-why">${row.detail || ""}</p>
+        </div>`;
+      };
+
+      const grid = [
+        ...topMust.map(r => card(r, "must")),
+        ...topExit.map(r => card(r, "exit")),
+      ].join("");
+
+      el.classList.add("active");
+      el.innerHTML = `
+        <div class="pb-head">
+          <div>
+            <h2 class="pb-title">Must trade <em>sure-shot</em> + exits</h2>
+            <div class="pb-sub">Hist-gated tickets with strike, strike-rate, and expiry up top. EXIT cards are live positions/tickets the desk says leave now. Hist edge ≠ guaranteed future profit.</div>
+          </div>
+          <div class="status">MUST ${topMust.length} · EXIT ${topExit.length}</div>
+        </div>
+        <div class="pb-grid">${grid}</div>`;
+    }
+
     function paint() {
+      renderMustTradeBanner();
       const ac = DATA.action_cards || {};
       const hz = DATA.horizons || {};
       renderCards("overviewCards", [
@@ -1203,6 +1708,8 @@ PAGE = r"""
       renderChallenge(DATA.challenge || {});
       renderScreener(hz, DATA.market || {});
       renderInsights(DATA.insights);
+      renderRecLogAll(DATA.rec_log || {});
+      renderWebull(DATA.webull || {});
       document.getElementById("session").textContent = (DATA.session||"—") + " · " + (DATA.universe_mode||"focus");
       const uniPill = document.getElementById("universePill");
       if (uniPill) {
@@ -1210,7 +1717,7 @@ PAGE = r"""
           (DATA.focus_size!=null ? ` · focus ${DATA.focus_size}` : "") +
           (DATA.liquid_size!=null ? ` · liquid ${DATA.liquid_size}` : "");
       }
-      document.getElementById("updated").textContent = "Updated " + (DATA.generated_at||"").replace("T"," ").slice(0,19);
+      document.getElementById("updated").textContent = "Updated " + fmtCST(DATA.generated_at, true);
       const c = acts.counts || {};
       const lc = (DATA.lottery && DATA.lottery.counts) || {};
       document.getElementById("counts").textContent =
@@ -1236,12 +1743,21 @@ PAGE = r"""
       note.textContent = "Refreshing…";
       try {
         const ctrl = new AbortController();
-        const t = setTimeout(() => ctrl.abort(), 50000);
+        // Snapshot can take 1–3 min (Yahoo quotes + earnings warm); don't abort early
+        const t = setTimeout(() => ctrl.abort(), 180000);
         const res = await fetch("/api/snapshot", { signal: ctrl.signal });
         clearTimeout(t);
+        if (!res.ok) throw new Error("HTTP " + res.status);
         DATA = await res.json();
         paint();
-        note.style.display = "none";
+        const n = (DATA.scores||[]).length;
+        const focus = DATA.focus_size ?? 0;
+        if (!n && !focus) {
+          note.style.display = "block";
+          note.textContent = "No scan yet — tap Scan focus (or Scan liquid) to load data.";
+        } else {
+          note.style.display = "none";
+        }
       } catch (e) {
         note.textContent = "Load failed: " + (e.message||e);
       }
@@ -1252,9 +1768,31 @@ PAGE = r"""
       btn.disabled = true;
       const label = btn.textContent;
       btn.textContent = "Scanning…";
+      const note = document.getElementById("loadNote");
+      note.style.display = "block";
       try {
-        await fetch("/api/scan?mode=" + encodeURIComponent(mode||"focus"), { method: "POST" });
-        await new Promise(r => setTimeout(r, mode==="liquid" ? 20000 : 10000));
+        const start = await fetch("/api/scan?mode=" + encodeURIComponent(mode||"focus"), { method: "POST" });
+        const body = await start.json().catch(() => ({}));
+        if (!start.ok) {
+          note.textContent = body.error || ("Scan failed HTTP " + start.status);
+          return;
+        }
+        // Poll until latest scan appears / scan lock frees (liquid can take several minutes)
+        const maxWaitMs = mode==="liquid" ? 12*60*1000 : 6*60*1000;
+        const startedAt = Date.now();
+        let ready = false;
+        while (Date.now() - startedAt < maxWaitMs) {
+          const elapsed = Math.round((Date.now() - startedAt)/1000);
+          note.textContent = `Scanning ${mode||"focus"}… ${elapsed}s (Yahoo can be slow)`;
+          await new Promise(r => setTimeout(r, 5000));
+          try {
+            const st = await fetch("/api/scan_status");
+            const info = await st.json();
+            if (info && info.ready) { ready = true; break; }
+            if (info && info.running === false && info.has_scan) { ready = true; break; }
+          } catch (_) { /* keep waiting */ }
+        }
+        if (!ready) note.textContent = "Scan still running — tap Reload in a minute.";
         await loadAll();
       } finally {
         btn.disabled = false;
@@ -1265,8 +1803,18 @@ PAGE = r"""
     document.getElementById("btnRefresh").onclick = loadAll;
     document.getElementById("btnScan").onclick = () => runScan("focus");
     document.getElementById("btnScanWide").onclick = () => runScan("liquid");
+    const btnWb = document.getElementById("btnWebullSync");
+    if (btnWb) btnWb.onclick = syncWebull;
+    let _loading = false;
+    const _origLoad = loadAll;
+    loadAll = async function() {
+      if (_loading) return;
+      _loading = true;
+      try { await _origLoad(); } finally { _loading = false; }
+    };
     loadAll();
-    setInterval(loadAll, 15000);
+    // Snapshot is expensive (Yahoo); refresh once a minute, never overlap
+    setInterval(loadAll, 60000);
   </script>
 </body>
 </html>
@@ -1280,6 +1828,16 @@ def _read_json(path: Path) -> dict | list | None:
         return json.loads(path.read_text())
     except Exception:  # noqa: BLE001
         return None
+
+
+def _snapshot_offline() -> bool:
+    """Disk-only snapshot for GitHub Pages export (no live Yahoo fan-out)."""
+    if os.environ.get("SIGNAL_DESK_OFFLINE", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return True
+    try:
+        return str(request.args.get("offline") or "").strip().lower() in {"1", "true", "yes", "on"}
+    except RuntimeError:
+        return False
 
 
 def create_app(config_path: str | None = None) -> Flask:
@@ -1300,6 +1858,7 @@ def create_app(config_path: str | None = None) -> Flask:
         from odte_scanner.data.live_quotes import fetch_live_quote
         from odte_scanner.options.live_chain import refresh_candidate_quote
 
+        offline = _snapshot_offline()
         scan = _read_json(ROOT / "outputs" / "latest_scan.json") or {}
         watch = _read_json(ROOT / "outputs" / "watch" / "latest_watch.json")
         ledger_path = Path(cfg.get("paper_trading", {}).get("ledger_path", "outputs/paper_ledger.json"))
@@ -1343,16 +1902,13 @@ def create_app(config_path: str | None = None) -> Flask:
                 win_table = cached_wr
         except Exception:  # noqa: BLE001
             pass
-        if syms and (
-            not win_table
-            or not set(syms).issubset(set((win_table.get("symbols") or {}).keys()))
-            or "swing" not in next(iter((win_table.get("symbols") or {}).values()), {})
-        ):
+        # Prefer scan/disk win rates — rebuilding here blocks the UI for minutes
+        if not win_table:
             try:
-                win_table = build_win_rate_table(syms[:20], config_path=cfg_path)
+                win_table = load_win_rate_table() or {}
             except Exception as exc:  # noqa: BLE001
                 logger.warning("win rates unavailable: %s", exc)
-                win_table = win_table or {}
+                win_table = {}
 
         # Challenge-eligible + DRAM/memory sleeve need live/cache quotes (often outside focus)
         challenge_syms: list[str] = []
@@ -1361,38 +1917,41 @@ def create_app(config_path: str | None = None) -> Flask:
             from odte_scanner.challenge.million import _eligible_rows
             from odte_scanner.data.universe import dram_memory_universe, liquid_universe
 
+            # Only pull challenge/DRAM live quotes when we already have scan scores —
+            # otherwise empty first paint waits minutes on Yahoo and the UI aborts.
+            has_scan_scores = bool(scan.get("scores"))
+            # Cap live quote fan-out — full challenge/DRAM sleeves make snapshot >3 min
             challenge_syms = [
                 str(r["symbol"])
-                for r in _eligible_rows(win_table if isinstance(win_table, dict) else None)[:14]
-            ]
-            dram_syms = dram_memory_universe()[:16]
+                for r in _eligible_rows(win_table if isinstance(win_table, dict) else None)[:6]
+            ] if has_scan_scores else []
+            dram_syms = dram_memory_universe()[:4] if has_scan_scores else []
             # Aliases for full liquid universe (earnings/volume board — no extra quotes)
             for s in liquid_universe():
                 aliases.setdefault(s, resolve_yahoo_symbol(s, cfg))
         except Exception:  # noqa: BLE001
             challenge_syms = []
             dram_syms = []
-        quote_syms = sorted(set(syms[:20] + challenge_syms + dram_syms))
+        quote_syms = [] if offline else sorted(set(syms[:8]))  # keep snapshot interactive; skip DRAM/challenge fan-out
         for s in quote_syms:
             aliases.setdefault(s, resolve_yahoo_symbol(s, cfg))
 
         def _uq(sym: str):
             return sym, fetch_live_quote(sym, yahoo_symbol=aliases.get(sym))
 
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            for sym, q in pool.map(_uq, quote_syms):
-                if q:
-                    quotes[sym] = q.to_dict()
+        if quote_syms:
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                for sym, q in pool.map(_uq, quote_syms):
+                    if q:
+                        quotes[sym] = q.to_dict()
 
         refreshed: list[dict] = []
 
         def _refresh(item: dict) -> dict:
+            # Use scan-time option fields; live chain refresh is too slow for UI paint
+            out = dict(item)
+            out["quote_stale"] = True
             sym = str(item.get("symbol"))
-            try:
-                out = refresh_candidate_quote(item, yahoo_symbol=aliases.get(sym))
-            except Exception:  # noqa: BLE001
-                out = dict(item)
-                out["quote_stale"] = True
             q = quotes.get(sym)
             if q:
                 out["live_change_pct"] = q.get("session_change_pct", q.get("change_pct"))
@@ -1445,21 +2004,22 @@ def create_app(config_path: str | None = None) -> Flask:
                 auto_exit=bool(jcfg.get("auto_exit", True)),
             )
             marks: dict[str, float] = {}
-            for t in journal.book.trades:
-                if t.status != "open":
-                    continue
-                if t.expiry and t.strike is not None:
-                    q = fetch_live_option_quote(
-                        t.symbol,
-                        t.expiry,
-                        float(t.strike),
-                        yahoo_symbol=aliases.get(t.symbol) or resolve_yahoo_symbol(t.symbol, cfg),
-                    )
-                    if q:
-                        if q.bid > 0 and q.ask > 0:
-                            marks[t.contract] = (q.bid + q.ask) / 2
-                        else:
-                            marks[t.contract] = q.bid if q.bid > 0 else (q.ask or 0)
+            if not offline:
+                for t in journal.book.trades:
+                    if t.status != "open":
+                        continue
+                    if t.expiry and t.strike is not None:
+                        q = fetch_live_option_quote(
+                            t.symbol,
+                            t.expiry,
+                            float(t.strike),
+                            yahoo_symbol=aliases.get(t.symbol) or resolve_yahoo_symbol(t.symbol, cfg),
+                        )
+                        if q:
+                            if q.bid > 0 and q.ask > 0:
+                                marks[t.contract] = (q.bid + q.ask) / 2
+                            else:
+                                marks[t.contract] = q.bid if q.bid > 0 else (q.ask or 0)
             if marks:
                 journal.mark_open(marks)
             insights = build_insights(journal=journal, actions=actions, win_rates=win_table)
@@ -1473,7 +2033,7 @@ def create_app(config_path: str | None = None) -> Flask:
             scores=scan.get("scores") or [],
             quotes=quotes,
             aliases=aliases,
-            enrich_live=True,
+            enrich_live=False,  # live option enrich is too slow for interactive snapshot
             per_symbol=2,
             max_total=24,
         )
@@ -1521,6 +2081,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 lottery=lottery,
                 max_symbols=int(actions_cfg.get("echo_max_symbols", 6)),
                 max_dte=int((cfg.get("options") or {}).get("max_dte", 5)),
+                fetch_ladders=False,  # Yahoo ladders block snapshot for minutes
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("echo board unavailable: %s", exc)
@@ -1582,10 +2143,11 @@ def create_app(config_path: str | None = None) -> Flask:
                 target_usd=float(actions_cfg.get("challenge_target_usd", 1_000_000)),
                 flips=int(actions_cfg.get("challenge_flips", 12)),
                 max_tickets=int(actions_cfg.get("challenge_max_tickets", 8)),
-                fetch_contracts=bool(actions_cfg.get("challenge_fetch_contracts", True)),
-                fetch_earnings=bool(actions_cfg.get("challenge_fetch_earnings", True)),
+                # Snapshot must stay interactive — use disk cache only (no Yahoo fan-out)
+                fetch_contracts=False,
+                fetch_earnings=False,
                 earnings_max_fetch=int(actions_cfg.get("challenge_earnings_max_fetch", 36)),
-                fetch_walls=bool(actions_cfg.get("challenge_fetch_walls", True)),
+                fetch_walls=False,
                 wall_buffer_usd=float(actions_cfg.get("wall_exit_buffer_usd", 0.10)),
                 walls_map=echo_walls,
             )
@@ -1603,7 +2165,7 @@ def create_app(config_path: str | None = None) -> Flask:
             )
             challenge["sync"] = sync
             challenge["book"] = sync.get("book") or tracker.book.to_dict()
-            # Rebuild statuses after sync; keep live contract quotes from first pass
+            # Rebuild statuses after sync; keep prior contract fields when present
             challenge = build_challenge_board(
                 win_table=win_table if isinstance(win_table, dict) else None,
                 scores=scan.get("scores") or [],
@@ -1614,7 +2176,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 target_usd=float(actions_cfg.get("challenge_target_usd", 1_000_000)),
                 flips=int(actions_cfg.get("challenge_flips", 12)),
                 max_tickets=int(actions_cfg.get("challenge_max_tickets", 8)),
-                fetch_contracts=True,  # disk-cached chains — preserve strike/expiry/ask
+                fetch_contracts=False,
                 fetch_earnings=False,
                 earnings_max_fetch=int(actions_cfg.get("challenge_earnings_max_fetch", 36)),
                 fetch_walls=False,
@@ -1699,7 +2261,8 @@ def create_app(config_path: str | None = None) -> Flask:
                 scores=scan.get("scores") or [],
                 quotes=quotes,
                 aliases=aliases,
-                fetch_earnings=bool(actions_cfg.get("challenge_fetch_earnings", True)),
+                # Earnings cache only — live Yahoo warm on every snapshot starves the UI
+                fetch_earnings=False,
                 earnings_max_fetch=int(
                     actions_cfg.get(
                         "market_board_earnings_max_fetch",
@@ -1800,9 +2363,46 @@ def create_app(config_path: str | None = None) -> Flask:
             logger.debug("walls_by_symbol merge failed: %s", exc)
             walls_by_symbol = {}
 
+        # Persist recommendation history (lottery / challenge / 0DTE / weekly / swing)
+        rec_log_payload: dict = {}
+        try:
+            from odte_scanner.trading.rec_log import RecommendationLog
+
+            rec_path = Path(actions_cfg.get("rec_log_path", "outputs/recommendation_log.json"))
+            if not rec_path.is_absolute():
+                rec_path = ROOT / rec_path
+            rlog = RecommendationLog(rec_path)
+            rlog.sync_all(
+                lottery=lottery,
+                challenge=challenge,
+                actions=actions,
+                action_cards=scan.get("action_cards") or {},
+            )
+            by_section = {
+                "lottery": rlog.board(section="lottery", limit=30),
+                "challenge": rlog.board(section="challenge", limit=30),
+                "odte": rlog.board(section="odte", limit=30),
+                "weekly": rlog.board(section="weekly", limit=30),
+                "swing": rlog.board(section="swing", limit=30),
+            }
+            rec_log_payload = {
+                **rlog.board(limit=50),
+                "by_section": by_section,
+                "lottery": by_section["lottery"],
+                "challenge": by_section["challenge"],
+                "odte": by_section["odte"],
+                "weekly": by_section["weekly"],
+                "swing": by_section["swing"],
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("recommendation log unavailable: %s", exc)
+            rec_log_payload = {"error": str(exc), "open_recs": [], "closed_recs": [], "by_section": {}}
+
         return jsonify(
             {
                 "generated_at": datetime.now(timezone.utc).isoformat(),
+                "offline": offline,
+                "host": "github-pages" if offline else "live",
                 "session": scan.get("session_weekday"),
                 "universe_mode": scan.get("universe_mode"),
                 "universe_size": scan.get("universe_size"),
@@ -1826,6 +2426,8 @@ def create_app(config_path: str | None = None) -> Flask:
                 "insights": insights,
                 "journal_sync": journal_sync,
                 "win_rates": win_table,
+                "rec_log": rec_log_payload,
+                "webull": _webull_status_payload(),
             }
         )
 
@@ -1941,6 +2543,21 @@ def create_app(config_path: str | None = None) -> Flask:
             return jsonify({"ok": False, "error": "exit failed"}), 409
         return jsonify({"ok": True, "trade": out.to_dict(), "book": tracker.book.to_dict()})
 
+    @app.get("/api/scan_status")
+    def scan_status():
+        latest = ROOT / "outputs" / "latest_scan.json"
+        has_scan = latest.exists() and latest.stat().st_size > 50
+        mtime = latest.stat().st_mtime if has_scan else None
+        running = scan_lock.locked()
+        return jsonify(
+            {
+                "running": running,
+                "has_scan": has_scan,
+                "ready": has_scan and not running,
+                "latest_mtime": mtime,
+            }
+        )
+
     @app.post("/api/scan")
     def trigger_scan():
         if not scan_lock.acquire(blocking=False):
@@ -1967,6 +2584,111 @@ def create_app(config_path: str | None = None) -> Flask:
 
         threading.Thread(target=_job, daemon=True).start()
         return jsonify({"ok": True, "started": True, "mode": mode})
+
+    def _webull_bundle():
+        from odte_scanner.trading.auto_trader import AutoTrader
+        from odte_scanner.trading.webull import WebullBroker
+
+        lt = cfg.get("live_trading") or {}
+        ledger = Path(lt.get("ledger_path", "outputs/webull_orders.json"))
+        if not ledger.is_absolute():
+            ledger = ROOT / ledger
+        broker = WebullBroker(
+            enabled=bool(lt.get("enabled", False)),
+            dry_run=bool(lt.get("dry_run", True)),
+            region=str(lt.get("region") or "us"),
+            sandbox=bool(lt.get("sandbox", True)),
+            account_id=lt.get("account_id"),
+            app_key=lt.get("app_key"),
+            app_secret=lt.get("app_secret"),
+            ledger_path=ledger,
+        )
+        desk_cfg = dict(lt.get("desks") or {})
+        if not desk_cfg:
+            desk_cfg = {
+                "lottery": True,
+                "odte": True,
+                "weekly": True,
+                "swing": True,
+                "challenge": True,
+            }
+        trader = AutoTrader(
+            broker,
+            require_perfect_hist=bool(lt.get("require_perfect_hist", True)),
+            min_hist_win_pct=float(lt.get("min_hist_win_pct", 100)),
+            min_hist_win_samples=int(lt.get("min_hist_win_samples", 3)),
+            desks=desk_cfg,
+            max_contracts=int(lt.get("max_contracts", 1)),
+            max_orders_per_sync=int(lt.get("max_orders_per_sync", 3)),
+        )
+        return broker, trader
+
+    def _webull_status_payload() -> dict:
+        try:
+            broker, trader = _webull_bundle()
+            st = broker.status()
+            return {
+                "status": st,
+                "broker": st,
+                "require_perfect_hist": trader.require_perfect_hist,
+                "min_hist_win_pct": trader.min_hist_win_pct,
+                "min_hist_win_samples": trader.min_hist_win_samples,
+                "desks": trader.desks,
+                "recent": broker.recent(20),
+                "submitted_n": 0,
+                "skipped_n": 0,
+                "disclaimer": st.get("disclaimer"),
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("webull status failed: %s", exc)
+            return {"error": str(exc), "status": {"enabled": False}, "recent": []}
+
+    @app.get("/api/webull/status")
+    def webull_status():
+        return jsonify(_webull_status_payload())
+
+    @app.post("/api/webull/sync")
+    def webull_sync():
+        """Route current lottery / actions / challenge tickets to Webull (dry-run by default)."""
+        broker, trader = _webull_bundle()
+        scan = _read_json(ROOT / "outputs" / "latest_scan.json") or {}
+        # Prefer live snapshot boards when available via lightweight rebuild fields on disk
+        # Rebuild actions/lottery/challenge from last snapshot cache if present
+        snap_cache = _read_json(ROOT / "outputs" / "ui_snapshot_cache.json") or {}
+        actions = snap_cache.get("actions") if isinstance(snap_cache, dict) else None
+        lottery = snap_cache.get("lottery") if isinstance(snap_cache, dict) else None
+        challenge = snap_cache.get("challenge") if isinstance(snap_cache, dict) else None
+        # Fallback: construct minimal actions from scan call candidates (no live tape)
+        if not actions:
+            actions = {"buy_now": [], "sell_now": []}
+        if not lottery:
+            lottery = {"buy_now": [], "sell_now": []}
+        if not challenge:
+            challenge = {"entry": [], "exit": [], "tickets": []}
+        # Enrich buy candidates from scan call list with win rates for gate
+        try:
+            from odte_scanner.backtest.win_rates import load_win_rate_table, lookup_win_stats
+
+            wr = scan.get("win_rates") or load_win_rate_table() or {}
+            if not (actions.get("buy_now") or actions.get("sell_now")):
+                for c in (scan.get("call_candidates_0dte") or [])[:8]:
+                    stats = lookup_win_stats(wr, c.get("symbol"), "0dte")
+                    actions.setdefault("buy_now", []).append(
+                        {
+                            **c,
+                            "action": "BUY_NOW",
+                            "dte_bucket": "0dte",
+                            "hist_win_pct": stats.get("win_pct"),
+                            "hist_samples": stats.get("trades"),
+                            "win_pct": stats.get("win_pct"),
+                            "win_samples": stats.get("trades"),
+                        }
+                    )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("webull sync enrich failed: %s", exc)
+
+        out = trader.sync(actions=actions, lottery=lottery, challenge=challenge)
+        return jsonify(out)
 
     return app
 

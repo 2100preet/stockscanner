@@ -92,6 +92,10 @@ class ChallengeTrade:
     exit_plan: str = ""
     hold_approx_label: str = ""
     certainty_tier: str | None = None
+    cash_before: float | None = None
+    cash_after: float | None = None
+    equity_after: float | None = None
+    balance_note: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -114,21 +118,26 @@ class ChallengeBook:
     wins: int = 0
     losses: int = 0
     trades: list[ChallengeTrade] = field(default_factory=list)
+    balance_log: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         open_mtm = sum(
             (t.mark or t.entry_ask) * 100 * t.contracts for t in self.trades if t.status == "open"
         )
+        equity = round(self.cash + open_mtm, 2)
         return {
             "starting_cash": self.starting_cash,
             "cash": round(self.cash, 2),
-            "equity": round(self.cash + open_mtm, 2),
+            "equity": equity,
             "target_usd": self.target_usd,
+            "progress_pct": round((equity / self.target_usd) * 100.0, 4) if self.target_usd else 0,
+            "milestone_500k_pct": round((equity / 500_000.0) * 100.0, 4) if equity else 0,
             "flips_closed": self.flips_closed,
             "wins": self.wins,
             "losses": self.losses,
             "open_trades": sum(1 for t in self.trades if t.status == "open"),
             "trades": [t.to_dict() for t in self.trades],
+            "balance_log": list(self.balance_log[-40:]),
         }
 
 
@@ -161,6 +170,7 @@ class ChallengeTracker:
                 wins=int(raw.get("wins") or 0),
                 losses=int(raw.get("losses") or 0),
                 trades=trades,
+                balance_log=list(raw.get("balance_log") or []),
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("challenge ledger load failed: %s", exc)
@@ -225,6 +235,7 @@ class ChallengeTracker:
             f"EXIT when premium ≥${float(target_ask):.2f} (+{target_pct:.0f}%), "
             f"or stop −45%, or max hold {hp['max_days']}d"
         )
+        cash_before = round(self.book.cash, 2)
         trade = ChallengeTrade(
             id=f"CH-{symbol}{right}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
             symbol=symbol,
@@ -260,9 +271,36 @@ class ChallengeTracker:
                 or f"≈{hp['ideal_days']}d ({hp['min_days']}–{hp['max_days']}d)"
             ),
             certainty_tier=ticket.get("certainty_tier"),
+            cash_before=cash_before,
         )
         self.book.cash -= cost
+        cash_after = round(self.book.cash, 2)
+        equity_after = round(cash_after + ask * 100 * contracts, 2)
+        trade.cash_after = cash_after
+        trade.equity_after = equity_after
+        trade.balance_note = (
+            f"Balance after ENTRY: cash ${cash_after:,.2f} · sleeve equity ${equity_after:,.2f} "
+            f"(was ${cash_before:,.2f})"
+        )
+        trade.last_action_detail = (
+            f"Entered {side} @ ${ask:.2f} · target +{target_pct:.0f}% · "
+            f"cash ${cash_before:,.2f}→${cash_after:,.2f}"
+        )
         self.book.trades.append(trade)
+        self.book.balance_log.append(
+            {
+                "at": trade.entered_at,
+                "action": "ENTRY",
+                "symbol": symbol,
+                "right": right,
+                "trade_id": trade.id,
+                "cash_before": cash_before,
+                "cash_after": cash_after,
+                "equity_after": equity_after,
+                "debit_usd": cost,
+                "pnl_usd": None,
+            }
+        )
         self.save()
         return trade
 
@@ -351,6 +389,7 @@ class ChallengeTracker:
                 continue
             bid = max(0.0, float(exit_bid))
             proceeds = bid * 100 * t.contracts
+            cash_before = round(self.book.cash, 2)
             t.exit_bid = bid
             t.proceeds = proceeds
             t.pnl_usd = round(proceeds - t.cost, 2)
@@ -362,13 +401,38 @@ class ChallengeTracker:
             t.status = "closed"
             t.hold_days = round(self._days_held(t), 2)
             t.last_action = "EXIT"
-            t.last_action_detail = reason
+            t.cash_before = cash_before
             self.book.cash += proceeds
+            cash_after = round(self.book.cash, 2)
+            t.cash_after = cash_after
+            t.equity_after = cash_after
+            t.balance_note = (
+                f"Balance after EXIT: cash/equity ${cash_after:,.2f} "
+                f"(was cash ${cash_before:,.2f} + open mark) · P&L ${t.pnl_usd:,.2f}"
+            )
+            t.last_action_detail = (
+                f"{reason} · cash ${cash_before:,.2f}→${cash_after:,.2f} · P&L ${t.pnl_usd:,.2f}"
+            )
             self.book.flips_closed += 1
             if (t.pnl_usd or 0) > 0:
                 self.book.wins += 1
             else:
                 self.book.losses += 1
+            self.book.balance_log.append(
+                {
+                    "at": t.exited_at,
+                    "action": "EXIT",
+                    "symbol": t.symbol,
+                    "right": t.right,
+                    "trade_id": t.id,
+                    "cash_before": cash_before,
+                    "cash_after": cash_after,
+                    "equity_after": cash_after,
+                    "debit_usd": None,
+                    "pnl_usd": t.pnl_usd,
+                    "proceeds": proceeds,
+                }
+            )
             self.save()
             return t
         return None

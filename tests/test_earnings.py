@@ -37,6 +37,15 @@ def test_spcx_in_scan_universe():
     assert market_cap_tier("SPCX") == "mega_large"
 
 
+def test_ddog_in_focus_universe():
+    from odte_scanner.data.universe import FOCUS_DEFAULT, liquid_universe
+
+    # Already liquid/mid; elevated to focus + Friday weeklies for 0DTE/earnings
+    assert "DDOG" in liquid_universe()
+    assert "DDOG" in FOCUS_DEFAULT
+    assert market_cap_tier("DDOG") == "mid"
+
+
 def test_classify_post_earnings():
     as_of = date(2026, 8, 5)
     last = (as_of - timedelta(days=3)).isoformat()

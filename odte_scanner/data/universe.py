@@ -107,7 +107,7 @@ FOCUS_DEFAULT: list[str] = [
     "AAPL", "MSFT", "NVDA", "TSLA", "AMD", "META", "AMZN", "GOOGL", "AVGO",
     "INTC", "MU", "USO", "UNG", "NFLX", "CRM", "ORCL", "ADBE", "QCOM", "AMAT",
     "ARM", "PLTR", "COIN", "MSTR", "HOOD", "UBER", "JPM", "BAC", "XOM", "COST",
-    "TSM", "DIA", "XLK", "XLE", "SOXX", "HYG", "EEM", "SPCX",
+    "TSM", "DIA", "XLK", "XLE", "SOXX", "HYG", "EEM", "SPCX", "DDOG",
 ]
 
 

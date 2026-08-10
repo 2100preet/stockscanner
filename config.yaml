@@ -56,6 +56,7 @@ tickers:
   - HYG
   - EEM
   - SPCX  # SpaceX — recent IPO; include for swing/earnings watch
+  - DDOG  # Datadog — liquid mid; promote to focus for options/earnings
 
 # Yahoo Finance symbol overrides (indexes need ^ prefix for quotes/chains)
 symbol_aliases:
@@ -119,6 +120,7 @@ expiry_calendars:
     - XLE
     - SOXX
     - SPCX
+    - DDOG
     - HYG
     - EEM
 
@@ -158,11 +160,15 @@ actions:
   min_hist_win_samples: 5
   lottery_min_score: 62
   lottery_min_confirms: 4
-  # $1k → $1M challenge (swing / LEAP only)
+  # $1k → $1M challenge (swing / LEAP + weekly pace for 4mo→$500k)
   challenge_start_usd: 1000
   challenge_target_usd: 1000000
   challenge_flips: 12
   challenge_max_tickets: 8
+  # Prefer weekly-style tickets that can compound to ≥$500k in ~4 months
+  challenge_pace_months: 4
+  challenge_pace_milestone_usd: 500000
+  challenge_prefer_weekly_pace: true
   challenge_fetch_contracts: true
   challenge_fetch_earnings: true
   # Prefetch earnings across liquid universe (cached ~18h; warms ~N/refresh)
@@ -227,8 +233,28 @@ watch:
   output_dir: outputs/watch
 
 live_trading:
-  enabled: false
-  broker: none
+  enabled: false          # master switch — keep false until Webull keys are set
+  broker: webull
+  dry_run: true           # log + deep-link only; no broker submit
+  sandbox: true           # Webull OpenAPI sandbox host when live
+  region: us
+  # Credentials via env (preferred): WEBULL_APP_KEY, WEBULL_APP_SECRET, WEBULL_ACCOUNT_ID
+  app_key: null
+  app_secret: null
+  account_id: null
+  ledger_path: outputs/webull_orders.json
+  # “100% win rate” live gate = historical perfect quality filter (NOT a future guarantee)
+  require_perfect_hist: true
+  min_hist_win_pct: 100
+  min_hist_win_samples: 3
+  max_contracts: 1
+  max_orders_per_sync: 3
+  desks:
+    lottery: true         # 0DTE/1DTE convex BUY/SELL NOW
+    odte: true
+    weekly: true
+    swing: true
+    challenge: true       # ENTRY/EXIT calls & puts
 
 algos:
   # Legacy flat weights (merged into each horizon as a base)
