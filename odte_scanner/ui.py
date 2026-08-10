@@ -239,6 +239,17 @@ PAGE = r"""
       <div class="metric-row" id="explosiveMetrics"></div>
       <div class="cards" id="lotteryPrimary"></div>
       <div class="panel">
+        <h2>Discord-style lottery radar (SPY / QQQ wings)</h2>
+        <p class="lede" style="margin-top:0;font-size:.76rem">
+          Separate lane for cheap near-money 0DTE calls (~$0.15–$2.50) like discretionary Discord alerts.
+          <strong>RADAR HOT</strong> ≠ BUY NOW — no hist-win gate, no auto journal fill.
+        </p>
+        <div class="metric-row" id="radarMetrics"></div>
+        <div id="radarHot" class="empty">No RADAR HOT wings yet.</div>
+        <div class="status" style="margin:.75rem 0 .4rem">WATCH / COOL</div>
+        <div id="radarWatch" class="empty">—</div>
+      </div>
+      <div class="panel">
         <h2>BUY NOW lottery</h2>
         <div id="lotteryBuy" class="empty">No BUY NOW lottery yet — waiting for tape + convexity clears.</div>
       </div>
@@ -654,6 +665,57 @@ PAGE = r"""
           <td class="why">${r.detail||""}${(r.vetoes&&r.vetoes.length)?` · veto: ${r.vetoes.slice(0,2).join("; ")}`:""}</td>
         </tr>`;
       }).join("")}</tbody></table>`;
+    }
+
+    function radarCard(r) {
+      const act = r.action || "RADAR_WATCH";
+      const cls = act === "RADAR_HOT" ? "long" : (act === "RADAR_COOL" ? "short" : "wait");
+      const tag = act.replace("RADAR_", "");
+      return `<article class="action-card ${cls}">
+        <div class="ac-top">
+          <div class="ac-sym">${r.symbol} <span class="tag">radar</span></div>
+          <div class="ac-dir ${cls}">${tag}</div>
+        </div>
+        <div class="ac-meta">
+          <div>Strike / expiry<strong>${r.strike==null?"—":fmt(r.strike,2)} · ${r.expiry||"—"}</strong></div>
+          <div>Ask / spot<strong>$${fmt(r.ask,2)} · $${fmt(r.spot,2)}</strong></div>
+          <div>OTM %<strong>${r.moneyness_pct==null?"—":fmt(r.moneyness_pct,2)+"%"}</strong></div>
+          <div>~1% / 2% mult<strong>${r.mult_at_1pct==null?"—":fmt(r.mult_at_1pct,1)+"×"} / ${r.mult_at_2pct==null?"—":fmt(r.mult_at_2pct,1)+"×"}</strong></div>
+          <div>Confirms<strong>${r.confirms??0}</strong></div>
+          <div>Contract<strong class="mono" style="font-size:.72rem">${r.contract||"—"}</strong></div>
+          ${levelsMeta(r)}
+        </div>
+        <p class="why" style="margin:.45rem 0 0">${r.detail||r.headline||""}</p>
+      </article>`;
+    }
+
+    function renderRadar(radar) {
+      const metrics = document.getElementById("radarMetrics");
+      const hotEl = document.getElementById("radarHot");
+      const watchEl = document.getElementById("radarWatch");
+      const rad = radar || {};
+      const c = rad.counts || {};
+      const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
+      if (metrics) {
+        metrics.innerHTML = [
+          m("RADAR HOT", c.hot||0, (c.hot||0)>0?"up":""),
+          m("WATCH", c.watch||0),
+          m("COOL", c.cool||0),
+          m("Wings scanned", c.tickets||(rad.tickets||[]).length||0),
+        ].join("");
+      }
+      if (hotEl) {
+        const hot = rad.hot || [];
+        hotEl.innerHTML = hot.length
+          ? `<div class="cards">${hot.map(radarCard).join("")}</div>`
+          : `<div class="empty">No RADAR HOT wings — waiting for cheap SPY/QQQ near-money tape/reclaim.</div>`;
+      }
+      if (watchEl) {
+        const gated = [...(rad.watch||[]), ...(rad.cool||[]).slice(0,4)];
+        watchEl.innerHTML = gated.length
+          ? `<div class="cards">${gated.map(radarCard).join("")}</div><p class="lede" style="margin-top:.5rem;font-size:.76rem">${rad.note||""}</p>`
+          : `<div class="empty">${rad.note||"Radar idle."}</div>`;
+      }
     }
 
     function renderRecLog(elId, board, emptyMsg) {
@@ -1704,6 +1766,15 @@ PAGE = r"""
       (acts.buy_now || []).forEach(r => pushMust(r, "Options"));
       (lot.buy_now || []).forEach(r => pushMust(r, "Explosive"));
       (ch.entry || []).forEach(r => pushMust(r, "Challenge"));
+      // Radar HOT is a separate discretionary pulse — labeled RADAR, not MUST TRADE hist-gated
+      const radarHot = ((DATA.radar || {}).hot || []).map(r => ({
+        ...r,
+        desk: "Radar",
+        certainty: "radar",
+        win_pct: null,
+        win_samples: null,
+        detail: r.detail || r.headline || "Discord-style radar HOT",
+      }));
       // Prefer perfect/elite hist certainty first
       must.sort((a, b) => {
         const tier = (t) => t === "perfect" ? 0 : t === "elite" ? 1 : 2;
@@ -1719,31 +1790,32 @@ PAGE = r"""
 
       const topMust = must.slice(0, 4);
       const topExit = exits.slice(0, 4);
-      if (!topMust.length && !topExit.length) {
+      const topRadar = radarHot.slice(0, 3);
+      if (!topMust.length && !topExit.length && !topRadar.length) {
         el.classList.remove("active");
         el.innerHTML = "";
         return;
       }
 
       const card = (row, kind) => {
-        const tag = kind === "must" ? "MUST TRADE" : "EXIT NOW";
+        const tag = kind === "must" ? "MUST TRADE" : (kind === "radar" ? "RADAR HOT" : "EXIT NOW");
         const strikeTxt = row.strike == null ? "—" : `${Number(row.strike).toFixed(Number(row.strike) % 1 ? 2 : 0)}${(row.right || "C") === "P" ? "p" : "c"}`;
         const dteTxt = row.dte == null ? "" : ` · ${row.dte}DTE`;
         const winTxt = row.win_pct == null ? "—" : `${fmt(row.win_pct, 0)}%`;
         const nTxt = row.win_samples == null ? "" : ` n=${row.win_samples}`;
         const srTxt = row.hit_1pct == null ? "—" : `${fmt(row.hit_1pct, 0)}%`;
         const askTxt = row.ask == null ? "—" : `$${fmt(row.ask, 2)}`;
-        return `<div class="pulse-card ${kind}">
+        return `<div class="pulse-card ${kind === "radar" ? "must" : kind}">
           <div class="pc-top">
             <div class="pc-sym">${row.symbol}</div>
-            <div class="pc-tag ${kind}">${tag} · ${row.desk}</div>
+            <div class="pc-tag ${kind === "radar" ? "must" : kind}">${tag} · ${row.desk}</div>
           </div>
           <div class="pc-meta">
             <div><span>Strike</span><br><strong>${strikeTxt}</strong></div>
             <div><span>Expiry</span><br><strong>${row.expiry || "—"}${dteTxt}</strong></div>
-            <div><span>Hist win</span><br><strong class="up">${winTxt}</strong><span>${nTxt}</span></div>
-            <div><span>Strike rate ≥1%</span><br><strong>${srTxt}</strong></div>
-            <div><span>${kind === "must" ? "Ask" : "Mark"}</span><br><strong>${askTxt}</strong></div>
+            <div><span>${kind === "radar" ? "OTM %" : "Hist win"}</span><br><strong class="up">${kind === "radar" ? (row.moneyness_pct==null?"—":fmt(row.moneyness_pct,2)+"%") : winTxt}</strong><span>${kind === "radar" ? "" : nTxt}</span></div>
+            <div><span>${kind === "radar" ? "~1% mult" : "Strike rate ≥1%"}</span><br><strong>${kind === "radar" ? (row.mult_at_1pct==null?"—":fmt(row.mult_at_1pct,1)+"×") : srTxt}</strong></div>
+            <div><span>${kind === "must" || kind === "radar" ? "Ask" : "Mark"}</span><br><strong>${askTxt}</strong></div>
             <div><span>Contract</span><br><strong class="mono" style="font-size:.72rem">${row.contract || "—"}</strong></div>
             ${levelsMeta(row)}
           </div>
@@ -1753,6 +1825,7 @@ PAGE = r"""
 
       const grid = [
         ...topMust.map(r => card(r, "must")),
+        ...topRadar.map(r => card(r, "radar")),
         ...topExit.map(r => card(r, "exit")),
       ].join("");
 
@@ -1795,6 +1868,7 @@ PAGE = r"""
       renderOptionTable("table0dte", (acts.all||[]).filter(r=>(r.dte_bucket||"0dte")==="0dte" || (r.dte!=null && r.dte<=1)));
       renderOptionTable("tableWeekly", (acts.all||[]).filter(r=>r.dte_bucket==="weekly"));
       renderExplosive(DATA.explosive || [], DATA.lottery || {});
+      renderRadar(DATA.radar || {});
       renderEcho(DATA.echo || {});
       renderDarkpoolMini(DATA.echo || {});
       renderChallenge(DATA.challenge || {});
@@ -1812,8 +1886,9 @@ PAGE = r"""
       document.getElementById("updated").textContent = "Updated " + fmtCST(DATA.generated_at, true);
       const c = acts.counts || {};
       const lc = (DATA.lottery && DATA.lottery.counts) || {};
+      const rc = (DATA.radar && DATA.radar.counts) || {};
       document.getElementById("counts").textContent =
-        `BUY ${c.buy_now||0} · SELL ${c.sell_now||0} · WAIT ${c.wait||0} · LOTTO B/S ${lc.buy_now||0}/${lc.sell_now||0}`;
+        `BUY ${c.buy_now||0} · SELL ${c.sell_now||0} · WAIT ${c.wait||0} · LOTTO B/S ${lc.buy_now||0}/${lc.sell_now||0} · RADAR HOT ${rc.hot||0}`;
       const gate = acts.hist_win_gate || DATA.hist_win_gate || {};
       const gateEl = document.getElementById("histWinGate");
       if (gateEl) {
@@ -2116,8 +2191,9 @@ def create_app(config_path: str | None = None) -> Flask:
                 journal.mark_open(marks)
             insights = build_insights(journal=journal, actions=actions, win_rates=win_table)
 
-        from odte_scanner.options.explosive import build_explosive_board
+        from odte_scanner.options.explosive import build_explosive_board, build_radar_wing_board
         from odte_scanner.signals.lottery import build_lottery_board
+        from odte_scanner.signals.radar import build_radar_board
 
         # Lottery / parabolic 0DTE–1DTE tickets (e.g. cheap calls that can 3×–100× on a rip)
         explosive = build_explosive_board(
@@ -2152,6 +2228,44 @@ def create_app(config_path: str | None = None) -> Flask:
             min_lottery_score=float(actions_cfg.get("lottery_min_score", 62)),
             min_confirms=int(actions_cfg.get("lottery_min_confirms", 4)),
         )
+
+        # Discord-style radar — cheap index wings; does NOT feed BUY NOW / journal
+        radar: dict = {"hot": [], "watch": [], "cool": [], "tickets": [], "counts": {}, "note": ""}
+        if actions_cfg.get("radar_enabled", True):
+            try:
+                focus = list(actions_cfg.get("radar_focus") or ["SPY", "QQQ", "IWM", "DIA"])
+                radar_tickets = build_radar_wing_board(
+                    scores=scan.get("scores") or [],
+                    quotes=quotes,
+                    aliases=aliases,
+                    focus_symbols=focus,
+                    candidates=refreshed,
+                    min_ask=float(actions_cfg.get("radar_min_ask", 0.15)),
+                    max_ask=float(actions_cfg.get("radar_max_ask", 2.50)),
+                    otm_pct_max=float(actions_cfg.get("radar_otm_pct_max", 1.50)),
+                    enrich_live=bool(actions_cfg.get("radar_enrich_live", True)),
+                    per_symbol=3,
+                    max_total=18,
+                )
+                radar = build_radar_board(
+                    radar_tickets,
+                    quotes=quotes,
+                    scores=scan.get("scores") or [],
+                    min_ask=float(actions_cfg.get("radar_min_ask", 0.15)),
+                    max_ask=float(actions_cfg.get("radar_max_ask", 2.50)),
+                    max_otm_pct=float(actions_cfg.get("radar_otm_pct_max", 1.50)),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("radar board unavailable: %s", exc)
+                radar = {
+                    "error": str(exc),
+                    "hot": [],
+                    "watch": [],
+                    "cool": [],
+                    "tickets": [],
+                    "counts": {},
+                    "note": "Radar temporarily unavailable.",
+                }
 
         from odte_scanner.challenge import build_challenge_board
         from odte_scanner.data.universe import liquid_universe
@@ -2469,6 +2583,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 challenge=challenge,
                 actions=actions,
                 action_cards=scan.get("action_cards") or {},
+                radar=radar,
             )
             by_section = {
                 "lottery": rlog.board(section="lottery", limit=30),
@@ -2476,6 +2591,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 "odte": rlog.board(section="odte", limit=30),
                 "weekly": rlog.board(section="weekly", limit=30),
                 "swing": rlog.board(section="swing", limit=30),
+                "radar": rlog.board(section="radar", limit=30),
             }
             rec_log_payload = {
                 **rlog.board(limit=50),
@@ -2485,6 +2601,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 "odte": by_section["odte"],
                 "weekly": by_section["weekly"],
                 "swing": by_section["swing"],
+                "radar": by_section["radar"],
             }
         except Exception as exc:  # noqa: BLE001
             logger.warning("recommendation log unavailable: %s", exc)
@@ -2507,6 +2624,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 "call_candidates": refreshed,
                 "explosive": explosive,
                 "lottery": lottery,
+                "radar": radar,
                 "echo": echo,
                 "challenge": challenge,
                 "market": market,

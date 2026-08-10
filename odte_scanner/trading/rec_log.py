@@ -455,6 +455,39 @@ class RecommendationLog:
         self.mark_off_board("lottery", live)
         return n
 
+    def sync_radar(self, radar: dict[str, Any] | None) -> int:
+        """Discord-style radar HOT/WATCH — separate section from lottery BUY NOW."""
+        if not isinstance(radar, dict):
+            return 0
+        n = 0
+        live: set[str] = set()
+        for row in list(radar.get("hot") or []) + list(radar.get("watch") or [])[:6]:
+            if not isinstance(row, dict):
+                continue
+            sym = str(row.get("symbol") or "")
+            if not sym:
+                continue
+            action = str(row.get("action") or "RADAR_WATCH")
+            self.note_entry(
+                section="radar",
+                symbol=sym,
+                action=action,
+                right="C",
+                price=_f(row.get("ask") or row.get("bid")),
+                spot=_f(row.get("spot") or row.get("live_last")),
+                contract=str(row.get("contract") or "") or None,
+                expiry=str(row.get("expiry") or "") or None,
+                strike=_f(row.get("strike")),
+                dte=int(row["dte"]) if row.get("dte") is not None else None,
+                horizon="0dte",
+                reason=str(row.get("detail") or row.get("headline") or "radar"),
+                headline=str(row.get("headline") or action),
+            )
+            live.add(self._key("radar", sym, "C"))
+            n += 1
+        self.mark_off_board("radar", live)
+        return n
+
     def sync_actions(self, actions: dict[str, Any] | None) -> int:
         """Main 0DTE / weekly action board BUY_NOW / SELL_NOW."""
         if not isinstance(actions, dict):
@@ -588,17 +621,20 @@ class RecommendationLog:
         challenge: dict[str, Any] | None = None,
         actions: dict[str, Any] | None = None,
         action_cards: dict[str, Any] | None = None,
+        radar: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         n_lot = self.sync_lottery(lottery)
         n_ch = self.sync_challenge(challenge)
         n_act = self.sync_actions(actions)
         n_cards = self.sync_action_cards(action_cards)
+        n_radar = self.sync_radar(radar)
         self.save()
         return {
             "lottery": n_lot,
             "challenge": n_ch,
             "actions": n_act,
             "action_cards": n_cards,
+            "radar": n_radar,
             **self.summary(),
         }
 

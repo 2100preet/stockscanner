@@ -160,6 +160,17 @@ actions:
   min_hist_win_samples: 5
   lottery_min_score: 62
   lottery_min_confirms: 4
+  # Discord-style radar lane (cheap SPY/QQQ wings) — separate from BUY NOW
+  radar_enabled: true
+  radar_focus:
+    - SPY
+    - QQQ
+    - IWM
+    - DIA
+  radar_min_ask: 0.15
+  radar_max_ask: 2.50
+  radar_otm_pct_max: 1.50
+  radar_enrich_live: true   # short Yahoo chain sweep for focus indices only
   # $1k → $1M challenge (swing / LEAP + weekly pace for 4mo→$500k)
   challenge_start_usd: 1000
   challenge_target_usd: 1000000
