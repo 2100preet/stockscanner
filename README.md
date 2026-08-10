@@ -45,17 +45,21 @@ python -m odte_scanner ui
 
 ## Always-on (24×7) hosting
 
-Cursor cloud agents, `trycloudflare` quick tunnels, and `*.agent.cvm.dev` port links are **ephemeral** — they die when the agent sleeps or the VM recycles.
+Cursor cloud agents, `trycloudflare` quick tunnels, and `*.agent.cvm.dev` port links are **ephemeral** — they die when the agent sleeps or the VM recycles. This agent **cannot** keep a public URL forever without a real host account.
 
-For a server that stays up:
+**Fastest path (you click once):**
+
+1. [Railway → New Project → Deploy from GitHub](https://railway.app/new) → `2100preet/stockscanner` (Dockerfile / `railway.toml` included)
+2. Or [Render → New Web Service](https://render.com/) → same repo (`render.yaml` included)
+3. Open the generated `*.up.railway.app` / `*.onrender.com` URL — that stays up without Cursor
 
 ```bash
-# Docker (Railway / Render / Fly / any VPS)
+# Local Docker
 docker build -t signal-desk .
-docker run -p 8787:8787 -v signal-desk-data:/app/outputs signal-desk
+docker run -p 8787:8787 -e PORT=8787 -v signal-desk-data:/app/outputs signal-desk
 ```
 
-Or use the `Procfile` / `Dockerfile` in this repo on Railway/Render. Mount a volume on `/app/outputs` so journals and recommendation logs persist.
+Mount a volume on `/app/outputs` so journals and recommendation logs persist.
 
 Demo tunnels (not 24×7):
 

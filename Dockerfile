@@ -21,4 +21,5 @@ EXPOSE 8787
 # Persist outputs via a volume mount in production
 RUN mkdir -p /app/outputs
 
-CMD ["python", "-m", "odte_scanner", "ui", "--host", "0.0.0.0", "--port", "8787"]
+# Honor $PORT from Railway/Render/Fly (defaults to 8787)
+CMD ["sh", "-c", "python -m odte_scanner ui --host 0.0.0.0 --port ${PORT:-8787}"]
