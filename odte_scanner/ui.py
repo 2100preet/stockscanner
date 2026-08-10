@@ -109,6 +109,50 @@ PAGE = r"""
     .panel { margin-top: 1.1rem; }
     footer { margin-top: 1.6rem; color: var(--muted); font-size: .72rem; line-height: 1.45; }
     .loading { color: var(--wait); font-family: "JetBrains Mono", monospace; font-size: .8rem; }
+    .pulse-banner {
+      display: none; margin: 0 0 .95rem; border-radius: .9rem; overflow: hidden;
+      border: 1px solid rgba(62,207,142,.35);
+      background:
+        linear-gradient(105deg, rgba(62,207,142,.18), rgba(18,28,24,.55) 42%, rgba(255,107,90,.12));
+      box-shadow: 0 10px 28px rgba(0,0,0,.28);
+    }
+    .pulse-banner.active { display: block; animation: fade .3s ease; }
+    .pulse-banner .pb-head {
+      display: flex; flex-wrap: wrap; gap: .45rem .75rem; align-items: baseline;
+      justify-content: space-between; padding: .7rem 1rem .35rem;
+      border-bottom: 1px solid var(--line);
+    }
+    .pulse-banner .pb-title {
+      font-family: "Instrument Serif", Georgia, serif; font-size: 1.35rem; letter-spacing: -.02em; margin: 0;
+    }
+    .pulse-banner .pb-title em { color: var(--long); font-style: italic; }
+    .pulse-banner .pb-sub { color: var(--muted); font-size: .72rem; max-width: 36rem; }
+    .pulse-banner .pb-grid {
+      display: grid; gap: .55rem; padding: .75rem 1rem 1rem;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    }
+    .pulse-card {
+      border: 1px solid var(--line); border-radius: .7rem; padding: .7rem .8rem;
+      background: rgba(8,16,14,.55);
+    }
+    .pulse-card.must { box-shadow: inset 3px 0 0 var(--long); }
+    .pulse-card.exit { box-shadow: inset 3px 0 0 var(--short); }
+    .pulse-card .pc-top { display: flex; justify-content: space-between; gap: .5rem; align-items: baseline; }
+    .pulse-card .pc-sym { font-family: "Instrument Serif", Georgia, serif; font-size: 1.35rem; }
+    .pulse-card .pc-tag {
+      font-family: "JetBrains Mono", monospace; font-size: .68rem; letter-spacing: .06em;
+      font-weight: 500;
+    }
+    .pulse-card .pc-tag.must { color: var(--long); }
+    .pulse-card .pc-tag.exit { color: var(--short); }
+    .pulse-card .pc-meta {
+      display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .25rem .55rem;
+      margin-top: .45rem; font-size: .78rem;
+    }
+    .pulse-card .pc-meta strong { color: var(--ink); font-weight: 600; }
+    .pulse-card .pc-meta span { color: var(--muted); }
+    .pulse-card .pc-why { margin: .4rem 0 0; color: var(--muted); font-size: .72rem; line-height: 1.35; }
+    .pulse-empty { padding: .85rem 1rem 1rem; color: var(--muted); font-size: .8rem; }
   </style>
 </head>
 <body>
@@ -124,6 +168,7 @@ PAGE = r"""
       <span class="status" id="counts"></span>
       <span class="status" id="updated">Loading…</span>
     </div>
+    <div id="mustTradeBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="loadNote" class="loading" style="display:none;margin-bottom:.6rem"></div>
 
     <nav class="tabs" id="tabs">
@@ -1364,7 +1409,140 @@ PAGE = r"""
       journal.innerHTML = html || `<div class="empty">No journal trades yet.</div>`;
     }
 
+    function renderMustTradeBanner() {
+      const el = document.getElementById("mustTradeBanner");
+      if (!el) return;
+      const acts = DATA.actions || {};
+      const lot = DATA.lottery || {};
+      const ch = DATA.challenge || {};
+      const must = [];
+      const exits = [];
+      const seenMust = new Set();
+      const seenExit = new Set();
+
+      const pushMust = (row, desk) => {
+        if (!row) return;
+        const sym = String(row.symbol || "").toUpperCase();
+        if (!sym) return;
+        const strike = row.strike;
+        const expiry = row.expiry || "—";
+        const key = `${sym}|${strike}|${expiry}|${row.contract || ""}`;
+        if (seenMust.has(key)) return;
+        seenMust.add(key);
+        const win = row.win_pct ?? row.hist_win_pct;
+        const n = row.win_samples ?? row.hist_samples;
+        const hit1 = row.hit_1pct;
+        must.push({
+          desk,
+          symbol: sym,
+          strike,
+          expiry,
+          dte: row.dte,
+          ask: row.ask,
+          contract: row.contract,
+          win_pct: win,
+          win_samples: n,
+          hit_1pct: hit1,
+          hit_2pct: row.hit_2pct,
+          certainty: row.certainty_tier,
+          score: row.score ?? row.ensemble_score ?? row.lottery_score ?? row.strength,
+          detail: row.headline || row.detail || row.recommend_reason || row.thesis || "",
+          right: row.right || "C",
+        });
+      };
+      const pushExit = (row, desk) => {
+        if (!row) return;
+        const sym = String(row.symbol || "").toUpperCase();
+        if (!sym) return;
+        const strike = row.strike;
+        const expiry = row.expiry || "—";
+        const key = `${sym}|${strike}|${expiry}|${row.contract || row.id || ""}`;
+        if (seenExit.has(key)) return;
+        seenExit.add(key);
+        exits.push({
+          desk,
+          symbol: sym,
+          strike,
+          expiry,
+          dte: row.dte,
+          ask: row.ask ?? row.bid ?? row.mark,
+          contract: row.contract,
+          win_pct: row.win_pct ?? row.hist_win_pct,
+          win_samples: row.win_samples ?? row.hist_samples,
+          hit_1pct: row.hit_1pct,
+          detail: row.exit_plan || row.wall_exit_hint || row.detail || row.headline || row.last_action_detail || "Exit now",
+          right: row.right || "C",
+        });
+      };
+
+      (acts.buy_now || []).forEach(r => pushMust(r, "Options"));
+      (lot.buy_now || []).forEach(r => pushMust(r, "Explosive"));
+      (ch.entry || []).forEach(r => pushMust(r, "Challenge"));
+      // Prefer perfect/elite hist certainty first
+      must.sort((a, b) => {
+        const tier = (t) => t === "perfect" ? 0 : t === "elite" ? 1 : 2;
+        const tw = (Number(b.win_pct) || 0) - (Number(a.win_pct) || 0);
+        if (tier(a.certainty) !== tier(b.certainty)) return tier(a.certainty) - tier(b.certainty);
+        if (tw) return tw;
+        return (Number(b.hit_1pct) || 0) - (Number(a.hit_1pct) || 0);
+      });
+
+      (acts.sell_now || []).forEach(r => pushExit(r, "Options"));
+      (lot.sell_now || []).forEach(r => pushExit(r, "Explosive"));
+      (ch.exit || []).forEach(r => pushExit(r, "Challenge"));
+
+      const topMust = must.slice(0, 4);
+      const topExit = exits.slice(0, 4);
+      if (!topMust.length && !topExit.length) {
+        el.classList.remove("active");
+        el.innerHTML = "";
+        return;
+      }
+
+      const card = (row, kind) => {
+        const tag = kind === "must" ? "MUST TRADE" : "EXIT NOW";
+        const strikeTxt = row.strike == null ? "—" : `${Number(row.strike).toFixed(Number(row.strike) % 1 ? 2 : 0)}${(row.right || "C") === "P" ? "p" : "c"}`;
+        const dteTxt = row.dte == null ? "" : ` · ${row.dte}DTE`;
+        const winTxt = row.win_pct == null ? "—" : `${fmt(row.win_pct, 0)}%`;
+        const nTxt = row.win_samples == null ? "" : ` n=${row.win_samples}`;
+        const srTxt = row.hit_1pct == null ? "—" : `${fmt(row.hit_1pct, 0)}%`;
+        const askTxt = row.ask == null ? "—" : `$${fmt(row.ask, 2)}`;
+        return `<div class="pulse-card ${kind}">
+          <div class="pc-top">
+            <div class="pc-sym">${row.symbol}</div>
+            <div class="pc-tag ${kind}">${tag} · ${row.desk}</div>
+          </div>
+          <div class="pc-meta">
+            <div><span>Strike</span><br><strong>${strikeTxt}</strong></div>
+            <div><span>Expiry</span><br><strong>${row.expiry || "—"}${dteTxt}</strong></div>
+            <div><span>Hist win</span><br><strong class="up">${winTxt}</strong><span>${nTxt}</span></div>
+            <div><span>Strike rate ≥1%</span><br><strong>${srTxt}</strong></div>
+            <div><span>${kind === "must" ? "Ask" : "Mark"}</span><br><strong>${askTxt}</strong></div>
+            <div><span>Contract</span><br><strong class="mono" style="font-size:.72rem">${row.contract || "—"}</strong></div>
+          </div>
+          <p class="pc-why">${row.detail || ""}</p>
+        </div>`;
+      };
+
+      const grid = [
+        ...topMust.map(r => card(r, "must")),
+        ...topExit.map(r => card(r, "exit")),
+      ].join("");
+
+      el.classList.add("active");
+      el.innerHTML = `
+        <div class="pb-head">
+          <div>
+            <h2 class="pb-title">Must trade <em>sure-shot</em> + exits</h2>
+            <div class="pb-sub">Hist-gated tickets with strike, strike-rate, and expiry up top. EXIT cards are live positions/tickets the desk says leave now. Hist edge ≠ guaranteed future profit.</div>
+          </div>
+          <div class="status">MUST ${topMust.length} · EXIT ${topExit.length}</div>
+        </div>
+        <div class="pb-grid">${grid}</div>`;
+    }
+
     function paint() {
+      renderMustTradeBanner();
       const ac = DATA.action_cards || {};
       const hz = DATA.horizons || {};
       renderCards("overviewCards", [
