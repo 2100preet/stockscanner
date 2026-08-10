@@ -4,6 +4,7 @@ from odte_scanner.challenge.million import (
     build_challenge_board,
     compound_path,
     path_table,
+    time_boxed_path,
     _side_from_tape,
 )
 from odte_scanner.challenge.tracker import ChallengeTracker, hold_period_for
@@ -13,6 +14,50 @@ def test_compound_path_12_flips():
     p = compound_path(start_usd=1000, target_usd=1_000_000, flips=12)
     assert p["pct_per_flip"] > 70  # ~78%
     assert p["schedule"][-1]["equity"] >= 999_000
+
+
+def test_time_boxed_path_4mo_500k_weekly():
+    pace = time_boxed_path(
+        start_usd=1000,
+        milestone_usd=500_000,
+        target_usd=1_000_000,
+        months=4,
+        ideal_hold_days=8,
+    )
+    assert pace["flips_in_window"] >= 12
+    assert pace["milestone"]["pct_per_flip"] > 40
+    assert pace["schedule"][-1]["hit_milestone"] is True
+    assert pace["feasible"] is True
+
+
+def test_challenge_enter_exit_records_balance(tmp_path):
+    ledger = tmp_path / "ch.json"
+    tr = ChallengeTracker(ledger, starting_cash=1000)
+    ticket = {
+        "action": "ENTRY",
+        "symbol": "JPM",
+        "right": "C",
+        "ask": 2.0,
+        "contract": "JPM260918C00200000",
+        "expiry": "2026-09-18",
+        "strike": 200,
+        "horizon": "weekly",
+        "dte": 30,
+        "target_premium_mult": 1.6,
+        "spot": 200,
+    }
+    entered = tr.enter(ticket)
+    assert entered is not None
+    assert entered.cash_before == 1000
+    assert entered.cash_after == 800  # 2*100*1
+    assert entered.equity_after == 1000
+    assert tr.book.balance_log[-1]["action"] == "ENTRY"
+    out = tr.exit_trade(entered.id, exit_bid=3.2, reason="target")
+    assert out is not None
+    assert out.cash_after == 800 + 320
+    assert out.pnl_usd == 120
+    assert tr.book.balance_log[-1]["action"] == "EXIT"
+    assert tr.book.cash == out.cash_after
 
 
 def test_path_table_10_to_15():

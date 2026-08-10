@@ -160,11 +160,15 @@ actions:
   min_hist_win_samples: 5
   lottery_min_score: 62
   lottery_min_confirms: 4
-  # $1k → $1M challenge (swing / LEAP only)
+  # $1k → $1M challenge (swing / LEAP + weekly pace for 4mo→$500k)
   challenge_start_usd: 1000
   challenge_target_usd: 1000000
   challenge_flips: 12
   challenge_max_tickets: 8
+  # Prefer weekly-style tickets that can compound to ≥$500k in ~4 months
+  challenge_pace_months: 4
+  challenge_pace_milestone_usd: 500000
+  challenge_prefer_weekly_pace: true
   challenge_fetch_contracts: true
   challenge_fetch_earnings: true
   # Prefetch earnings across liquid universe (cached ~18h; warms ~N/refresh)

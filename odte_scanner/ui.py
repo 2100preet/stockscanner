@@ -284,12 +284,11 @@ PAGE = r"""
     <section class="tabpane" id="tab-challenge">
       <h2>$1,000 → $1,000,000 challenge</h2>
       <p class="lede">
-        Swing / LEAP <strong>calls &amp; puts</strong> across mega + <strong>mid/small</strong> +
-        <strong>DRAM/memory</strong> optionables.
-        Sure-shot hist filter (prefer <strong>100% hist win</strong>, else ≥80% n≥5).
-        Status: <strong>ENTRY · HOLD · EXIT</strong> with hold periods. Earnings bias:
-        prefer <strong>post-print continuation</strong>; caution/LEAP into the print.
-        <em>Hist 100% ≠ guaranteed future wins.</em>
+        Path includes a <strong>4-month → $500k</strong> pace (prefer <strong>weekly-style</strong> tickets)
+        on the way to $1M. Sure-shot hist filter (prefer <strong>100% hist win</strong>, else ≥80% n≥5).
+        Status: <strong>ENTRY · HOLD · EXIT</strong>. After each Paper ENTER/EXIT the sleeve
+        <strong>cash &amp; equity balance</strong> updates so you know where you are.
+        <em>Hist 100% ≠ guaranteed future wins — options can go to zero.</em>
       </p>
       <div class="metric-row" id="challengeMetrics"></div>
       <div class="cards" id="challengePrimary"></div>
@@ -813,6 +812,8 @@ PAGE = r"""
       }
       const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
       const path = ch.path || {};
+      const pace = ch.pace || {};
+      const paceM = pace.milestone || {};
       const c = ch.counts || {};
       // Prefer ledger book (always written by API); sync.book is fallback
       const book = (ch.book && (ch.book.trades || ch.book.cash!=null)) ? ch.book
@@ -827,17 +828,16 @@ PAGE = r"""
         return `<span class="badge sell">NO SPOT</span>`;
       };
       if (metrics) metrics.innerHTML = [
-        m("Sleeve equity", book.equity!=null?`$${Number(book.equity).toLocaleString()}`:`$${(ch.start_usd||1000).toLocaleString()}`),
-        m("Target", `$${(ch.target_usd||1000000).toLocaleString()}`, "up"),
-        m("Need / flip", path.pct_per_flip==null?"—":`+${fmt(path.pct_per_flip,0)}%`, "up"),
+        m("Sleeve cash", book.cash!=null?`$${Number(book.cash).toLocaleString(undefined,{maximumFractionDigits:0})}`:"—"),
+        m("Sleeve equity", book.equity!=null?`$${Number(book.equity).toLocaleString(undefined,{maximumFractionDigits:0})}`:`$${(ch.start_usd||1000).toLocaleString()}`),
+        m("→ $500k", book.milestone_500k_pct!=null?`${fmt(book.milestone_500k_pct,2)}%`:(book.equity!=null?`${fmt((book.equity/500000)*100,2)}%`:"—"), "up"),
+        m("→ $1M", book.progress_pct!=null?`${fmt(book.progress_pct,3)}%`:"—", "up"),
+        m("4mo need / flip", paceM.pct_per_flip==null?"—":`+${fmt(paceM.pct_per_flip,0)}%`, "up"),
+        m("Classic need / flip", path.pct_per_flip==null?"—":`+${fmt(path.pct_per_flip,0)}%`),
+        m("4mo fits", `${c.fits_4mo_500k||0} / weekly ${c.weekly_pace||0}`),
         m("ENTRY / HOLD / EXIT", `${c.entry||0} / ${c.hold||0} / ${c.exit||0}`),
-        m("Calls / Puts", `${c.calls||0} / ${c.puts||0}`),
-        m("Approx hold", (ch.primary && holdLbl(ch.primary)) || "—"),
-        m("Live / cache spot", `${c.live_spot||0} / ${c.cache_spot||0}`),
-        m("Live asks", `${c.live_ask||0}/${c.tickets||0}`),
-        m("Earn today / week / next", `${c.earn_today||0} / ${c.earn_this_week||0} / ${c.earn_next_week||0}`),
-        m("Pre / Post earn", `${c.pre_earnings||0} / ${c.post_earnings||0}`),
         m("Closed flips", `${book.flips_closed||0} (W${book.wins||0}/L${book.losses||0})`),
+        m("Earn today / week", `${c.earn_today||0} / ${c.earn_this_week||0}`),
       ].join("");
 
       const earnBadge = (t) => {
@@ -893,7 +893,7 @@ PAGE = r"""
           const kind = act==="EXIT"?"short":(act==="ENTRY"||act==="HOLD"?"long":"wait");
           primaryEl.innerHTML = `<article class="action-card ${kind}">
             <div class="ac-top">
-              <div class="ac-sym">${t0.symbol} <span class="tag">${t0.right==="P"?"PUT":"CALL"}</span> <span class="tag">${(t0.market_cap_tier||"").replace("_","/")}</span> ${earnBadge(t0)} ${spotBadge(t0)}</div>
+              <div class="ac-sym">${t0.symbol} <span class="tag">${t0.right==="P"?"PUT":"CALL"}</span> <span class="tag">${(t0.market_cap_tier||"").replace("_","/")}</span> ${earnBadge(t0)} ${spotBadge(t0)}${t0.fits_4mo_500k?` <span class="badge buy">4MO $500k</span>`:""}</div>
               <div class="ac-dir ${kind}">${act} · ${tier.toUpperCase()}</div>
             </div>
             <div class="ac-conf">Hist win ${fmt(t0.hist_win_pct,0)}% · n=${t0.hist_samples} · <strong>approx hold ${holdLbl(t0)}</strong></div>
@@ -975,10 +975,13 @@ PAGE = r"""
                 <div>Hist win<strong>${t.hist_win_pct==null?"—":fmt(t.hist_win_pct,0)+"%"} (n=${t.hist_samples??"—"})</strong></div>
                 <div>Held / max<strong>${t.hold_days==null?"0":fmt(t.hold_days,1)}d / ${t.hold_max_days||"—"}d</strong></div>
                 <div>Contracts / cost<strong>${t.contracts||1} · $${fmt(t.cost,0)}</strong></div>
+                <div>Cash before → after<strong>$${fmt(t.cash_before,0)} → $${fmt(t.cash_after,0)}</strong></div>
+                <div>Balance (equity)<strong class="up">$${fmt(t.equity_after!=null?t.equity_after:book.equity,0)}</strong></div>
                 ${levelsMeta(t)}
               </div>
               <p class="why" style="margin:.45rem 0 0"><strong>EXIT plan:</strong> ${t.exit_plan||t.last_action_detail||"—"}</p>
               <p class="why" style="margin:.25rem 0 0"><strong>ENTER was:</strong> ${t.enter_plan||t.entry_reason||"—"}</p>
+              ${t.balance_note?`<p class="why" style="margin:.25rem 0 0"><strong>Balance:</strong> ${t.balance_note}</p>`:""}
               <div class="playbook" style="margin-top:.45rem">
                 <button type="button" class="tag" data-ch-exit="${t.id}">Paper EXIT now</button>
               </div>
@@ -994,11 +997,14 @@ PAGE = r"""
               <div>Exit (CST)<strong>${fmtCST(t.exited_at||t.closed_at)}</strong></div>
               <div>Strike / expiry<strong>${t.strike==null?"—":fmt(t.strike,2)} · ${t.expiry||"—"}</strong></div>
               <div>In → out $<strong>$${fmt(t.entry_ask,2)} → $${fmt(t.exit_bid,2)}</strong></div>
-              <div>P&amp;L %<strong class="${pctClass(t.profit_pct)}">${t.profit_pct==null?"—":fmt(t.profit_pct,1)+"%"}</strong></div>
+              <div>P&amp;L % / $<strong class="${pctClass(t.profit_pct)}">${t.profit_pct==null?"—":fmt(t.profit_pct,1)+"%"} · ${t.pnl_usd==null?"—":"$"+fmt(t.pnl_usd,2)}</strong></div>
               <div>Held<strong>${t.hold_days==null?"—":fmt(t.hold_days,1)+"d"}</strong></div>
+              <div>Cash before → after<strong>$${fmt(t.cash_before,0)} → $${fmt(t.cash_after,0)}</strong></div>
+              <div>Balance after EXIT<strong class="up">$${fmt(t.equity_after!=null?t.equity_after:t.cash_after,0)}</strong></div>
               ${levelsMeta(t)}
             </div>
             <p class="why" style="margin:.45rem 0 0">${t.exit_reason||""}</p>
+            ${t.balance_note?`<p class="why" style="margin:.25rem 0 0"><strong>Balance:</strong> ${t.balance_note}</p>`:""}
           </article>`).join("")}</div>`:""}`;
         bookEl.querySelectorAll("[data-ch-exit]").forEach(btn=>{
           btn.addEventListener("click", async ()=>{
@@ -1025,6 +1031,7 @@ PAGE = r"""
               <div>Opt mark → target<strong>${mark==null?"—":"$"+fmt(mark,2)} → ${focus.target_ask==null?"—":"$"+fmt(focus.target_ask,2)} (+${fmt(focus.target_profit_pct,0)}%)</strong></div>
               <div>Strike rate ≥1%/≥2%<strong>${focus.hit_1pct==null?"—":fmt(focus.hit_1pct,0)+"%"} / ${focus.hit_2pct==null?"—":fmt(focus.hit_2pct,0)+"%"}</strong></div>
               <div>Approx hold<strong>${holdLbl(focus)}</strong></div>
+              ${levelsMeta(focus)}
             </div>
             <p class="why" style="margin:.55rem 0 0"><strong>ENTER:</strong> ${focus.enter_plan||"—"}</p>
             <p class="why" style="margin:.35rem 0 0"><strong>EXIT:</strong> ${focus.exit_plan||"—"}</p>
@@ -1045,20 +1052,44 @@ PAGE = r"""
       if (pathEl) {
         const paths = ch.paths || [];
         const hp = ch.hold_periods || {};
+        const sched = pace.schedule || path.schedule || [];
+        const balLog = book.balance_log || [];
         pathEl.innerHTML = `
-          <p class="lede" style="margin-top:0">${path.note||""}</p>
+          <p class="lede" style="margin-top:0"><strong>4-month → $500k pace:</strong> ${pace.note||"—"}</p>
+          <p class="lede" style="margin-top:.35rem">${path.note||""}</p>
           <div class="playbook" style="margin-bottom:.55rem">
             ${["weekly","swing","leap"].map(k=>{
               const h=hp[k]||{};
               return `<span class="tag">${k}: ${h.label||"—"}</span>`;
             }).join("")}
+            <span class="tag">Prefer weekly for 4mo/$500k</span>
           </div>
+          <div class="status" style="margin:.2rem 0 .4rem">4mo compound schedule (weekly ~${pace.ideal_hold_days||8}d holds)</div>
+          <table><thead><tr><th>Flip</th><th>Months</th><th>Equity</th><th>Milestone</th></tr></thead>
+          <tbody>${(sched.slice(0,16)).map(s=>`<tr>
+            <td class="mono">${s.flip}</td>
+            <td class="mono">${s.months_elapsed==null?"—":fmt(s.months_elapsed,1)}</td>
+            <td class="mono up"><strong>$${Number(s.equity||0).toLocaleString()}</strong></td>
+            <td class="why">${s.hit_target?"$1M":(s.hit_milestone?"$500k":"—")}</td>
+          </tr>`).join("")||`<tr><td colspan="4" class="empty">No pace schedule</td></tr>`}</tbody></table>
+          <div class="status" style="margin:.75rem 0 .4rem">Classic path flip counts</div>
           <table><thead><tr><th>Flips</th><th>Need / flip</th><th>Multiple / flip</th></tr></thead>
           <tbody>${paths.map(p=>`<tr>
             <td class="mono">${p.flips}</td>
             <td class="mono up"><strong>+${fmt(p.pct_per_flip,0)}%</strong></td>
             <td class="mono">${fmt(p.mult_per_flip,2)}×</td>
           </tr>`).join("")}</tbody></table>
+          <div class="status" style="margin:.75rem 0 .4rem">Balance after ENTRY / EXIT (CST)</div>
+          ${balLog.length?`<table><thead><tr><th>When</th><th>Action</th><th>Sym</th><th>Cash before</th><th>Cash after</th><th>Equity after</th><th>P&amp;L</th></tr></thead>
+            <tbody>${balLog.slice().reverse().slice(0,20).map(e=>`<tr>
+              <td class="mono">${fmtCST(e.at)}</td>
+              <td><span class="badge ${e.action==="EXIT"?"sell":"buy"}">${e.action}</span></td>
+              <td><strong>${e.symbol||"—"}</strong></td>
+              <td class="mono">$${fmt(e.cash_before,0)}</td>
+              <td class="mono"><strong>$${fmt(e.cash_after,0)}</strong></td>
+              <td class="mono up">$${fmt(e.equity_after,0)}</td>
+              <td class="mono ${pctClass(e.pnl_usd)}">${e.pnl_usd==null?"—":"$"+fmt(e.pnl_usd,2)}</td>
+            </tr>`).join("")}</tbody></table>`:`<div class="empty">No ENTRY/EXIT yet — balance updates after Paper ENTER / EXIT.</div>`}
           <ul class="lede" style="font-size:.76rem">${(ch.rules||[]).map(r=>`<li>${r}</li>`).join("")}</ul>`;
       }
 
@@ -1077,7 +1108,7 @@ PAGE = r"""
           return `<tr>
           <td><span class="badge ${cls}">${a}</span></td>
           <td class="mono">${t.right==="P"?"PUT":"CALL"}</td>
-          <td><strong>${t.symbol}</strong> ${spotBadge(t)} ${earnBadge(t)}<div class="why">spot ${t.spot==null?"—":"$"+fmt(t.spot,2)}</div></td>
+          <td><strong>${t.symbol}</strong> ${spotBadge(t)} ${earnBadge(t)}${t.fits_4mo_500k?` <span class="badge buy">4MO $500k</span>`:""}${t.pace_style==="weekly"?` <span class="tag">weekly pace</span>`:""}<div class="why">spot ${t.spot==null?"—":"$"+fmt(t.spot,2)}</div></td>
           <td class="mono"><strong>${t.strike==null?"—":fmt(t.strike,2)}</strong><div class="why">${t.expiry||"—"} · ${t.dte==null?"":t.dte+"d"}</div></td>
           <td class="mono"><span class="up">${t.call_wall==null?"—":fmt(t.call_wall,2)}</span> / <span class="down">${t.put_wall==null?"—":fmt(t.put_wall,2)}</span></td>
           <td class="mono up"><strong>${t.soft_exit==null?"—":"$"+fmt(t.soft_exit,2)}</strong><div class="why">${t.wall_exit_hint||""}</div></td>

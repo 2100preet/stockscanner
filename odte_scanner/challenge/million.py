@@ -9,6 +9,7 @@ underlying — not a guarantee of future option P&L. Options can go to zero.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -97,6 +98,11 @@ class ChallengeTicket:
     wall_exit_hint: str
     gex_flip: float | None
     gex_regime: str | None
+    # 4-month / $500k pace fields
+    fits_4mo_500k: bool = False
+    pace_required_mult: float | None = None
+    pace_required_pct: float | None = None
+    pace_style: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -133,6 +139,103 @@ def compound_path(
     }
 
 
+def time_boxed_path(
+    *,
+    start_usd: float = 1000.0,
+    milestone_usd: float = 500_000.0,
+    target_usd: float = 1_000_000.0,
+    months: float = 4.0,
+    ideal_hold_days: int = 8,
+    current_equity: float | None = None,
+) -> dict[str, Any]:
+    """Geometric pace so a sleeve can hit a milestone (e.g. $500k) inside N months.
+
+    Uses ideal hold days to estimate how many flips fit in the window (weekly≈8d).
+    """
+    equity = float(current_equity if current_equity is not None else start_usd)
+    if equity <= 0 or months <= 0 or ideal_hold_days <= 0:
+        return {
+            "months": months,
+            "milestone_usd": milestone_usd,
+            "target_usd": target_usd,
+            "flips_in_window": 0,
+            "feasible": False,
+        }
+    days = float(months) * 30.4375
+    flips_in_window = max(1, int(days // float(ideal_hold_days)))
+    months_per_flip = float(ideal_hold_days) / 30.4375
+
+    def _leg(goal: float) -> dict[str, Any]:
+        if goal <= equity:
+            return {
+                "goal_usd": goal,
+                "already_met": True,
+                "mult_per_flip": 1.0,
+                "pct_per_flip": 0.0,
+                "total_multiple": round(goal / equity, 4),
+                "flips_needed": 0,
+                "months_needed": 0.0,
+            }
+        need = goal / equity
+        mult = need ** (1.0 / flips_in_window)
+        pct = (mult - 1.0) * 100.0
+        # flips if hitting this mult each time
+        flips_needed = int(math.ceil(math.log(need) / math.log(mult))) if mult > 1 else flips_in_window
+        return {
+            "goal_usd": goal,
+            "already_met": False,
+            "mult_per_flip": round(mult, 4),
+            "pct_per_flip": round(pct, 1),
+            "total_multiple": round(need, 2),
+            "flips_needed": flips_needed,
+            "months_needed": round(flips_needed * months_per_flip, 1),
+        }
+
+    milestone = _leg(float(milestone_usd))
+    final = _leg(float(target_usd))
+    # Schedule hitting milestone mult each flip (capped to window)
+    eq = equity
+    schedule = []
+    mult_m = float(milestone.get("mult_per_flip") or 1.0)
+    # Use unrounded mult for the schedule so compound lands on the goal
+    raw_mult = (float(milestone_usd) / equity) ** (1.0 / flips_in_window) if float(milestone_usd) > equity else 1.0
+    for i in range(1, flips_in_window + 1):
+        eq *= raw_mult
+        schedule.append(
+            {
+                "flip": i,
+                "equity": round(eq, 2),
+                "gain_pct": milestone.get("pct_per_flip"),
+                "months_elapsed": round(i * months_per_flip, 1),
+                "hit_milestone": eq + 1e-6 >= float(milestone_usd),
+                "hit_target": eq + 1e-6 >= float(target_usd),
+            }
+        )
+    feasible = float(milestone.get("pct_per_flip") or 0) <= 250.0  # >2.5×/flip is fantasy for sleeve
+    return {
+        "months": months,
+        "days": round(days, 1),
+        "ideal_hold_days": ideal_hold_days,
+        "style": "weekly" if ideal_hold_days <= 14 else ("leap" if ideal_hold_days >= 50 else "swing"),
+        "current_equity": round(equity, 2),
+        "flips_in_window": flips_in_window,
+        "milestone": milestone,
+        "target": final,
+        "schedule": schedule,
+        "feasible": feasible,
+        "note": (
+            f"4-month pace to ${milestone_usd:,.0f}: ~{flips_in_window} flips @ "
+            f"~{ideal_hold_days}d hold → need ~{milestone.get('pct_per_flip')}% premium/flip "
+            f"(then continue to ${target_usd:,.0f}). Prefer weekly-style tickets."
+            if months == 4
+            else (
+                f"{months:g}-month pace to ${milestone_usd:,.0f}: ~{flips_in_window} flips @ "
+                f"~{ideal_hold_days}d → ~{milestone.get('pct_per_flip')}%/flip."
+            )
+        ),
+    }
+
+
 def path_table(start_usd: float = 1000.0, target_usd: float = 1_000_000.0) -> list[dict[str, Any]]:
     return [compound_path(start_usd=start_usd, target_usd=target_usd, flips=n) for n in range(10, 16)]
 
@@ -151,6 +254,7 @@ def _eligible_rows(
     win_table: dict[str, Any] | None,
     *,
     prefer_perfect: bool = True,
+    prefer_weekly: bool = False,
 ) -> list[dict[str, Any]]:
     """Prefer 100% hist-win rows; fall back to ≥80% with n≥5 on swing/weekly."""
     perfect = summarize_hist_win_gate(
@@ -169,9 +273,11 @@ def _eligible_rows(
                 seen.add(key)
     rows.sort(
         key=lambda r: (
+            0 if prefer_weekly and r.get("horizon") == "weekly" else 1,
             0 if r.get("horizon") == "swing" else 1,
             0 if float(r.get("win_pct") or 0) >= 99.9 else 1,
             -float(r.get("win_pct") or 0),
+            -float(r.get("hit_2pct") or r.get("hit_1pct") or 0),
             -int(r.get("trades") or 0),
         )
     )
@@ -554,6 +660,10 @@ def build_challenge_board(
     fetch_walls: bool = True,
     wall_buffer_usd: float = WALL_EXIT_BUFFER_USD,
     walls_map: dict[str, dict[str, Any]] | None = None,
+    pace_months: float = 4.0,
+    pace_milestone_usd: float = 500_000.0,
+    prefer_weekly_pace: bool = True,
+    current_equity: float | None = None,
 ) -> dict[str, Any]:
     quotes = quotes or {}
     aliases = aliases or {}
@@ -580,11 +690,22 @@ def build_challenge_board(
             row["_hz"] = hz
             score_map[sym] = row
 
+    equity_now = float(current_equity if current_equity is not None else start_usd)
     paths = path_table(start_usd, target_usd)
     primary_path = compound_path(start_usd=start_usd, target_usd=target_usd, flips=flips)
-    need_mult = float(primary_path["mult_per_flip"] or 1.8)
+    need_mult_base = float(primary_path["mult_per_flip"] or 1.8)
+    pace = time_boxed_path(
+        start_usd=start_usd,
+        milestone_usd=pace_milestone_usd,
+        target_usd=target_usd,
+        months=pace_months,
+        ideal_hold_days=8 if prefer_weekly_pace else 35,
+        current_equity=equity_now,
+    )
+    pace_mult = float((pace.get("milestone") or {}).get("mult_per_flip") or need_mult_base)
+    pace_pct = float((pace.get("milestone") or {}).get("pct_per_flip") or 0)
 
-    eligible = _eligible_rows(win_table)
+    eligible = _eligible_rows(win_table, prefer_weekly=prefer_weekly_pace)
     # Earnings calendar over full liquid universe (+ hist/DRAM/focus first for fetch priority)
     seen_earn: set[str] = set()
     earn_syms: list[str] = []
@@ -728,6 +849,17 @@ def build_challenge_board(
         # Refresh hold period with DTE
         hp = hold_period_for(horizon, (contract or {}).get("dte"))
         hold_approx = f"≈{hp['ideal_days']}d ({hp['min_days']}–{hp['max_days']}d)"
+        # Weekly-paced tickets use the stricter of classic path vs 4mo→$500k mult
+        style = str(hp.get("style") or horizon)
+        ticket_need_mult = need_mult_base
+        fits_4mo = False
+        if prefer_weekly_pace and style == "weekly":
+            ticket_need_mult = max(need_mult_base, pace_mult)
+            hit2 = float(row.get("hit_2pct") or row.get("hit_1pct") or 0)
+            fits_4mo = bool(pace.get("feasible")) and hit2 >= 40.0
+        elif prefer_weekly_pace and style == "swing" and int(hp.get("ideal_days") or 35) <= 25:
+            ticket_need_mult = max(need_mult_base, pace_mult)
+        need_mult = ticket_need_mult
 
         ask = float(contract["ask"]) if contract and contract.get("ask") else None
         bid = float(contract["bid"]) if contract and contract.get("bid") else None
@@ -814,6 +946,11 @@ def build_challenge_board(
             action=action,
         )
         reasons.insert(2, f"Approx hold {hold_approx} before EXIT / roll")
+        if fits_4mo:
+            reasons.insert(
+                3,
+                f"4mo→${pace_milestone_usd/1000:.0f}k pace: need ~{pace_pct:.0f}%/flip on weekly-style ticket",
+            )
         if spot_source == "live":
             reasons.append(f"Live spot ${spot:.2f}" + (f" @ {quote_asof}" if quote_asof else ""))
         elif spot_source == "cache":
@@ -1031,16 +1168,22 @@ def build_challenge_board(
                 wall_exit_hint=str(walls.get("exit_hint") or ""),
                 gex_flip=walls.get("flip"),
                 gex_regime=walls.get("regime"),
+                fits_4mo_500k=fits_4mo,
+                pace_required_mult=round(ticket_need_mult, 3),
+                pace_required_pct=round((ticket_need_mult - 1.0) * 100.0, 1),
+                pace_style=style,
             )
         )
         if len(tickets) >= max_tickets:
             break
 
-    # Rank: EXIT first, then earnings boost, certainty, hist
+    # Rank: EXIT first, then 4mo-pace weekly fits, earnings boost, certainty, hist
     rank_action = {"EXIT": 0, "ENTRY": 1, "HOLD": 2, "WAIT": 3}
     tickets.sort(
         key=lambda t: (
             rank_action.get(t.action, 9),
+            0 if t.fits_4mo_500k else 1,
+            0 if t.pace_style == "weekly" else 1,
             -earn_boosts.get(t.symbol, 0),
             0 if t.certainty_tier == "perfect" else 1 if t.certainty_tier == "elite" else 2,
             0
@@ -1069,7 +1212,9 @@ def build_challenge_board(
         "start_usd": start_usd,
         "target_usd": target_usd,
         "flips": flips,
+        "current_equity": round(equity_now, 2),
         "path": primary_path,
+        "pace": pace,
         "paths": [
             {"flips": p["flips"], "pct_per_flip": p["pct_per_flip"], "mult_per_flip": p["mult_per_flip"]}
             for p in paths
@@ -1100,6 +1245,8 @@ def build_challenge_board(
             "live_spot": sum(1 for t in tickets if t.spot_source == "live"),
             "cache_spot": sum(1 for t in tickets if t.spot_source == "cache"),
             "live_ask": sum(1 for t in tickets if t.ask is not None),
+            "fits_4mo_500k": sum(1 for t in tickets if t.fits_4mo_500k),
+            "weekly_pace": sum(1 for t in tickets if t.pace_style == "weekly"),
         },
         "hold_periods": {
             "weekly": hold_period_for("weekly"),
