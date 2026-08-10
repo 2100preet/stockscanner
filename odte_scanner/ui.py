@@ -485,20 +485,51 @@ PAGE = r"""
     }
 
     function wallLookup(symbol) {
-      const m = (DATA.walls_by_symbol || {})[symbol] || {};
+      const m = (DATA.walls_by_symbol || {})[String(symbol || "").toUpperCase()] || {};
       return m;
     }
-    function wallMeta(t) {
-      const w = t.call_wall!=null || t.put_wall!=null ? t : wallLookup(t.symbol);
-      const callW = w.call_wall, putW = w.put_wall;
-      const soft = w.soft_exit;
-      const side = w.primary_wall_side || (t.right==="P"?"put":"call");
-      if (callW==null && putW==null) return "";
+    function spotLookup(symbol, row) {
+      const r = row || {};
+      const direct = r.spot ?? r.live_last ?? r.live_spot ?? r.entry_spot ?? r.last_price ?? r.entry;
+      if (direct != null && direct !== "" && !Number.isNaN(Number(direct))) return Number(direct);
+      const sym = String(symbol || r.symbol || "").toUpperCase();
+      if (!sym) return null;
+      const sc = (DATA.scores || []).find(s => String(s.symbol || "").toUpperCase() === sym);
+      if (sc) {
+        const v = sc.last_price ?? sc.entry;
+        if (v != null && !Number.isNaN(Number(v))) return Number(v);
+      }
+      const q = ((DATA.watch || {}).quotes || {})[sym] || {};
+      if (q.last != null && !Number.isNaN(Number(q.last))) return Number(q.last);
+      // Challenge / market boards sometimes carry spot under aliases
+      for (const bucket of ["entry", "hold", "exit", "tickets"]) {
+        const rows = ((DATA.challenge || {})[bucket]) || [];
+        const hit = rows.find(x => String(x.symbol || "").toUpperCase() === sym && x.spot != null);
+        if (hit) return Number(hit.spot);
+      }
+      return null;
+    }
+    /** Spot (scan) + call/put walls + soft EXIT — always shown on recommend tiles. */
+    function levelsMeta(t) {
+      const row = t || {};
+      const sym = String(row.symbol || "").toUpperCase();
+      const walls = wallLookup(sym);
+      const callW = row.call_wall ?? walls.call_wall;
+      const putW = row.put_wall ?? walls.put_wall;
+      let soft = row.soft_exit ?? walls.soft_exit;
+      if (soft == null && callW != null && !Number.isNaN(Number(callW))) {
+        soft = Number(callW) - Number(row.wall_buffer_usd ?? walls.wall_buffer_usd ?? 0.10);
+      }
+      const spot = spotLookup(sym, row);
       return `
+          <div>Spot (scan)<strong>${spot==null?"—":"$"+fmt(spot,2)}</strong></div>
           <div title="Max call OI ≥ spot">Call wall<strong class="up">${callW==null?"—":fmt(callW,2)}</strong></div>
           <div title="Max put OI ≤ spot">Put wall<strong class="down">${putW==null?"—":fmt(putW,2)}</strong></div>
-          <div title="Take profit on underlying before OI wall">Soft EXIT<strong class="up">${soft==null?"—":"$"+fmt(soft,2)}</strong></div>
-          <div>Wall side<strong>${side||"—"}</strong></div>`;
+          <div title="Take profit on underlying before OI wall">Soft EXIT<strong class="up">${soft==null?"—":"$"+fmt(soft,2)}</strong></div>`;
+    }
+    function wallMeta(t) {
+      // Back-compat alias — prefer levelsMeta on recommend tiles
+      return levelsMeta(t);
     }
     function cardHTML(t, hz) {
       const long = t.quality || (t.ensemble_score||0) >= 70;
@@ -526,7 +557,7 @@ PAGE = r"""
           <div title="Sample size: number of historical quality signals">${w.n < 8 && w.pct!=null ? "n (low)" : "n"}<strong>${nLabel}</strong></div>
           <div title="How often underlying ripped after signal">Strike rate<strong>${strikeRate}</strong></div>
           <div>Exp move<strong>${fmt(t.expected_move_pct,1)}%</strong></div>
-          ${wallMeta({...t, ...walls})}
+          ${levelsMeta({...t, ...walls})}
         </div>
         <p class="why" style="margin:.55rem 0 0">${(t.reasons||[]).filter(r=>!r.includes("/")).slice(0,4).join(" · ")||"—"}</p>
         ${softHint?`<p class="why" style="margin:.35rem 0 0"><strong>Wall EXIT:</strong> ${softHint}</p>`:""}
@@ -584,6 +615,7 @@ PAGE = r"""
           <div>Lottery score<strong>${fmt(r.lottery_score,0)}</strong></div>
           <div>Tape 5m / 15m<strong>${r.mom_5m_pct==null?"—":fmt(r.mom_5m_pct,2)+"%"} / ${r.mom_15m_pct==null?"—":fmt(r.mom_15m_pct,2)+"%"}</strong></div>
           <div>Unreal%<strong>${r.option_unrealized_pct==null?"—":fmt(r.option_unrealized_pct,0)+"%"}</strong></div>
+          ${levelsMeta(r)}
         </div>
         <p class="why" style="margin:.55rem 0 0">${r.detail||r.headline||"—"}</p>
         <div class="playbook">${tags}</div>
@@ -635,6 +667,7 @@ PAGE = r"""
           <div>Last seen (CST)<strong>${fmtCST(r.last_recommended_at||r.recommended_at)}</strong></div>
           <div>Contract<strong class="mono" style="font-size:.72rem">${r.contract||"—"}</strong></div>
           <div>Status<strong>${r.on_board?"On board":"Off board"}</strong></div>
+          ${levelsMeta(r)}
         </div>
         <p class="why" style="margin:.45rem 0 0">${r.headline||r.reason||""}</p>
       </article>`;
@@ -650,6 +683,7 @@ PAGE = r"""
           <div>Exit (CST)<strong>${fmtCST(r.closed_at)}</strong></div>
           <div>Profit %<strong class="${pctClass(r.profit_pct)}">${r.profit_pct==null?"—":fmt(r.profit_pct,1)+"%"}</strong></div>
           <div>P&amp;L (1ct)<strong class="${pctClass(r.pnl_usd)}">${r.pnl_usd==null?"—":"$"+fmt(r.pnl_usd,2)}</strong></div>
+          ${levelsMeta(r)}
         </div>
         <p class="why" style="margin:.45rem 0 0">${r.exit_reason||r.reason||r.headline||""}</p>
       </article>`;
@@ -871,10 +905,7 @@ PAGE = r"""
               <div>DTE / contract<strong>${t0.dte??"—"}d · ${t0.contract||"pending"}</strong></div>
               <div>Opt ${t0.mark_source||"price"} → tgt<strong>${(t0.ask??t0.option_last)==null?"—":"$"+fmt(t0.ask??t0.option_last,2)} → ${t0.target_ask==null?"—":"$"+fmt(t0.target_ask,2)}</strong></div>
               <div>Strike rate ≥1%/≥2%<strong>${t0.hit_1pct==null?"—":fmt(t0.hit_1pct,0)+"%"} / ${t0.hit_2pct==null?"—":fmt(t0.hit_2pct,0)+"%"}</strong></div>
-              <div>Spot (${t0.spot_source||"—"})<strong>${t0.spot==null?"—":"$"+fmt(t0.spot,2)}</strong></div>
-              <div>Call wall<strong class="up">${t0.call_wall==null?"—":fmt(t0.call_wall,2)}</strong></div>
-              <div>Put wall<strong class="down">${t0.put_wall==null?"—":fmt(t0.put_wall,2)}</strong></div>
-              <div title="Underlying take-profit before OI wall">Soft EXIT<strong class="up">${t0.soft_exit==null?"—":"$"+fmt(t0.soft_exit,2)}</strong></div>
+              ${levelsMeta(t0)}
             </div>
             <p class="why" style="margin:.55rem 0 0">${t0.status_detail||""}${t0.data_note?` · ${t0.data_note}`:""}</p>
             ${reasonList(t0)}
@@ -944,6 +975,7 @@ PAGE = r"""
                 <div>Hist win<strong>${t.hist_win_pct==null?"—":fmt(t.hist_win_pct,0)+"%"} (n=${t.hist_samples??"—"})</strong></div>
                 <div>Held / max<strong>${t.hold_days==null?"0":fmt(t.hold_days,1)}d / ${t.hold_max_days||"—"}d</strong></div>
                 <div>Contracts / cost<strong>${t.contracts||1} · $${fmt(t.cost,0)}</strong></div>
+                ${levelsMeta(t)}
               </div>
               <p class="why" style="margin:.45rem 0 0"><strong>EXIT plan:</strong> ${t.exit_plan||t.last_action_detail||"—"}</p>
               <p class="why" style="margin:.25rem 0 0"><strong>ENTER was:</strong> ${t.enter_plan||t.entry_reason||"—"}</p>
@@ -964,6 +996,7 @@ PAGE = r"""
               <div>In → out $<strong>$${fmt(t.entry_ask,2)} → $${fmt(t.exit_bid,2)}</strong></div>
               <div>P&amp;L %<strong class="${pctClass(t.profit_pct)}">${t.profit_pct==null?"—":fmt(t.profit_pct,1)+"%"}</strong></div>
               <div>Held<strong>${t.hold_days==null?"—":fmt(t.hold_days,1)+"d"}</strong></div>
+              ${levelsMeta(t)}
             </div>
             <p class="why" style="margin:.45rem 0 0">${t.exit_reason||""}</p>
           </article>`).join("")}</div>`:""}`;
@@ -1442,6 +1475,7 @@ PAGE = r"""
               <div>Entry → mark<strong>$${fmt(t.entry_ask,2)} → $${fmt(t.mark,2)}</strong></div>
               <div>Unreal %<strong class="${pctClass(t.unrealized_pct)}">${t.unrealized_pct==null?"—":fmt(t.unrealized_pct,1)+"%"}</strong></div>
               <div>Contract<strong class="mono" style="font-size:.72rem">${t.contract||"—"}</strong></div>
+              ${levelsMeta(t)}
             </div>
             <p class="why" style="margin:.45rem 0 0">${t.entry_reason||""}</p>
           </article>`).join("")}</div>`;
@@ -1460,6 +1494,7 @@ PAGE = r"""
               <div>Profit % / P&amp;L<strong class="${pctClass(t.profit_pct)}">${fmt(t.profit_pct,1)}% · $${fmt(t.pnl_usd,2)}</strong></div>
               <div>Hold<strong>${fmt(t.hold_minutes,0)}m</strong></div>
               <div>Contract<strong class="mono" style="font-size:.72rem">${t.contract||"—"}</strong></div>
+              ${levelsMeta(t)}
             </div>
             <p class="why" style="margin:.45rem 0 0">${t.exit_reason||""}</p>
           </article>`).join("")}</div>`;
@@ -1506,6 +1541,11 @@ PAGE = r"""
           score: row.score ?? row.ensemble_score ?? row.lottery_score ?? row.strength,
           detail: row.headline || row.detail || row.recommend_reason || row.thesis || "",
           right: row.right || "C",
+          spot: row.spot ?? row.live_last ?? row.live_spot ?? row.entry_spot ?? row.last_price,
+          call_wall: row.call_wall,
+          put_wall: row.put_wall,
+          soft_exit: row.soft_exit,
+          wall_buffer_usd: row.wall_buffer_usd,
         });
       };
       const pushExit = (row, desk) => {
@@ -1530,6 +1570,11 @@ PAGE = r"""
           hit_1pct: row.hit_1pct,
           detail: row.exit_plan || row.wall_exit_hint || row.detail || row.headline || row.last_action_detail || "Exit now",
           right: row.right || "C",
+          spot: row.spot ?? row.live_last ?? row.live_spot ?? row.entry_spot ?? row.last_price,
+          call_wall: row.call_wall,
+          put_wall: row.put_wall,
+          soft_exit: row.soft_exit,
+          wall_buffer_usd: row.wall_buffer_usd,
         });
       };
 
@@ -1577,6 +1622,7 @@ PAGE = r"""
             <div><span>Strike rate ≥1%</span><br><strong>${srTxt}</strong></div>
             <div><span>${kind === "must" ? "Ask" : "Mark"}</span><br><strong>${askTxt}</strong></div>
             <div><span>Contract</span><br><strong class="mono" style="font-size:.72rem">${row.contract || "—"}</strong></div>
+            ${levelsMeta(row)}
           </div>
           <p class="pc-why">${row.detail || ""}</p>
         </div>`;
