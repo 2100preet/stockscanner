@@ -68,6 +68,11 @@ def test_earnings_darlings_in_universe():
     assert "CRCL" in darlings
     assert "CRCL" in liquid_universe()
     assert "CRCL" in FOCUS_DEFAULT
+    assert "SMCI" in darlings
+    assert "SMCI" in liquid_universe()
+    assert "SMCI" in FOCUS_DEFAULT
+    assert "SMCI" in CURATED_EARNINGS
+    assert market_cap_tier("SMCI") == "mid"
     # CRM / NOW are liquid megas — must stay on focus scans
     assert "CRM" in liquid_universe()
     assert "CRM" in FOCUS_DEFAULT

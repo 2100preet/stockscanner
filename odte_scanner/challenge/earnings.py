@@ -55,6 +55,7 @@ CURATED_EARNINGS: dict[str, dict[str, str]] = {
     # High-attention liquid names traders expect on the desk
     "CRCL": {"last_earnings": "2026-08-05", "session": "bmo", "name": "Circle"},
     "CRM": {"next_earnings": "2026-08-26", "session": "amc", "name": "Salesforce"},
+    "SMCI": {"next_earnings": "2026-08-11", "session": "amc", "name": "Supermicro"},
 }
 
 

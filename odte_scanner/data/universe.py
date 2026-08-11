@@ -77,6 +77,7 @@ EARNINGS_DARLINGS_UNIVERSE: list[str] = [
     "CRCL",  # Circle
     "CAVA",
     "ONON",
+    "SMCI",  # Super Micro — high-attention AI server / earnings print
 ]
 
 # S&P 100-ish + liquid optionables / ETFs commonly on Signa/Intellectia screens
@@ -150,7 +151,7 @@ FOCUS_DEFAULT: list[str] = [
     "TSM", "DIA", "XLK", "XLE", "SOXX", "HYG", "EEM", "SPCX", "DDOG",
     # Most-anticipated / high-attention names (swing / earnings / focus scan)
     "CRWV", "CBRS", "FLY", "FIGR", "GEMI", "NBIS", "BETA", "XE",
-    "CRCL", "NOW",
+    "CRCL", "NOW", "SMCI",
 ]
 
 

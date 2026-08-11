@@ -68,6 +68,7 @@ tickers:
   - XE    # X-Energy
   - CRCL  # Circle — high-attention fintech
   - NOW   # ServiceNow — liquid mega; keep on focus scans
+  - SMCI  # Super Micro — earnings today AMC; liquid mid, was missing from focus
   # CRM already listed above under Friday weeklies
 
 # Yahoo Finance symbol overrides (indexes need ^ prefix for quotes/chains)
@@ -143,6 +144,7 @@ expiry_calendars:
     - XE
     - CRCL
     - NOW
+    - SMCI
     - HYG
     - EEM
 
