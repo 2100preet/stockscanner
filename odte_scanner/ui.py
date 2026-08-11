@@ -1748,11 +1748,17 @@ PAGE = r"""
           strike,
           expiry,
           dte: row.dte,
-          ask: row.ask ?? row.bid ?? row.mark,
+          ask: row.bid ?? row.mark ?? row.ask ?? row.exit_bid,
+          bid: row.bid ?? row.exit_bid ?? row.mark,
+          entry_ask: row.entry_ask ?? row.entry,
           contract: row.contract,
           win_pct: row.win_pct ?? row.hist_win_pct,
           win_samples: row.win_samples ?? row.hist_samples,
           hit_1pct: row.hit_1pct,
+          profit_pct: row.profit_pct ?? row.option_unrealized_pct ?? row.unrealized_pct,
+          pnl_usd: row.pnl_usd ?? row.unrealized_pnl_usd,
+          exited_at: row.exited_at || row.closed_at,
+          entered_at: row.entered_at,
           detail: row.exit_plan || row.wall_exit_hint || row.detail || row.headline || row.last_action_detail || "Exit now",
           right: row.right || "C",
           spot: row.spot ?? row.live_last ?? row.live_spot ?? row.entry_spot ?? row.last_price,
@@ -1785,8 +1791,10 @@ PAGE = r"""
       });
 
       (acts.sell_now || []).forEach(r => pushExit(r, "Options"));
+      (acts.just_exited || []).forEach(r => pushExit(r, "Options"));
       (lot.sell_now || []).forEach(r => pushExit(r, "Explosive"));
       (ch.exit || []).forEach(r => pushExit(r, "Challenge"));
+      (ch.just_exited || []).forEach(r => pushExit(r, "Challenge"));
 
       const topMust = must.slice(0, 4);
       const topExit = exits.slice(0, 4);
@@ -1805,6 +1813,12 @@ PAGE = r"""
         const nTxt = row.win_samples == null ? "" : ` n=${row.win_samples}`;
         const srTxt = row.hit_1pct == null ? "—" : `${fmt(row.hit_1pct, 0)}%`;
         const askTxt = row.ask == null ? "—" : `$${fmt(row.ask, 2)}`;
+        const pnlLine = kind === "exit" && (row.profit_pct != null || row.pnl_usd != null)
+          ? `<div><span>P&amp;L</span><br><strong class="${pctClass(row.profit_pct ?? row.pnl_usd)}">${row.profit_pct==null?"—":fmt(row.profit_pct,1)+"%"}${row.pnl_usd==null?"":" · $"+fmt(row.pnl_usd,2)}</strong></div>`
+          : "";
+        const exitTime = kind === "exit" && row.exited_at
+          ? `<div><span>Exited (CST)</span><br><strong>${fmtCST(row.exited_at)}</strong></div>`
+          : "";
         return `<div class="pulse-card ${kind === "radar" ? "must" : kind}">
           <div class="pc-top">
             <div class="pc-sym">${row.symbol}</div>
@@ -1815,8 +1829,9 @@ PAGE = r"""
             <div><span>Expiry</span><br><strong>${row.expiry || "—"}${dteTxt}</strong></div>
             <div><span>${kind === "radar" ? "OTM %" : "Hist win"}</span><br><strong class="up">${kind === "radar" ? (row.moneyness_pct==null?"—":fmt(row.moneyness_pct,2)+"%") : winTxt}</strong><span>${kind === "radar" ? "" : nTxt}</span></div>
             <div><span>${kind === "radar" ? "~1% mult" : "Strike rate ≥1%"}</span><br><strong>${kind === "radar" ? (row.mult_at_1pct==null?"—":fmt(row.mult_at_1pct,1)+"×") : srTxt}</strong></div>
-            <div><span>${kind === "must" || kind === "radar" ? "Ask" : "Mark"}</span><br><strong>${askTxt}</strong></div>
+            <div><span>${kind === "must" || kind === "radar" ? "Ask" : "Exit $"}</span><br><strong>${askTxt}</strong></div>
             <div><span>Contract</span><br><strong class="mono" style="font-size:.72rem">${row.contract || "—"}</strong></div>
+            ${pnlLine}${exitTime}
             ${levelsMeta(row)}
           </div>
           <p class="pc-why">${row.detail || ""}</p>
@@ -2132,11 +2147,73 @@ def create_app(config_path: str | None = None) -> Flask:
 
         refreshed.sort(key=lambda c: float(c.get("score") or 0), reverse=True)
 
+        jcfg = cfg.get("journal") or {}
+        insights = None
+        journal_sync = None
+        journal = None
+        journal_opens: list[dict] = []
+        marks: dict[str, float] = {}
+        if jcfg.get("enabled", True):
+            from odte_scanner.options.live_chain import fetch_live_option_quote
+            from odte_scanner.trading.journal import SignalJournal
+
+            jpath = Path(jcfg.get("path", "outputs/signal_journal.json"))
+            if not jpath.is_absolute():
+                jpath = ROOT / jpath
+            journal = SignalJournal(
+                jpath, starting_cash=float(jcfg.get("starting_cash", 5000))
+            )
+            # Mark open journal calls FIRST so TP/SL / SELL NOW see live premium
+            open_syms_for_quotes: list[str] = []
+            if not offline:
+                for t in journal.book.trades:
+                    if t.status != "open":
+                        continue
+                    open_syms_for_quotes.append(t.symbol)
+                    aliases.setdefault(t.symbol, resolve_yahoo_symbol(t.symbol, cfg))
+                    if t.expiry and t.strike is not None:
+                        q = fetch_live_option_quote(
+                            t.symbol,
+                            t.expiry,
+                            float(t.strike),
+                            yahoo_symbol=aliases.get(t.symbol) or resolve_yahoo_symbol(t.symbol, cfg),
+                        )
+                        if q:
+                            if q.bid > 0 and q.ask > 0:
+                                marks[t.contract] = (q.bid + q.ask) / 2
+                            elif q.bid > 0:
+                                marks[t.contract] = q.bid
+                            elif q.ask > 0:
+                                marks[t.contract] = q.ask
+                # Underlying tape for open positions (exit on dumps / soft wall)
+                for sym in sorted(set(open_syms_for_quotes)):
+                    if sym in quotes:
+                        continue
+                    try:
+                        lq = fetch_live_quote(sym, yahoo_symbol=aliases.get(sym))
+                        if lq:
+                            quotes[sym] = lq.to_dict()
+                    except Exception:  # noqa: BLE001
+                        pass
+            if marks:
+                journal.mark_open(marks)
+            # Enrich open rows with bid=mark for decide_exit premium P&L
+            journal_opens = []
+            for t in journal.book.trades:
+                if t.status != "open":
+                    continue
+                row = t.to_dict()
+                if row.get("mark") is not None:
+                    row["bid"] = row.get("bid") or row["mark"]
+                    row["entry"] = row.get("entry_ask")
+                journal_opens.append(row)
+
         actions = build_action_board(
             candidates=refreshed,
             scores=scan.get("scores") or [],
             quotes=quotes,
             ledger=ledger if isinstance(ledger, dict) else None,
+            journal_opens=journal_opens,
             buy_score=float(actions_cfg.get("buy_score", 70)),
             wait_score=float(actions_cfg.get("wait_score", 62)),
             sell_score=float(actions_cfg.get("sell_score", 48)),
@@ -2149,47 +2226,27 @@ def create_app(config_path: str | None = None) -> Flask:
             require_hist_win=bool(actions_cfg.get("require_hist_win", True)),
         )
 
-        jcfg = cfg.get("journal") or {}
-        insights = None
-        journal_sync = None
-        journal = None
-        if jcfg.get("enabled", True):
-            from odte_scanner.options.live_chain import fetch_live_option_quote
+        if journal is not None:
             from odte_scanner.trading.insights import build_insights
-            from odte_scanner.trading.journal import SignalJournal
 
-            jpath = Path(jcfg.get("path", "outputs/signal_journal.json"))
-            if not jpath.is_absolute():
-                jpath = ROOT / jpath
-            journal = SignalJournal(
-                jpath, starting_cash=float(jcfg.get("starting_cash", 5000))
-            )
             journal_sync = journal.sync_from_actions(
                 actions,
                 max_risk_usd=float(jcfg.get("max_risk_per_trade_usd", 250)),
                 auto_enter=bool(jcfg.get("auto_enter", True)),
                 auto_exit=bool(jcfg.get("auto_exit", True)),
             )
-            marks: dict[str, float] = {}
-            if not offline:
-                for t in journal.book.trades:
-                    if t.status != "open":
-                        continue
-                    if t.expiry and t.strike is not None:
-                        q = fetch_live_option_quote(
-                            t.symbol,
-                            t.expiry,
-                            float(t.strike),
-                            yahoo_symbol=aliases.get(t.symbol) or resolve_yahoo_symbol(t.symbol, cfg),
-                        )
-                        if q:
-                            if q.bid > 0 and q.ask > 0:
-                                marks[t.contract] = (q.bid + q.ask) / 2
-                            else:
-                                marks[t.contract] = q.bid if q.bid > 0 else (q.ask or 0)
+            # Re-mark after exits so open MTM / equity stay current
             if marks:
-                journal.mark_open(marks)
+                still = {t.contract: marks[t.contract] for t in journal.book.trades if t.status == "open" and t.contract in marks}
+                if still:
+                    journal.mark_open(still)
             insights = build_insights(journal=journal, actions=actions, win_rates=win_table)
+            # Attach just-closed exits onto actions so UI shows EXIT + P&L this cycle
+            if journal_sync and journal_sync.get("exited"):
+                actions = dict(actions)
+                actions["just_exited"] = journal_sync["exited"]
+                actions["counts"] = dict(actions.get("counts") or {})
+                actions["counts"]["just_exited"] = len(journal_sync["exited"])
 
         from odte_scanner.options.explosive import build_explosive_board, build_radar_wing_board
         from odte_scanner.signals.lottery import build_lottery_board
@@ -2453,6 +2510,45 @@ def create_app(config_path: str | None = None) -> Flask:
             challenge["entry"] = [t for t in tickets if t.get("action") == "ENTRY"]
             challenge["hold"] = [t for t in tickets if t.get("action") == "HOLD"]
             challenge["exit"] = [t for t in tickets if t.get("action") == "EXIT"]
+            # Keep just-closed flips visible this cycle (rebuild drops them from open_map)
+            just_closed = [
+                t.to_dict()
+                for t in tracker.book.trades
+                if t.status == "closed" and t.id in set(sync.get("exited") or [])
+            ]
+            if just_closed:
+                challenge["just_exited"] = just_closed
+                # Surface as EXIT cards with P&L so the desk isn't ENTER-only after auto-exit
+                for t in just_closed:
+                    challenge["exit"].append(
+                        {
+                            "symbol": t.get("symbol"),
+                            "right": t.get("right") or "C",
+                            "action": "EXIT",
+                            "strike": t.get("strike"),
+                            "expiry": t.get("expiry"),
+                            "contract": t.get("contract"),
+                            "ask": t.get("entry_ask"),
+                            "bid": t.get("exit_bid"),
+                            "mark": t.get("exit_bid"),
+                            "entered_at": t.get("entered_at"),
+                            "exited_at": t.get("exited_at"),
+                            "closed_at": t.get("exited_at"),
+                            "profit_pct": t.get("profit_pct"),
+                            "pnl_usd": t.get("pnl_usd"),
+                            "cash_after": t.get("cash_after"),
+                            "equity_after": t.get("equity_after"),
+                            "balance_note": t.get("balance_note"),
+                            "exit_plan": t.get("exit_reason") or t.get("last_action_detail"),
+                            "recommend_reason": t.get("exit_reason") or "Auto EXIT",
+                            "reasons": [t.get("exit_reason") or t.get("last_action_detail") or "EXIT"],
+                        }
+                    )
+                challenge["counts"] = {
+                    **(challenge.get("counts") or {}),
+                    "exit": len(challenge["exit"]),
+                    "just_exited": len(just_closed),
+                }
             challenge["sync"] = sync
             challenge["book"] = tracker.book.to_dict()
         except Exception as exc:  # noqa: BLE001

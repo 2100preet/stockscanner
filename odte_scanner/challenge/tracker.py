@@ -362,6 +362,22 @@ class ChallengeTracker:
             action = "EXIT"
             reasons.append(f"ideal hold + {unreal:.0f}% (≥70% of target) — bank & roll")
 
+        # Soft wall on underlying when attached to the trade
+        soft = getattr(trade, "soft_exit", None)
+        if soft is None and isinstance(quote, dict):
+            soft = quote.get("soft_exit")
+        if soft is not None and quote:
+            spot = quote.get("last")
+            if spot is not None:
+                soft_f = float(soft)
+                spot_f = float(spot)
+                if trade.right == "C" and spot_f >= soft_f:
+                    action = "EXIT"
+                    reasons.append(f"spot {spot_f:.2f} ≥ soft EXIT ${soft_f:.2f} (call wall)")
+                elif trade.right == "P" and spot_f <= soft_f:
+                    action = "EXIT"
+                    reasons.append(f"spot {spot_f:.2f} ≤ soft EXIT ${soft_f:.2f} (put wall)")
+
         if action == "HOLD":
             reasons.append(
                 f"holding {days:.1f}d / max {trade.hold_max_days}d · "
@@ -409,9 +425,11 @@ class ChallengeTracker:
             t.balance_note = (
                 f"Balance after EXIT: cash/equity ${cash_after:,.2f} "
                 f"(was cash ${cash_before:,.2f} + open mark) · P&L ${t.pnl_usd:,.2f}"
+                + (f" ({t.profit_pct:+.1f}%)" if t.profit_pct is not None else "")
             )
             t.last_action_detail = (
                 f"{reason} · cash ${cash_before:,.2f}→${cash_after:,.2f} · P&L ${t.pnl_usd:,.2f}"
+                + (f" ({t.profit_pct:+.1f}%)" if t.profit_pct is not None else "")
             )
             self.book.flips_closed += 1
             if (t.pnl_usd or 0) > 0:
@@ -430,6 +448,7 @@ class ChallengeTracker:
                     "equity_after": cash_after,
                     "debit_usd": None,
                     "pnl_usd": t.pnl_usd,
+                    "profit_pct": t.profit_pct,
                     "proceeds": proceeds,
                 }
             )

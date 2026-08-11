@@ -225,22 +225,58 @@ def decide_exit(
     take_profit_pct: float = 80.0,
     sell_score: float = 48.0,
 ) -> ActionSignal | None:
-    if trade.get("status") != "open":
+    if str(trade.get("status") or "open") != "open":
         return None
     symbol = str(trade.get("symbol", ""))
-    entry = float(trade.get("entry") or 0)
+    entry = float(trade.get("entry") or trade.get("entry_ask") or 0)
     live = _live_pct(quote)
     last = float(quote["last"]) if quote and quote.get("last") is not None else None
-    score = float(score_by_symbol.get(symbol, trade.get("score") or 0))
+    score = float(score_by_symbol.get(symbol, trade.get("score") or trade.get("entry_score") or 0))
     mom5 = float(quote["mom_5m_pct"]) if quote and quote.get("mom_5m_pct") is not None else None
+
+    # Live option mark for premium P&L (never fall back to entry for exit price)
+    exit_px: float | None = None
+    for key in ("bid", "mark", "exit_bid"):
+        raw = trade.get(key)
+        if raw is not None and float(raw) > 0:
+            exit_px = float(raw)
+            break
+    unreal: float | None = None
+    if exit_px is not None and entry > 0:
+        unreal = (exit_px - entry) / entry * 100.0
 
     reasons: list[str] = []
     sell = False
     strength = 60.0
 
+    # Premium take-profit / stop-loss (config risk knobs — were previously unused)
+    if unreal is not None and unreal >= float(take_profit_pct):
+        sell = True
+        strength = max(strength, 92.0)
+        reasons.append(f"take profit {unreal:+.0f}% ≥ +{take_profit_pct:.0f}%")
+
+    if unreal is not None and unreal <= -abs(float(stop_loss_pct)):
+        sell = True
+        strength = max(strength, 95.0)
+        reasons.append(f"stop loss {unreal:+.0f}% ≤ −{abs(float(stop_loss_pct)):.0f}%")
+
+    # Soft wall EXIT on underlying (call: spot ≥ soft_exit; put: spot ≤ soft_exit)
+    soft = trade.get("soft_exit")
+    right = str(trade.get("right") or "C").upper()
+    if soft is not None and last is not None:
+        soft_f = float(soft)
+        if right != "P" and last >= soft_f:
+            sell = True
+            strength = max(strength, 90.0)
+            reasons.append(f"spot {last:.2f} ≥ soft EXIT ${soft_f:.2f} (call wall)")
+        elif right == "P" and last <= soft_f:
+            sell = True
+            strength = max(strength, 90.0)
+            reasons.append(f"spot {last:.2f} ≤ soft EXIT ${soft_f:.2f} (put wall)")
+
     if score <= sell_score:
         sell = True
-        strength = 85.0
+        strength = max(strength, 85.0)
         reasons.append(f"ensemble cooled to {score:.0f}")
 
     if live is not None and live <= -1.2:
@@ -258,6 +294,10 @@ def decide_exit(
         strength = max(strength, 80.0)
         reasons.append(f"underlying ripped {live:+.2f}% — bank premium")
 
+    detail_extra = ""
+    if unreal is not None:
+        detail_extra = f" · unreal {unreal:+.0f}% @ ${exit_px:.2f}" if exit_px else f" · unreal {unreal:+.0f}%"
+
     kwargs = dict(
         symbol=symbol,
         score=score,
@@ -265,7 +305,13 @@ def decide_exit(
         live_change_pct=live,
         contract=trade.get("contract"),
         trade_id=trade.get("id"),
-        ask=entry,
+        strike=trade.get("strike"),
+        expiry=trade.get("expiry"),
+        dte=trade.get("dte"),
+        dte_bucket=trade.get("dte_bucket"),
+        # Critical: price the exit at mark/bid — never entry ask (that forced ~0% P&L)
+        ask=exit_px,
+        bid=exit_px,
     )
 
     if sell:
@@ -273,7 +319,7 @@ def decide_exit(
             action="SELL_NOW",
             strength=strength,
             headline=f"SELL NOW {symbol}",
-            detail="; ".join(reasons) or "Exit signal",
+            detail=("; ".join(reasons) or "Exit signal") + detail_extra,
             **kwargs,
         )
 
@@ -281,9 +327,62 @@ def decide_exit(
         action="HOLD",
         strength=min(100.0, max(40.0, score)),
         headline=f"HOLD {symbol}",
-        detail="Open call still valid — trail with stop / time stop near expiry.",
+        detail=(
+            "Open call still valid — trail with stop / take-profit / soft wall"
+            + detail_extra
+            + "."
+        ),
         **kwargs,
     )
+
+
+def normalize_open_trade(trade: dict[str, Any]) -> dict[str, Any]:
+    """Normalize journal / paper / lottery open rows for decide_exit."""
+    t = dict(trade)
+    entry = t.get("entry")
+    if entry is None:
+        entry = t.get("entry_ask")
+    t["entry"] = float(entry) if entry is not None else 0.0
+    if t.get("entry_ask") is None and entry is not None:
+        t["entry_ask"] = float(entry)
+    mark = t.get("mark")
+    bid = t.get("bid")
+    if mark is None and bid is not None and float(bid) > 0:
+        t["mark"] = float(bid)
+    if (bid is None or float(bid or 0) <= 0) and mark is not None and float(mark) > 0:
+        t["bid"] = float(mark)
+    t["status"] = str(t.get("status") or "open")
+    if t.get("score") is None and t.get("entry_score") is not None:
+        t["score"] = t.get("entry_score")
+    return t
+
+
+def merge_exit_ledgers(
+    *sources: dict[str, Any] | list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """Union open trades from paper ledger + signal journal for SELL NOW decisions."""
+    trades: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for src in sources:
+        if src is None:
+            continue
+        rows = src if isinstance(src, list) else (src.get("trades") or [])
+        for raw in rows:
+            if not isinstance(raw, dict):
+                continue
+            if str(raw.get("status") or "open") != "open":
+                continue
+            t = normalize_open_trade(raw)
+            key = str(
+                t.get("id")
+                or t.get("contract")
+                or f"{t.get('symbol')}-{t.get('entry')}-{t.get('strike')}"
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            trades.append(t)
+    return {"trades": trades}
 
 
 def _attach_win_stats(sig: ActionSignal, win_table: dict[str, Any] | None) -> ActionSignal:
@@ -372,11 +471,14 @@ def build_action_board(
     min_hist_win_pct: float = 80.0,
     min_hist_win_samples: int = 5,
     require_hist_win: bool = True,
+    journal_opens: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     score_by_symbol = {
         str(s.get("symbol")): float(s.get("ensemble_score") or 0) for s in scores or []
     }
-    open_trades = [t for t in (ledger or {}).get("trades", []) if t.get("status") == "open"]
+    # Journal opens drive auto SELL NOW; paper ledger alone was leaving exits dark
+    merged = merge_exit_ledgers(ledger, journal_opens)
+    open_trades = list(merged.get("trades") or [])
     open_symbols = {str(t.get("symbol")) for t in open_trades}
 
     buys: list[ActionSignal] = []

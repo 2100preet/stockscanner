@@ -136,3 +136,38 @@ def test_journal_reload_preserves_balance_fields(tmp_path):
     assert j2.book.trades[0].cash_before == 5000
     assert j2.book.trades[0].cash_after == 4900
     assert len(j2.book.balance_log) == 1
+
+
+def test_exit_prefers_mark_over_entry_ask_on_signal(tmp_path):
+    """Regression: SELL NOW used to set ask=entry → journal closed at 0% P&L."""
+    j = SignalJournal(tmp_path / "j4.json", starting_cash=5000)
+    j.enter_from_signal(
+        {
+            "action": "BUY_NOW",
+            "symbol": "SPY",
+            "contract": "SPY260811C00770000",
+            "expiry": "2026-08-11",
+            "strike": 770,
+            "ask": 2.0,
+            "score": 80,
+            "dte_bucket": "0dte",
+            "detail": "buy",
+        }
+    )
+    j.mark_open({"SPY260811C00770000": 1.2})
+    closed = j.exit_from_signal(
+        {
+            "action": "SELL_NOW",
+            "symbol": "SPY",
+            "ask": 2.0,  # stale entry echo
+            "bid": None,
+            "detail": "ensemble cooled",
+        }
+    )
+    assert len(closed) == 1
+    assert closed[0].exit_bid == 1.2
+    assert closed[0].profit_pct == -40.0
+    assert closed[0].pnl_usd == -80.0
+    assert closed[0].exited_at
+    assert j.book.balance_log[-1]["profit_pct"] == -40.0
+    assert j.book.balance_log[-1]["action"] == "EXIT"

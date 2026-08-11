@@ -278,19 +278,38 @@ class SignalJournal:
         if signal.get("action") != "SELL_NOW":
             return []
         symbol = str(signal.get("symbol") or "")
-        # Prefer live bid on the signal; fall back to ask*0.9
+        # Prefer live bid/mark on the signal — never silently use entry ask (0% P&L bug)
         px = signal.get("bid")
-        if px is None:
+        if px is None or float(px or 0) <= 0:
+            px = signal.get("mark")
+        if px is None or float(px or 0) <= 0:
             px = signal.get("ask")
-        if px is None:
-            return []
         closed = []
         for t in list(self.open_by_symbol(symbol)):
-            # If signal has matching contract, prefer that price; else use provided bid
+            exit_px = px
+            # If signal still has no usable price, fall back to trade mark
+            if exit_px is None or float(exit_px or 0) <= 0:
+                exit_px = t.mark
+            reason = signal.get("detail") or signal.get("headline") or "SELL_NOW"
+            priced_at_entry = False
+            if exit_px is None or float(exit_px or 0) <= 0:
+                # Still exit so losers aren't held forever when Yahoo option quote is blank
+                exit_px = t.entry_ask
+                priced_at_entry = True
+                reason = f"{reason} · exit priced at entry (no live bid/mark)"
+            # Prefer live mark over a stale signal still pinned to entry ask
+            if (
+                not priced_at_entry
+                and t.mark is not None
+                and float(t.mark) > 0
+                and abs(float(exit_px) - float(t.entry_ask)) < 1e-9
+                and abs(float(t.mark) - float(t.entry_ask)) > 1e-9
+            ):
+                exit_px = t.mark
             out = self.exit_trade(
                 t.id,
-                exit_bid=float(px),
-                reason=signal.get("detail") or signal.get("headline") or "SELL_NOW",
+                exit_bid=float(exit_px),
+                reason=reason,
                 exit_spot=signal.get("live_last"),
             )
             if out:

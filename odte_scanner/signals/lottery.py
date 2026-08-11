@@ -364,7 +364,7 @@ def decide_lottery_exit(
         contract=trade.get("contract"),
         strike=trade.get("strike"),
         expiry=trade.get("expiry"),
-        ask=trade.get("entry_ask"),
+        ask=bid,  # exit pricing — never entry ask (that zeroed P&L on fills)
         bid=bid,
         dte=trade.get("dte"),
         trade_id=trade.get("id"),
