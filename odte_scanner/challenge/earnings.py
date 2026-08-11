@@ -29,33 +29,43 @@ SOON_EARNINGS_DAYS = 21  # label-only horizon beyond pre window
 # often lacks — fills next_earnings so they surface on the earnings board.
 # Dates are calendar report days; session is bmo | amc (informational).
 CURATED_EARNINGS: dict[str, dict[str, str]] = {
-    # Week of Aug 10, 2026
+    # Week of Aug 10, 2026 — Earnings Whispers liquid / high-attention set
     "BTDR": {"next_earnings": "2026-08-10", "session": "bmo", "name": "Bitdeer"},
     "QUBT": {"next_earnings": "2026-08-10", "session": "amc", "name": "Quantum Computing"},
     "USAR": {"next_earnings": "2026-08-10", "session": "amc", "name": "USA Rare Earth"},
+    "BRK-B": {"next_earnings": "2026-08-10", "session": "bmo", "name": "Berkshire Hathaway"},
+    "RKLB": {"next_earnings": "2026-08-10", "session": "amc", "name": "Rocket Lab"},
+    "ASTS": {"next_earnings": "2026-08-10", "session": "amc", "name": "AST SpaceMobile"},
+    "PLUG": {"next_earnings": "2026-08-10", "session": "amc", "name": "Plug Power"},
+    "HIMS": {"next_earnings": "2026-08-10", "session": "amc", "name": "Hims & Hers"},
     "VG": {"next_earnings": "2026-08-11", "session": "bmo", "name": "Venture Global"},
     "ONON": {"next_earnings": "2026-08-11", "session": "bmo", "name": "On"},
+    "SE": {"next_earnings": "2026-08-11", "session": "bmo", "name": "Sea"},
     "CRWV": {"next_earnings": "2026-08-11", "session": "amc", "name": "CoreWeave"},
     "FLY": {"next_earnings": "2026-08-11", "session": "amc", "name": "Firefly Aerospace"},
     "LITE": {"next_earnings": "2026-08-11", "session": "amc", "name": "Lumentum"},
     "CAVA": {"next_earnings": "2026-08-11", "session": "amc", "name": "Cava"},
+    "SMCI": {"next_earnings": "2026-08-11", "session": "amc", "name": "Supermicro"},
     "NBIS": {"next_earnings": "2026-08-12", "session": "bmo", "name": "Nebius"},
     "BETA": {"next_earnings": "2026-08-12", "session": "bmo", "name": "Beta Technologies"},
+    "CSCO": {"next_earnings": "2026-08-12", "session": "amc", "name": "Cisco"},
     "INFQ": {"next_earnings": "2026-08-12", "session": "amc", "name": "Infleqtion"},
     "CBRS": {"next_earnings": "2026-08-12", "session": "amc", "name": "Cerebras"},
     "COHR": {"next_earnings": "2026-08-12", "session": "amc", "name": "Coherent"},
     "ENVX": {"next_earnings": "2026-08-12", "session": "amc", "name": "Enovix"},
     "XE": {"next_earnings": "2026-08-13", "session": "bmo", "name": "X-Energy"},
     "BLSH": {"next_earnings": "2026-08-13", "session": "bmo", "name": "Bullish"},
+    "LUNR": {"next_earnings": "2026-08-13", "session": "bmo", "name": "Intuitive Machines"},
+    "JD": {"next_earnings": "2026-08-13", "session": "bmo", "name": "JD.com"},
     "FIGR": {"next_earnings": "2026-08-13", "session": "amc", "name": "Figure"},
     "FAC": {"next_earnings": "2026-08-13", "session": "amc", "name": "Factorial"},
     "GEMI": {"next_earnings": "2026-08-13", "session": "amc", "name": "Gemini"},
     "TMC": {"next_earnings": "2026-08-13", "session": "amc", "name": "The Metals Company"},
+    "AMAT": {"next_earnings": "2026-08-13", "session": "amc", "name": "Applied Materials"},
     "TMS": {"next_earnings": "2026-08-14", "session": "bmo", "name": "Teamshares"},
     # High-attention liquid names traders expect on the desk
     "CRCL": {"last_earnings": "2026-08-05", "session": "bmo", "name": "Circle"},
     "CRM": {"next_earnings": "2026-08-26", "session": "amc", "name": "Salesforce"},
-    "SMCI": {"next_earnings": "2026-08-11", "session": "amc", "name": "Supermicro"},
 }
 
 
@@ -255,6 +265,11 @@ def classify_earnings(
         return out
     next_d = _parse_day(row.get("next_earnings"))
     last_d = _parse_day(row.get("last_earnings"))
+    # Curated calendars often keep report day as next_earnings; once past, treat as last
+    if next_d is not None and next_d < as_of:
+        if last_d is None or next_d > last_d:
+            last_d = next_d
+        next_d = None
     out["next_earnings"] = next_d.isoformat() if next_d else None
     out["last_earnings"] = last_d.isoformat() if last_d else None
 
