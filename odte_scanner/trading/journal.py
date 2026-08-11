@@ -28,6 +28,7 @@ class JournalTrade:
     entry_score: float | None
     entry_reason: str
     entry_spot: float | None = None
+    right: str = "C"  # C | P
     # Exit (SELL NOW / force close)
     status: str = "open"  # open | closed
     exited_at: str | None = None
@@ -150,6 +151,9 @@ class SignalJournal:
             return None
 
         cash_before = round(self.book.cash, 2)
+        right = str(signal.get("right") or "C").upper()
+        if right not in {"C", "P"}:
+            right = "C"
         trade = JournalTrade(
             id=f"{symbol}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
             symbol=symbol,
@@ -162,6 +166,7 @@ class SignalJournal:
             entry_score=signal.get("score"),
             entry_reason=signal.get("detail") or signal.get("headline") or "BUY_NOW",
             entry_spot=signal.get("live_last"),
+            right=right,
             contracts=contracts,
             cost=cost,
             mark=ask,

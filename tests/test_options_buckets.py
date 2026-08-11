@@ -86,6 +86,8 @@ def test_board_splits_0dte_and_weekly():
         },
         ledger=None,
         buy_score=70,
+        require_hist_win=False,
+        now=__import__("datetime").datetime(2026, 8, 11, 11, 0, tzinfo=__import__("zoneinfo").ZoneInfo("America/New_York")),
     )
     assert board["counts"]["buy_now_0dte"] == 1
     assert board["counts"]["buy_now_weekly"] == 1

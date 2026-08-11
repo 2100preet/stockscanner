@@ -5,6 +5,10 @@ from odte_scanner.signals.actions import (
     decide_entry,
     decide_exit,
 )
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+_MORNING = datetime(2026, 8, 11, 11, 0, tzinfo=ZoneInfo("America/New_York"))
 
 
 def test_buy_now_requires_short_term_bounce():
@@ -29,6 +33,7 @@ def test_buy_now_requires_short_term_bounce():
             "dist_from_day_high_pct": -0.1,
         },
         buy_score=70,
+        now=_MORNING,
     )
     assert sig.action == "BUY_NOW"
 
@@ -58,6 +63,7 @@ def test_qqq_falling_is_wait_not_buy():
             "dist_from_day_high_pct": -0.86,
         },
         buy_score=70,
+        now=_MORNING,
     )
     assert sig.action == "WAIT"
     assert "724" in sig.detail or "weak" in sig.detail.lower() or "below" in sig.detail.lower() or "melting" in sig.detail.lower() or "bounce" in sig.detail.lower() or "high" in sig.detail.lower()
@@ -68,6 +74,7 @@ def test_wait_on_soft_tape():
         {"symbol": "MU", "score": 75, "strike": 880, "expiry": "2026-08-05", "ask": 4.0, "contract": "X", "dte_bucket": "0dte"},
         quote={"last": 876, "session_change_pct": -1.8, "change_pct": 5.0, "mom_5m_pct": -0.2},
         buy_score=70,
+        now=_MORNING,
     )
     assert sig.action == "WAIT"
 
@@ -193,6 +200,7 @@ def test_action_board_primary_prefers_sell():
         buy_score=70,
         sell_score=48,
         require_hist_win=False,
+        now=_MORNING,
     )
     assert board["primary"]["action"] == "SELL_NOW"
     assert board["counts"]["sell_now"] >= 1
@@ -287,6 +295,7 @@ def test_board_requires_80_hist_win_for_buy():
         require_hist_win=True,
         min_hist_win_pct=80,
         min_hist_win_samples=5,
+        now=_MORNING,
     )
     buy_syms = {b["symbol"] for b in board["buy_now"]}
     assert "MSFT" in buy_syms
