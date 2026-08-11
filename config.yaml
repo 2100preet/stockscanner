@@ -57,6 +57,15 @@ tickers:
   - EEM
   - SPCX  # SpaceX — recent IPO; include for swing/earnings watch
   - DDOG  # Datadog — liquid mid; promote to focus for options/earnings
+  # Most-anticipated earnings darlings (week of Aug 10 2026)
+  - CRWV  # CoreWeave
+  - CBRS  # Cerebras
+  - FLY   # Firefly Aerospace
+  - FIGR  # Figure
+  - GEMI  # Gemini
+  - NBIS  # Nebius
+  - BETA  # Beta Technologies
+  - XE    # X-Energy
 
 # Yahoo Finance symbol overrides (indexes need ^ prefix for quotes/chains)
 symbol_aliases:
@@ -121,6 +130,14 @@ expiry_calendars:
     - SOXX
     - SPCX
     - DDOG
+    - CRWV
+    - CBRS
+    - FLY
+    - FIGR
+    - GEMI
+    - NBIS
+    - BETA
+    - XE
     - HYG
     - EEM
 

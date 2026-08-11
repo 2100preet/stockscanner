@@ -17,6 +17,28 @@ def test_market_board_covers_liquid_universe():
     assert board["counts"]["today"] >= 0
 
 
+def test_market_board_includes_earnings_darlings(tmp_path, monkeypatch):
+    from datetime import date
+
+    from odte_scanner.data.universe import earnings_darlings_universe
+
+    as_of = date(2026, 8, 11)
+    monkeypatch.setattr("odte_scanner.challenge.earnings._today", lambda: as_of)
+    monkeypatch.setattr(
+        "odte_scanner.challenge.earnings.DEFAULT_CACHE",
+        tmp_path / "earnings_cache.json",
+    )
+    board = build_market_board(
+        symbols=earnings_darlings_universe()[:8],
+        fetch_earnings=False,
+        earnings_max_fetch=0,
+    )
+    earn = board["by_earnings"]
+    assert earn, "curated darlings should populate by_earnings without Yahoo"
+    assert any(r["symbol"] == "CRWV" and r.get("darling") for r in earn)
+    assert any(r.get("company_name") for r in earn)
+
+
 def test_market_board_earnings_sort_uses_buckets(tmp_path, monkeypatch):
     import json
     from datetime import date
