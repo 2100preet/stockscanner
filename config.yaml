@@ -69,7 +69,13 @@ tickers:
   - CRCL  # Circle — high-attention fintech
   - NOW   # ServiceNow — liquid mega; keep on focus scans
   - SMCI  # Super Micro — earnings today AMC; liquid mid, was missing from focus
-  # CRM already listed above under Friday weeklies
+  - SE    # Sea Limited — EW this week
+  - HIMS  # Hims & Hers — EW this week
+  - RKLB  # Rocket Lab — EW this week
+  - ASTS  # AST SpaceMobile — EW this week
+  - PLUG  # Plug Power — EW this week
+  - CSCO  # Cisco — EW this week
+  # CRM / AMAT already listed above under Friday weeklies
 
 # Yahoo Finance symbol overrides (indexes need ^ prefix for quotes/chains)
 symbol_aliases:
@@ -145,6 +151,12 @@ expiry_calendars:
     - CRCL
     - NOW
     - SMCI
+    - SE
+    - HIMS
+    - RKLB
+    - ASTS
+    - PLUG
+    - CSCO
     - HYG
     - EEM
 
@@ -209,6 +221,8 @@ actions:
   # Prefetch earnings across liquid universe (cached ~18h; warms ~N/refresh)
   challenge_earnings_max_fetch: 60
   market_board_earnings_max_fetch: 60
+  # Flow Desk (Bullflow-inspired) — Yahoo chain ladders for top symbols
+  echo_max_symbols: 8
   # Manual Paper ENTER/EXIT in UI (sleeve updates on button click)
   challenge_auto_enter: false
   challenge_auto_exit: false

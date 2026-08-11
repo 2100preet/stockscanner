@@ -177,7 +177,7 @@ PAGE = r"""
       <button data-tab="explosive">Explosive</button>
       <button data-tab="weekly">1 Week</button>
       <button data-tab="swing">Swing 1–3M</button>
-      <button data-tab="echo">Echo Desk</button>
+      <button data-tab="echo">Flow Desk</button>
       <button data-tab="challenge">$1k→$1M</button>
       <button data-tab="screener">Screener</button>
       <button data-tab="journal">Journal</button>
@@ -355,11 +355,11 @@ PAGE = r"""
     </section>
 
     <section class="tabpane" id="tab-echo">
-      <h2>Echo Desk — TradeEcho-style terminal</h2>
+      <h2>Flow Desk — unusual options + GEX + dark pool</h2>
       <p class="lede">
-        Modules inspired by <a href="https://tradeecho.com/" target="_blank" rel="noopener" style="color:var(--accent)">Trade Echo</a>:
-        OptionFlow · DealerEdge (GEX) · Darkpool (FINRA ATS) · AlgoEdge · Pulse · Mirror · Cortex.
-        Built from Yahoo chains + <a href="https://www.finra.org/filing-reporting/otc-transparency" target="_blank" rel="noopener" style="color:var(--accent)">FINRA OTC Transparency</a> — <strong>not affiliated</strong> with Trade Echo.
+        Bullflow-inspired layout: filterable unusual options flow, dealer GEX walls, and dark-pool ATS context.
+        Built from Yahoo chain snapshots + <a href="https://www.finra.org/filing-reporting/otc-transparency" target="_blank" rel="noopener" style="color:var(--accent)">FINRA OTC Transparency</a>
+        — <strong>not</strong> OPRA time &amp; sales and <strong>not affiliated</strong> with Bullflow / Trade Echo.
       </p>
       <div class="metric-row" id="echoMetrics"></div>
       <div class="panel">
@@ -368,8 +368,19 @@ PAGE = r"""
       </div>
       <div class="echo-grid" style="margin-top:1rem">
         <div class="panel" style="margin:0">
-          <h2>OptionFlow</h2>
-          <p class="lede" style="margin-top:0;font-size:.76rem">Golden / Unusual / Aggressive tiers from volume, OI, premium notional.</p>
+          <h2>Unusual options flow</h2>
+          <p class="lede" style="margin-top:0;font-size:.76rem">
+            Golden / Unusual / Aggressive from premium, volume, and vol/OI — filter like a flow tape.
+          </p>
+          <div class="playbook" id="flowFilters" style="margin:.35rem 0 .55rem;flex-wrap:wrap">
+            <button type="button" class="tag active" data-flow="all">All</button>
+            <button type="button" class="tag" data-flow="golden">Golden</button>
+            <button type="button" class="tag" data-flow="unusual">Unusual</button>
+            <button type="button" class="tag" data-flow="calls">Calls</button>
+            <button type="button" class="tag" data-flow="puts">Puts</button>
+            <button type="button" class="tag" data-flow="vol_gt_oi">Vol&gt;OI</button>
+            <button type="button" class="tag" data-flow="earnings">Earnings</button>
+          </div>
           <div id="echoFlow" class="empty">—</div>
         </div>
         <div class="panel" style="margin:0">
@@ -379,7 +390,7 @@ PAGE = r"""
         </div>
       </div>
       <div class="panel">
-        <h2>Darkpool</h2>
+        <h2>Dark pool (FINRA ATS)</h2>
         <div id="echoDark" class="empty">—</div>
       </div>
       <div class="panel">
@@ -1243,6 +1254,9 @@ PAGE = r"""
         </tr>`).join("")}</tbody></table>`;
     }
 
+    let FLOW_FILTER = "all";
+    const EARNINGS_FLOW_SYMS = new Set();
+
     function renderEcho(echo) {
       const metrics = document.getElementById("echoMetrics");
       const flowEl = document.getElementById("echoFlow");
@@ -1255,9 +1269,14 @@ PAGE = r"""
       const disc = document.getElementById("echoDisclaimer");
       if (!echo || !Object.keys(echo).length) {
         if (metrics) metrics.innerHTML = "";
-        if (flowEl) flowEl.innerHTML = `<div class="empty">Echo Desk not loaded — wait for snapshot refresh.</div>`;
+        if (flowEl) flowEl.innerHTML = `<div class="empty">Flow Desk not loaded — wait for snapshot refresh.</div>`;
         return;
       }
+      // Refresh earnings symbol set from market/challenge for Earnings filter
+      EARNINGS_FLOW_SYMS.clear();
+      ((DATA.market && DATA.market.by_earnings) || []).forEach(r => { if (r.symbol) EARNINGS_FLOW_SYMS.add(r.symbol); });
+      ((DATA.challenge && DATA.challenge.earnings_watch) || []).forEach(r => { if (r.symbol) EARNINGS_FLOW_SYMS.add(r.symbol); });
+
       const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
       const fc = (echo.option_flow && echo.option_flow.counts) || {};
       const prim = (echo.dealer_edge && echo.dealer_edge.primary) || {};
@@ -1273,27 +1292,60 @@ PAGE = r"""
 
       const cx = echo.cortex || {};
       if (cortexEl) {
-        cortexEl.innerHTML = `<strong style="color:var(--ink)">${cx.headline||"Echo briefing"}</strong><br/>`
+        cortexEl.innerHTML = `<strong style="color:var(--ink)">${cx.headline||"Flow briefing"}</strong><br/>`
           + (cx.summary || "")
           + ((cx.bullets||[]).length ? `<br/><span class="status">${cx.bullets.join(" · ")}</span>` : "");
       }
 
-      const prints = (echo.option_flow && echo.option_flow.prints) || [];
+      const filterBar = document.getElementById("flowFilters");
+      if (filterBar && !filterBar._wired) {
+        filterBar._wired = true;
+        filterBar.querySelectorAll("[data-flow]").forEach(btn => {
+          btn.addEventListener("click", () => {
+            FLOW_FILTER = btn.getAttribute("data-flow") || "all";
+            filterBar.querySelectorAll("[data-flow]").forEach(b => b.classList.toggle("active", b === btn));
+            renderEcho(DATA.echo || {});
+          });
+        });
+      }
+
+      const printsAll = (echo.option_flow && echo.option_flow.prints) || [];
+      const prints = printsAll.filter(p => {
+        const flags = p.flags || [];
+        if (FLOW_FILTER === "golden") return p.tier === "golden";
+        if (FLOW_FILTER === "unusual") return p.tier === "unusual" || p.tier === "golden";
+        if (FLOW_FILTER === "calls") return p.right === "C";
+        if (FLOW_FILTER === "puts") return p.right === "P";
+        if (FLOW_FILTER === "vol_gt_oi") return flags.includes("vol_gt_oi");
+        if (FLOW_FILTER === "earnings") return EARNINGS_FLOW_SYMS.has(p.symbol);
+        return true;
+      });
       if (flowEl) {
-        if (!prints.length) flowEl.innerHTML = `<div class="empty">No unusual prints — need chain volume on focus names.</div>`;
-        else flowEl.innerHTML = `<table><thead><tr>
-          <th>Tier</th><th>Sym</th><th>Side</th><th>Strike</th><th>Vol</th><th>OI</th><th>Premium</th><th>Score</th>
-        </tr></thead><tbody>${prints.slice(0,18).map(p=>`<tr>
-          <td><span class="badge ${p.tier||"aggressive"}">${(p.tier||"").toUpperCase()}</span></td>
-          <td><strong>${p.symbol}</strong></td>
-          <td class="mono">${p.right}</td>
-          <td class="mono">${fmt(p.strike,2)}</td>
-          <td class="mono">${p.volume??"—"}</td>
-          <td class="mono">${p.open_interest??"—"}</td>
-          <td class="mono">$${fmt((p.premium_notional||0)/1000,1)}k</td>
-          <td class="mono ${p.flow_score>=0?"up":"down"}">${fmt(p.flow_score,0)}</td>
-        </tr>`).join("")}</tbody></table>
-        <p class="lede" style="font-size:.72rem;margin:.4rem 0 0">${echo.option_flow.note||""}</p>`;
+        if (!prints.length) {
+          flowEl.innerHTML = `<div class="empty">No prints for filter “${FLOW_FILTER}” — try All / Unusual, or wait for chain volume.</div>`;
+        } else {
+          flowEl.innerHTML = `<table><thead><tr>
+            <th>Tier</th><th>Sym</th><th>Side</th><th>Strike</th><th>DTE</th><th>Vol</th><th>OI</th><th>Vol/OI</th><th>Premium</th><th>Sent</th><th>Flags</th><th>Score</th>
+          </tr></thead><tbody>${prints.slice(0,24).map(p=>{
+            const flags = (p.flags||[]).filter(f=>f!==p.tier).slice(0,3).join(" · ") || "—";
+            const earn = EARNINGS_FLOW_SYMS.has(p.symbol) ? ` <span class="tag">earn</span>` : "";
+            return `<tr>
+              <td><span class="badge ${p.tier||"aggressive"}">${(p.tier||"").toUpperCase()}</span></td>
+              <td><strong>${p.symbol}</strong>${earn}</td>
+              <td class="mono">${p.right}</td>
+              <td class="mono">${fmt(p.strike,2)}</td>
+              <td class="mono">${p.dte??"—"}</td>
+              <td class="mono">${p.volume??"—"}</td>
+              <td class="mono">${p.open_interest??"—"}</td>
+              <td class="mono">${p.vol_oi_ratio==null?"—":fmt(p.vol_oi_ratio,2)}</td>
+              <td class="mono">$${fmt((p.premium_notional||0)/1000,1)}k</td>
+              <td><span class="badge ${p.sentiment==="bullish"?"buy":(p.sentiment==="bearish"?"sell":"wait")}">${p.sentiment||"—"}</span></td>
+              <td class="why">${flags}</td>
+              <td class="mono ${p.flow_score>=0?"up":"down"}">${fmt(p.flow_score,0)}</td>
+            </tr>`;
+          }).join("")}</tbody></table>
+          <p class="lede" style="font-size:.72rem;margin:.4rem 0 0">${echo.option_flow.note||""} Showing ${Math.min(24, prints.length)} / ${prints.length} filtered · Yahoo snapshot ≠ OPRA tape.</p>`;
+        }
       }
 
       if (gexEl) {
@@ -2349,7 +2401,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 journal_sync=journal_sync if isinstance(journal_sync, dict) else None,
                 actions=actions,
                 lottery=lottery,
-                max_symbols=int(actions_cfg.get("echo_max_symbols", 6)),
+                max_symbols=int(actions_cfg.get("echo_max_symbols", 8)),
                 max_dte=int((cfg.get("options") or {}).get("max_dte", 5)),
                 fetch_ladders=False,  # Yahoo ladders block snapshot for minutes
             )

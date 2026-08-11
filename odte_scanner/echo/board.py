@@ -30,9 +30,17 @@ def _pick_echo_symbols(
     candidates: list[dict[str, Any]],
     quotes: dict[str, dict[str, Any]],
     max_symbols: int = 10,
+    prefer_symbols: list[str] | None = None,
 ) -> list[str]:
     ranked: list[tuple[float, str]] = []
     seen: set[str] = set()
+    # Earnings / darling names first so Flow Desk mirrors Bullflow "earnings soon" focus
+    for sym in prefer_symbols or []:
+        u = str(sym or "").upper()
+        if not u or u in seen:
+            continue
+        seen.add(u)
+        ranked.append((200.0, u))
     for s in scores or []:
         sym = str(s.get("symbol") or "")
         if not sym or sym in seen:
@@ -274,18 +282,33 @@ def build_echo_board(
     journal_sync: dict[str, Any] | None = None,
     actions: dict[str, Any] | None = None,
     lottery: dict[str, Any] | None = None,
-    max_symbols: int = 6,
+    max_symbols: int = 8,
     max_dte: int = 5,
     fetch_ladders: bool = True,
     include_darkpool: bool = True,
+    prefer_symbols: list[str] | None = None,
 ) -> dict[str, Any]:
     scores = scores or []
     candidates = candidates or []
     quotes = quotes or {}
     aliases = aliases or {}
 
+    prefer = list(prefer_symbols or [])
+    if not prefer:
+        try:
+            from odte_scanner.challenge.earnings import CURATED_EARNINGS
+            from odte_scanner.data.universe import earnings_darlings_universe
+
+            prefer = list(earnings_darlings_universe())[:10] + list(CURATED_EARNINGS.keys())[:12]
+        except Exception:  # noqa: BLE001
+            prefer = []
+
     symbols = _pick_echo_symbols(
-        scores=scores, candidates=candidates, quotes=quotes, max_symbols=max_symbols
+        scores=scores,
+        candidates=candidates,
+        quotes=quotes,
+        max_symbols=max_symbols,
+        prefer_symbols=prefer,
     )
 
     ladders: list[dict[str, Any]] = []

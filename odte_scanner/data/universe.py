@@ -78,6 +78,8 @@ EARNINGS_DARLINGS_UNIVERSE: list[str] = [
     "CAVA",
     "ONON",
     "SMCI",  # Super Micro — high-attention AI server / earnings print
+    # Liquid EW names that belong on earnings + flow desks (not mega megas like CSCO/AMAT)
+    "SE", "HIMS", "RKLB", "ASTS", "PLUG", "LUNR",
 ]
 
 # S&P 100-ish + liquid optionables / ETFs commonly on Signa/Intellectia screens
@@ -152,6 +154,7 @@ FOCUS_DEFAULT: list[str] = [
     # Most-anticipated / high-attention names (swing / earnings / focus scan)
     "CRWV", "CBRS", "FLY", "FIGR", "GEMI", "NBIS", "BETA", "XE",
     "CRCL", "NOW", "SMCI",
+    "SE", "HIMS", "RKLB", "ASTS", "PLUG", "CSCO",
 ]
 
 
