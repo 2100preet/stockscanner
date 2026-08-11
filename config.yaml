@@ -66,6 +66,9 @@ tickers:
   - NBIS  # Nebius
   - BETA  # Beta Technologies
   - XE    # X-Energy
+  - CRCL  # Circle — high-attention fintech
+  - NOW   # ServiceNow — liquid mega; keep on focus scans
+  # CRM already listed above under Friday weeklies
 
 # Yahoo Finance symbol overrides (indexes need ^ prefix for quotes/chains)
 symbol_aliases:
@@ -138,6 +141,8 @@ expiry_calendars:
     - NBIS
     - BETA
     - XE
+    - CRCL
+    - NOW
     - HYG
     - EEM
 

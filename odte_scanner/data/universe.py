@@ -69,11 +69,12 @@ EARNINGS_DARLINGS_UNIVERSE: list[str] = [
     "BTDR",
     "USAR",
     "TMC",
-    # Consumer / growth prints in the spotlight
+    # Consumer / growth / fintech prints in the spotlight
     "FIGR",  # Figure
     "GEMI",  # Gemini
     "TMS",   # Teamshares
     "BLSH",  # Bullish
+    "CRCL",  # Circle
     "CAVA",
     "ONON",
 ]
@@ -134,6 +135,7 @@ _MID = {
     "ENTG", "TER", "HIMS", "OSCR", "CVNA", "W", "CHWY", "DRAM", "SNDK", "NXPI",
     # Mid-tier earnings darlings
     "CRWV", "CBRS", "NBIS", "FIGR", "GEMI", "VG", "CAVA", "ONON", "LITE", "COHR",
+    "CRCL",
 } | (set(MID_SMALL_UNIVERSE) - _SMALL)
 
 _DRAM = frozenset(DRAM_MEMORY_UNIVERSE)
@@ -146,8 +148,9 @@ FOCUS_DEFAULT: list[str] = [
     "INTC", "MU", "USO", "UNG", "NFLX", "CRM", "ORCL", "ADBE", "QCOM", "AMAT",
     "ARM", "PLTR", "COIN", "MSTR", "HOOD", "UBER", "JPM", "BAC", "XOM", "COST",
     "TSM", "DIA", "XLK", "XLE", "SOXX", "HYG", "EEM", "SPCX", "DDOG",
-    # Most-anticipated earnings darlings (swing / earnings watch)
+    # Most-anticipated / high-attention names (swing / earnings / focus scan)
     "CRWV", "CBRS", "FLY", "FIGR", "GEMI", "NBIS", "BETA", "XE",
+    "CRCL", "NOW",
 ]
 
 

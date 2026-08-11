@@ -65,6 +65,16 @@ def test_earnings_darlings_in_universe():
     assert "TMS" in darlings
     assert "INFQ" in darlings
     assert "FAC" in liquid_universe()
+    assert "CRCL" in darlings
+    assert "CRCL" in liquid_universe()
+    assert "CRCL" in FOCUS_DEFAULT
+    # CRM / NOW are liquid megas — must stay on focus scans
+    assert "CRM" in liquid_universe()
+    assert "CRM" in FOCUS_DEFAULT
+    assert market_cap_tier("CRM") == "mega_large"
+    assert "NOW" in liquid_universe()
+    assert "NOW" in FOCUS_DEFAULT
+    assert market_cap_tier("NOW") == "mega_large"
 
 
 def test_curated_darlings_show_on_earnings_calendar(monkeypatch):

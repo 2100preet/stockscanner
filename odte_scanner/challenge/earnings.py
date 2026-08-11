@@ -52,6 +52,9 @@ CURATED_EARNINGS: dict[str, dict[str, str]] = {
     "GEMI": {"next_earnings": "2026-08-13", "session": "amc", "name": "Gemini"},
     "TMC": {"next_earnings": "2026-08-13", "session": "amc", "name": "The Metals Company"},
     "TMS": {"next_earnings": "2026-08-14", "session": "bmo", "name": "Teamshares"},
+    # High-attention liquid names traders expect on the desk
+    "CRCL": {"last_earnings": "2026-08-05", "session": "bmo", "name": "Circle"},
+    "CRM": {"next_earnings": "2026-08-26", "session": "amc", "name": "Salesforce"},
 }
 
 
@@ -61,13 +64,15 @@ def curated_earnings_row(symbol: str) -> dict[str, Any] | None:
     hit = CURATED_EARNINGS.get(key)
     if not hit:
         return None
+    next_e = hit.get("next_earnings")
+    last_e = hit.get("last_earnings")
     return {
         "symbol": key,
-        "next_earnings": hit.get("next_earnings"),
-        "last_earnings": None,
+        "next_earnings": next_e,
+        "last_earnings": last_e,
         "fetched_at": datetime.now(timezone.utc).isoformat(),
         "source": "curated",
-        "available": True,
+        "available": bool(next_e or last_e),
         "error": None,
         "earnings_session": hit.get("session"),
         "company_name": hit.get("name"),
@@ -76,24 +81,30 @@ def curated_earnings_row(symbol: str) -> dict[str, Any] | None:
 
 
 def merge_curated_earnings(symbol: str, row: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Fill missing next_earnings from curated darlings calendar (Yahoo often blank on new IPOs)."""
+    """Fill missing next/last earnings from curated darlings calendar (Yahoo often blank on new IPOs)."""
     curated = curated_earnings_row(symbol)
     if not curated:
         return row
     if not row:
         return curated
     out = dict(row)
-    if not out.get("next_earnings"):
+    filled = False
+    if not out.get("next_earnings") and curated.get("next_earnings"):
         out["next_earnings"] = curated["next_earnings"]
+        filled = True
+    if not out.get("last_earnings") and curated.get("last_earnings"):
+        out["last_earnings"] = curated["last_earnings"]
+        filled = True
+    if filled:
         out["available"] = True
-        if not out.get("source") or out.get("source") == "yfinance":
-            out["source"] = "curated" if not out.get("last_earnings") else "yfinance+curated"
-        out["earnings_session"] = curated.get("earnings_session")
-        out["company_name"] = curated.get("company_name")
+        src = out.get("source")
+        if not src or src == "yfinance":
+            out["source"] = "yfinance+curated" if src == "yfinance" else "curated"
+        out["earnings_session"] = curated.get("earnings_session") or out.get("earnings_session")
+        out["company_name"] = curated.get("company_name") or out.get("company_name")
         out["darling"] = True
         out["error"] = None
     elif out.get("source") != "curated":
-        # Annotate when Yahoo already has a date so UI can still flag darlings
         out["darling"] = True
         if curated.get("earnings_session") and not out.get("earnings_session"):
             out["earnings_session"] = curated.get("earnings_session")
