@@ -13,7 +13,12 @@ from typing import Any
 
 from odte_scanner.challenge.earnings import earnings_map_for, scan_earnings_calendar
 from odte_scanner.data.fetcher import CACHE_DIR
-from odte_scanner.data.universe import FOCUS_DEFAULT, liquid_universe, market_cap_tier
+from odte_scanner.data.universe import (
+    FOCUS_DEFAULT,
+    earnings_darlings_universe,
+    liquid_universe,
+    market_cap_tier,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +121,12 @@ def build_market_board(
             cached = {k for k, v in raw.items() if isinstance(v, dict) and v.get("available")}
         except Exception:  # noqa: BLE001
             cached = set()
-    uni_sorted = sorted(uni, key=lambda s: (0 if s not in cached else 1, s))
+    darlings = {s.upper() for s in earnings_darlings_universe()}
+    # Prefer darlings + uncached so this week's anticipated names warm first
+    uni_sorted = sorted(
+        uni,
+        key=lambda s: (0 if s in darlings else 1, 0 if s not in cached else 1, s),
+    )
 
     earn_map = earnings_map_for(
         uni_sorted,
@@ -171,6 +181,9 @@ def build_market_board(
                 "hist_swing_win": swing_wr.get("win_pct"),
                 "hist_swing_n": swing_wr.get("trades"),
                 "in_focus": sym in set(FOCUS_DEFAULT),
+                "darling": bool(earn.get("darling")) or sym in darlings,
+                "earnings_session": earn.get("earnings_session"),
+                "company_name": earn.get("company_name"),
             }
         )
 
@@ -183,6 +196,7 @@ def build_market_board(
     by_earnings.sort(
         key=lambda r: (
             BUCKET_RANK.get(str(r.get("bucket")), 9),
+            0 if r.get("darling") else 1,
             int(r.get("days_to_earnings") if r.get("days_to_earnings") is not None else 999),
             int(r.get("days_since_earnings") if r.get("days_since_earnings") is not None else 999),
             r.get("symbol") or "",

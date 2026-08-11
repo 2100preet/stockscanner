@@ -921,13 +921,16 @@ PAGE = r"""
       const earnBadge = (t) => {
         const w = t.earnings_window||t.window||"none";
         const b = t.bucket||"";
-        if (w==="post_earnings"||b==="post") return `<span class="badge buy">POST-EARN</span>`;
-        if (w==="earnings_day"||b==="today") return `<span class="badge sell">TODAY</span>`;
-        if (b==="this_week") return `<span class="badge wait">THIS WEEK</span>`;
-        if (b==="next_week") return `<span class="badge wait">NEXT WEEK</span>`;
-        if (w==="pre_earnings") return `<span class="badge wait">PRE-EARN</span>`;
-        if (w==="earnings_soon"||b==="soon") return `<span class="badge skip">SOON</span>`;
-        return `<span class="badge skip">—</span>`;
+        let core = `<span class="badge skip">—</span>`;
+        if (w==="post_earnings"||b==="post") core = `<span class="badge buy">POST-EARN</span>`;
+        else if (w==="earnings_day"||b==="today") core = `<span class="badge sell">TODAY</span>`;
+        else if (b==="this_week") core = `<span class="badge wait">THIS WEEK</span>`;
+        else if (b==="next_week") core = `<span class="badge wait">NEXT WEEK</span>`;
+        else if (w==="pre_earnings") core = `<span class="badge wait">PRE-EARN</span>`;
+        else if (w==="earnings_soon"||b==="soon") core = `<span class="badge skip">SOON</span>`;
+        const darling = t.darling ? ` <span class="tag">darling</span>` : "";
+        const sess = t.earnings_session ? ` <span class="tag">${String(t.earnings_session).toUpperCase()}</span>` : "";
+        return core + darling + sess;
       };
       const renderEarnWatch = (el) => {
         if (!el) return;
@@ -944,9 +947,10 @@ PAGE = r"""
           const days = (r.bucket==="post"||r.window==="post_earnings")
             ? (r.days_since_earnings!=null?r.days_since_earnings+"d since":"—")
             : (r.days_to_earnings!=null?r.days_to_earnings+"d to":(r.days_since_earnings!=null?r.days_since_earnings+"d since":"—"));
+          const name = r.company_name ? `<div class="why">${r.company_name}</div>` : "";
           return `<tr>
             <td>${earnBadge(r)}</td>
-            <td><strong>${r.symbol}</strong></td>
+            <td><strong>${r.symbol}</strong>${name}</td>
             <td class="mono">${days}</td>
             <td class="mono">${r.next_earnings||r.last_earnings||"—"}</td>
             <td><span class="badge ${cls}">${bias}</span>${r.prefer_leap?` <span class="tag">LEAP</span>`:""}</td>
@@ -1443,13 +1447,16 @@ PAGE = r"""
       const earnBadge = (t) => {
         const w = t.earnings_window||t.window||"none";
         const b = t.bucket||"";
-        if (w==="post_earnings"||b==="post") return `<span class="badge buy">POST</span>`;
-        if (w==="earnings_day"||b==="today") return `<span class="badge sell">TODAY</span>`;
-        if (b==="this_week") return `<span class="badge wait">THIS WK</span>`;
-        if (b==="next_week") return `<span class="badge wait">NEXT WK</span>`;
-        if (w==="pre_earnings") return `<span class="badge wait">PRE</span>`;
-        if (w==="earnings_soon"||b==="soon") return `<span class="badge skip">SOON</span>`;
-        return `<span class="badge skip">—</span>`;
+        let core = `<span class="badge skip">—</span>`;
+        if (w==="post_earnings"||b==="post") core = `<span class="badge buy">POST</span>`;
+        else if (w==="earnings_day"||b==="today") core = `<span class="badge sell">TODAY</span>`;
+        else if (b==="this_week") core = `<span class="badge wait">THIS WK</span>`;
+        else if (b==="next_week") core = `<span class="badge wait">NEXT WK</span>`;
+        else if (w==="pre_earnings") core = `<span class="badge wait">PRE</span>`;
+        else if (w==="earnings_soon"||b==="soon") core = `<span class="badge skip">SOON</span>`;
+        const darling = t.darling ? ` <span class="tag">darling</span>` : "";
+        const sess = t.earnings_session ? ` <span class="tag">${String(t.earnings_session).toUpperCase()}</span>` : "";
+        return core + darling + sess;
       };
       let rows = [];
       if (SCREENER_SORT === "volume") rows = mkt.by_volume || [];
@@ -1483,7 +1490,7 @@ PAGE = r"""
           const bcls = bias==="prefer_post"?"buy":(bias==="caution_pre"||bias==="avoid_short_premium"?"sell":"wait");
           return `<tr>
             <td>${earnBadge(r)}</td>
-            <td><strong>${r.symbol}</strong>${r.in_focus?` <span class="tag">focus</span>`:""}</td>
+            <td><strong>${r.symbol}</strong>${r.in_focus?` <span class="tag">focus</span>`:""}${r.company_name?`<div class="why">${r.company_name}</div>`:""}</td>
             <td class="mono">${r.last==null?"—":fmt(r.last,2)}<div class="why ${pctClass(r.change_pct)}">${r.change_pct==null?"":fmt(r.change_pct,1)+"%"}</div></td>
             <td class="mono">${r.day_volume==null?"—":Number(r.day_volume).toLocaleString()}</td>
             <td class="mono ${Number(r.rel_volume||0)>=1.5?"up":""}">${r.rel_volume==null?"—":fmt(r.rel_volume,2)+"×"}</td>
