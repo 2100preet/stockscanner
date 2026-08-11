@@ -130,17 +130,47 @@ def run_watch(
                 cfg = load_config(config_path)
                 jcfg = cfg.get("journal") or {}
                 if jcfg.get("enabled", True):
+                    from odte_scanner.signals.actions import merge_exit_ledgers
+
+                    journal = SignalJournal(
+                        jcfg.get("path", "outputs/signal_journal.json"),
+                        starting_cash=float(jcfg.get("starting_cash", 5000)),
+                    )
+                    journal_opens = [
+                        {
+                            **t.to_dict(),
+                            "entry": t.entry_ask,
+                            "bid": t.mark or t.entry_ask,
+                            "mark": t.mark,
+                        }
+                        for t in journal.book.trades
+                        if t.status == "open"
+                    ]
+                    paper_path = Path(
+                        (cfg.get("paper_trading") or {}).get(
+                            "ledger_path", "outputs/paper_ledger.json"
+                        )
+                    )
+                    paper = None
+                    if paper_path.exists():
+                        try:
+                            paper = json.loads(paper_path.read_text())
+                        except Exception:  # noqa: BLE001
+                            paper = None
+                    risk = cfg.get("risk") or {}
+                    actions_cfg = cfg.get("actions") or {}
                     actions = build_action_board(
                         candidates=report.get("call_candidates") or [],
                         scores=report.get("scores") or [],
                         quotes=snapshot.get("quotes") or {},
-                        ledger=None,
-                        buy_score=float((cfg.get("actions") or {}).get("buy_score", 70)),
+                        ledger=merge_exit_ledgers(paper, journal_opens),
+                        journal_opens=None,
+                        buy_score=float(actions_cfg.get("buy_score", 70)),
+                        wait_score=float(actions_cfg.get("wait_score", 62)),
+                        sell_score=float(actions_cfg.get("sell_score", 48)),
+                        stop_loss_pct=float(risk.get("stop_loss_pct", 50)),
+                        take_profit_pct=float(risk.get("take_profit_pct", 80)),
                         win_rate_table=report.get("win_rates"),
-                    )
-                    journal = SignalJournal(
-                        jcfg.get("path", "outputs/signal_journal.json"),
-                        starting_cash=float(jcfg.get("starting_cash", 5000)),
                     )
                     sync = journal.sync_from_actions(
                         actions,

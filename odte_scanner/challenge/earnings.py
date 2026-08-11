@@ -25,6 +25,94 @@ PRE_EARNINGS_DAYS = 14
 POST_EARNINGS_DAYS = 10
 SOON_EARNINGS_DAYS = 21  # label-only horizon beyond pre window
 
+# Curated "most anticipated" prints (Earnings Whispers–style) for names Yahoo
+# often lacks — fills next_earnings so they surface on the earnings board.
+# Dates are calendar report days; session is bmo | amc (informational).
+CURATED_EARNINGS: dict[str, dict[str, str]] = {
+    # Week of Aug 10, 2026
+    "BTDR": {"next_earnings": "2026-08-10", "session": "bmo", "name": "Bitdeer"},
+    "QUBT": {"next_earnings": "2026-08-10", "session": "amc", "name": "Quantum Computing"},
+    "USAR": {"next_earnings": "2026-08-10", "session": "amc", "name": "USA Rare Earth"},
+    "VG": {"next_earnings": "2026-08-11", "session": "bmo", "name": "Venture Global"},
+    "ONON": {"next_earnings": "2026-08-11", "session": "bmo", "name": "On"},
+    "CRWV": {"next_earnings": "2026-08-11", "session": "amc", "name": "CoreWeave"},
+    "FLY": {"next_earnings": "2026-08-11", "session": "amc", "name": "Firefly Aerospace"},
+    "LITE": {"next_earnings": "2026-08-11", "session": "amc", "name": "Lumentum"},
+    "CAVA": {"next_earnings": "2026-08-11", "session": "amc", "name": "Cava"},
+    "NBIS": {"next_earnings": "2026-08-12", "session": "bmo", "name": "Nebius"},
+    "BETA": {"next_earnings": "2026-08-12", "session": "bmo", "name": "Beta Technologies"},
+    "INFQ": {"next_earnings": "2026-08-12", "session": "amc", "name": "Infleqtion"},
+    "CBRS": {"next_earnings": "2026-08-12", "session": "amc", "name": "Cerebras"},
+    "COHR": {"next_earnings": "2026-08-12", "session": "amc", "name": "Coherent"},
+    "ENVX": {"next_earnings": "2026-08-12", "session": "amc", "name": "Enovix"},
+    "XE": {"next_earnings": "2026-08-13", "session": "bmo", "name": "X-Energy"},
+    "BLSH": {"next_earnings": "2026-08-13", "session": "bmo", "name": "Bullish"},
+    "FIGR": {"next_earnings": "2026-08-13", "session": "amc", "name": "Figure"},
+    "FAC": {"next_earnings": "2026-08-13", "session": "amc", "name": "Factorial"},
+    "GEMI": {"next_earnings": "2026-08-13", "session": "amc", "name": "Gemini"},
+    "TMC": {"next_earnings": "2026-08-13", "session": "amc", "name": "The Metals Company"},
+    "TMS": {"next_earnings": "2026-08-14", "session": "bmo", "name": "Teamshares"},
+    # High-attention liquid names traders expect on the desk
+    "CRCL": {"last_earnings": "2026-08-05", "session": "bmo", "name": "Circle"},
+    "CRM": {"next_earnings": "2026-08-26", "session": "amc", "name": "Salesforce"},
+    "SMCI": {"next_earnings": "2026-08-11", "session": "amc", "name": "Supermicro"},
+}
+
+
+def curated_earnings_row(symbol: str) -> dict[str, Any] | None:
+    """Return a synthetic earnings cache row from the curated darling calendar."""
+    key = str(symbol).replace(".", "-").upper()
+    hit = CURATED_EARNINGS.get(key)
+    if not hit:
+        return None
+    next_e = hit.get("next_earnings")
+    last_e = hit.get("last_earnings")
+    return {
+        "symbol": key,
+        "next_earnings": next_e,
+        "last_earnings": last_e,
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "source": "curated",
+        "available": bool(next_e or last_e),
+        "error": None,
+        "earnings_session": hit.get("session"),
+        "company_name": hit.get("name"),
+        "darling": True,
+    }
+
+
+def merge_curated_earnings(symbol: str, row: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Fill missing next/last earnings from curated darlings calendar (Yahoo often blank on new IPOs)."""
+    curated = curated_earnings_row(symbol)
+    if not curated:
+        return row
+    if not row:
+        return curated
+    out = dict(row)
+    filled = False
+    if not out.get("next_earnings") and curated.get("next_earnings"):
+        out["next_earnings"] = curated["next_earnings"]
+        filled = True
+    if not out.get("last_earnings") and curated.get("last_earnings"):
+        out["last_earnings"] = curated["last_earnings"]
+        filled = True
+    if filled:
+        out["available"] = True
+        src = out.get("source")
+        if not src or src == "yfinance":
+            out["source"] = "yfinance+curated" if src == "yfinance" else "curated"
+        out["earnings_session"] = curated.get("earnings_session") or out.get("earnings_session")
+        out["company_name"] = curated.get("company_name") or out.get("company_name")
+        out["darling"] = True
+        out["error"] = None
+    elif out.get("source") != "curated":
+        out["darling"] = True
+        if curated.get("earnings_session") and not out.get("earnings_session"):
+            out["earnings_session"] = curated.get("earnings_session")
+        if curated.get("company_name") and not out.get("company_name"):
+            out["company_name"] = curated.get("company_name")
+    return out
+
 
 def _today() -> date:
     return datetime.now(timezone.utc).date()
@@ -86,9 +174,9 @@ def fetch_earnings_row(
             age_h = (now - fetched).total_seconds() / 3600.0
             # Reuse successes; retry recent failures after 2h
             if hit.get("available") and age_h <= max_age_hours:
-                return hit
+                return merge_curated_earnings(key, hit) or hit
             if (not hit.get("available")) and age_h < 2.0:
-                return hit
+                return merge_curated_earnings(key, hit) or hit
         except Exception:  # noqa: BLE001
             pass
 
@@ -138,7 +226,7 @@ def fetch_earnings_row(
         _save_cache(path, cache)
     except Exception as exc:  # noqa: BLE001
         logger.debug("earnings cache write failed: %s", exc)
-    return row
+    return merge_curated_earnings(key, row) or row
 
 
 def classify_earnings(
@@ -251,9 +339,14 @@ def earnings_map_for(
             )
             fetched += 1
             cache = _load_cache(path)
+        row = merge_curated_earnings(key, row)
         out[key] = classify_earnings(row)
         out[key]["raw"] = row
         out[key]["symbol"] = key
+        if row and row.get("darling"):
+            out[key]["darling"] = True
+            out[key]["earnings_session"] = row.get("earnings_session")
+            out[key]["company_name"] = row.get("company_name")
     return out
 
 
@@ -299,11 +392,15 @@ def scan_earnings_calendar(
                 "strategy_bias": c.get("strategy_bias"),
                 "prefer_leap": c.get("prefer_leap"),
                 "boost": c.get("boost") or 0,
+                "darling": bool(c.get("darling")),
+                "earnings_session": c.get("earnings_session"),
+                "company_name": c.get("company_name"),
             }
         )
     rows.sort(
         key=lambda r: (
             bucket_rank.get(str(r.get("bucket")), 9),
+            0 if r.get("darling") else 1,
             int(r.get("days_to_earnings") if r.get("days_to_earnings") is not None else 999),
             int(r.get("days_since_earnings") if r.get("days_since_earnings") is not None else 999),
             r.get("symbol") or "",

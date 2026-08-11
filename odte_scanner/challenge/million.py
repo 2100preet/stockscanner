@@ -22,6 +22,7 @@ from odte_scanner.challenge.tracker import hold_period_for
 from odte_scanner.data.universe import (
     FOCUS_DEFAULT,
     dram_memory_universe,
+    earnings_darlings_universe,
     liquid_universe,
     market_cap_tier,
     mid_small_universe,
@@ -711,6 +712,7 @@ def build_challenge_board(
     earn_syms: list[str] = []
     for sym in (
         [str(r["symbol"]) for r in eligible[: max_tickets + 12]]
+        + earnings_darlings_universe()
         + dram_memory_universe()
         + list(FOCUS_DEFAULT)
         + mid_small_universe()

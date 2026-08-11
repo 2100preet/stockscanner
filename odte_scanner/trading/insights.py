@@ -43,6 +43,7 @@ def build_insights(
                 "strike": s.get("strike"),
                 "expiry": s.get("expiry"),
                 "ask": s.get("ask"),
+                "bid": s.get("bid"),
                 "score": s.get("score"),
                 "hist_win_pct": s.get("win_pct"),
                 "reason": s.get("detail"),

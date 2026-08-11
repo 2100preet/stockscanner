@@ -48,6 +48,38 @@ MID_SMALL_UNIVERSE: list[str] = [
     "PTON", "BYND", "SPWR", "LAZR", "VLDR", "NKLA", "GOEV", "FFIE",
 ]
 
+# Earnings Whispers–style most-anticipated names (often missing from S&P100 lists).
+# Keep in liquid + earnings watch even when Yahoo coverage lags on new IPOs.
+EARNINGS_DARLINGS_UNIVERSE: list[str] = [
+    # AI / infra / compute
+    "CRWV",  # CoreWeave
+    "CBRS",  # Cerebras
+    "NBIS",  # Nebius
+    "INFQ",  # Infleqtion
+    "QUBT",
+    "ENVX",
+    "LITE",
+    "COHR",
+    # Space / aerospace / energy
+    "FLY",   # Firefly Aerospace
+    "BETA",  # Beta Technologies
+    "XE",    # X-Energy
+    "FAC",   # Factorial
+    "VG",    # Venture Global
+    "BTDR",
+    "USAR",
+    "TMC",
+    # Consumer / growth / fintech prints in the spotlight
+    "FIGR",  # Figure
+    "GEMI",  # Gemini
+    "TMS",   # Teamshares
+    "BLSH",  # Bullish
+    "CRCL",  # Circle
+    "CAVA",
+    "ONON",
+    "SMCI",  # Super Micro — high-attention AI server / earnings print
+]
+
 # S&P 100-ish + liquid optionables / ETFs commonly on Signa/Intellectia screens
 LIQUID_UNIVERSE: list[str] = [
     # Index / mega ETFs
@@ -75,6 +107,8 @@ LIQUID_UNIVERSE: list[str] = [
     *MID_SMALL_UNIVERSE,
     # DRAM / memory thematic
     *DRAM_MEMORY_UNIVERSE,
+    # This week's most-anticipated earnings darlings
+    *EARNINGS_DARLINGS_UNIVERSE,
 ]
 
 _ETF = {
@@ -88,6 +122,9 @@ _SMALL = {
     "CLOV", "RXRX", "CRSP", "NTLA", "BEAM", "DNA", "TEM", "TDOC",
     "SOUN", "BBAI", "AI", "PLUG", "FCEL", "SPCE", "OPEN", "PTON", "BYND",
     "SPWR", "LAZR", "VLDR", "NKLA", "GOEV", "FFIE", "CHPT", "BLNK", "WOLF",
+    # Newer high-beta earnings darlings
+    "FLY", "BETA", "INFQ", "QUBT", "ENVX", "BTDR", "USAR", "TMC", "TMS",
+    "FAC", "XE", "BLSH",
 }
 
 _MID = {
@@ -97,9 +134,13 @@ _MID = {
     "F", "GM", "DKNG", "CELH", "PATH", "IOT", "DUOL", "GTLB", "CFLT", "BILL",
     "TOST", "APP", "TTD", "ENPH", "SEDG", "FSLR", "RUN", "ON", "WDC", "STX",
     "ENTG", "TER", "HIMS", "OSCR", "CVNA", "W", "CHWY", "DRAM", "SNDK", "NXPI",
+    # Mid-tier earnings darlings
+    "CRWV", "CBRS", "NBIS", "FIGR", "GEMI", "VG", "CAVA", "ONON", "LITE", "COHR",
+    "CRCL",
 } | (set(MID_SMALL_UNIVERSE) - _SMALL)
 
 _DRAM = frozenset(DRAM_MEMORY_UNIVERSE)
+_DARLINGS = frozenset(s.replace(".", "-").upper() for s in EARNINGS_DARLINGS_UNIVERSE)
 
 # Focus list stays smaller for 0DTE options chains (rate limits)
 FOCUS_DEFAULT: list[str] = [
@@ -108,6 +149,9 @@ FOCUS_DEFAULT: list[str] = [
     "INTC", "MU", "USO", "UNG", "NFLX", "CRM", "ORCL", "ADBE", "QCOM", "AMAT",
     "ARM", "PLTR", "COIN", "MSTR", "HOOD", "UBER", "JPM", "BAC", "XOM", "COST",
     "TSM", "DIA", "XLK", "XLE", "SOXX", "HYG", "EEM", "SPCX", "DDOG",
+    # Most-anticipated / high-attention names (swing / earnings / focus scan)
+    "CRWV", "CBRS", "FLY", "FIGR", "GEMI", "NBIS", "BETA", "XE",
+    "CRCL", "NOW", "SMCI",
 ]
 
 
@@ -130,6 +174,10 @@ def dram_memory_universe() -> list[str]:
     return _dedupe(list(DRAM_MEMORY_UNIVERSE))
 
 
+def earnings_darlings_universe() -> list[str]:
+    return _dedupe(list(EARNINGS_DARLINGS_UNIVERSE))
+
+
 def liquid_universe() -> list[str]:
     return _dedupe(list(LIQUID_UNIVERSE))
 
@@ -144,12 +192,14 @@ def market_cap_tier(symbol: str) -> str:
     if s in _MID:
         return "mid"
     # Known liquid mega/large (before DRAM-only leftovers like niche memory names)
-    if s in set(LIQUID_UNIVERSE) - set(MID_SMALL_UNIVERSE) - _DRAM:
+    if s in set(LIQUID_UNIVERSE) - set(MID_SMALL_UNIVERSE) - _DRAM - _DARLINGS:
         return "mega_large"
-    if s in set(LIQUID_UNIVERSE) - set(MID_SMALL_UNIVERSE):
+    if s in set(LIQUID_UNIVERSE) - set(MID_SMALL_UNIVERSE) - _DARLINGS:
         return "mega_large"
     if s in _DRAM:
         return "dram_memory"
+    if s in _DARLINGS:
+        return "mid"
     return "unknown"
 
 

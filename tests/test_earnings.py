@@ -46,6 +46,67 @@ def test_ddog_in_focus_universe():
     assert market_cap_tier("DDOG") == "mid"
 
 
+def test_earnings_darlings_in_universe():
+    from odte_scanner.challenge.earnings import CURATED_EARNINGS
+    from odte_scanner.data.universe import (
+        FOCUS_DEFAULT,
+        earnings_darlings_universe,
+        liquid_universe,
+    )
+
+    darlings = earnings_darlings_universe()
+    # CoreWeave / Cerebras / Firefly / Figure / Gemini — week’s anticipated set
+    for sym in ("CRWV", "CBRS", "FLY", "FIGR", "GEMI", "NBIS", "BETA", "XE"):
+        assert sym in darlings
+        assert sym in liquid_universe()
+        assert sym in FOCUS_DEFAULT
+        assert market_cap_tier(sym) in {"mid", "small"}
+        assert sym in CURATED_EARNINGS
+    assert "TMS" in darlings
+    assert "INFQ" in darlings
+    assert "FAC" in liquid_universe()
+    assert "CRCL" in darlings
+    assert "CRCL" in liquid_universe()
+    assert "CRCL" in FOCUS_DEFAULT
+    assert "SMCI" in darlings
+    assert "SMCI" in liquid_universe()
+    assert "SMCI" in FOCUS_DEFAULT
+    assert "SMCI" in CURATED_EARNINGS
+    assert market_cap_tier("SMCI") == "mid"
+    # CRM / NOW are liquid megas — must stay on focus scans
+    assert "CRM" in liquid_universe()
+    assert "CRM" in FOCUS_DEFAULT
+    assert market_cap_tier("CRM") == "mega_large"
+    assert "NOW" in liquid_universe()
+    assert "NOW" in FOCUS_DEFAULT
+    assert market_cap_tier("NOW") == "mega_large"
+
+
+def test_curated_darlings_show_on_earnings_calendar(monkeypatch):
+    from odte_scanner.challenge.earnings import scan_earnings_calendar
+
+    as_of = date(2026, 8, 11)
+    monkeypatch.setattr(
+        "odte_scanner.challenge.earnings._today",
+        lambda: as_of,
+    )
+    rows = scan_earnings_calendar(
+        ["CRWV", "CBRS", "FLY", "FIGR", "GEMI", "TMS", "SPY"],
+        fetch=False,
+        max_fetch=0,
+    )
+    by_sym = {r["symbol"]: r for r in rows}
+    assert "CRWV" in by_sym
+    assert by_sym["CRWV"]["bucket"] == "today"
+    assert by_sym["CRWV"]["darling"] is True
+    assert by_sym["CRWV"]["earnings_session"] == "amc"
+    assert by_sym["CBRS"]["bucket"] == "this_week"
+    assert by_sym["FIGR"]["next_earnings"] == "2026-08-13"
+    assert by_sym["TMS"]["next_earnings"] == "2026-08-14"
+    # SPY has no curated date and no cache → absent from watch
+    assert "SPY" not in by_sym
+
+
 def test_classify_post_earnings():
     as_of = date(2026, 8, 5)
     last = (as_of - timedelta(days=3)).isoformat()

@@ -83,6 +83,82 @@ def test_sell_now_on_score_collapse():
     assert sig.action == "SELL_NOW"
 
 
+def test_sell_now_take_profit_and_stop():
+    tp = decide_exit(
+        {
+            "symbol": "QQQ",
+            "status": "open",
+            "entry": 2.0,
+            "mark": 3.8,
+            "bid": 3.7,
+            "contract": "QQQC",
+            "id": "tp1",
+            "score": 70,
+        },
+        quote={"last": 500, "session_change_pct": 0.2, "mom_5m_pct": 0.05},
+        score_by_symbol={"QQQ": 72},
+        take_profit_pct=80.0,
+        stop_loss_pct=50.0,
+        sell_score=48,
+    )
+    assert tp is not None
+    assert tp.action == "SELL_NOW"
+    assert tp.bid == 3.7
+    assert "take profit" in tp.detail.lower()
+
+    sl = decide_exit(
+        {
+            "symbol": "IWM",
+            "status": "open",
+            "entry_ask": 2.0,
+            "mark": 0.9,
+            "bid": 0.85,
+            "contract": "IWMC",
+            "id": "sl1",
+            "score": 70,
+        },
+        quote={"last": 220, "session_change_pct": -0.2, "mom_5m_pct": 0.0},
+        score_by_symbol={"IWM": 65},
+        take_profit_pct=80.0,
+        stop_loss_pct=50.0,
+        sell_score=48,
+    )
+    assert sl is not None
+    assert sl.action == "SELL_NOW"
+    assert sl.bid == 0.85
+    assert "stop" in sl.detail.lower()
+
+
+def test_action_board_uses_journal_opens_for_exit():
+    board = build_action_board(
+        candidates=[],
+        scores=[{"symbol": "SPY", "ensemble_score": 70}],
+        quotes={"SPY": {"last": 770, "session_change_pct": -1.5, "mom_5m_pct": -0.5}},
+        ledger=None,
+        journal_opens=[
+            {
+                "symbol": "SPY",
+                "status": "open",
+                "entry_ask": 1.5,
+                "mark": 1.1,
+                "bid": 1.05,
+                "contract": "SPY260811C00770000",
+                "id": "j1",
+                "dte_bucket": "0dte",
+            }
+        ],
+        sell_score=48,
+        stop_loss_pct=50,
+        take_profit_pct=80,
+        require_hist_win=False,
+    )
+    assert board["counts"]["sell_now"] >= 1
+    sell = board["sell_now"][0]
+    assert sell["symbol"] == "SPY"
+    assert sell["bid"] == 1.05
+    assert sell["ask"] == 1.05  # not entry 1.5
+
+
 def test_action_board_primary_prefers_sell():
     board = build_action_board(
         candidates=[

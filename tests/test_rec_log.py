@@ -81,7 +81,8 @@ def test_challenge_entry_persists_when_off_board(tmp_path: Path):
     assert board["open_recs"][0]["on_board"] is False
 
 
-def test_challenge_wait_still_logged(tmp_path: Path):
+def test_challenge_wait_not_opened_as_entry(tmp_path: Path):
+    """WAIT/HOLD must not open ENTRY recs — that starved EXIT/P&L history."""
     log = RecommendationLog(tmp_path / "rec.json")
     log.sync_challenge(
         {
@@ -89,13 +90,20 @@ def test_challenge_wait_still_logged(tmp_path: Path):
             "tickets": [
                 {"symbol": "TOST", "right": "C", "action": "WAIT"},
                 {"symbol": "AMZN", "right": "C", "action": "WAIT", "ask": 2.1},
+                {
+                    "symbol": "MU",
+                    "right": "C",
+                    "action": "ENTRY",
+                    "ask": 3.5,
+                    "reasons": ["hist"],
+                },
             ],
         }
     )
     board = log.board(section="challenge")
-    assert board["open"] >= 2
-    syms = {r["symbol"] for r in board["open_recs"]}
-    assert "TOST" in syms and "AMZN" in syms
+    assert board["open"] == 1
+    assert board["open_recs"][0]["symbol"] == "MU"
+    assert board["open_recs"][0]["open_action"] == "ENTRY"
 
 
 def test_challenge_exit_closes_with_pnl(tmp_path: Path):

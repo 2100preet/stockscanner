@@ -367,11 +367,15 @@ class RecommendationLog:
                 )
                 n += 1
                 continue
-            # ENTRY / HOLD / WAIT — keep on the recommendation log so names don't vanish overnight
+            if action in ("WAIT", "HOLD"):
+                # Do not open a BUY/ENTRY rec for WAIT/HOLD — that starved EXIT/P&L history
+                live.add(self._key("challenge", sym, right))
+                continue
+            # ENTRY only opens a lasting recommendation
             self.note_entry(
                 section="challenge",
                 symbol=sym,
-                action="ENTRY" if action in ("ENTRY", "HOLD", "WAIT") else "ENTRY",
+                action="ENTRY",
                 right=right,
                 price=price,
                 spot=_f(row.get("spot")),
@@ -428,30 +432,14 @@ class RecommendationLog:
             )
             live.add(self._key("lottery", sym, "C"))
             n += 1
-        # Top WAIT tickets still get logged so the desk history isn't empty on quiet tapes
+        # WAIT tickets are not open BUY_NOW recs — only keep them "live" for off-board marking
         for row in (lottery.get("wait") or [])[:5]:
             if not isinstance(row, dict):
                 continue
             sym = str(row.get("symbol") or "")
             if not sym:
                 continue
-            self.note_entry(
-                section="lottery",
-                symbol=sym,
-                action="BUY_NOW",
-                right="C",
-                price=_f(row.get("ask") or row.get("entry_ask")),
-                spot=_f(row.get("spot") or row.get("live_last")),
-                contract=str(row.get("contract") or "") or None,
-                expiry=str(row.get("expiry") or "") or None,
-                strike=_f(row.get("strike")),
-                dte=int(row["dte"]) if row.get("dte") is not None else None,
-                horizon="0dte",
-                reason=str(row.get("detail") or "WAIT — gated lottery") ,
-                headline=str(row.get("headline") or "WAIT lottery"),
-            )
             live.add(self._key("lottery", sym, "C"))
-            n += 1
         self.mark_off_board("lottery", live)
         return n
 
@@ -541,33 +529,17 @@ class RecommendationLog:
             )
             live.add(self._key(sec, sym, "C"))
             n += 1
-        # WAIT rows still tracked (top of board) so section logs aren't empty
-        for row in (actions.get("wait") or actions.get("all") or [])[:8]:
+        # WAIT / HOLD stay on-board for marking only — do not open BUY_NOW with null P&L
+        for row in (actions.get("wait") or []) + (actions.get("hold") or []):
             if not isinstance(row, dict):
                 continue
             if str(row.get("action") or "").upper() in _CLOSE_ACTIONS:
                 continue
             sec = _section_for(row)
             sym = str(row.get("symbol") or "")
-            if not sym or self._key(sec, sym, "C") in live:
+            if not sym:
                 continue
-            self.note_entry(
-                section=sec,
-                symbol=sym,
-                action="BUY_NOW",
-                right="C",
-                price=_f(row.get("ask") or row.get("entry_ask")),
-                spot=_f(row.get("spot") or row.get("live_last")),
-                contract=str(row.get("contract") or "") or None,
-                expiry=str(row.get("expiry") or "") or None,
-                strike=_f(row.get("strike")),
-                dte=int(row["dte"]) if row.get("dte") is not None else None,
-                horizon=str(row.get("dte_bucket") or row.get("horizon") or "") or None,
-                reason=str(row.get("thesis") or row.get("reason") or "WAIT desk"),
-                headline=str(row.get("headline") or row.get("action") or "WAIT"),
-            )
             live.add(self._key(sec, sym, "C"))
-            n += 1
         for sec in ("odte", "weekly", "swing"):
             self.mark_off_board(sec, {k for k in live if k.startswith(sec.upper())})
         return n
