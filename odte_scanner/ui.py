@@ -153,6 +153,22 @@ PAGE = r"""
     .pulse-card .pc-meta span { color: var(--muted); }
     .pulse-card .pc-why { margin: .4rem 0 0; color: var(--muted); font-size: .72rem; line-height: 1.35; }
     .pulse-empty { padding: .85rem 1rem 1rem; color: var(--muted); font-size: .8rem; }
+    #alertToasts {
+      position: fixed; right: 1rem; bottom: 1rem; z-index: 80;
+      display: flex; flex-direction: column; gap: .45rem; max-width: min(360px, 92vw);
+      pointer-events: none;
+    }
+    .alert-toast {
+      pointer-events: auto;
+      border: 1px solid var(--line); border-radius: .65rem; padding: .65rem .75rem;
+      background: rgba(8,16,14,.92); box-shadow: 0 8px 28px rgba(0,0,0,.35);
+      font-size: .78rem; line-height: 1.35;
+    }
+    .alert-toast.buy { box-shadow: inset 3px 0 0 var(--long), 0 8px 28px rgba(0,0,0,.35); }
+    .alert-toast.sell { box-shadow: inset 3px 0 0 var(--short), 0 8px 28px rgba(0,0,0,.35); }
+    .alert-toast strong { display: block; font-size: .86rem; margin-bottom: .15rem; }
+    .alert-toast .at-meta { color: var(--muted); font-family: "JetBrains Mono", monospace; font-size: .7rem; }
+    button.alerts-on { border-color: rgba(62,207,142,.55); color: var(--long); }
   </style>
 </head>
 <body>
@@ -163,6 +179,7 @@ PAGE = r"""
       <button class="primary" id="btnScan">Scan focus</button>
       <button id="btnScanWide">Scan liquid universe</button>
       <button id="btnRefresh">Reload</button>
+      <button type="button" id="btnAlerts" title="Browser alerts for BUY/SELL call &amp; put recommendations">Enable alerts</button>
       <span class="pill" id="session">—</span>
       <span class="pill" id="universePill">—</span>
       <span class="status" id="counts"></span>
@@ -170,6 +187,7 @@ PAGE = r"""
     </div>
     <div id="mustTradeBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="loadNote" class="loading" style="display:none;margin-bottom:.6rem"></div>
+    <div id="alertToasts" aria-live="assertive"></div>
 
     <nav class="tabs" id="tabs">
       <button class="active" data-tab="overview">Overview</button>
@@ -1949,6 +1967,7 @@ PAGE = r"""
 
     function paint() {
       renderMustTradeBanner();
+      maybeFireTradeAlerts();
       const ac = DATA.action_cards || {};
       const hz = DATA.horizons || {};
       renderCards("overviewCards", [
@@ -2078,6 +2097,198 @@ PAGE = r"""
     document.getElementById("btnScanWide").onclick = () => runScan("liquid");
     const btnWb = document.getElementById("btnWebullSync");
     if (btnWb) btnWb.onclick = syncWebull;
+
+    // --- Browser BUY/SELL alerts (calls & puts) ---
+    const ALERT_KEY = "signalDeskAlertsOn";
+    const ALERT_SEEN = "signalDeskAlertSeen";
+    let alertsEnabled = localStorage.getItem(ALERT_KEY) === "1";
+    let alertSeen = new Set();
+    try {
+      const raw = sessionStorage.getItem(ALERT_SEEN);
+      if (raw) JSON.parse(raw).forEach(k => alertSeen.add(k));
+    } catch (_) {}
+    let alertPrimed = alertSeen.size > 0;
+
+    function saveAlertSeen() {
+      try {
+        sessionStorage.setItem(ALERT_SEEN, JSON.stringify([...alertSeen].slice(-200)));
+      } catch (_) {}
+    }
+
+    function syncAlertButton() {
+      const btn = document.getElementById("btnAlerts");
+      if (!btn) return;
+      const perm = (typeof Notification !== "undefined") ? Notification.permission : "unsupported";
+      if (alertsEnabled && perm === "granted") {
+        btn.textContent = "Alerts on";
+        btn.classList.add("alerts-on");
+      } else if (alertsEnabled && perm === "denied") {
+        btn.textContent = "Alerts blocked";
+        btn.classList.remove("alerts-on");
+      } else {
+        btn.textContent = "Enable alerts";
+        btn.classList.remove("alerts-on");
+      }
+    }
+
+    async function enableTradeAlerts() {
+      if (typeof Notification === "undefined") {
+        window.alert("This browser does not support notifications. Keep the desk tab open for on-page toasts only.");
+        alertsEnabled = true;
+        localStorage.setItem(ALERT_KEY, "1");
+        syncAlertButton();
+        return;
+      }
+      if (Notification.permission === "denied") {
+        window.alert("Notifications are blocked for this site. Allow them in browser settings, then click Enable alerts again.");
+        syncAlertButton();
+        return;
+      }
+      if (Notification.permission !== "granted") {
+        const p = await Notification.requestPermission();
+        if (p !== "granted") {
+          window.alert("Permission not granted — on-page toasts will still show while this tab is open.");
+        }
+      }
+      alertsEnabled = true;
+      localStorage.setItem(ALERT_KEY, "1");
+      syncAlertButton();
+      // Seed current board so only *new* recommendations alert after enable
+      collectTradeAlerts().forEach(a => alertSeen.add(a.key));
+      alertPrimed = true;
+      saveAlertSeen();
+      pushToast({
+        kind: "buy",
+        title: "Alerts armed",
+        body: "Browser + on-page alerts for BUY/SELL call & put recommendations. Keep this tab open (or allow notifications).",
+      });
+    }
+
+    function disableTradeAlerts() {
+      alertsEnabled = false;
+      localStorage.setItem(ALERT_KEY, "0");
+      syncAlertButton();
+    }
+
+    function collectTradeAlerts() {
+      const out = [];
+      const push = (row, side, desk) => {
+        if (!row || !row.symbol) return;
+        const act = String(row.action || side || "").toUpperCase();
+        const isBuy = /BUY|ENTRY/.test(act) || side === "BUY";
+        const isSell = /SELL|EXIT/.test(act) || side === "SELL";
+        if (!isBuy && !isSell) return;
+        const right = String(row.right || "C").toUpperCase() === "P" ? "PUT" : "CALL";
+        const key = [
+          isBuy ? "BUY" : "SELL",
+          desk,
+          String(row.symbol).toUpperCase(),
+          right,
+          row.contract || "",
+          row.expiry || "",
+          row.strike ?? "",
+        ].join("|");
+        const px = isBuy ? (row.ask ?? row.entry_ask) : (row.bid ?? row.mark ?? row.ask ?? row.exit_bid);
+        out.push({
+          key,
+          kind: isBuy ? "buy" : "sell",
+          title: `${isBuy ? "BUY" : "SELL"} ${row.symbol} ${right}`,
+          body: [
+            desk,
+            row.expiry || null,
+            row.strike != null ? `${Number(row.strike)}${right === "PUT" ? "p" : "c"}` : null,
+            px != null ? `@ $${Number(px).toFixed(2)}` : null,
+            row.dte != null ? `${row.dte}DTE` : (row.dte_bucket || null),
+            row.detail || row.headline || row.exit_plan || "",
+          ].filter(Boolean).join(" · "),
+        });
+      };
+      const acts = DATA.actions || {};
+      (acts.buy_now || []).forEach(r => push(r, "BUY", "Options"));
+      (acts.sell_now || []).forEach(r => push(r, "SELL", "Options"));
+      (acts.just_exited || []).forEach(r => push({...r, action: "SELL_NOW"}, "SELL", "Options"));
+      const lot = DATA.lottery || {};
+      (lot.buy_now || []).forEach(r => push(r, "BUY", "Lottery"));
+      (lot.sell_now || []).forEach(r => push(r, "SELL", "Lottery"));
+      const ch = DATA.challenge || {};
+      (ch.entry || []).forEach(r => push({...r, action: "ENTRY"}, "BUY", "Challenge"));
+      (ch.exit || []).forEach(r => push({...r, action: "EXIT"}, "SELL", "Challenge"));
+      (ch.just_exited || []).forEach(r => push({...r, action: "EXIT"}, "SELL", "Challenge"));
+      return out;
+    }
+
+    function pushToast(alert) {
+      const host = document.getElementById("alertToasts");
+      if (!host) return;
+      const el = document.createElement("div");
+      el.className = `alert-toast ${alert.kind || "buy"}`;
+      el.innerHTML = `<strong>${alert.title}</strong><div>${alert.body || ""}</div><div class="at-meta">Signal Desk · keep tab open for alerts</div>`;
+      host.prepend(el);
+      setTimeout(() => el.remove(), 12000);
+    }
+
+    function beepAlert(kind) {
+      try {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) return;
+        const ctx = new Ctx();
+        const o = ctx.createOscillator();
+        const g = ctx.createGain();
+        o.type = "sine";
+        o.frequency.value = kind === "sell" ? 440 : 660;
+        g.gain.value = 0.04;
+        o.connect(g); g.connect(ctx.destination);
+        o.start();
+        setTimeout(() => { o.stop(); ctx.close(); }, 180);
+      } catch (_) {}
+    }
+
+    function fireBrowserNotification(alert) {
+      if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+      try {
+        const n = new Notification(alert.title, {
+          body: alert.body,
+          tag: alert.key.slice(0, 100),
+          renotify: true,
+        });
+        setTimeout(() => n.close(), 12000);
+      } catch (_) {}
+    }
+
+    function maybeFireTradeAlerts() {
+      const alerts = collectTradeAlerts();
+      if (!alertPrimed) {
+        // First paint: remember current set, don't spam
+        alerts.forEach(a => alertSeen.add(a.key));
+        alertPrimed = true;
+        saveAlertSeen();
+        return;
+      }
+      if (!alertsEnabled) {
+        alerts.forEach(a => alertSeen.add(a.key));
+        saveAlertSeen();
+        return;
+      }
+      const fresh = alerts.filter(a => !alertSeen.has(a.key));
+      fresh.slice(0, 6).forEach(a => {
+        alertSeen.add(a.key);
+        pushToast(a);
+        beepAlert(a.kind);
+        fireBrowserNotification(a);
+      });
+      alerts.forEach(a => alertSeen.add(a.key));
+      saveAlertSeen();
+    }
+
+    const btnAlerts = document.getElementById("btnAlerts");
+    if (btnAlerts) {
+      syncAlertButton();
+      btnAlerts.onclick = () => {
+        if (alertsEnabled) disableTradeAlerts();
+        else enableTradeAlerts();
+      };
+    }
+
     let _loading = false;
     const _origLoad = loadAll;
     loadAll = async function() {
