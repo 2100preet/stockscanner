@@ -295,6 +295,8 @@ live_trading:
   broker: webull
   dry_run: true           # log + deep-link only; no broker submit
   sandbox: true           # Webull OpenAPI sandbox host when live
+  # Stage BUY/SELL into webull_orders.json on each snapshot / watch (safe with dry_run)
+  auto_sync: true
   region: us
   # Credentials via env (preferred): WEBULL_APP_KEY, WEBULL_APP_SECRET, WEBULL_ACCOUNT_ID
   app_key: null

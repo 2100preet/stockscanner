@@ -236,6 +236,24 @@ class WebullBroker:
         """Submit staged intent — dry-run unless fully armed."""
         intent.updated_at = _now()
         if not self.enabled:
+            # Still log dry-run previews so Journal history fills while learning the bridge
+            if self.dry_run:
+                intent.status = "dry_run"
+                intent.error = None
+                intent.meta["note"] = (
+                    "Preview only (live_trading.enabled is false). "
+                    "Set enabled: true + dry_run: true to arm the bridge without live fills; "
+                    "then dry_run: false + API keys for OpenAPI submit."
+                )
+                self.save()
+                logger.info(
+                    "WEBULL PREVIEW %s %s %s [%s] (enabled=false)",
+                    intent.action,
+                    intent.symbol,
+                    intent.contract or intent.strike,
+                    intent.desk,
+                )
+                return intent
             intent.status = "skipped"
             intent.error = "live_trading.enabled is false"
             self.save()
@@ -343,3 +361,43 @@ class WebullBroker:
 
     def recent(self, limit: int = 30) -> list[dict[str, Any]]:
         return [o.to_dict() for o in self.orders[:limit]]
+
+    def activity(self, limit: int = 40) -> dict[str, Any]:
+        """BUY/SELL history summary for the Journal Webull panel."""
+        rows = [o.to_dict() for o in self.orders[:limit]]
+        buys = [r for r in rows if str(r.get("action") or "").upper() == "BUY"]
+        sells = [r for r in rows if str(r.get("action") or "").upper() == "SELL"]
+        liveish = [
+            r
+            for r in rows
+            if str(r.get("status") or "") in {"dry_run", "submitted", "staged"}
+        ]
+        skipped = [r for r in rows if str(r.get("status") or "") == "skipped"]
+        by_status: dict[str, int] = {}
+        for r in rows:
+            st = str(r.get("status") or "unknown")
+            by_status[st] = by_status.get(st, 0) + 1
+        return {
+            "orders": rows,
+            "buys": buys,
+            "sells": sells,
+            "active_or_dry_run": liveish,
+            "skipped": skipped,
+            "counts": {
+                "all": len(rows),
+                "buys": len(buys),
+                "sells": len(sells),
+                "dry_run_or_submitted": len(liveish),
+                "skipped": len(skipped),
+                **{f"status_{k}": v for k, v in by_status.items()},
+            },
+            "how_to_verify": [
+                "1. Run a live Flask host (not GitHub Pages) — Pages is read-only.",
+                "2. Set live_trading.enabled: true and dry_run: true first (safe).",
+                "3. Set WEBULL_APP_KEY / WEBULL_APP_SECRET / WEBULL_ACCOUNT_ID in env.",
+                "4. With auto_sync: true, each snapshot/watch stages BUY/SELL into this ledger.",
+                "5. Check statuses here: dry_run = logged only; submitted = sent to Webull; skipped = gate/off.",
+                "6. Confirm fills in the Webull app; broker_order_id appears when OpenAPI accepts the order.",
+                "7. Paper ENTRY/EXIT history is separate — Journal + Recommendation logger tabs.",
+            ],
+        }

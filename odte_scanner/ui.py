@@ -446,15 +446,17 @@ PAGE = r"""
         <p class="lede" style="margin-top:0;font-size:.76rem">
           Routes lottery / 0DTE / weekly / swing / challenge option tickets to Webull by desk type.
           Live gate: <strong>100% hist-win</strong> (n≥3) — historical filter only, <em>not</em> a future guarantee.
-          Default is <strong>dry-run</strong> (deep-link + order log). Set env
-          <code>WEBULL_APP_KEY</code> / <code>WEBULL_APP_SECRET</code> / <code>WEBULL_ACCOUNT_ID</code>
-          and <code>live_trading.enabled</code> to submit via OpenAPI.
+          With <code>auto_sync: true</code>, each refresh stages BUY/SELL into the order ledger (preview/dry-run by default).
+          Set env <code>WEBULL_APP_KEY</code> / <code>WEBULL_APP_SECRET</code> / <code>WEBULL_ACCOUNT_ID</code>
+          and <code>live_trading.enabled</code> + <code>dry_run: false</code> for OpenAPI submits.
         </p>
         <div class="toolbar" style="margin:.4rem 0">
           <button type="button" class="primary" id="btnWebullSync">Sync → Webull (dry-run / live)</button>
           <a class="pill" id="webullHelp" href="https://developer.webull.com/apis/docs/sdk.md" target="_blank" rel="noopener">OpenAPI docs</a>
         </div>
         <div class="metric-row" id="webullMetrics"></div>
+        <div id="webullHowTo" class="lede" style="font-size:.74rem;margin:.35rem 0 .55rem"></div>
+        <h3 style="margin:.6rem 0 .35rem;font-size:.9rem">BUY / SELL order history</h3>
         <div id="webullOrders" class="empty">No Webull orders staged yet.</div>
         <p class="lede" id="webullDisclaimer" style="font-size:.72rem;margin-top:.5rem"></p>
       </div>
@@ -1574,36 +1576,49 @@ PAGE = r"""
       const metrics = document.getElementById("webullMetrics");
       const ordersEl = document.getElementById("webullOrders");
       const disc = document.getElementById("webullDisclaimer");
+      const howEl = document.getElementById("webullHowTo");
       if (!metrics) return;
       const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
       const st = wb.status || wb.broker || {};
+      const act = wb.activity || {};
+      const counts = act.counts || {};
       metrics.innerHTML = [
-        m("Bridge", st.enabled ? (st.dry_run?"DRY-RUN":"LIVE") : "OFF", st.enabled?(st.dry_run?"wait":"up"):"down"),
+        m("Bridge", st.enabled ? (st.dry_run?"DRY-RUN":"LIVE") : (st.dry_run?"PREVIEW":"OFF"), st.enabled?(st.dry_run?"wait":"up"):"down"),
+        m("Auto sync", wb.auto_sync?"on":"off", wb.auto_sync?"up":""),
         m("Ready live", st.ready_live?"yes":"no", st.ready_live?"up":""),
         m("SDK", st.sdk_available?"installed":"missing"),
         m("Keys", (st.has_app_key&&st.has_app_secret&&st.has_account_id)?"set":"env needed"),
         m("Perfect gate", wb.require_perfect_hist===false?"off":`${wb.min_hist_win_pct??100}% n≥${wb.min_hist_win_samples??3}`),
+        m("BUY / SELL logged", `${counts.buys??0} / ${counts.sells??0}`),
         m("Last sync in", wb.submitted_n??0, "up"),
         m("Last sync skip", wb.skipped_n??0),
       ].join("");
       if (disc) disc.textContent = wb.disclaimer || st.disclaimer || "";
-      const rows = wb.recent || wb.orders || [];
+      if (howEl) {
+        const steps = act.how_to_verify || wb.how_to_verify || [];
+        howEl.innerHTML = steps.length
+          ? `<strong>How to verify auto BUY/SELL:</strong><ol style="margin:.25rem 0 0;padding-left:1.1rem">${steps.map(s=>`<li>${String(s).replace(/^\\d+\\.\\s*/, "")}</li>`).join("")}</ol>`
+          : "";
+      }
+      const rows = (act.orders || wb.recent || wb.orders || []);
       if (!rows.length) {
-        ordersEl.innerHTML = `<div class="empty">No staged Webull orders. Tap Sync when BUY NOW / ENTRY clears the 100% hist-win gate.</div>`;
+        ordersEl.innerHTML = `<div class="empty">No Webull BUY/SELL history yet. With auto_sync on, refresh the desk after a BUY NOW / SELL NOW pulse — or tap Sync. Paper ENTRY/EXIT is on the Journal cards above / Recommendation logger below.</div>`;
         return;
       }
       ordersEl.innerHTML = `<table><thead><tr>
-        <th>Desk</th><th>Side</th><th>Symbol</th><th>Contract</th><th>Limit</th><th>Hist</th><th>Status</th><th>Webull</th>
+        <th>When (CST)</th><th>Desk</th><th>Side</th><th>Symbol</th><th>Contract</th><th>Limit</th><th>Hist</th><th>Status</th><th>Broker id</th><th>Webull</th>
       </tr></thead><tbody>
-      ${rows.slice(0,25).map(o=>`<tr>
+      ${rows.slice(0,40).map(o=>`<tr>
+        <td class="mono">${fmtCST(o.updated_at||o.created_at)}</td>
         <td class="tag">${o.desk||"—"}</td>
-        <td class="mono">${o.action||"—"}</td>
+        <td class="mono"><strong>${o.action||"—"}</strong></td>
         <td><strong>${o.symbol}</strong> ${o.right||"C"}</td>
         <td class="mono">${o.contract||((o.strike!=null?o.strike:"")+" "+(o.expiry||""))}</td>
         <td class="mono">${o.limit_price==null?"—":"$"+fmt(o.limit_price,2)}</td>
         <td class="mono">${o.hist_win_pct==null?"—":fmt(o.hist_win_pct,0)+"%"}${(o.hist_samples!=null?` n=${o.hist_samples}`:"")}</td>
         <td><span class="badge ${o.status==="dry_run"||o.status==="submitted"?"buy":(o.status==="skipped"?"wait":"skip")}">${o.status||"—"}</span>
-          <div class="why">${o.error||o.reason||""}</div></td>
+          <div class="why">${o.error||o.reason||(o.meta&&o.meta.note)||""}</div></td>
+        <td class="mono" style="font-size:.72rem">${o.broker_order_id||"—"}</td>
         <td>${o.deep_link?`<a href="${o.deep_link}" target="_blank" rel="noopener">Open</a>`:"—"}</td>
       </tr>`).join("")}
       </tbody></table>`;
@@ -2800,6 +2815,41 @@ def create_app(config_path: str | None = None) -> Flask:
             logger.warning("recommendation log unavailable: %s", exc)
             rec_log_payload = {"error": str(exc), "open_recs": [], "closed_recs": [], "by_section": {}}
 
+        # Persist boards so /api/webull/sync + auto_sync see the same ENTER/EXIT set
+        cache_path = ROOT / "outputs" / "ui_snapshot_cache.json"
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_text(
+                json.dumps(
+                    {
+                        "generated_at": datetime.now(timezone.utc).isoformat(),
+                        "actions": actions,
+                        "lottery": lottery,
+                        "challenge": challenge,
+                        "radar": radar,
+                    },
+                    indent=2,
+                    default=str,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("ui snapshot cache write failed: %s", exc)
+
+        webull_payload = _webull_status_payload()
+        lt_cfg = cfg.get("live_trading") or {}
+        # Auto-stage BUY/SELL into Webull ledger (preview/dry-run by default).
+        # Also run offline so Pages export captures history after a scan.
+        if bool(lt_cfg.get("auto_sync", True)):
+            try:
+                webull_payload = _run_webull_sync(
+                    actions=actions,
+                    lottery=lottery,
+                    challenge=challenge,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("webull auto_sync failed: %s", exc)
+                webull_payload = {**(webull_payload or {}), "auto_sync_error": str(exc)}
+
         return jsonify(
             {
                 "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -2830,7 +2880,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 "journal_sync": journal_sync,
                 "win_rates": win_table,
                 "rec_log": rec_log_payload,
-                "webull": _webull_status_payload(),
+                "webull": webull_payload,
             }
         )
 
@@ -3030,45 +3080,48 @@ def create_app(config_path: str | None = None) -> Flask:
         try:
             broker, trader = _webull_bundle()
             st = broker.status()
+            act = broker.activity(40)
+            lt = cfg.get("live_trading") or {}
             return {
                 "status": st,
                 "broker": st,
+                "auto_sync": bool(lt.get("auto_sync", True)),
                 "require_perfect_hist": trader.require_perfect_hist,
                 "min_hist_win_pct": trader.min_hist_win_pct,
                 "min_hist_win_samples": trader.min_hist_win_samples,
                 "desks": trader.desks,
-                "recent": broker.recent(20),
+                "recent": broker.recent(40),
+                "activity": act,
+                "how_to_verify": act.get("how_to_verify") or [],
                 "submitted_n": 0,
                 "skipped_n": 0,
                 "disclaimer": st.get("disclaimer"),
             }
         except Exception as exc:  # noqa: BLE001
             logger.warning("webull status failed: %s", exc)
-            return {"error": str(exc), "status": {"enabled": False}, "recent": []}
+            return {"error": str(exc), "status": {"enabled": False}, "recent": [], "activity": {}}
 
-    @app.get("/api/webull/status")
-    def webull_status():
-        return jsonify(_webull_status_payload())
-
-    @app.post("/api/webull/sync")
-    def webull_sync():
-        """Route current lottery / actions / challenge tickets to Webull (dry-run by default)."""
+    def _run_webull_sync(
+        *,
+        actions: dict | None = None,
+        lottery: dict | None = None,
+        challenge: dict | None = None,
+    ) -> dict:
+        """Route current boards to Webull ledger (preview/dry-run/live)."""
         broker, trader = _webull_bundle()
         scan = _read_json(ROOT / "outputs" / "latest_scan.json") or {}
-        # Prefer live snapshot boards when available via lightweight rebuild fields on disk
-        # Rebuild actions/lottery/challenge from last snapshot cache if present
         snap_cache = _read_json(ROOT / "outputs" / "ui_snapshot_cache.json") or {}
-        actions = snap_cache.get("actions") if isinstance(snap_cache, dict) else None
-        lottery = snap_cache.get("lottery") if isinstance(snap_cache, dict) else None
-        challenge = snap_cache.get("challenge") if isinstance(snap_cache, dict) else None
-        # Fallback: construct minimal actions from scan call candidates (no live tape)
+        if not isinstance(snap_cache, dict):
+            snap_cache = {}
+        actions = actions if isinstance(actions, dict) else snap_cache.get("actions")
+        lottery = lottery if isinstance(lottery, dict) else snap_cache.get("lottery")
+        challenge = challenge if isinstance(challenge, dict) else snap_cache.get("challenge")
         if not actions:
             actions = {"buy_now": [], "sell_now": []}
         if not lottery:
             lottery = {"buy_now": [], "sell_now": []}
         if not challenge:
             challenge = {"entry": [], "exit": [], "tickets": []}
-        # Enrich buy candidates from scan call list with win rates for gate
         try:
             from odte_scanner.backtest.win_rates import load_win_rate_table, lookup_win_stats
 
@@ -3087,11 +3140,37 @@ def create_app(config_path: str | None = None) -> Flask:
                             "win_samples": stats.get("trades"),
                         }
                     )
+                for c in (scan.get("put_candidates_0dte") or [])[:4]:
+                    stats = lookup_win_stats(wr, c.get("symbol"), "0dte")
+                    actions.setdefault("buy_now", []).append(
+                        {
+                            **c,
+                            "action": "BUY_NOW",
+                            "dte_bucket": "0dte",
+                            "right": "P",
+                            "hist_win_pct": stats.get("win_pct"),
+                            "hist_samples": stats.get("trades"),
+                            "win_pct": stats.get("win_pct"),
+                            "win_samples": stats.get("trades"),
+                        }
+                    )
         except Exception as exc:  # noqa: BLE001
             logger.debug("webull sync enrich failed: %s", exc)
 
         out = trader.sync(actions=actions, lottery=lottery, challenge=challenge)
-        return jsonify(out)
+        lt = cfg.get("live_trading") or {}
+        out["auto_sync"] = bool(lt.get("auto_sync", True))
+        out["status"] = out.get("broker") or out.get("status")
+        return out
+
+    @app.get("/api/webull/status")
+    def webull_status():
+        return jsonify(_webull_status_payload())
+
+    @app.post("/api/webull/sync")
+    def webull_sync():
+        """Route current lottery / actions / challenge tickets to Webull (dry-run by default)."""
+        return jsonify(_run_webull_sync())
 
     return app
 
