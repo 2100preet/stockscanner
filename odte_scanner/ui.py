@@ -247,6 +247,10 @@ PAGE = r"""
       </div>
       <div class="panel">
         <h2>Recommendation log — 0DTE entry / exit / P&amp;L</h2>
+        <p class="lede" style="margin-top:0;font-size:.76rem">
+          P&amp;L from BUY NOW ask → SELL NOW bid (1 contract). Same logger as Journal, filtered to 0DTE.
+        </p>
+        <div class="metric-row" id="odteRecLogMetrics"></div>
         <div id="odteRecLog" class="empty">—</div>
       </div>
     </section>
@@ -285,8 +289,10 @@ PAGE = r"""
       <div class="panel">
         <h2>Recommendation log — entry / exit / P&amp;L</h2>
         <p class="lede" style="margin-top:0;font-size:.76rem">
-          Persistent history of lottery BUY NOW / SELL NOW. Yesterday’s picks stay here even when they drop off the live board.
+          Persistent history of lottery BUY NOW / SELL NOW. P&amp;L (1ct) = exit bid − entry ask × 100.
+          Yesterday’s picks stay here even when they drop off the live board.
         </p>
+        <div class="metric-row" id="lotteryRecLogMetrics"></div>
         <div id="lotteryRecLog" class="empty">—</div>
       </div>
       <div class="panel">
@@ -302,6 +308,10 @@ PAGE = r"""
       <div class="panel"><div id="tableWeekly" class="empty"></div></div>
       <div class="panel">
         <h2>Recommendation log — weekly entry / exit / P&amp;L</h2>
+        <p class="lede" style="margin-top:0;font-size:.76rem">
+          Weekly BUY NOW → SELL NOW history with estimated P&amp;L (1 contract).
+        </p>
+        <div class="metric-row" id="weeklyRecLogMetrics"></div>
         <div id="weeklyRecLog" class="empty">—</div>
       </div>
     </section>
@@ -317,6 +327,10 @@ PAGE = r"""
       </div>
       <div class="panel">
         <h2>Recommendation log — swing entry / exit / P&amp;L</h2>
+        <p class="lede" style="margin-top:0;font-size:.76rem">
+          Swing BUY NOW → SELL NOW history with estimated P&amp;L (1 contract).
+        </p>
+        <div class="metric-row" id="swingRecLogMetrics"></div>
         <div id="swingRecLog" class="empty">—</div>
       </div>
     </section>
@@ -367,9 +381,10 @@ PAGE = r"""
       <div class="panel">
         <h2>Recommendation log — entry / exit / P&amp;L</h2>
         <p class="lede" style="margin-top:0;font-size:.76rem">
-          Keeps challenge ENTRY / EXIT history even when a name drops off today’s ticket list
-          (rank / hist-win / liquidity shifts). Open = still recommended or waiting for EXIT.
+          Keeps challenge ENTRY / EXIT history even when a name drops off today’s ticket list.
+          P&amp;L (1ct) = EXIT bid − ENTRY ask × 100 when both prices were on the pulse.
         </p>
+        <div class="metric-row" id="challengeRecLogMetrics"></div>
         <div id="challengeRecLog" class="empty">—</div>
       </div>
       <p class="lede" id="challengeDisclaimer" style="font-size:.72rem"></p>
@@ -485,8 +500,8 @@ PAGE = r"""
         <h2>Recommendation logger — all sections</h2>
         <p class="lede" style="margin-top:0;font-size:.76rem">
           Cross-desk history: lottery · challenge · 0DTE · weekly · swing.
-          Records recommended entry time/price and exit + estimated P&amp;L (1 contract).
-          Names stay logged after they leave today’s live board.
+          P&amp;L (1ct) = <strong>SELL NOW bid − BUY NOW / ENTRY ask</strong> × 100 — priced only when both pulses had marks.
+          Clock flatten without a live mark is a <em>lapse</em> (not a win/loss). Same panels live under each desk tab.
         </p>
         <div class="metric-row" id="recLogMetrics"></div>
         <div id="recLogAll" class="empty">—</div>
@@ -755,9 +770,24 @@ PAGE = r"""
       }
     }
 
-    function renderRecLog(elId, board, emptyMsg) {
+    function fillRecLogMetrics(metricsId, board) {
+      const metrics = document.getElementById(metricsId);
+      if (!metrics || !board) return;
+      const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
+      metrics.innerHTML = [
+        m("Open", board.open??0),
+        m("Closed", board.closed??0),
+        m("Wins", board.wins??0, "up"),
+        m("Losses", board.losses??0, "down"),
+        m("Scratch/lapse", (board.scratches||0)+(board.lapsed||0)),
+        m("Closed P&L", board.closed_pnl_usd==null?"—":`$${fmt(board.closed_pnl_usd,2)}`, pctClass(board.closed_pnl_usd)),
+      ].join("");
+    }
+
+    function renderRecLog(elId, board, emptyMsg, metricsId) {
       const el = document.getElementById(elId);
       if (!el) return;
+      if (metricsId) fillRecLogMetrics(metricsId, board || {});
       const open = (board && board.open_recs) || [];
       const closed = (board && board.closed_recs) || [];
       if (!open.length && !closed.length) {
@@ -769,6 +799,10 @@ PAGE = r"""
         const side = (r.right || "C") === "P" ? "p" : "c";
         return `${Number(r.strike).toFixed(Number(r.strike) % 1 ? 2 : 0)}${side}`;
       };
+      const pnlTone = (r) => {
+        if (r.status === "lapsed" || r.profit_pct == null) return "";
+        return r.profit_pct > 0 ? "long" : (r.profit_pct < 0 ? "short" : "");
+      };
       const cardOpen = (r) => `<article class="action-card long">
         <div class="ac-top">
           <div class="ac-sym">${r.symbol} <span class="tag">${r.section||""}</span></div>
@@ -776,7 +810,7 @@ PAGE = r"""
         </div>
         <div class="ac-meta">
           <div>Strike / expiry<strong>${strikeTxt(r)} · ${r.expiry||"—"}${r.dte!=null?` (${r.dte}DTE)`:""}</strong></div>
-          <div>Entry $<strong>${r.entry_price==null?"—":"$"+fmt(r.entry_price,2)}</strong></div>
+          <div>Entry ask<strong>${r.entry_price==null?"—":"$"+fmt(r.entry_price,2)}</strong></div>
           <div>First entry (CST)<strong>${fmtCST(r.recommended_at)}</strong></div>
           <div>Last seen (CST)<strong>${fmtCST(r.last_recommended_at||r.recommended_at)}</strong></div>
           <div>Contract<strong class="mono" style="font-size:.72rem">${r.contract||"—"}</strong></div>
@@ -785,61 +819,63 @@ PAGE = r"""
         </div>
         <p class="why" style="margin:.45rem 0 0">${r.headline||r.reason||""}</p>
       </article>`;
-      const cardClosed = (r) => `<article class="action-card ${((r.profit_pct||0)>=0)?"long":"short"}">
+      const cardClosed = (r) => {
+        const tone = pnlTone(r);
+        const dir = r.status === "lapsed" ? "LAPSE" : (r.close_action||"EXIT");
+        const pnlLabel = r.status === "lapsed" ? "—" : (r.pnl_usd==null?"—":"$"+fmt(r.pnl_usd,2));
+        const pctLabel = r.status === "lapsed" ? "lapse" : (r.profit_pct==null?"—":fmt(r.profit_pct,1)+"%");
+        return `<article class="action-card ${tone||""}">
         <div class="ac-top">
           <div class="ac-sym">${r.symbol} <span class="tag">${r.section||""}</span></div>
-          <div class="ac-dir ${((r.profit_pct||0)>=0)?"long":"short"}">${r.close_action||"EXIT"}</div>
+          <div class="ac-dir ${tone||""}">${dir}</div>
         </div>
         <div class="ac-meta">
           <div>Strike / expiry<strong>${strikeTxt(r)} · ${r.expiry||"—"}</strong></div>
-          <div>In → out $<strong>${r.entry_price==null?"—":"$"+fmt(r.entry_price,2)} → ${r.exit_price==null?"—":"$"+fmt(r.exit_price,2)}</strong></div>
+          <div>In ask → out bid<strong>${r.entry_price==null?"—":"$"+fmt(r.entry_price,2)} → ${r.exit_price==null?"—":"$"+fmt(r.exit_price,2)}</strong></div>
           <div>Entry (CST)<strong>${fmtCST(r.recommended_at)}</strong></div>
           <div>Exit (CST)<strong>${fmtCST(r.closed_at)}</strong></div>
-          <div>Profit %<strong class="${pctClass(r.profit_pct)}">${r.profit_pct==null?"—":fmt(r.profit_pct,1)+"%"}</strong></div>
-          <div>P&amp;L (1ct)<strong class="${pctClass(r.pnl_usd)}">${r.pnl_usd==null?"—":"$"+fmt(r.pnl_usd,2)}</strong></div>
+          <div>Profit %<strong class="${r.profit_pct==null?"":pctClass(r.profit_pct)}">${pctLabel}</strong></div>
+          <div>P&amp;L (1ct)<strong class="${r.pnl_usd==null?"":pctClass(r.pnl_usd)}">${pnlLabel}</strong></div>
           ${levelsMeta(r)}
         </div>
         <p class="why" style="margin:.45rem 0 0">${r.exit_reason||r.reason||r.headline||""}</p>
       </article>`;
+      };
       let html = "";
+      if (board && board.pnl_note) {
+        html += `<p class="lede" style="margin:.1rem 0 .55rem;font-size:.74rem">${board.pnl_note}</p>`;
+      }
       if (open.length) {
         html += `<div class="status" style="margin:.2rem 0 .45rem">OPEN / STILL TRACKING (${open.length}) · times in CST</div>
           <div class="cards">${open.map(cardOpen).join("")}</div>`;
       }
       if (closed.length) {
-        html += `<div class="status" style="margin:.9rem 0 .45rem">CLOSED — EXIT / P&amp;L (${closed.length}) · times in CST</div>
+        html += `<div class="status" style="margin:.9rem 0 .45rem">CLOSED / LAPSED — EXIT / P&amp;L (${closed.length}) · times in CST</div>
           <div class="cards">${closed.map(cardClosed).join("")}</div>`;
       }
       el.innerHTML = html;
     }
 
     function renderRecLogAll(rec) {
-      const metrics = document.getElementById("recLogMetrics");
       const allEl = document.getElementById("recLogAll");
       if (!rec) {
         if (allEl) allEl.innerHTML = `<div class="empty">Recommendation log empty.</div>`;
         return;
       }
-      const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
-      if (metrics) metrics.innerHTML = [
-        m("Open recs", rec.open??0),
-        m("Closed", rec.closed??0),
-        m("Wins", rec.wins??0, "up"),
-        m("Losses", rec.losses??0, "down"),
-        m("Closed P&L", rec.closed_pnl_usd==null?"—":`$${fmt(rec.closed_pnl_usd,2)}`, pctClass(rec.closed_pnl_usd)),
-      ].join("");
+      fillRecLogMetrics("recLogMetrics", rec);
       const by = rec.by_section || {};
       // Prefer combined all list
       renderRecLog("recLogAll", {
         open_recs: (rec.open_recs || (rec.all||[]).filter(r=>r.status==="open")),
-        closed_recs: (rec.closed_recs || (rec.all||[]).filter(r=>r.status==="closed")),
+        closed_recs: (rec.closed_recs || (rec.all||[]).filter(r=>r.status==="closed"||r.status==="lapsed")),
+        pnl_note: rec.pnl_note,
       }, "No recommendations logged yet — appear after BUY NOW / ENTRY pulses.");
-      // Section panels
-      renderRecLog("lotteryRecLog", by.lottery || rec.lottery, "No lottery recommendations logged yet.");
-      renderRecLog("challengeRecLog", by.challenge || rec.challenge, "No challenge recommendations logged yet.");
-      renderRecLog("odteRecLog", by.odte || rec.odte, "No 0DTE recommendations logged yet.");
-      renderRecLog("weeklyRecLog", by.weekly || rec.weekly, "No weekly recommendations logged yet.");
-      renderRecLog("swingRecLog", by.swing || rec.swing, "No swing recommendations logged yet.");
+      // Section panels (each desk tab has its own metrics + cards)
+      renderRecLog("lotteryRecLog", by.lottery || rec.lottery, "No lottery recommendations logged yet.", "lotteryRecLogMetrics");
+      renderRecLog("challengeRecLog", by.challenge || rec.challenge, "No challenge recommendations logged yet.", "challengeRecLogMetrics");
+      renderRecLog("odteRecLog", by.odte || rec.odte, "No 0DTE recommendations logged yet.", "odteRecLogMetrics");
+      renderRecLog("weeklyRecLog", by.weekly || rec.weekly, "No weekly recommendations logged yet.", "weeklyRecLogMetrics");
+      renderRecLog("swingRecLog", by.swing || rec.swing, "No swing recommendations logged yet.", "swingRecLogMetrics");
     }
 
     function renderExplosive(rows, lottery) {
@@ -907,7 +943,7 @@ PAGE = r"""
       }
       table.innerHTML = head + list.map(rowHtml).join("") + "</tbody></table>";
       const rec = (DATA.rec_log && DATA.rec_log.by_section && DATA.rec_log.by_section.lottery) || (DATA.rec_log && DATA.rec_log.lottery);
-      renderRecLog("lotteryRecLog", rec, "No lottery recommendations logged yet.");
+      renderRecLog("lotteryRecLog", rec, "No lottery recommendations logged yet.", "lotteryRecLogMetrics");
     }
 
     function renderChallenge(ch) {
@@ -1257,7 +1293,7 @@ PAGE = r"""
       }
       if (disc) disc.textContent = ch.disclaimer || "";
       const rec = (DATA.rec_log && DATA.rec_log.by_section && DATA.rec_log.by_section.challenge) || (DATA.rec_log && DATA.rec_log.challenge);
-      renderRecLog("challengeRecLog", rec, "No challenge recommendations logged yet.");
+      renderRecLog("challengeRecLog", rec, "No challenge recommendations logged yet.", "challengeRecLogMetrics");
     }
 
     function renderDarkpoolMini(echo) {
@@ -3104,6 +3140,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 actions=actions,
                 action_cards=scan.get("action_cards") or {},
                 radar=radar,
+                journal=journal,
             )
             by_section = {
                 "lottery": rlog.board(section="lottery", limit=30),
