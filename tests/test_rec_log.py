@@ -1,6 +1,7 @@
 """Tests for persistent recommendation logger."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from odte_scanner.trading.rec_log import RecommendationLog
@@ -46,6 +47,8 @@ def test_lottery_entry_exit_pnl(tmp_path: Path):
     board = log.board(section="lottery")
     assert board["open"] == 0
     assert board["closed"] == 1
+    assert board["wins"] == 1
+    assert board["losses"] == 0
     closed = board["closed_recs"][0]
     assert closed["profit_pct"] == 100.0
     assert closed["pnl_usd"] == 120.0  # (2.4-1.2)*100
@@ -124,9 +127,13 @@ def test_challenge_exit_closes_with_pnl(tmp_path: Path):
         price=1.0,
         reason="stop",
     )
-    closed = log.board(section="challenge")["closed_recs"][0]
+    board = log.board(section="challenge")
+    closed = board["closed_recs"][0]
     assert closed["profit_pct"] == -50.0
     assert closed["pnl_usd"] == -100.0
+    assert board["wins"] == 0
+    assert board["losses"] == 1
+    assert board["closed_pnl_usd"] == -100.0
 
 
 def test_actions_sections(tmp_path: Path):
@@ -142,3 +149,189 @@ def test_actions_sections(tmp_path: Path):
     )
     assert log.board(section="odte")["open"] == 1
     assert log.board(section="weekly")["open"] == 1
+
+
+def test_clock_flatten_does_not_count_zero_as_loss(tmp_path: Path):
+    """Off-board time-stop must lapse — never invent exit=entry $0 losses."""
+    log = RecommendationLog(tmp_path / "rec.json")
+    log.note_entry(
+        section="odte",
+        symbol="SMCI",
+        action="BUY_NOW",
+        price=1.5,
+        dte=0,
+        horizon="0dte",
+        contract="SMCI_OPT",
+        strike=40,
+    )
+    # Force recommended_at into the past so 0DTE clock fires
+    open_rec = log.book.recommendations[0]
+    open_rec.recommended_at = "2020-01-01T15:00:00+00:00"
+    open_rec.dte = 0
+    open_rec.horizon = "0dte"
+    log.mark_off_board("odte", live_keys=set())
+    board = log.board(section="odte")
+    assert board["open"] == 0
+    assert board["losses"] == 0
+    assert board["wins"] == 0
+    assert board["closed_pnl_usd"] == 0
+    assert board["lapsed"] == 1
+    assert board["closed_recs"][0]["status"] == "lapsed"
+    assert board["closed_recs"][0]["pnl_usd"] is None
+
+
+def test_scrub_legacy_zero_clock_closes(tmp_path: Path):
+    path = tmp_path / "rec.json"
+    path.write_text(
+        json.dumps(
+            {
+                "updated_at": "x",
+                "recommendations": [
+                    {
+                        "id": "rec-1",
+                        "section": "odte",
+                        "symbol": "CBRS",
+                        "right": "C",
+                        "open_action": "BUY_NOW",
+                        "recommended_at": "2026-08-11T10:00:00+00:00",
+                        "last_recommended_at": "2026-08-11T20:00:00+00:00",
+                        "entry_price": 264.5,
+                        "status": "closed",
+                        "close_action": "EXIT",
+                        "closed_at": "2026-08-11T20:45:00+00:00",
+                        "exit_price": 264.5,
+                        "exit_reason": "0DTE time-stop — flatten by 15:45 ET",
+                        "profit_pct": 0.0,
+                        "pnl_usd": 0.0,
+                        "events": [],
+                    }
+                ],
+            }
+        )
+    )
+    log = RecommendationLog(path)
+    board = log.board()
+    assert board["losses"] == 0
+    assert board["lapsed"] == 1
+    assert board["closed_pnl_usd"] == 0
+
+
+def test_quality_cards_do_not_open_stock_last_as_buy(tmp_path: Path):
+    log = RecommendationLog(tmp_path / "rec.json")
+    n = log.sync_action_cards(
+        {
+            "0dte_quality": [
+                {"symbol": "CBRS", "last_price": 264.5, "entry": 264.5, "reasons": ["gap"]}
+            ]
+        }
+    )
+    assert n == 0
+    assert log.board(section="odte")["open"] == 0
+
+
+def test_journal_buy_sell_drives_priced_pnl(tmp_path: Path):
+    log = RecommendationLog(tmp_path / "rec.json")
+    log.sync_from_journal(
+        {
+            "trades": [
+                {
+                    "id": "j1",
+                    "symbol": "SPY",
+                    "right": "C",
+                    "contract": "SPY260812C00770000",
+                    "dte_bucket": "0dte",
+                    "status": "open",
+                    "entry_ask": 2.0,
+                    "entered_at": "2026-08-12T14:00:00+00:00",
+                    "entry_reason": "BUY NOW",
+                    "strike": 770,
+                    "expiry": "2026-08-12",
+                }
+            ]
+        }
+    )
+    assert log.board(section="odte")["open"] == 1
+    assert log.board(section="odte")["open_recs"][0]["entry_price"] == 2.0
+
+    log.sync_from_journal(
+        {
+            "trades": [
+                {
+                    "id": "j1",
+                    "symbol": "SPY",
+                    "right": "C",
+                    "contract": "SPY260812C00770000",
+                    "dte_bucket": "0dte",
+                    "status": "closed",
+                    "entry_ask": 2.0,
+                    "exit_bid": 3.9,
+                    "entered_at": "2026-08-12T14:00:00+00:00",
+                    "exited_at": "2026-08-12T18:00:00+00:00",
+                    "exit_reason": "take profit +95%",
+                    "strike": 770,
+                    "expiry": "2026-08-12",
+                }
+            ]
+        }
+    )
+    board = log.board(section="odte")
+    assert board["open"] == 0
+    assert board["closed"] == 1
+    assert board["wins"] == 1
+    assert board["closed_pnl_usd"] == 190.0  # (3.9-2.0)*100
+    closed = board["closed_recs"][0]
+    assert closed["entry_price"] == 2.0
+    assert closed["exit_price"] == 3.9
+    assert closed["profit_pct"] == 95.0
+
+
+def test_sell_only_stub_not_created_without_entry(tmp_path: Path):
+    log = RecommendationLog(tmp_path / "rec.json")
+    out = log.note_exit(
+        section="odte",
+        symbol="SPY",
+        action="SELL_NOW",
+        price=3.9,
+        reason="take profit",
+    )
+    assert out is None
+    assert log.board(section="odte")["closed"] == 0
+
+
+def test_zero_pct_is_scratch_not_loss(tmp_path: Path):
+    log = RecommendationLog(tmp_path / "rec.json")
+    log.note_entry(section="odte", symbol="QQQ", action="BUY_NOW", price=1.0)
+    log.note_exit(section="odte", symbol="QQQ", action="SELL_NOW", price=1.0, reason="flat")
+    board = log.board(section="odte")
+    assert board["wins"] == 0
+    assert board["losses"] == 0
+    assert board["scratches"] == 1
+    assert board["closed"] == 1
+
+
+def test_radar_soft_no_clock_loss(tmp_path: Path):
+    log = RecommendationLog(tmp_path / "rec.json")
+    log.sync_radar(
+        {
+            "hot": [],
+            "watch": [
+                {
+                    "symbol": "IWM",
+                    "ask": 0.86,
+                    "action": "RADAR_WATCH",
+                    "contract": "IWM_OPT",
+                    "strike": 300,
+                    "dte": 0,
+                }
+            ],
+        }
+    )
+    open_rec = log.book.recommendations[0]
+    open_rec.recommended_at = "2020-01-01T15:00:00+00:00"
+    log.sync_radar({"hot": [], "watch": []})
+    board = log.board(section="radar")
+    # Still open / off-board — not a $0 loss
+    assert board["losses"] == 0
+    assert board["lapsed"] == 0
+    assert board["open"] == 1
+    assert board["open_recs"][0]["on_board"] is False
