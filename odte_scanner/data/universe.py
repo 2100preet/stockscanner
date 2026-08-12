@@ -153,7 +153,7 @@ FOCUS_DEFAULT: list[str] = [
     "TSM", "DIA", "XLK", "XLE", "SOXX", "HYG", "EEM", "SPCX", "DDOG",
     # Most-anticipated / high-attention names (swing / earnings / focus scan)
     "CRWV", "CBRS", "FLY", "FIGR", "GEMI", "NBIS", "BETA", "XE",
-    "CRCL", "NOW", "SMCI",
+    "CRCL", "NOW", "SMCI", "DELL",
     "SE", "HIMS", "RKLB", "ASTS", "PLUG", "CSCO",
 ]
 
