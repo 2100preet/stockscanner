@@ -225,7 +225,8 @@ actions:
   echo_max_symbols: 8
   # Manual Paper ENTER/EXIT in UI (sleeve updates on button click)
   challenge_auto_enter: false
-  challenge_auto_exit: false
+  # Auto EXIT when time-stop / TP / SL / tape fires (was false → ENTERs never closed on Pages)
+  challenge_auto_exit: true
   challenge_max_open: 1
   challenge_ledger_path: outputs/challenge_ledger.json
   challenge_min_option_volume: 25
@@ -233,6 +234,11 @@ actions:
   # Soft EXIT on underlying = wall ± this buffer (call wall − buffer / put wall + buffer)
   wall_exit_buffer_usd: 0.10
   challenge_fetch_walls: true
+  # Hold / time-stop (industry desk practice)
+  odte_flatten_et: "15:45"       # hard flatten 0DTE by 15:45 ET
+  weekly_max_hold_days: 7        # max calendar days for weekly tickets
+  rec_log_path: outputs/recommendation_log.json
+  # Persist ledgers across Pages builds via Actions cache (see workflow)
 
 options:
   # Look out to ~1 week for best listed call (not only same-day)
@@ -249,6 +255,9 @@ options:
   per_bucket: 1
   max_candidates_shown: 12
   prefer_expiry_weekdays: [0, 1, 2, 3, 4]
+  # Put sleeve: names with bullish ensemble ≤ this get ATM/OTM puts
+  include_puts: true
+  put_max_bull_score: 48
 
 risk:
   max_contracts_per_trade: 1

@@ -115,13 +115,32 @@ def export_pages(
     scan_src = ROOT / "outputs" / "latest_scan.json"
     (data_dir / "latest_scan.json").write_text(scan_src.read_text() if scan_src.exists() else "{}")
 
+    # Copy paper ledgers into static site (gitignored outputs/ otherwise vanish on Pages)
+    ledgers_dir = data_dir / "ledgers"
+    ledgers_dir.mkdir(parents=True, exist_ok=True)
+    for name in (
+        "signal_journal.json",
+        "recommendation_log.json",
+        "challenge_ledger.json",
+        "paper_ledger.json",
+    ):
+        src = ROOT / "outputs" / name
+        if src.exists():
+            (ledgers_dir / name).write_text(src.read_text())
+
     (out / "index.html").write_text(_static_html(PAGE))
     (out / ".nojekyll").write_text("")
+    insights = payload.get("insights") or {}
+    acts = payload.get("actions") or {}
     meta = {
         "generated_at": payload.get("generated_at"),
         "offline": True,
         "scores": len(payload.get("scores") or []),
         "universe_mode": payload.get("universe_mode"),
+        "sell_now": (acts.get("counts") or {}).get("sell_now"),
+        "buy_now_puts": (acts.get("counts") or {}).get("buy_now_puts"),
+        "just_exited": len(acts.get("just_exited") or []),
+        "closed_journal": len(insights.get("closed_trades") or []),
         "url_hint": "https://2100preet.github.io/stockscanner/",
     }
     (out / "meta.json").write_text(json.dumps(meta, indent=2))

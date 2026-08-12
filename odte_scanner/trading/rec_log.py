@@ -316,13 +316,35 @@ class RecommendationLog:
         return rec
 
     def mark_off_board(self, section: str, live_keys: set[str]) -> None:
-        """Flag open recs not on today's board; keep history (do not delete)."""
+        """Flag open recs not on today's board; close when hold/time-stop says so."""
+        from odte_scanner.signals.hold_rules import time_stop_reason
+
         sec = str(section).lower()
         for r in self.book.recommendations:
             if r.section != sec or r.status != "open":
                 continue
             key = self._key(r.section, r.symbol, r.right)
             r.on_board = key in live_keys
+            if r.on_board:
+                continue
+            # Only lapse off-board opens via clock — on-board exits come from SELL_NOW sync
+            trade_like = {
+                "dte_bucket": r.horizon
+                or ("0dte" if r.section in {"odte", "lottery", "radar"} else "weekly"),
+                "dte": r.dte,
+                "entered_at": r.recommended_at,
+            }
+            reason = time_stop_reason(trade_like)
+            if reason:
+                self.note_exit(
+                    section=r.section,
+                    symbol=r.symbol,
+                    action="EXIT",
+                    right=r.right,
+                    price=r.entry_price,
+                    spot=r.entry_spot,
+                    reason=reason,
+                )
 
     def sync_challenge(self, challenge: dict[str, Any] | None) -> int:
         if not isinstance(challenge, dict):
@@ -496,11 +518,14 @@ class RecommendationLog:
                 continue
             sec = _section_for(row)
             sym = str(row.get("symbol") or "")
+            right = str(row.get("right") or "C").upper()
+            if right not in {"C", "P"}:
+                right = "C"
             self.note_entry(
                 section=sec,
                 symbol=sym,
                 action="BUY_NOW",
-                right="C",
+                right=right,
                 price=_f(row.get("ask") or row.get("entry_ask")),
                 spot=_f(row.get("spot") or row.get("live_last")),
                 contract=str(row.get("contract") or "") or None,
@@ -511,23 +536,26 @@ class RecommendationLog:
                 reason=str(row.get("thesis") or row.get("reason") or row.get("detail") or ""),
                 headline=str(row.get("headline") or "BUY NOW"),
             )
-            live.add(self._key(sec, sym, "C"))
+            live.add(self._key(sec, sym, right))
             n += 1
         for row in actions.get("sell_now") or []:
             if not isinstance(row, dict):
                 continue
             sec = _section_for(row)
             sym = str(row.get("symbol") or "")
+            right = str(row.get("right") or "C").upper()
+            if right not in {"C", "P"}:
+                right = "C"
             self.note_exit(
                 section=sec,
                 symbol=sym,
                 action="SELL_NOW",
-                right="C",
+                right=right,
                 price=_f(row.get("bid") or row.get("ask") or row.get("mark")),
                 spot=_f(row.get("spot") or row.get("live_last")),
                 reason=str(row.get("thesis") or row.get("reason") or row.get("detail") or ""),
             )
-            live.add(self._key(sec, sym, "C"))
+            live.add(self._key(sec, sym, right))
             n += 1
         # WAIT / HOLD stay on-board for marking only — do not open BUY_NOW with null P&L
         for row in (actions.get("wait") or []) + (actions.get("hold") or []):
@@ -539,7 +567,10 @@ class RecommendationLog:
             sym = str(row.get("symbol") or "")
             if not sym:
                 continue
-            live.add(self._key(sec, sym, "C"))
+            right = str(row.get("right") or "C").upper()
+            if right not in {"C", "P"}:
+                right = "C"
+            live.add(self._key(sec, sym, right))
         for sec in ("odte", "weekly", "swing"):
             self.mark_off_board(sec, {k for k in live if k.startswith(sec.upper())})
         return n

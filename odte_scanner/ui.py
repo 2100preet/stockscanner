@@ -612,24 +612,27 @@ PAGE = r"""
       const el = document.getElementById(elId);
       if (!rows || !rows.length) { el.innerHTML = `<div class="empty">No listed calls in this bucket.</div>`; return; }
       el.innerHTML = `<table><thead><tr>
-        <th>Action</th><th>Symbol</th><th>Call strike</th><th>Expiry</th><th>Bid/Ask</th><th>Score</th><th>Hist win</th><th>n</th><th>Strike rate</th><th>Why</th>
+        <th>Action</th><th>Symbol</th><th>Side</th><th>Strike</th><th>Expiry</th><th>Bid/Ask</th><th>Score</th><th>Hist win</th><th>n</th><th>Strike rate</th><th>Why / EXIT plan</th>
       </tr></thead><tbody>${rows.map(r=>{
         const a=(r.action||"WAIT").replace("_"," ");
         const cls=(r.action||"WAIT").toLowerCase().split("_")[0];
+        const side=(r.right||"C")==="P"?"PUT":"CALL";
         const win=r.win_pct==null?"—":`${fmt(r.win_pct,0)}%`;
         const n=r.win_pct==null?"—":`${r.win_samples||0}`;
         const sr=r.hit_1pct==null?"—":`${fmt(r.hit_1pct,0)}% ≥1%`+(r.hit_2pct==null?"":` · ${fmt(r.hit_2pct,0)}% ≥2%`);
+        const why=[r.detail||"", r.exit_plan||""].filter(Boolean).join(" · ");
         return `<tr>
           <td><span class="badge ${cls}">${a}</span></td>
           <td><strong>${r.symbol}</strong></td>
-          <td class="mono">${r.strike==null?"—":fmt(r.strike,2)}</td>
+          <td class="mono">${side}</td>
+          <td class="mono">${r.strike==null?"—":fmt(r.strike,2)}${(r.right||"C")==="P"?"p":"c"}</td>
           <td class="mono">${r.expiry||"—"} <span class="status">DTE ${r.dte??"—"}</span></td>
           <td class="mono">${fmt(r.bid,2)} / ${fmt(r.ask,2)}</td>
           <td class="mono">${fmt(r.score,0)}</td>
           <td class="mono">${win}</td>
           <td class="mono" title="Historical sample size">${n}</td>
           <td class="mono" title="Underlying rip frequency after signal">${sr}</td>
-          <td class="why">${r.detail||""}</td>
+          <td class="why">${why}</td>
         </tr>`;
       }).join("")}</tbody></table>`;
     }
@@ -1452,20 +1455,33 @@ PAGE = r"""
       const mir = echo.mirror || {};
       if (mirrorEl) {
         const open = mir.open || [];
+        const closed = mir.closed || [];
         const perf = mir.performance || {};
         mirrorEl.innerHTML = `
           <div class="ac-meta" style="margin-bottom:.5rem">
             <div>Win rate<strong>${perf.win_rate_pct==null?"—":fmt(perf.win_rate_pct,1)+"%"}</strong></div>
             <div>Open<strong>${open.length}</strong></div>
+            <div>Closed<strong>${closed.length}</strong></div>
             <div>Mode<strong>${mir.mode||"paper"}</strong></div>
           </div>
-          ${open.length?`<table><thead><tr><th>Sym</th><th>Entry</th><th>Mark</th><th>Unreal%</th></tr></thead>
+          ${open.length?`<table><thead><tr><th>Sym</th><th>Side</th><th>Entry</th><th>Mark</th><th>Unreal%</th></tr></thead>
           <tbody>${open.slice(0,8).map(t=>`<tr>
             <td><strong>${t.symbol}</strong></td>
+            <td class="mono">${t.right||"C"}</td>
             <td class="mono">$${fmt(t.entry_ask,2)}</td>
             <td class="mono">$${fmt(t.mark,2)}</td>
             <td class="mono ${pctClass(t.unrealized_pct)}">${t.unrealized_pct==null?"—":fmt(t.unrealized_pct,1)+"%"}</td>
           </tr>`).join("")}</tbody></table>`:`<div class="empty">No open mirrored paper trades.</div>`}
+          ${closed.length?`<div class="status" style="margin:.7rem 0 .35rem">CLOSED / EXIT</div>
+          <table><thead><tr><th>Sym</th><th>Side</th><th>Entry</th><th>Exit</th><th>P&amp;L%</th><th>Exit (CST)</th></tr></thead>
+          <tbody>${closed.slice(0,8).map(t=>`<tr>
+            <td><strong>${t.symbol}</strong></td>
+            <td class="mono">${t.right||"C"}</td>
+            <td class="mono">$${fmt(t.entry_ask,2)}</td>
+            <td class="mono">$${fmt(t.exit_bid,2)}</td>
+            <td class="mono ${pctClass(t.profit_pct)}">${t.profit_pct==null?"—":fmt(t.profit_pct,1)+"%"}</td>
+            <td class="mono">${fmtCST(t.exited_at||t.closed_at)}</td>
+          </tr>`).join("")}</tbody></table>`:""}
           <p class="lede" style="font-size:.72rem;margin:.4rem 0 0">${mir.note||""}</p>`;
       }
       if (disc) disc.textContent = echo.disclaimer || "";
@@ -1784,6 +1800,7 @@ PAGE = r"""
           certainty: row.certainty_tier,
           score: row.score ?? row.ensemble_score ?? row.lottery_score ?? row.strength,
           detail: row.headline || row.detail || row.recommend_reason || row.thesis || "",
+          exit_plan: row.exit_plan || "",
           right: row.right || "C",
           spot: row.spot ?? row.live_last ?? row.live_spot ?? row.entry_spot ?? row.last_price,
           call_wall: row.call_wall,
@@ -1893,7 +1910,7 @@ PAGE = r"""
             ${pnlLine}${exitTime}
             ${levelsMeta(row)}
           </div>
-          <p class="pc-why">${row.detail || ""}</p>
+          <p class="pc-why">${row.detail || ""}${row.exit_plan && kind==="must" ? ` · <strong>EXIT:</strong> ${row.exit_plan}` : ""}</p>
         </div>`;
       };
 
@@ -2109,19 +2126,27 @@ def create_app(config_path: str | None = None) -> Flask:
         quotes = dict((watch or {}).get("quotes") or {})
 
         merged: list[dict] = []
-        for key in ("call_candidates_0dte", "call_candidates_weekly", "call_candidates"):
+        for key in (
+            "option_candidates",
+            "call_candidates_0dte",
+            "call_candidates_weekly",
+            "call_candidates",
+            "put_candidates_0dte",
+            "put_candidates_weekly",
+            "put_candidates",
+        ):
             for c in scan.get(key) or []:
                 merged.append(dict(c))
         deduped: list[dict] = []
         seen: set[str] = set()
         for item in merged:
-            key = item.get("contract") or f"{item.get('symbol')}-{item.get('expiry')}-{item.get('strike')}"
+            key = item.get("contract") or f"{item.get('symbol')}-{item.get('right')}-{item.get('expiry')}-{item.get('strike')}"
             if key in seen:
                 continue
             seen.add(key)
             deduped.append(item)
 
-        board_rows = deduped[:14]
+        board_rows = deduped[:20]
         syms = sorted({str(c.get("symbol")) for c in board_rows if c.get("symbol")})
         # Also include action-card symbols for win rates
         for bucket in (scan.get("action_cards") or {}).values():
@@ -2231,11 +2256,13 @@ def create_app(config_path: str | None = None) -> Flask:
                     open_syms_for_quotes.append(t.symbol)
                     aliases.setdefault(t.symbol, resolve_yahoo_symbol(t.symbol, cfg))
                     if t.expiry and t.strike is not None:
+                        opt_right = "put" if str(getattr(t, "right", "C") or "C").upper() == "P" else "call"
                         q = fetch_live_option_quote(
                             t.symbol,
                             t.expiry,
                             float(t.strike),
                             yahoo_symbol=aliases.get(t.symbol) or resolve_yahoo_symbol(t.symbol, cfg),
+                            right=opt_right,
                         )
                         if q:
                             if q.bid > 0 and q.ask > 0:
@@ -2283,6 +2310,8 @@ def create_app(config_path: str | None = None) -> Flask:
             min_hist_win_pct=float(actions_cfg.get("min_hist_win_pct", 80)),
             min_hist_win_samples=int(actions_cfg.get("min_hist_win_samples", 5)),
             require_hist_win=bool(actions_cfg.get("require_hist_win", True)),
+            weekly_max_hold_days=int(actions_cfg.get("weekly_max_hold_days", 7)),
+            odte_flatten_et=str(actions_cfg.get("odte_flatten_et") or "15:45"),
         )
 
         if journal is not None:
@@ -2682,6 +2711,14 @@ def create_app(config_path: str | None = None) -> Flask:
                 sym = str(t.get("symbol") or "").upper()
                 if not sym or t.get("call_wall") is None and t.get("put_wall") is None:
                     continue
+                right = str(t.get("right") or "C").upper()
+                refreshed_w = wall_exit_levels(
+                    right=right,
+                    spot=t.get("spot") or t.get("live_last"),
+                    call_wall=t.get("call_wall"),
+                    put_wall=t.get("put_wall"),
+                    buffer_usd=float(actions_cfg.get("wall_exit_buffer_usd", 0.10)),
+                )
                 walls_by_symbol[sym] = {
                     "call_wall": t.get("call_wall"),
                     "put_wall": t.get("put_wall"),
@@ -2689,12 +2726,13 @@ def create_app(config_path: str | None = None) -> Flask:
                     "put_wall_oi": t.get("put_wall_oi"),
                     "primary_wall": t.get("primary_wall"),
                     "primary_wall_side": t.get("primary_wall_side"),
-                    "soft_exit": t.get("soft_exit"),
+                    "soft_exit": refreshed_w.get("soft_exit") or t.get("soft_exit"),
                     "wall_buffer_usd": t.get("wall_buffer_usd"),
-                    "exit_hint": t.get("wall_exit_hint"),
-                    "wall_exit_hint": t.get("wall_exit_hint"),
+                    "exit_hint": refreshed_w.get("exit_hint") or t.get("wall_exit_hint"),
+                    "wall_exit_hint": refreshed_w.get("exit_hint") or t.get("wall_exit_hint"),
                     "flip": t.get("gex_flip"),
                     "regime": t.get("gex_regime"),
+                    "right": right,
                     "source": "challenge",
                 }
             # Soft-exit hint for long bias on action-card names using call wall
