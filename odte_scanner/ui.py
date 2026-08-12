@@ -220,6 +220,9 @@ PAGE = r"""
       </div>
       <div class="panel">
         <h2>Live board (options)</h2>
+        <p class="lede" id="exitCriteriaNote" style="margin-top:0;font-size:.76rem">
+          SELL NOW fires only after a paper ENTRY. Every BUY/WAIT shows an EXIT plan (TP / SL / 15:45 ET clock).
+        </p>
         <div id="boardMini" class="empty">—</div>
       </div>
       <div class="panel">
@@ -1878,7 +1881,7 @@ PAGE = r"""
         });
       };
 
-      (acts.buy_now || []).forEach(r => pushMust(r, "Options"));
+      (acts.buy_now || []).filter(r => r.headline || r.exit_plan || r.detail).forEach(r => pushMust(r, "Options"));
       (lot.buy_now || []).forEach(r => pushMust(r, "Explosive"));
       (ch.entry || []).forEach(r => pushMust(r, "Challenge"));
       // Radar HOT is a separate discretionary pulse — labeled RADAR, not MUST TRADE hist-gated
@@ -1901,6 +1904,7 @@ PAGE = r"""
 
       (acts.sell_now || []).forEach(r => pushExit(r, "Options"));
       (acts.just_exited || []).forEach(r => pushExit(r, "Options"));
+      (acts.recent_exits || []).forEach(r => pushExit(r, "Options"));
       (lot.sell_now || []).forEach(r => pushExit(r, "Explosive"));
       (ch.exit || []).forEach(r => pushExit(r, "Challenge"));
       (ch.just_exited || []).forEach(r => pushExit(r, "Challenge"));
@@ -1992,6 +1996,14 @@ PAGE = r"""
       renderOptionTable("boardMini", (acts.all||[]).slice(0,10));
       renderOptionTable("table0dte", (acts.all||[]).filter(r=>(r.dte_bucket||"0dte")==="0dte" || (r.dte!=null && r.dte<=1)));
       renderOptionTable("tableWeekly", (acts.all||[]).filter(r=>r.dte_bucket==="weekly"));
+      const hr = acts.hold_rules || {};
+      const exitCrit = document.getElementById("exitCriteriaNote");
+      if (exitCrit) {
+        const bits = hr.exit_criteria || [];
+        exitCrit.innerHTML = bits.length
+          ? `<strong>EXIT rules:</strong> ${bits.join(" · ")} <span class="status">${hr.note||""}</span>`
+          : (hr.note || "");
+      }
       renderExplosive(DATA.explosive || [], DATA.lottery || {});
       renderRadar(DATA.radar || {});
       renderEcho(DATA.echo || {});
@@ -2204,9 +2216,10 @@ PAGE = r"""
         });
       };
       const acts = DATA.actions || {};
-      (acts.buy_now || []).forEach(r => push(r, "BUY", "Options"));
+      (acts.buy_now || []).filter(r => r.headline || r.exit_plan || r.detail).forEach(r => push(r, "BUY", "Options"));
       (acts.sell_now || []).forEach(r => push(r, "SELL", "Options"));
       (acts.just_exited || []).forEach(r => push({...r, action: "SELL_NOW"}, "SELL", "Options"));
+      (acts.recent_exits || []).forEach(r => push({...r, action: "SELL_NOW"}, "SELL", "Options"));
       const lot = DATA.lottery || {};
       (lot.buy_now || []).forEach(r => push(r, "BUY", "Lottery"));
       (lot.sell_now || []).forEach(r => push(r, "SELL", "Lottery"));
@@ -2473,6 +2486,9 @@ def create_app(config_path: str | None = None) -> Flask:
             journal = SignalJournal(
                 jpath, starting_cash=float(jcfg.get("starting_cash", 5000))
             )
+            # Always create an empty journal file so Pages export can copy it
+            if not jpath.exists():
+                journal.save()
             # Mark open journal calls FIRST so TP/SL / SELL NOW see live premium
             open_syms_for_quotes: list[str] = []
             if not offline:
@@ -2538,6 +2554,8 @@ def create_app(config_path: str | None = None) -> Flask:
             require_hist_win=bool(actions_cfg.get("require_hist_win", True)),
             weekly_max_hold_days=int(actions_cfg.get("weekly_max_hold_days", 7)),
             odte_flatten_et=str(actions_cfg.get("odte_flatten_et") or "15:45"),
+            # Pages offline has no live tape — still allow gated BUY so journal/exits can run
+            require_live_confirm=not offline,
         )
 
         if journal is not None:
@@ -2549,6 +2567,47 @@ def create_app(config_path: str | None = None) -> Flask:
                 auto_enter=bool(jcfg.get("auto_enter", True)),
                 auto_exit=bool(jcfg.get("auto_exit", True)),
             )
+            # If we just opened fills, rebuild SELL NOW (TP/SL/clock) against new opens
+            if journal_sync and journal_sync.get("entered"):
+                journal_opens = []
+                for t in journal.book.trades:
+                    if t.status != "open":
+                        continue
+                    row = t.to_dict()
+                    if row.get("mark") is not None:
+                        row["bid"] = row.get("bid") or row["mark"]
+                        row["entry"] = row.get("entry_ask")
+                    journal_opens.append(row)
+                actions = build_action_board(
+                    candidates=refreshed,
+                    scores=scan.get("scores") or [],
+                    quotes=quotes,
+                    ledger=ledger if isinstance(ledger, dict) else None,
+                    journal_opens=journal_opens,
+                    buy_score=float(actions_cfg.get("buy_score", 70)),
+                    wait_score=float(actions_cfg.get("wait_score", 62)),
+                    sell_score=float(actions_cfg.get("sell_score", 48)),
+                    stop_loss_pct=float(risk.get("stop_loss_pct", 50)),
+                    take_profit_pct=float(risk.get("take_profit_pct", 80)),
+                    max_chase_pct=float(actions_cfg.get("max_chase_pct", 2.5)),
+                    win_rate_table=win_table,
+                    min_hist_win_pct=float(actions_cfg.get("min_hist_win_pct", 80)),
+                    min_hist_win_samples=int(actions_cfg.get("min_hist_win_samples", 5)),
+                    require_hist_win=bool(actions_cfg.get("require_hist_win", True)),
+                    weekly_max_hold_days=int(actions_cfg.get("weekly_max_hold_days", 7)),
+                    odte_flatten_et=str(actions_cfg.get("odte_flatten_et") or "15:45"),
+                    require_live_confirm=not offline,
+                )
+                more = journal.sync_from_actions(
+                    actions,
+                    max_risk_usd=float(jcfg.get("max_risk_per_trade_usd", 250)),
+                    auto_enter=False,
+                    auto_exit=bool(jcfg.get("auto_exit", True)),
+                )
+                if more.get("exited"):
+                    journal_sync = dict(journal_sync)
+                    journal_sync["exited"] = list(journal_sync.get("exited") or []) + list(more["exited"])
+                    journal_sync["performance"] = more.get("performance") or journal_sync.get("performance")
             # Re-mark after exits so open MTM / equity stay current
             if marks:
                 still = {t.contract: marks[t.contract] for t in journal.book.trades if t.status == "open" and t.contract in marks}
@@ -2561,6 +2620,12 @@ def create_app(config_path: str | None = None) -> Flask:
                 actions["just_exited"] = journal_sync["exited"]
                 actions["counts"] = dict(actions.get("counts") or {})
                 actions["counts"]["just_exited"] = len(journal_sync["exited"])
+            else:
+                # Keep closed history visible even when this cycle had no new exits
+                closed = (insights or {}).get("closed_trades") or []
+                if closed and not (actions.get("just_exited")):
+                    actions = dict(actions)
+                    actions["recent_exits"] = closed[:8]
 
         from odte_scanner.options.explosive import build_explosive_board, build_radar_wing_board
         from odte_scanner.signals.lottery import build_lottery_board
@@ -2599,6 +2664,42 @@ def create_app(config_path: str | None = None) -> Flask:
             min_lottery_score=float(actions_cfg.get("lottery_min_score", 62)),
             min_confirms=int(actions_cfg.get("lottery_min_confirms", 4)),
         )
+
+        # Paper journal also follows lottery BUY/SELL NOW
+        if journal is not None and jcfg.get("enabled", True):
+            try:
+                from odte_scanner.trading.insights import build_insights as _build_insights
+
+                lot_sync = journal.sync_from_actions(
+                    {"buy_now": [], "sell_now": [], "buy_now_0dte": [], "buy_now_weekly": []},
+                    max_risk_usd=float(jcfg.get("max_risk_per_trade_usd", 250)),
+                    auto_enter=bool(jcfg.get("auto_enter", True)),
+                    auto_exit=bool(jcfg.get("auto_exit", True)),
+                    lottery=lottery,
+                )
+                if journal_sync is None:
+                    journal_sync = lot_sync
+                else:
+                    journal_sync = dict(journal_sync)
+                    journal_sync["entered"] = list(journal_sync.get("entered") or []) + list(
+                        lot_sync.get("entered") or []
+                    )
+                    journal_sync["exited"] = list(journal_sync.get("exited") or []) + list(
+                        lot_sync.get("exited") or []
+                    )
+                    journal_sync["performance"] = lot_sync.get("performance") or journal_sync.get(
+                        "performance"
+                    )
+                if lot_sync.get("exited"):
+                    actions = dict(actions)
+                    actions["just_exited"] = list(actions.get("just_exited") or []) + list(
+                        lot_sync["exited"]
+                    )
+                    actions["counts"] = dict(actions.get("counts") or {})
+                    actions["counts"]["just_exited"] = len(actions["just_exited"])
+                insights = _build_insights(journal=journal, actions=actions, win_rates=win_table)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("lottery journal sync skipped: %s", exc)
 
         # Discord-style radar — cheap index wings; does NOT feed BUY NOW / journal
         radar: dict = {"hot": [], "watch": [], "cool": [], "tickets": [], "counts": {}, "note": ""}
@@ -3319,14 +3420,19 @@ def create_app(config_path: str | None = None) -> Flask:
         challenge: dict | None = None,
     ) -> dict:
         """Route current boards to Webull ledger (preview/dry-run/live)."""
+        import copy
+
         broker, trader = _webull_bundle()
         scan = _read_json(ROOT / "outputs" / "latest_scan.json") or {}
         snap_cache = _read_json(ROOT / "outputs" / "ui_snapshot_cache.json") or {}
         if not isinstance(snap_cache, dict):
             snap_cache = {}
-        actions = actions if isinstance(actions, dict) else snap_cache.get("actions")
-        lottery = lottery if isinstance(lottery, dict) else snap_cache.get("lottery")
-        challenge = challenge if isinstance(challenge, dict) else snap_cache.get("challenge")
+        # Copy — never mutate the live action board (was stuffing raw candidates into buy_now)
+        actions = copy.deepcopy(actions if isinstance(actions, dict) else snap_cache.get("actions"))
+        lottery = copy.deepcopy(lottery if isinstance(lottery, dict) else snap_cache.get("lottery"))
+        challenge = copy.deepcopy(
+            challenge if isinstance(challenge, dict) else snap_cache.get("challenge")
+        )
         if not actions:
             actions = {"buy_now": [], "sell_now": []}
         if not lottery:
@@ -3337,10 +3443,12 @@ def create_app(config_path: str | None = None) -> Flask:
             from odte_scanner.backtest.win_rates import load_win_rate_table, lookup_win_stats
 
             wr = scan.get("win_rates") or load_win_rate_table() or {}
-            if not (actions.get("buy_now") or actions.get("sell_now")):
+            # Only enrich a *private* list for Webull when desk has no actionable BUY/SELL
+            wb_actions = copy.deepcopy(actions)
+            if not (wb_actions.get("buy_now") or wb_actions.get("sell_now")):
                 for c in (scan.get("call_candidates_0dte") or [])[:8]:
                     stats = lookup_win_stats(wr, c.get("symbol"), "0dte")
-                    actions.setdefault("buy_now", []).append(
+                    wb_actions.setdefault("buy_now", []).append(
                         {
                             **c,
                             "action": "BUY_NOW",
@@ -3349,11 +3457,13 @@ def create_app(config_path: str | None = None) -> Flask:
                             "hist_samples": stats.get("trades"),
                             "win_pct": stats.get("win_pct"),
                             "win_samples": stats.get("trades"),
+                            "headline": f"SCAN {c.get('symbol')} call",
+                            "detail": "Webull enrich from scan candidate (not desk BUY NOW)",
                         }
                     )
                 for c in (scan.get("put_candidates_0dte") or [])[:4]:
                     stats = lookup_win_stats(wr, c.get("symbol"), "0dte")
-                    actions.setdefault("buy_now", []).append(
+                    wb_actions.setdefault("buy_now", []).append(
                         {
                             **c,
                             "action": "BUY_NOW",
@@ -3363,12 +3473,17 @@ def create_app(config_path: str | None = None) -> Flask:
                             "hist_samples": stats.get("trades"),
                             "win_pct": stats.get("win_pct"),
                             "win_samples": stats.get("trades"),
+                            "headline": f"SCAN {c.get('symbol')} put",
+                            "detail": "Webull enrich from scan candidate (not desk BUY NOW)",
                         }
                     )
+            else:
+                wb_actions = actions
         except Exception as exc:  # noqa: BLE001
             logger.debug("webull sync enrich failed: %s", exc)
+            wb_actions = actions
 
-        out = trader.sync(actions=actions, lottery=lottery, challenge=challenge)
+        out = trader.sync(actions=wb_actions, lottery=lottery, challenge=challenge)
         lt = cfg.get("live_trading") or {}
         out["auto_sync"] = bool(lt.get("auto_sync", True))
         out["status"] = out.get("broker") or out.get("status")

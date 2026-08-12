@@ -648,6 +648,7 @@ def build_action_board(
     weekly_max_hold_days: int = 7,
     odte_flatten_et: str = "15:45",
     now: datetime | None = None,
+    require_live_confirm: bool = True,
 ) -> dict[str, Any]:
     score_by_symbol = {
         str(s.get("symbol")): float(s.get("ensemble_score") or 0) for s in scores or []
@@ -690,7 +691,7 @@ def build_action_board(
             wait_score=wait_score,
             max_chase_pct=max_chase_pct,
             open_symbols=open_symbols,
-            require_live_confirm=True,
+            require_live_confirm=require_live_confirm,
             take_profit_pct=take_profit_pct,
             stop_loss_pct=stop_loss_pct,
             weekly_max_hold_days=weekly_max_hold_days,
@@ -762,9 +763,21 @@ def build_action_board(
         "hold_rules": {
             "odte_flatten_et": odte_flatten_et,
             "weekly_max_hold_days": weekly_max_hold_days,
+            "require_live_confirm": require_live_confirm,
+            "exit_criteria": [
+                f"take profit ≥ +{take_profit_pct:.0f}% premium",
+                f"stop loss ≤ −{abs(stop_loss_pct):.0f}% premium",
+                f"0DTE clock flatten by {odte_flatten_et} ET",
+                f"weekly max hold {weekly_max_hold_days}d",
+                "soft wall on underlying (call ≥ wall / put ≤ wall)",
+                f"ensemble cool ≤ {sell_score:.0f} (calls) / reheated (puts)",
+                "tape fail: 5m dump (calls) / 5m bounce (puts)",
+                "bank rip/dump on underlying vs side",
+            ],
             "note": (
-                "0DTE flatten by clock (desk practice ~15:45 ET); "
-                "weekly max hold days; every BUY includes EXIT plan (TP/SL/clock)."
+                "SELL NOW only fires for open paper positions. "
+                "Every BUY/WAIT includes an EXIT plan (TP/SL/clock). "
+                "0DTE flatten by clock; weekly max hold days."
             ),
         },
         "hist_win_gate": {
