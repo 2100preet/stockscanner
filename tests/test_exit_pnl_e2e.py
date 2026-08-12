@@ -13,7 +13,7 @@ def test_user_named_tickers_are_scannable():
     focus = set(FOCUS_DEFAULT)
     cfg = load_config()
     cfg_tickers = {str(t).upper() for t in (cfg.get("tickers") or [])}
-    for sym in ("NBIS", "CRWV", "CRCL", "NOW", "CRM", "SMCI"):
+    for sym in ("NBIS", "CRWV", "CRCL", "NOW", "CRM", "SMCI", "DELL"):
         assert sym in liq, f"{sym} missing from liquid universe"
         assert sym in focus or sym in cfg_tickers, f"{sym} missing from focus/config"
     for sym in ("NBIS", "CRWV", "CRCL", "SMCI"):

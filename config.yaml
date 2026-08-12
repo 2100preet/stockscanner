@@ -69,6 +69,7 @@ tickers:
   - CRCL  # Circle — high-attention fintech
   - NOW   # ServiceNow — liquid mega; keep on focus scans
   - SMCI  # Super Micro — earnings today AMC; liquid mid, was missing from focus
+  - DELL  # Dell Technologies — liquid mega/AI PC; elevate onto focus options scan
   - SE    # Sea Limited — EW this week
   - HIMS  # Hims & Hers — EW this week
   - RKLB  # Rocket Lab — EW this week
@@ -151,6 +152,7 @@ expiry_calendars:
     - CRCL
     - NOW
     - SMCI
+    - DELL
     - SE
     - HIMS
     - RKLB
