@@ -243,7 +243,10 @@ class AutoTrader:
                     continue
                 bucket = str(row.get("dte_bucket") or row.get("horizon") or "odte").lower()
                 desk = "weekly" if "week" in bucket else ("swing" if "swing" in bucket else "odte")
-                _take(self._route_sell(desk=desk, row=row, right="C"))
+                right = str(row.get("right") or "C").upper()
+                if right not in {"C", "P"}:
+                    right = "C"
+                _take(self._route_sell(desk=desk, row=row, right=right))
             for row in actions.get("buy_now") or []:
                 if budget <= 0:
                     break
@@ -251,7 +254,10 @@ class AutoTrader:
                     continue
                 bucket = str(row.get("dte_bucket") or row.get("horizon") or "odte").lower()
                 desk = "weekly" if "week" in bucket else ("swing" if "swing" in bucket else "odte")
-                _take(self._route_buy(desk=desk, row=row, right="C"))
+                right = str(row.get("right") or "C").upper()
+                if right not in {"C", "P"}:
+                    right = "C"
+                _take(self._route_buy(desk=desk, row=row, right=right))
 
         # --- Challenge sleeve (calls & puts) ---
         if challenge and budget > 0:
@@ -287,6 +293,7 @@ class AutoTrader:
 
         return {
             "broker": self.broker.status(),
+            "status": self.broker.status(),
             "require_perfect_hist": self.require_perfect_hist,
             "min_hist_win_pct": self.min_hist_win_pct,
             "min_hist_win_samples": self.min_hist_win_samples,
@@ -295,6 +302,7 @@ class AutoTrader:
             "skipped": skipped[:40],
             "submitted_n": len(submitted),
             "skipped_n": len(skipped),
-            "recent": self.broker.recent(20),
+            "recent": self.broker.recent(40),
+            "activity": self.broker.activity(40),
             "disclaimer": self.broker.status()["disclaimer"],
         }

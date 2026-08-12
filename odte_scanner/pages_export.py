@@ -123,6 +123,8 @@ def export_pages(
         "recommendation_log.json",
         "challenge_ledger.json",
         "paper_ledger.json",
+        "webull_orders.json",
+        "ui_snapshot_cache.json",
     ):
         src = ROOT / "outputs" / name
         if src.exists():

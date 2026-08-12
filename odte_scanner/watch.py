@@ -183,6 +183,38 @@ def run_watch(
                         "exited": sync.get("exited"),
                         "performance": sync.get("performance"),
                     }
+                    # Stage Webull BUY/SELL from the same action board
+                    lt = cfg.get("live_trading") or {}
+                    if bool(lt.get("auto_sync", True)):
+                        from odte_scanner.trading.auto_trader import AutoTrader
+                        from odte_scanner.trading.webull import WebullBroker
+
+                        ledger = Path(lt.get("ledger_path", "outputs/webull_orders.json"))
+                        broker = WebullBroker(
+                            enabled=bool(lt.get("enabled", False)),
+                            dry_run=bool(lt.get("dry_run", True)),
+                            region=str(lt.get("region") or "us"),
+                            sandbox=bool(lt.get("sandbox", True)),
+                            account_id=lt.get("account_id"),
+                            app_key=lt.get("app_key"),
+                            app_secret=lt.get("app_secret"),
+                            ledger_path=ledger,
+                        )
+                        trader = AutoTrader(
+                            broker,
+                            require_perfect_hist=bool(lt.get("require_perfect_hist", True)),
+                            min_hist_win_pct=float(lt.get("min_hist_win_pct", 100)),
+                            min_hist_win_samples=int(lt.get("min_hist_win_samples", 3)),
+                            desks=dict(lt.get("desks") or {}) or None,
+                            max_contracts=int(lt.get("max_contracts", 1)),
+                            max_orders_per_sync=int(lt.get("max_orders_per_sync", 3)),
+                        )
+                        wb = trader.sync(actions=actions, lottery=None, challenge=None)
+                        snapshot["webull_sync"] = {
+                            "submitted_n": wb.get("submitted_n"),
+                            "skipped_n": wb.get("skipped_n"),
+                            "activity_counts": (wb.get("activity") or {}).get("counts"),
+                        }
             except Exception as exc:  # noqa: BLE001
                 logger.debug("journal sync skipped: %s", exc)
 

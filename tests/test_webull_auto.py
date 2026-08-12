@@ -123,3 +123,71 @@ def test_routes_lottery_vs_odte(tmp_path: Path):
     desks = {o["desk"] for o in out["submitted"]}
     assert "lottery" in desks
     assert "odte" in desks
+
+
+def test_preview_logs_when_bridge_disabled(tmp_path: Path):
+    """enabled=false + dry_run=true still writes BUY/SELL history for verification."""
+    broker = WebullBroker(enabled=False, dry_run=True, ledger_path=tmp_path / "wb.json")
+    trader = AutoTrader(broker, require_perfect_hist=True, min_hist_win_samples=3)
+    out = trader.sync(
+        actions={
+            "buy_now": [
+                {
+                    "symbol": "MSFT",
+                    "ask": 1.1,
+                    "dte_bucket": "0dte",
+                    "hist_win_pct": 100,
+                    "hist_samples": 5,
+                    "expiry": "2026-08-12",
+                    "strike": 420,
+                    "contract": "MSFT260812C00420000",
+                }
+            ],
+            "sell_now": [
+                {
+                    "symbol": "AAPL",
+                    "bid": 0.9,
+                    "dte_bucket": "0dte",
+                    "expiry": "2026-08-12",
+                    "strike": 200,
+                    "contract": "AAPL260812C00200000",
+                    "right": "C",
+                }
+            ],
+        }
+    )
+    assert out["submitted_n"] >= 2
+    statuses = {o["status"] for o in out["submitted"]}
+    assert "dry_run" in statuses
+    act = out["activity"]
+    assert act["counts"]["buys"] >= 1
+    assert act["counts"]["sells"] >= 1
+    assert any("verify" in s.lower() or "Webull" in s for s in act["how_to_verify"])
+    # Ledger file persists
+    assert (tmp_path / "wb.json").exists()
+    recent = broker.recent(10)
+    assert len(recent) >= 2
+
+
+def test_put_buy_routes_with_right(tmp_path: Path):
+    broker = WebullBroker(enabled=True, dry_run=True, ledger_path=tmp_path / "wb.json")
+    trader = AutoTrader(broker, require_perfect_hist=False)
+    out = trader.sync(
+        actions={
+            "buy_now": [
+                {
+                    "symbol": "IWM",
+                    "ask": 1.0,
+                    "dte_bucket": "0dte",
+                    "right": "P",
+                    "expiry": "2026-08-12",
+                    "strike": 220,
+                    "contract": "IWM260812P00220000",
+                }
+            ],
+            "sell_now": [],
+        }
+    )
+    assert out["submitted_n"] == 1
+    assert out["submitted"][0]["right"] == "P"
+    assert out["submitted"][0]["action"] == "BUY"
