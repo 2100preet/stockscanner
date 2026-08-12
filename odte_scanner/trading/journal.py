@@ -409,21 +409,34 @@ class SignalJournal:
         max_risk_usd: float = 250,
         auto_enter: bool = True,
         auto_exit: bool = True,
+        lottery: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Apply BUY NOW / SELL NOW from the action board to the journal."""
+        """Apply BUY NOW / SELL NOW from the action board (+ optional lottery) to the journal."""
         entered, exited = [], []
+        sell_rows = list(actions.get("sell_now") or [])
+        if lottery:
+            sell_rows.extend(lottery.get("sell_now") or [])
         if auto_exit:
-            for sig in actions.get("sell_now") or []:
+            for sig in sell_rows:
                 exited.extend(self.exit_from_signal(sig))
         if auto_enter:
-            # Prefer 0DTE buys first, then weekly
+            # Prefer 0DTE buys first, then weekly, then lottery
             ordered = list(actions.get("buy_now_0dte") or []) + list(actions.get("buy_now_weekly") or [])
             if not ordered:
                 ordered = list(actions.get("buy_now") or [])
+            if lottery:
+                ordered = list(ordered) + list(lottery.get("buy_now") or [])
             for sig in ordered:
+                if str(sig.get("action") or "").upper() not in {"BUY_NOW", "BUY", ""}:
+                    continue
+                # Never paper-fill raw chain candidates missing a desk headline/detail
+                if not (sig.get("headline") or sig.get("detail") or sig.get("exit_plan")):
+                    continue
                 t = self.enter_from_signal(sig, max_risk_usd=max_risk_usd)
                 if t:
                     entered.append(t.to_dict())
+        # Always persist so Pages export has a journal file even at 0 fills
+        self.save()
         return {
             "entered": entered,
             "exited": [t.to_dict() for t in exited],
