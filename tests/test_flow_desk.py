@@ -14,6 +14,21 @@ def test_ew_liquid_names_curated_and_focus():
     assert "IREN" in liquid_universe()
 
 
+def test_curated_high_potential_on_focus():
+    """Selective AI/memory/power names — not full S&P 500."""
+    must = (
+        "MU", "DELL",  # already core
+        "SNDK", "WDC", "STX",
+        "LRCX", "KLAC", "MRVL", "ANET", "ALAB", "CRDO", "APP",
+        "VRT", "CEG", "GEV", "APLD", "CIFR", "WULF",
+    )
+    for sym in must:
+        assert sym in FOCUS_DEFAULT, f"{sym} missing from FOCUS_DEFAULT"
+        assert sym in liquid_universe(), f"{sym} missing from liquid_universe"
+    # Focus stays bounded (rate limits) — curated adds, not entire SPX
+    assert 60 <= len(FOCUS_DEFAULT) <= 120
+
+
 def test_flow_score_flags_and_tiers():
     golden = score_flow_print(
         {"right": "C", "strike": 100, "volume": 25000, "open_interest": 10000, "mid": 1.5, "premium_notional": 300000},
