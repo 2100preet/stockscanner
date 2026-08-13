@@ -447,6 +447,147 @@ def build_radar_wing_board(
     return [e.to_dict() for e in board[:max_total]]
 
 
+def _pick_chase_symbols(
+    scores: list[dict[str, Any]] | None,
+    quotes: dict[str, dict[str, Any]] | None,
+    *,
+    max_n: int = 10,
+    min_ensemble: float = 55.0,
+) -> list[str]:
+    """Prefer names that are already ripping or scoring soft-bullish for chase wings."""
+    quotes = quotes or {}
+    ranked: list[tuple[float, str]] = []
+    for s in scores or []:
+        sym = str(s.get("symbol") or "").upper()
+        if not sym:
+            continue
+        ens = float(s.get("ensemble_score") or 0)
+        rs = 0.0
+        for sig in s.get("signals") or []:
+            if str(sig.get("name") or "") == "relative_strength":
+                rs = float((sig.get("details") or {}).get("ret_pct") or 0)
+                break
+        q = quotes.get(sym) or {}
+        live = q.get("session_change_pct")
+        if live is None:
+            live = q.get("change_pct")
+        live_f = float(live) if live is not None else 0.0
+        if ens < min_ensemble and live_f < 1.2 and rs < 2.5:
+            continue
+        chase_rank = ens + live_f * 4.0 + max(0.0, rs) * 0.6
+        ranked.append((chase_rank, sym))
+    ranked.sort(key=lambda x: x[0], reverse=True)
+    out: list[str] = []
+    seen: set[str] = set()
+    for _, sym in ranked:
+        if sym in seen:
+            continue
+        seen.add(sym)
+        out.append(sym)
+        if len(out) >= max_n:
+            break
+    return out
+
+
+def build_chase_wing_board(
+    *,
+    scores: list[dict[str, Any]] | None = None,
+    quotes: dict[str, dict[str, Any]] | None = None,
+    aliases: dict[str, str] | None = None,
+    candidates: list[dict[str, Any]] | None = None,
+    focus_symbols: list[str] | None = None,
+    min_ask: float = 0.20,
+    max_ask: float = 12.0,
+    otm_pct_max: float = 8.0,
+    itm_pct_max: float = 0.5,
+    per_symbol: int = 2,
+    max_total: int = 16,
+    enrich_live: bool = True,
+    max_live_symbols: int = 8,
+) -> list[dict[str, Any]]:
+    """Far-OTM / richer-ask convex wings for the chase-aware lane (MU-style runners)."""
+    aliases = aliases or {}
+    quotes = quotes or {}
+    score_map = {
+        str(s.get("symbol")): float(s.get("ensemble_score") or 0) for s in (scores or [])
+    }
+    board: list[ExplosiveCandidate] = []
+    have: set[tuple[str, str, float]] = set()
+
+    focus_set = {str(s).upper() for s in (focus_symbols or [])} if focus_symbols else None
+
+    for c in candidates or []:
+        sym = str(c.get("symbol") or "").upper()
+        if focus_set and sym not in focus_set:
+            continue
+        ask = float(c.get("ask") or 0)
+        if ask < min_ask or ask > max_ask:
+            continue
+        dte = c.get("dte")
+        if dte is not None and int(dte) > 1:
+            continue
+        mny = c.get("moneyness_pct")
+        if mny is not None and float(mny) > otm_pct_max:
+            continue
+        ec = build_explosive_from_candidate(
+            {**c, "symbol": sym},
+            min_best_mult=3.5,
+            min_mult_at_3pct=3.0,
+            min_mult_at_1pct=1.2,
+        )
+        if not ec:
+            continue
+        key = (ec.symbol, ec.expiry, ec.strike)
+        if key in have:
+            continue
+        have.add(key)
+        board.append(ec)
+
+    if enrich_live:
+        live_syms = list(focus_symbols or []) if focus_symbols else []
+        if not live_syms:
+            live_syms = _pick_chase_symbols(scores, quotes, max_n=max_live_symbols)
+        for sym in live_syms[:max_live_symbols]:
+            q = quotes.get(sym) or {}
+            spot = float(q.get("last") or 0)
+            if spot <= 0:
+                for c in candidates or []:
+                    if str(c.get("symbol") or "").upper() == sym and c.get("spot"):
+                        spot = float(c["spot"])
+                        break
+            if spot <= 0:
+                # Fall back to score last_price from scan
+                for s in scores or []:
+                    if str(s.get("symbol") or "").upper() == sym and s.get("last_price"):
+                        spot = float(s["last_price"])
+                        break
+            if spot <= 0:
+                continue
+            found = find_explosive_calls(
+                sym,
+                spot,
+                score=score_map.get(sym, 0.0),
+                yahoo_symbol=aliases.get(sym),
+                min_ask=min_ask,
+                max_ask=max_ask,
+                otm_pct_max=otm_pct_max,
+                itm_pct_max=itm_pct_max,
+                limit=per_symbol,
+                min_best_mult=3.5,
+                min_mult_at_3pct=3.0,
+                min_mult_at_1pct=1.2,
+            )
+            for ec in found:
+                key = (ec.symbol, ec.expiry, ec.strike)
+                if key in have:
+                    continue
+                have.add(key)
+                board.append(ec)
+
+    board.sort(key=lambda x: (x.lottery_score, x.best_mult), reverse=True)
+    return [e.to_dict() for e in board[:max_total]]
+
+
 def build_explosive_board(
     candidates: list[dict[str, Any]],
     *,

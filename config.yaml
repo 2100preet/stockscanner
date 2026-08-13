@@ -278,6 +278,17 @@ actions:
   radar_max_ask: 2.50
   radar_otm_pct_max: 1.50
   radar_enrich_live: true   # short Yahoo chain sweep for focus indices only
+  # Chase / high-convexity lane — far-OTM or already-ripping wings (MU-style)
+  # Separate bucket: BUY — BIT RISKY / WATCH CONVEX (not hist-gated BUY NOW)
+  chase_radar_enabled: true
+  chase_min_ask: 0.20
+  chase_max_ask: 12.00       # allow richer premium than Discord radar
+  chase_otm_pct_max: 8.0     # widen past action/lottery ATM band (~3%)
+  chase_min_mult_at_3pct: 3.5
+  chase_min_mom_5m: 0.08     # still need impulse; extension alone + flat 5m OK
+  chase_enrich_live: true    # live chain sweep on top ripping names (capped)
+  chase_max_live_symbols: 8
+  chase_feed_journal: false  # never auto paper-enter risky chase tickets
   # $1k → $1M challenge (swing / LEAP + weekly pace for 4mo→$500k)
   challenge_start_usd: 1000
   challenge_target_usd: 1000000

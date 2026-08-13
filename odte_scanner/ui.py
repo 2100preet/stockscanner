@@ -248,6 +248,13 @@ PAGE = r"""
       <h2>0DTE — same-day / next-session algos</h2>
       <p class="lede">Gap-and-go, breakout, volume thrust, VIX regime. Win% = next session green after quality signal. Strike rate = ≥1% / ≥2% underlying rip rate.
         Paper <strong>BUY NOW / SELL NOW</strong> fills update cash, equity, and P&amp;L on each ENTRY / EXIT.</p>
+      <p class="lede" style="font-size:.76rem;margin-top:.35rem">
+        <strong>How 0DTE score is calculated:</strong> weighted average (0–100) of algos —
+        gap &amp; go / breakout (1.5), volume thrust (1.4), relative strength + VIX (1.2), squeeze (1.1),
+        MACD (1.0), RSI (0.9), EMA stack (0.8). A <em>confirm</em> = bullish algo with score ≥65.
+        <strong>Quality</strong> (needed for gated BUY NOW) = ensemble ≥72 <em>and</em> ≥3 confirms.
+        Soft scores ~55–71 can still appear on the chase / convex lane as <em>BUY — bit risky</em>.
+      </p>
       <div class="panel" id="redFlagOdtePanel"><div id="redFlagOdte" class="empty">—</div></div>
       <div class="cards" id="cards0dte"></div>
       <div class="panel"><div id="table0dte" class="empty"></div></div>
@@ -286,6 +293,19 @@ PAGE = r"""
         <div id="radarHot" class="empty">No RADAR HOT wings yet.</div>
         <div class="status" style="margin:.75rem 0 .4rem">WATCH / COOL</div>
         <div id="radarWatch" class="empty">—</div>
+      </div>
+      <div class="panel">
+        <h2>Chase / high-convexity — BUY bit risky</h2>
+        <p class="lede" style="margin-top:0;font-size:.76rem">
+          Far-OTM or already-ripping 0DTE/1DTE calls the main desk skips (anti-chase + hist-win).
+          <strong>BUY — BIT RISKY</strong> = discretionary / size small — <em>not</em> gated Options BUY NOW and not auto-journaled.
+          Example pattern: MU far wing that 10× after the rip.
+        </p>
+        <div class="metric-row" id="chaseMetrics"></div>
+        <div id="chaseBuyRisky" class="empty">No BUY — BIT RISKY tickets yet.</div>
+        <div class="status" style="margin:.75rem 0 .4rem">WATCH CONVEX</div>
+        <div id="chaseWatch" class="empty">—</div>
+        <p class="lede" id="chaseScoreNote" style="font-size:.72rem;margin-top:.5rem"></p>
       </div>
       <div class="panel">
         <h2>BUY NOW lottery</h2>
@@ -796,6 +816,32 @@ PAGE = r"""
       </article>`;
     }
 
+    function chaseCard(r) {
+      const risky = (r.action||"") === "BUY_RISKY";
+      const watch = (r.action||"") === "WATCH_CONVEX";
+      const cls = risky ? "short" : "wait";
+      const dir = risky ? "BUY — BIT RISKY" : ((r.action||"CHASE").replaceAll("_"," "));
+      return `<article class="action-card ${cls}">
+        <div class="ac-top">
+          <div class="ac-sym">${r.symbol} <span class="tag">${r.risk_tag||"chase"}</span></div>
+          <div class="ac-dir ${cls}">${dir}</div>
+        </div>
+        <div class="ac-meta">
+          <div>Strike / expiry<strong>${r.strike==null?"—":fmt(r.strike,2)+"c"} · ${r.expiry||"—"}</strong></div>
+          <div>Ask / spot<strong>$${fmt(r.ask,2)} · $${fmt(r.spot,2)}</strong></div>
+          <div>OTM %<strong>${r.moneyness_pct==null?"—":fmt(r.moneyness_pct,2)+"%"}</strong></div>
+          <div>Live / 5m<strong>${r.live_change_pct==null?"—":fmt(r.live_change_pct,2)+"%"}${r.mom_5m_pct==null?"":" · "+fmt(r.mom_5m_pct,2)+"%"}</strong></div>
+          <div>Mult +3% / +5%<strong>${fmt(r.mult_at_3pct,1)}× / ${fmt(r.mult_at_5pct,1)}×</strong></div>
+          <div>0DTE score<strong>${r.ensemble_score==null?"—":fmt(r.ensemble_score,0)}</strong></div>
+          <div>Confirms<strong>${r.confirms??0}</strong></div>
+          <div>Contract<strong class="mono" style="font-size:.72rem">${r.contract||"—"}</strong></div>
+          ${levelsMeta(r)}
+        </div>
+        <p class="why" style="margin:.45rem 0 0">${r.detail||r.headline||""}</p>
+        ${risky?`<p class="why" style="margin:.25rem 0 0"><strong>Risk:</strong> Not hist-gated BUY NOW — size small; premium can go to zero.</p>`:""}
+      </article>`;
+    }
+
 
     function renderFreeDealer(fd) {
       const el = document.getElementById("freeDealerBody");
@@ -1000,6 +1046,37 @@ PAGE = r"""
           ? `<div class="cards">${gated.map(radarCard).join("")}</div><p class="lede" style="margin-top:.5rem;font-size:.76rem">${rad.note||""}</p>`
           : `<div class="empty">${rad.note||"Radar idle."}</div>`;
       }
+    }
+
+    function renderChaseRadar(chase) {
+      const metrics = document.getElementById("chaseMetrics");
+      const buyEl = document.getElementById("chaseBuyRisky");
+      const watchEl = document.getElementById("chaseWatch");
+      const noteEl = document.getElementById("chaseScoreNote");
+      const ch = chase || {};
+      const c = ch.counts || {};
+      const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
+      if (metrics) {
+        metrics.innerHTML = [
+          m("BUY — BIT RISKY", c.buy_risky||0, (c.buy_risky||0)>0?"down":""),
+          m("WATCH CONVEX", c.watch||0),
+          m("COOL", c.cool||0),
+          m("Wings scanned", c.all||(ch.tickets||[]).length||0),
+        ].join("");
+      }
+      if (buyEl) {
+        const rows = ch.buy_risky || [];
+        buyEl.innerHTML = rows.length
+          ? `<div class="cards">${rows.map(chaseCard).join("")}</div>`
+          : `<div class="empty">No BUY — BIT RISKY tickets — waiting for ripping tape + convex wings.</div>`;
+      }
+      if (watchEl) {
+        const gated = [...(ch.watch||[]), ...(ch.cool||[]).slice(0,4)];
+        watchEl.innerHTML = gated.length
+          ? `<div class="cards">${gated.map(chaseCard).join("")}</div><p class="lede" style="margin-top:.5rem;font-size:.76rem">${ch.note||""}</p>`
+          : `<div class="empty">${ch.note||"Chase lane idle."}</div>`;
+      }
+      if (noteEl) noteEl.textContent = ch.score_note || "";
     }
 
     function fillRecLogMetrics(metricsId, board) {
@@ -2286,6 +2363,7 @@ PAGE = r"""
       renderFreeDealer(DATA.free_dealer);
       renderMl6(DATA.ml6 || { watchlist: ((DATA.horizons||{}).ml6||[]), bottom_line_rules: (DATA.ml6&&DATA.ml6.bottom_line_rules)||[] });
       renderRadar(DATA.radar || {});
+      renderChaseRadar(DATA.chase_radar || DATA.convex_risk || {});
       renderEcho(DATA.echo || {});
       renderDarkpoolMini(DATA.echo || {});
       renderChallenge(DATA.challenge || {});
@@ -3055,6 +3133,57 @@ def create_app(config_path: str | None = None) -> Flask:
                     "note": "Radar temporarily unavailable.",
                 }
 
+        # Chase / high-convexity lane — BUY_RISKY / WATCH_CONVEX (not hist-gated BUY NOW)
+        chase_radar: dict = {
+            "buy_risky": [],
+            "watch": [],
+            "cool": [],
+            "tickets": [],
+            "counts": {},
+            "note": "",
+            "score_note": "",
+        }
+        if actions_cfg.get("chase_radar_enabled", True):
+            try:
+                from odte_scanner.options.explosive import build_chase_wing_board
+                from odte_scanner.signals.chase_radar import build_chase_board
+
+                chase_tickets = build_chase_wing_board(
+                    scores=scan.get("scores") or [],
+                    quotes=quotes,
+                    aliases=aliases,
+                    candidates=refreshed,
+                    min_ask=float(actions_cfg.get("chase_min_ask", 0.20)),
+                    max_ask=float(actions_cfg.get("chase_max_ask", 12.0)),
+                    otm_pct_max=float(actions_cfg.get("chase_otm_pct_max", 8.0)),
+                    enrich_live=bool(actions_cfg.get("chase_enrich_live", True)),
+                    max_live_symbols=int(actions_cfg.get("chase_max_live_symbols", 8)),
+                    per_symbol=2,
+                    max_total=16,
+                )
+                chase_radar = build_chase_board(
+                    chase_tickets,
+                    quotes=quotes,
+                    scores=scan.get("scores") or [],
+                    min_ask=float(actions_cfg.get("chase_min_ask", 0.20)),
+                    max_ask=float(actions_cfg.get("chase_max_ask", 12.0)),
+                    max_otm_pct=float(actions_cfg.get("chase_otm_pct_max", 8.0)),
+                    min_mult_at_3pct=float(actions_cfg.get("chase_min_mult_at_3pct", 3.5)),
+                    min_mom_5m=float(actions_cfg.get("chase_min_mom_5m", 0.08)),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("chase radar unavailable: %s", exc)
+                chase_radar = {
+                    "error": str(exc),
+                    "buy_risky": [],
+                    "watch": [],
+                    "cool": [],
+                    "tickets": [],
+                    "counts": {},
+                    "note": "Chase / convex lane temporarily unavailable.",
+                    "score_note": "",
+                }
+
         from odte_scanner.challenge import build_challenge_board
         from odte_scanner.data.universe import liquid_universe
         from odte_scanner.echo import build_echo_board
@@ -3535,6 +3664,7 @@ def create_app(config_path: str | None = None) -> Flask:
                         "lottery": lottery,
                         "challenge": challenge,
                         "radar": radar,
+                        "chase_radar": chase_radar,
                     },
                     indent=2,
                     default=str,
@@ -3579,6 +3709,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 "red_flag": red_flag_snapshot,
                 "free_dealer": free_dealer,
                 "radar": radar,
+                "chase_radar": chase_radar,
                 "echo": echo,
                 "challenge": challenge,
                 "market": market,
