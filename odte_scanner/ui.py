@@ -141,6 +141,11 @@ PAGE = r"""
         <strong>BUY NOW gate</strong>: only symbols with hist win ≥80% and n≥5 are promoted (see hist-win gate card).
       </p>
       <div class="metric-row" id="histWinGate"></div>
+      <div class="panel" id="redFlagPanel">
+        <h2>Red Flag — VolSignals 0DTE framework (proxy)</h2>
+        <p class="lede" style="margin-top:0">Customer upside call-hedging / dealer short positioning + charm into the close can cap rallies. Blocks index 0DTE long calls when active.</p>
+        <div id="redFlagBody" class="empty">Loading Red Flag…</div>
+      </div>
       <h2>Top action cards</h2>
       <div class="cards" id="overviewCards"></div>
       <div class="panel">
@@ -157,6 +162,7 @@ PAGE = r"""
     <section class="tabpane" id="tab-odte">
       <h2>0DTE — same-day / next-session algos</h2>
       <p class="lede">Gap-and-go, breakout, volume thrust, VIX regime. Win% = next session green after quality signal. Strike rate = ≥1% / ≥2% underlying rip rate.</p>
+      <div class="panel" id="redFlagOdtePanel"><div id="redFlagOdte" class="empty">—</div></div>
       <div class="cards" id="cards0dte"></div>
       <div class="panel"><div id="table0dte" class="empty"></div></div>
     </section>
@@ -426,6 +432,45 @@ PAGE = r"""
       table.innerHTML = head + list.map(rowHtml).join("") + "</tbody></table>";
     }
 
+    function renderRedFlag(rf) {
+      const body = document.getElementById("redFlagBody");
+      const odte = document.getElementById("redFlagOdte");
+      if (!rf) {
+        const empty = `<div class="empty">Red Flag unavailable — run a scan.</div>`;
+        if (body) body.innerHTML = empty;
+        if (odte) odte.innerHTML = empty;
+        return;
+      }
+      const st = rf.state || "NEUTRAL";
+      const cls = st === "RED_FLAG" ? "down" : (st === "SUPPORTIVE" ? "up" : "");
+      const badgeCls = st === "RED_FLAG" ? "sell" : (st === "SUPPORTIVE" ? "buy" : "hold");
+      const strikes = (rf.resistance_strikes||[]).slice(0,4).map(s =>
+        `<span class="tag">$${s.strike} · OI ${s.open_interest}</span>`
+      ).join(" ");
+      const rules = (rf.bottom_line_rules||[]).map(r =>
+        `<li><strong>${r.ticker}</strong> (${r.when}): ${r.text}</li>`
+      ).join("");
+      const html = `<article class="action-card ${st==="RED_FLAG"?"wait":"long"}">
+        <div class="ac-top">
+          <div class="ac-sym">${rf.symbol||"SPY"}</div>
+          <div class="ac-dir ${cls||"wait"}"><span class="badge ${badgeCls}">${st.replace(/_/g," ")}</span></div>
+        </div>
+        <div class="ac-conf">Score ${fmt(rf.score,1)} · charm ${rf.charm_pressure||"—"} · expiry ${rf.expiry||"—"} · spot $${fmt(rf.spot,2)}</div>
+        <div class="bar"><i style="width:${Math.min(100, rf.score||50)}%"></i></div>
+        <p class="why" style="max-width:none">${(rf.reasons||[]).slice(0,5).join(" · ")||"—"}</p>
+        <p class="why" style="max-width:none;margin-top:.4rem"><strong>Equilibrium / call-wall:</strong> ${rf.equilibrium_strike?`$${rf.equilibrium_strike}`:"—"} ${strikes}</p>
+        <p class="why" style="max-width:none;margin-top:.4rem">${rf.strategy_hint||""}</p>
+        <p class="why" style="max-width:none;margin-top:.4rem;font-size:.72rem;color:var(--muted)">${rf.volsignals_note||""}</p>
+        ${rf.block_0dte_long_calls ? `<p class="why down" style="margin-top:.5rem"><strong>Gate active:</strong> index 0DTE long calls blocked until Red Flag clears.</p>` : ""}
+        <div class="panel" style="margin-top:.8rem">
+          <h2 style="font-size:1rem;margin-bottom:.4rem">Bottom-line earnings watch (ML6)</h2>
+          <ul class="why" style="padding-left:1.1rem;margin:0">${rules}</ul>
+        </div>
+      </article>`;
+      if (body) body.innerHTML = html;
+      if (odte) odte.innerHTML = html;
+    }
+
     function renderMl6(ml6) {
       const rulesEl = document.getElementById("ml6Rules");
       const boardEl = document.getElementById("ml6Board");
@@ -581,6 +626,7 @@ PAGE = r"""
       renderOptionTable("table0dte", (acts.all||[]).filter(r=>(r.dte_bucket||"0dte")==="0dte" || (r.dte!=null && r.dte<=1)));
       renderOptionTable("tableWeekly", (acts.all||[]).filter(r=>r.dte_bucket==="weekly"));
       renderExplosive(DATA.explosive || [], DATA.lottery || {});
+      renderRedFlag(DATA.red_flag);
       renderScreener(hz);
       renderMl6(DATA.ml6 || { watchlist: (hz.ml6||[]), bottom_line_rules: (DATA.ml6&&DATA.ml6.bottom_line_rules)||[] });
       renderInsights(DATA.insights);
@@ -756,6 +802,25 @@ def create_app(config_path: str | None = None) -> Flask:
 
         refreshed.sort(key=lambda c: float(c.get("score") or 0), reverse=True)
 
+        red_flag_snapshot = scan.get("red_flag")
+        rf_cfg = cfg.get("red_flag") or {}
+        if rf_cfg.get("enabled", True):
+            try:
+                from odte_scanner.calendars import resolve_yahoo_symbol
+                from odte_scanner.signals.red_flag import analyze_red_flag
+
+                rf_sym = str(rf_cfg.get("symbol") or (cfg.get("regime") or {}).get("spy") or "SPY")
+                red_flag_snapshot = analyze_red_flag(
+                    rf_sym,
+                    yahoo_symbol=rf_cfg.get("yahoo_symbol")
+                    or resolve_yahoo_symbol(rf_sym, cfg),
+                    otm_min_pct=float(rf_cfg.get("otm_min_pct", 0.15)),
+                    otm_max_pct=float(rf_cfg.get("otm_max_pct", 2.5)),
+                    min_oi=int(rf_cfg.get("min_oi", 500)),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Red Flag live refresh failed: %s", exc)
+
         actions = build_action_board(
             candidates=refreshed,
             scores=scan.get("scores") or [],
@@ -771,6 +836,7 @@ def create_app(config_path: str | None = None) -> Flask:
             min_hist_win_pct=float(actions_cfg.get("min_hist_win_pct", 80)),
             min_hist_win_samples=int(actions_cfg.get("min_hist_win_samples", 5)),
             require_hist_win=bool(actions_cfg.get("require_hist_win", True)),
+            red_flag=red_flag_snapshot,
         )
 
         jcfg = cfg.get("journal") or {}
@@ -884,6 +950,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 "explosive": explosive,
                 "lottery": lottery,
                 "ml6": ml6,
+                "red_flag": red_flag_snapshot,
                 "watch": {"quotes": quotes},
                 "ledger": ledger,
                 "actions": actions,

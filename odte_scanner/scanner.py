@@ -201,6 +201,23 @@ def run_scan(
     except Exception as exc:  # noqa: BLE001
         logger.warning("ML6 board failed: %s", exc)
 
+    red_flag = None
+    try:
+        from odte_scanner.signals.red_flag import analyze_red_flag
+
+        rf_cfg = cfg.get("red_flag") or {}
+        if rf_cfg.get("enabled", True):
+            rf_sym = str(rf_cfg.get("symbol") or regime.get("spy") or "SPY")
+            red_flag = analyze_red_flag(
+                rf_sym,
+                yahoo_symbol=rf_cfg.get("yahoo_symbol") or resolve_yahoo_symbol(rf_sym, cfg),
+                otm_min_pct=float(rf_cfg.get("otm_min_pct", 0.15)),
+                otm_max_pct=float(rf_cfg.get("otm_max_pct", 2.5)),
+                min_oi=int(rf_cfg.get("min_oi", 500)),
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Red Flag analysis failed: %s", exc)
+
     report = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "session_weekday": WEEKDAY_NAMES[weekday],
@@ -218,6 +235,7 @@ def run_scan(
             "ml6": (ml6_board or {}).get("watchlist") or [],
         },
         "ml6": ml6_board,
+        "red_flag": red_flag,
         "scores": summarize_scan(ranked_0dte),  # backward compat
         "action_cards": {
             "0dte_quality": [t.to_dict() for t in ranked_0dte if t.quality][:max_show],

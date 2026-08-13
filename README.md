@@ -8,8 +8,9 @@ Signa-style **action cards** (LONG/WAIT + entry/stop/R:R) and Intellectia-style 
 | **1 Week** | ~5 sessions | EMA/MACD/RS, pullbacks | 5 sessions |
 | **Swing** | 1–3 months | stage analysis, trend structure, medium RS | ~42 sessions |
 | **ML6** | earnings catalyst | drawdown + days-to-print + neocloud theme + liquidity; **reaction gate** (no blind BUY) | catalyst window |
+| **Red Flag** | 0DTE session | VolSignals-inspired dealer/charm proxy on SPY — blocks index 0DTE long calls when active | intraday |
 
-Quality gates (score + confirming algos) filter for **fewer, higher-conviction** signals to raise measured win rates. **ML6** is a separate earnings-catalyst neocloud / AI infra model (NBIS/CRWV style) — not the 0DTE ensemble.
+Quality gates (score + confirming algos) filter for **fewer, higher-conviction** signals to raise measured win rates. **ML6** is a separate earnings-catalyst neocloud / AI infra model (NBIS/CRWV style) — not the 0DTE ensemble. **Red Flag** uses public option-chain proxy data (not VS3D proprietary positioning).
 
 > **Not financial advice.** Options can go to zero. Research / paper-trading only. Not affiliated with Signa or Intellectia.
 

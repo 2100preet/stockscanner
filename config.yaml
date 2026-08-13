@@ -126,6 +126,16 @@ regime:
   vix: "^VIX"
   spx: SPX
 
+# VolSignals-inspired Red Flag proxy (0DTE dealer / charm — public chain, not VS3D)
+red_flag:
+  enabled: true
+  symbol: SPY          # index proxy for SPX MM positioning framework
+  yahoo_symbol: SPY
+  block_0dte_index_longs: true
+  otm_min_pct: 0.15
+  otm_max_pct: 2.5
+  min_oi: 500
+
 # Universe: focus = options 0DTE list; liquid/screener ≈ S&P100+optionables; all = union; ml6 = neocloud earnings
 universe:
   mode: focus
