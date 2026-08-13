@@ -76,6 +76,7 @@ tickers:
   - ASTS  # AST SpaceMobile — EW this week
   - PLUG  # Plug Power — EW this week
   - CSCO  # Cisco — EW this week
+  - IREN  # Iris Energy — liquid high-beta / AI infra; was missing from focus scan
   # CRM / AMAT already listed above under Friday weeklies
 
 # Yahoo Finance symbol overrides (indexes need ^ prefix for quotes/chains)
@@ -159,6 +160,7 @@ expiry_calendars:
     - ASTS
     - PLUG
     - CSCO
+    - IREN
     - HYG
     - EEM
 
