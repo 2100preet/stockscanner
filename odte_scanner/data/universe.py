@@ -47,6 +47,8 @@ MID_SMALL_UNIVERSE: list[str] = [
     "SOUN", "BBAI", "AI", "PLUG", "FCEL", "SPCE", "OPEN", "CVNA", "W", "CHWY",
     "PTON", "BYND", "SPWR", "LAZR", "VLDR", "NKLA", "GOEV", "FFIE",
     "IREN",  # Iris Energy — high-beta AI / bitcoin infra optionable
+    # AI connectivity / infra / miners elevated to focus
+    "ALAB", "CRDO", "VRT", "APLD", "CIFR", "WULF", "CEG", "GEV",
 ]
 
 # Earnings Whispers–style most-anticipated names (often missing from S&P100 lists).
@@ -103,6 +105,8 @@ LIQUID_UNIVERSE: list[str] = [
     "SMCI", "DELL", "HPE", "TSM", "ASML", "BABA", "PDD", "JD", "SE", "MELI",
     # Recent mega IPOs / high-attention names (missed when only on curated lists)
     "SPCX",
+    # AI power / cooling / connectivity (focus-elevated)
+    "VRT", "CEG", "GEV", "ALAB", "CRDO", "APLD", "CIFR", "WULF",
     # Energy / cyclicals / others
     "COP", "SLB", "OXY", "HAL", "F", "GM", "NKE", "LULU", "DE", "HON",
     "UNP", "RTX", "LMT", "NOC", "SPGI", "CME", "ICE", "SCHW", "C", "USB",
@@ -170,6 +174,9 @@ FOCUS_DEFAULT: list[str] = [
     "CRWV", "CBRS", "FLY", "FIGR", "GEMI", "NBIS", "BETA", "XE",
     "CRCL", "NOW", "SMCI", "DELL",
     "SE", "HIMS", "RKLB", "ASTS", "PLUG", "CSCO", "IREN",
+    # Curated high-potential (memory / AI infra / power / liquid mid) — not full S&P 500
+    "SNDK", "WDC", "STX", "LRCX", "KLAC", "MRVL", "ANET", "ALAB", "CRDO", "APP",
+    "VRT", "CEG", "GEV", "APLD", "CIFR", "WULF",
 ]
 
 
