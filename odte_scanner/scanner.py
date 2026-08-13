@@ -23,7 +23,7 @@ from odte_scanner.calendars import (
 from odte_scanner.config import load_config
 from odte_scanner.data.fetcher import fetch_history, fetch_many
 from odte_scanner.data.universe import resolve_scan_universe
-from odte_scanner.options.selector import CallCandidate, select_calls
+from odte_scanner.options.selector import CallCandidate, select_calls, select_puts
 from odte_scanner.trading.paper import PaperTrader
 
 logger = logging.getLogger(__name__)
@@ -109,43 +109,73 @@ def run_scan(
 
     # Options only for focus / high-score 0DTE+weekly (avoid blasting Yahoo on 100+ names)
     option_syms = set(focus)
-    for hz_name in ("0dte", "weekly"):
-        for ts in by_horizon.get(hz_name, []):
+    put_syms: set[str] = set()
+    put_max_score = float(opt_cfg.get("put_max_bull_score", 48))
+    for hz in ("0dte", "weekly"):
+        for ts in by_horizon.get(hz, []):
             if ts.quality or ts.ensemble_score >= min_score:
                 if len(option_syms) < 40:
                     option_syms.add(ts.symbol)
+            if ts.ensemble_score <= put_max_score and len(put_syms) < 20:
+                put_syms.add(ts.symbol)
+                option_syms.add(ts.symbol)
 
     candidates: list[CallCandidate] = []
+    put_candidates: list[CallCandidate] = []
     odte_scores = {t.symbol: t for t in by_horizon.get("0dte", [])}
+    include_puts = bool(opt_cfg.get("include_puts", True))
+    opt_kwargs = dict(
+        max_dte=int(opt_cfg.get("max_dte", 7)),
+        odte_max_dte=int(opt_cfg.get("odte_max_dte", 1)),
+        otm_pct_max=float(opt_cfg.get("otm_pct_max", 3.0)),
+        itm_pct_max=float(opt_cfg.get("itm_pct_max", 1.5)),
+        max_ask=float(opt_cfg.get("max_ask", 25.0)),
+        min_open_interest=int(opt_cfg.get("min_open_interest", 50)),
+        min_volume=int(opt_cfg.get("min_volume", 10)),
+        per_bucket=int(opt_cfg.get("per_bucket", 1)),
+    )
     for sym in sorted(option_syms):
         ts = odte_scores.get(sym)
         if ts is None:
             continue
-        if ts.ensemble_score < min_score and not ts.quality:
-            continue
-        if ts.expected_move_pct < lo * 0.6:
-            continue
-        picked = select_calls(
-            ts.symbol,
-            ts.last_price,
-            ts.ensemble_score,
-            ts.reasons,
-            max_dte=int(opt_cfg.get("max_dte", 7)),
-            odte_max_dte=int(opt_cfg.get("odte_max_dte", 1)),
-            otm_pct_max=float(opt_cfg.get("otm_pct_max", 3.0)),
-            itm_pct_max=float(opt_cfg.get("itm_pct_max", 1.5)),
-            max_ask=float(opt_cfg.get("max_ask", 25.0)),
-            min_open_interest=int(opt_cfg.get("min_open_interest", 50)),
-            min_volume=int(opt_cfg.get("min_volume", 10)),
-            yahoo_symbol=resolve_yahoo_symbol(ts.symbol, cfg),
-            per_bucket=int(opt_cfg.get("per_bucket", 1)),
-        )
-        candidates.extend(picked)
+        ysym = resolve_yahoo_symbol(ts.symbol, cfg)
+        if ts.ensemble_score >= min_score or ts.quality:
+            if ts.expected_move_pct >= lo * 0.6:
+                picked = select_calls(
+                    ts.symbol,
+                    ts.last_price,
+                    ts.ensemble_score,
+                    ts.reasons,
+                    yahoo_symbol=ysym,
+                    **opt_kwargs,
+                )
+                candidates.extend(picked)
+        # Bearish / weak sleeve → puts (score inverted for ranking)
+        if include_puts and (sym in put_syms or ts.ensemble_score <= put_max_score):
+            put_score = max(float(min_score), 100.0 - float(ts.ensemble_score))
+            reasons = list(ts.reasons) + [f"put_sleeve bull_score={ts.ensemble_score:.0f}"]
+            puts = select_puts(
+                ts.symbol,
+                ts.last_price,
+                put_score,
+                reasons,
+                yahoo_symbol=ysym,
+                **opt_kwargs,
+            )
+            for p in puts:
+                p.score = put_score
+            put_candidates.extend(puts)
 
     candidates.sort(key=lambda c: (c.score, -c.dte), reverse=True)
+    put_candidates.sort(key=lambda c: (c.score, -c.dte), reverse=True)
     zero = [c for c in candidates if c.dte_bucket == "0dte"]
     week = [c for c in candidates if c.dte_bucket == "weekly"]
+    put_zero = [c for c in put_candidates if c.dte_bucket == "0dte"]
+    put_week = [c for c in put_candidates if c.dte_bucket == "weekly"]
     top = (zero[: max_show // 2] + week[: max_show // 2]) or candidates[:max_show]
+    top_puts = (put_zero[: max_show // 2] + put_week[: max_show // 2]) or put_candidates[:max_show]
+    # Action board sees calls + puts together
+    board_candidates = top + top_puts
 
     # Swing action cards (shares / LEAPs style — no short DTE required)
     swing_cards = []
@@ -246,6 +276,10 @@ def run_scan(
         "call_candidates": [c.to_dict() for c in top],
         "call_candidates_0dte": [c.to_dict() for c in zero[:max_show]],
         "call_candidates_weekly": [c.to_dict() for c in week[:max_show]],
+        "put_candidates": [c.to_dict() for c in top_puts],
+        "put_candidates_0dte": [c.to_dict() for c in put_zero[:max_show]],
+        "put_candidates_weekly": [c.to_dict() for c in put_week[:max_show]],
+        "option_candidates": [c.to_dict() for c in board_candidates],
         "paper_trades": paper_trades,
         "disclaimer": (
             "Educational / research tool only. Options can expire worthless. "
@@ -258,10 +292,22 @@ def run_scan(
     try:
         from odte_scanner.backtest.win_rates import build_win_rate_table
 
+        from odte_scanner.data.universe import mid_small_universe
+
+        # Cover every quality card + challenge-relevant names so swing/1M strike rates show
+        ac = report.get("action_cards") or {}
+        card_syms = {
+            str(r.get("symbol") or "").upper()
+            for key in ("0dte_quality", "weekly_quality", "swing_quality")
+            for r in (ac.get(key) or [])
+            if r.get("symbol")
+        }
         wr_syms = sorted(
             {c.symbol for c in top}
-            | {c["symbol"] for c in swing_cards[:8]}
-            | set(focus[:15])
+            | {c["symbol"] for c in swing_cards[:12]}
+            | card_syms
+            | set(focus[:20])
+            | set(mid_small_universe()[:15])  # challenge mid/small hist breadth
         )
         win_table = build_win_rate_table(wr_syms, config_path=config_path)
         report["win_rates"] = win_table
@@ -277,12 +323,13 @@ def run_scan(
     if ml6_board:
         (out_dir / "latest_ml6.json").write_text(json.dumps(ml6_board, indent=2))
     logger.info(
-        "Wrote %s (universe=%s n=%d 0DTE_calls=%d weekly=%d swing_cards=%d ml6=%d)",
+        "Wrote %s (universe=%s n=%d 0DTE_calls=%d weekly=%d puts=%d swing_cards=%d ml6=%d)",
         path,
         uni_mode,
         len(tickers),
         len(zero),
         len(week),
+        len(top_puts),
         len(swing_cards),
         len((ml6_board or {}).get("watchlist") or []),
     )

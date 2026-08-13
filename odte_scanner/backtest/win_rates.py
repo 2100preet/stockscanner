@@ -21,7 +21,25 @@ DEFAULT_CACHE = ROOT / "outputs" / "win_rates.json"
 HORIZON_FORWARD: dict[str, int] = {
     "0dte": 1,  # next session
     "weekly": 5,  # ~1 week
+    "monthly": 21,  # ~1 month (~21 sessions) — challenge swing/leap band
     "swing": 42,  # ~2 months inside 1–3 month swing band
+}
+
+# UI / challenge aliases → win-rate bucket
+_HORIZON_ALIASES: dict[str, str] = {
+    "1w": "weekly",
+    "week": "weekly",
+    "1wk": "weekly",
+    "1m": "monthly",
+    "1mo": "monthly",
+    "1-month": "monthly",
+    "1_month": "monthly",
+    "month": "monthly",
+    "monthly": "monthly",
+    "leap": "monthly",  # challenge leap holds ≈ 1-month strike-rate window
+    "swing": "swing",
+    "0dte": "0dte",
+    "odte": "0dte",
 }
 
 
@@ -127,6 +145,8 @@ def build_win_rate_table(
     cache.parent.mkdir(parents=True, exist_ok=True)
     horizons = horizons or list(HORIZON_FORWARD.keys())
 
+    cached_raw: dict[str, Any] | None = None
+    need_force_monthly = False
     if cache.exists() and not force:
         try:
             raw = json.loads(cache.read_text())
@@ -135,13 +155,33 @@ def build_win_rate_table(
                 - datetime.fromisoformat(raw.get("generated_at").replace("Z", "+00:00"))
             ).total_seconds() / 3600
             have = set(raw.get("symbols", {}).keys())
-            # Accept cache if symbols covered and swing bucket present
+            # Accept cache if symbols covered and swing + monthly buckets present
             sample = next(iter(raw.get("symbols", {}).values()), {})
             has_swing = "swing" in sample
-            if age_h <= max_age_hours and set(symbols).issubset(have) and has_swing:
+            has_monthly = "monthly" in sample
+            if (
+                age_h <= max_age_hours
+                and set(symbols).issubset(have)
+                and has_swing
+                and has_monthly
+            ):
                 return raw
+            if age_h <= max_age_hours and has_swing:
+                cached_raw = raw
+                need_force_monthly = not has_monthly
         except Exception:  # noqa: BLE001
             pass
+
+    # Only compute missing symbols when a fresh-enough cache already exists
+    need = list(symbols)
+    if cached_raw is not None and not need_force_monthly:
+        have = set((cached_raw.get("symbols") or {}).keys())
+        need = [s for s in symbols if s not in have]
+        if not need:
+            return cached_raw
+    elif cached_raw is not None and need_force_monthly:
+        # Recompute all requested symbols so monthly strike-rate lands in cache
+        need = list(symbols)
 
     scan_cfg = cfg.get("scan") or {}
     actions_cfg = cfg.get("actions") or {}
@@ -152,23 +192,27 @@ def build_win_rate_table(
     aliases = {str(k).upper(): str(v) for k, v in (cfg.get("symbol_aliases") or {}).items()}
     regime = cfg.get("regime") or {}
 
-    histories = fetch_many(symbols, period="2y", aliases=aliases)
+    histories = fetch_many(need, period="2y", aliases=aliases)
     spy = fetch_history(regime.get("spy", "SPY"), period="2y")
     vix = fetch_history(regime.get("vix", "^VIX"), period="2y", yahoo_symbol=regime.get("vix", "^VIX"))
 
-    out_syms: dict[str, Any] = {}
-    for sym in symbols:
+    out_syms: dict[str, Any] = dict((cached_raw or {}).get("symbols") or {})
+    for sym in need:
         df = histories.get(sym)
         if df is None or df.empty:
             out_syms[sym] = {hz: {"trades": 0, "win_pct": None} for hz in horizons}
             continue
         row: dict[str, Any] = {}
         for hz in horizons:
-            w = weights_by_hz.get(hz) or legacy_w
+            # monthly uses swing quality gate / weights; forward window is 21d
+            score_hz = "swing" if hz == "monthly" else hz
+            w = weights_by_hz.get(score_hz) or weights_by_hz.get(hz) or legacy_w
             fwd = int(HORIZON_FORWARD.get(hz, 1))
-            # Step larger for swing to keep runtime reasonable
-            step = 3 if hz == "swing" else (2 if hz == "weekly" else 1)
-            gate = QUALITY_GATES.get(hz, {})
+            # Step larger for longer horizons to keep runtime reasonable
+            step = 3 if score_hz == "swing" else (2 if hz == "weekly" else 1)
+            if hz == "monthly":
+                step = 2
+            gate = QUALITY_GATES.get(score_hz, QUALITY_GATES.get("0dte", {}))
             stats = compute_symbol_win_rate(
                 sym,
                 df,
@@ -177,14 +221,12 @@ def build_win_rate_table(
                 weights=w,
                 min_score=float(gate.get("min_score", min_score)),
                 forward_days=fwd,
-                horizon=hz,
+                horizon=score_hz,
                 require_quality=True,
                 step=step,
             )
+            stats = {**stats, "horizon": hz, "forward_days": fwd}
             row[hz] = stats
-            # Keep legacy key alias
-            if hz == "weekly":
-                row["weekly"] = stats
             logger.info(
                 "Win%% %s %s=%s (n=%s)",
                 sym,
@@ -202,13 +244,30 @@ def build_win_rate_table(
         "note": (
             "win_pct = historical % of QUALITY signals (score+confirms gate) where "
             "underlying was green over the forward window: 1 session (0DTE), "
-            "5 sessions (1W), ~42 sessions (swing 1–3mo). Not option P&L. "
-            "Quality gates raise selectivity to improve measured win rates."
+            "5 sessions (1W), ~21 sessions (≈1 month / challenge leap), "
+            "~42 sessions (swing 1–3mo). Strike rate = % of those signals with "
+            "underlying ≥1% / ≥2% over the same window. Not option P&L."
         ),
         "symbols": out_syms,
     }
     cache.write_text(json.dumps(payload, indent=2))
     return payload
+
+
+def normalize_horizon_bucket(dte_bucket: str | None) -> str:
+    """Map UI / challenge labels (1m, leap, 1w, …) onto win-rate buckets."""
+    raw = str(dte_bucket or "0dte").strip().lower()
+    if raw in _HORIZON_ALIASES:
+        return _HORIZON_ALIASES[raw]
+    if "leap" in raw or "month" in raw or raw in {"1m", "1mo"}:
+        return "monthly"
+    if "swing" in raw:
+        return "swing"
+    if "week" in raw or raw == "1w":
+        return "weekly"
+    if raw in HORIZON_FORWARD:
+        return raw
+    return "0dte"
 
 
 def lookup_win_stats(
@@ -217,14 +276,16 @@ def lookup_win_stats(
     dte_bucket: str | None,
 ) -> dict[str, Any]:
     if not table:
-        return {"win_pct": None, "trades": 0, "hit_1pct": None}
-    bucket = dte_bucket or "0dte"
-    if bucket == "1w":
-        bucket = "weekly"
-    if bucket not in ("0dte", "weekly", "swing"):
-        bucket = "weekly" if bucket == "weekly" else "0dte"
-    row = (table.get("symbols") or {}).get(symbol) or {}
+        return {"win_pct": None, "trades": 0, "hit_1pct": None, "hit_2pct": None}
+    bucket = normalize_horizon_bucket(dte_bucket)
+    row = (table.get("symbols") or {}).get(str(symbol or "").upper()) or {}
     stats = row.get(bucket) or {}
+    # Fall back: monthly → swing (older caches) · swing → monthly if present
+    if not stats and bucket == "monthly":
+        stats = row.get("swing") or {}
+        bucket = "swing" if stats else bucket
+    if not stats and bucket == "swing":
+        stats = row.get("monthly") or {}
     return {
         "win_pct": stats.get("win_pct"),
         "trades": stats.get("trades") or 0,
@@ -232,7 +293,7 @@ def lookup_win_stats(
         "hit_1pct": stats.get("hit_1pct"),
         "hit_2pct": stats.get("hit_2pct"),
         "avg_ret_pct": stats.get("avg_ret_pct"),
-        "forward_days": stats.get("forward_days"),
+        "forward_days": stats.get("forward_days") or HORIZON_FORWARD.get(bucket),
         "horizon": bucket,
     }
 

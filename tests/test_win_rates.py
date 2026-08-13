@@ -16,6 +16,7 @@ def test_lookup_win_stats_buckets():
             "QQQ": {
                 "0dte": {"win_pct": 58.0, "trades": 40, "hit_1pct": 22.0},
                 "weekly": {"win_pct": 61.0, "trades": 35, "hit_1pct": 40.0},
+                "monthly": {"win_pct": 65.0, "trades": 28, "hit_1pct": 48.0, "hit_2pct": 30.0},
                 "swing": {"win_pct": 68.0, "trades": 22, "hit_1pct": 55.0},
             }
         }
@@ -23,6 +24,26 @@ def test_lookup_win_stats_buckets():
     assert lookup_win_stats(table, "QQQ", "0dte")["win_pct"] == 58.0
     assert lookup_win_stats(table, "QQQ", "weekly")["win_pct"] == 61.0
     assert lookup_win_stats(table, "QQQ", "swing")["win_pct"] == 68.0
+    # 1-month / leap aliases → monthly strike-rate (not 0dte)
+    m = lookup_win_stats(table, "QQQ", "leap")
+    assert m["win_pct"] == 65.0
+    assert m["hit_1pct"] == 48.0
+    assert m["horizon"] == "monthly"
+    assert lookup_win_stats(table, "QQQ", "1m")["hit_1pct"] == 48.0
+    assert lookup_win_stats(table, "QQQ", "monthly")["hit_2pct"] == 30.0
+
+
+def test_lookup_monthly_falls_back_to_swing():
+    table = {
+        "symbols": {
+            "DELL": {
+                "swing": {"win_pct": 80.0, "trades": 15, "hit_1pct": 80.0, "hit_2pct": 80.0},
+            }
+        }
+    }
+    s = lookup_win_stats(table, "DELL", "leap")
+    assert s["hit_1pct"] == 80.0
+    assert s["win_pct"] == 80.0
 
 
 def test_board_includes_win_pct():

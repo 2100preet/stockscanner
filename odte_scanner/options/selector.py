@@ -31,6 +31,7 @@ class CallCandidate:
     dte_bucket: str = "0dte"  # 0dte | weekly
     synthetic: bool = False
     spread_pct: float = 0.0
+    right: str = "C"  # C | P
 
     def estimated_cost(self, contracts: int = 1) -> float:
         return self.ask * 100 * contracts
@@ -38,11 +39,17 @@ class CallCandidate:
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         d["estimated_cost_1"] = round(self.estimated_cost(1), 2)
+        side = "p" if self.right == "P" else "c"
         d["label"] = (
             f"{'0DTE' if self.dte_bucket == '0dte' else '1W'} "
-            f"{self.expiry} {self.strike:g}c @ ${self.ask:.2f}"
+            f"{self.expiry} {self.strike:g}{side} @ ${self.ask:.2f}"
         )
         return d
+
+
+# Alias — same shape for puts
+OptionCandidate = CallCandidate
+PutCandidate = CallCandidate
 
 
 def _bucket(dte: int, odte_max: int = 1) -> DteBucket:
@@ -107,6 +114,77 @@ def select_calls(
     Returns up to `per_bucket` contracts for 0DTE (DTE<=odte_max_dte) and weekly (DTE<=max_dte).
     Never invents synthetic strikes for trading signals.
     """
+    return _select_side(
+        symbol,
+        spot,
+        score,
+        reasons,
+        right="C",
+        max_dte=max_dte,
+        odte_max_dte=odte_max_dte,
+        otm_pct_max=otm_pct_max,
+        itm_pct_max=itm_pct_max,
+        max_ask=max_ask,
+        min_open_interest=min_open_interest,
+        min_volume=min_volume,
+        yahoo_symbol=yahoo_symbol,
+        per_bucket=per_bucket,
+    )
+
+
+def select_puts(
+    symbol: str,
+    spot: float,
+    score: float,
+    reasons: list[str],
+    *,
+    max_dte: int = 7,
+    odte_max_dte: int = 1,
+    otm_pct_max: float = 3.0,
+    itm_pct_max: float = 1.5,
+    max_ask: float = 15.0,
+    min_open_interest: int = 50,
+    min_volume: int = 10,
+    yahoo_symbol: str | None = None,
+    per_bucket: int = 1,
+) -> list[CallCandidate]:
+    """Pick best *real* ATM/OTM puts — mirror of select_calls for bearish sleeve."""
+    return _select_side(
+        symbol,
+        spot,
+        score,
+        reasons,
+        right="P",
+        max_dte=max_dte,
+        odte_max_dte=odte_max_dte,
+        otm_pct_max=otm_pct_max,
+        itm_pct_max=itm_pct_max,
+        max_ask=max_ask,
+        min_open_interest=min_open_interest,
+        min_volume=min_volume,
+        yahoo_symbol=yahoo_symbol,
+        per_bucket=per_bucket,
+    )
+
+
+def _select_side(
+    symbol: str,
+    spot: float,
+    score: float,
+    reasons: list[str],
+    *,
+    right: str,
+    max_dte: int = 7,
+    odte_max_dte: int = 1,
+    otm_pct_max: float = 3.0,
+    itm_pct_max: float = 1.5,
+    max_ask: float = 15.0,
+    min_open_interest: int = 50,
+    min_volume: int = 10,
+    yahoo_symbol: str | None = None,
+    per_bucket: int = 1,
+) -> list[CallCandidate]:
+    right = right.upper()
     fetch_sym = yahoo_symbol or symbol
     try:
         t = yf.Ticker(fetch_sym)
@@ -124,24 +202,28 @@ def select_calls(
         return []
 
     best_by_bucket: dict[str, list[tuple[float, CallCandidate]]] = {"0dte": [], "weekly": []}
+    thesis = "; ".join(reasons) or ("ensemble bearish" if right == "P" else "ensemble bullish")
 
     for expiry, dte in targets:
         try:
             chain = t.option_chain(expiry)
-            calls = chain.calls
+            table = chain.puts if right == "P" else chain.calls
         except Exception as exc:  # noqa: BLE001
             logger.debug("chain %s %s failed: %s", symbol, expiry, exc)
             continue
-        if calls is None or calls.empty:
+        if table is None or table.empty:
             continue
 
         bucket = _bucket(dte, odte_max_dte)
-        for _, row in calls.iterrows():
+        for _, row in table.iterrows():
             strike = float(row.get("strike") or 0)
             if strike <= 0:
                 continue
-            moneyness = (strike - spot) / spot * 100
-            # Allow modest ITM through configured OTM (stocks often have $2.5/$5 steps)
+            # Call OTM% = (K-S)/S; put OTM% = (S-K)/S  (positive = OTM)
+            if right == "P":
+                moneyness = (spot - strike) / spot * 100
+            else:
+                moneyness = (strike - spot) / spot * 100
             if moneyness < -itm_pct_max or moneyness > otm_pct_max:
                 continue
 
@@ -154,11 +236,21 @@ def select_calls(
             if ask <= 0 or ask > max_ask:
                 continue
 
-            vol = int(row.get("volume") or 0)
-            oi = int(row.get("openInterest") or 0)
+            def _safe_int(v: object, default: int = 0) -> int:
+                try:
+                    if v is None:
+                        return default
+                    f = float(v)
+                    if f != f:  # NaN
+                        return default
+                    return int(f)
+                except (TypeError, ValueError):
+                    return default
+
+            vol = _safe_int(row.get("volume"))
+            oi = _safe_int(row.get("openInterest"))
             mid = (bid + ask) / 2 if bid > 0 else ask
             spread = (ask - bid) / ask if ask else 1.0
-            # Skip absurd spreads (often bad quotes)
             if spread > 0.45 and oi < min_open_interest:
                 continue
 
@@ -191,17 +283,17 @@ def select_calls(
                 open_interest=oi,
                 moneyness_pct=moneyness,
                 score=score,
-                thesis="; ".join(reasons) or "ensemble bullish",
+                thesis=thesis,
                 dte_bucket=bucket,
                 synthetic=False,
                 spread_pct=spread * 100,
+                right=right,
             )
             best_by_bucket[bucket].append((rank, cand))
 
     out: list[CallCandidate] = []
     for bucket, rows in best_by_bucket.items():
         rows.sort(key=lambda x: x[0], reverse=True)
-        # Dedupe by contract
         seen: set[str] = set()
         picked = 0
         for _, cand in rows:

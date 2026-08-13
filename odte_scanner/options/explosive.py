@@ -167,7 +167,13 @@ def score_lottery(
     )
 
 
-def build_explosive_from_candidate(c: dict[str, Any]) -> ExplosiveCandidate | None:
+def build_explosive_from_candidate(
+    c: dict[str, Any],
+    *,
+    min_best_mult: float = 3.0,
+    min_mult_at_3pct: float = 2.5,
+    min_mult_at_1pct: float = 0.0,
+) -> ExplosiveCandidate | None:
     ask = float(c.get("ask") or 0)
     spot = float(c.get("spot") or c.get("live_spot") or 0)
     strike = float(c.get("strike") or 0)
@@ -187,8 +193,10 @@ def build_explosive_from_candidate(c: dict[str, Any]) -> ExplosiveCandidate | No
     best_move = max(STRESS_MOVES_PCT, key=lambda m: mults[m])
     best_mult = mults[best_move]
     # Need at least ~3× (≈+200%) on a 2–5% rip to count as "explosive"
-    if best_mult < 3.0 and mults[3.0] < 2.5:
-        return None
+    # Radar lane can pass a lower 1% mult floor for cheap near-money wings.
+    if best_mult < min_best_mult and mults[3.0] < min_mult_at_3pct:
+        if min_mult_at_1pct <= 0 or mults[1.0] < min_mult_at_1pct:
+            return None
 
     lottery = score_lottery(
         ask=ask,
@@ -247,6 +255,9 @@ def find_explosive_calls(
     min_ask: float = 0.35,
     yahoo_symbol: str | None = None,
     limit: int = 4,
+    min_best_mult: float = 3.0,
+    min_mult_at_3pct: float = 2.5,
+    min_mult_at_1pct: float = 0.0,
 ) -> list[ExplosiveCandidate]:
     """Pull wider OTM short-dated calls optimized for lottery convexity."""
     fetch_sym = yahoo_symbol or symbol
@@ -308,7 +319,12 @@ def find_explosive_calls(
                 "open_interest": int(row.get("openInterest") or 0),
                 "score": score,
             }
-            ec = build_explosive_from_candidate(raw)
+            ec = build_explosive_from_candidate(
+                raw,
+                min_best_mult=min_best_mult,
+                min_mult_at_3pct=min_mult_at_3pct,
+                min_mult_at_1pct=min_mult_at_1pct,
+            )
             if ec:
                 out.append(ec)
 
@@ -325,6 +341,110 @@ def find_explosive_calls(
         if len(uniq) >= limit:
             break
     return uniq
+
+
+def build_radar_wing_board(
+    *,
+    scores: list[dict[str, Any]] | None = None,
+    quotes: dict[str, dict[str, Any]] | None = None,
+    aliases: dict[str, str] | None = None,
+    focus_symbols: list[str] | None = None,
+    candidates: list[dict[str, Any]] | None = None,
+    min_ask: float = 0.15,
+    max_ask: float = 2.50,
+    otm_pct_max: float = 1.50,
+    itm_pct_max: float = 0.40,
+    per_symbol: int = 3,
+    max_total: int = 18,
+    enrich_live: bool = True,
+) -> list[dict[str, Any]]:
+    """Cheap near-money 0DTE wings for Discord-style radar (SPY/QQQ/…).
+
+    Uses a lower ask floor than the main explosive board so $0.20–$0.35
+    index calls (Mike-style) can surface without diluting BUY NOW.
+    """
+    aliases = aliases or {}
+    quotes = quotes or {}
+    focus = [str(s).upper() for s in (focus_symbols or ["SPY", "QQQ", "IWM", "DIA"])]
+    score_map = {
+        str(s.get("symbol")): float(s.get("ensemble_score") or 0) for s in (scores or [])
+    }
+    board: list[ExplosiveCandidate] = []
+    have: set[tuple[str, str, float]] = set()
+
+    # Fold any already-fetched cheap candidates that fit the wing band
+    for c in candidates or []:
+        sym = str(c.get("symbol") or "").upper()
+        if focus and sym not in focus:
+            continue
+        ask = float(c.get("ask") or 0)
+        if ask < min_ask or ask > max_ask:
+            continue
+        dte = c.get("dte")
+        if dte is not None and int(dte) > 1:
+            continue
+        ec = build_explosive_from_candidate(
+            {**c, "symbol": sym},
+            min_best_mult=2.2,
+            min_mult_at_3pct=1.8,
+            min_mult_at_1pct=1.5,
+        )
+        if not ec:
+            continue
+        key = (ec.symbol, ec.expiry, ec.strike)
+        if key in have:
+            continue
+        have.add(key)
+        board.append(ec)
+
+    if enrich_live:
+        for sym in focus:
+            q = quotes.get(sym) or {}
+            spot = float(q.get("last") or 0)
+            if spot <= 0:
+                for c in candidates or []:
+                    if str(c.get("symbol") or "").upper() == sym and c.get("spot"):
+                        spot = float(c["spot"])
+                        break
+            if spot <= 0:
+                # Last-resort Yahoo last for focus indices so Pages still sees wings
+                try:
+                    t = yf.Ticker(aliases.get(sym) or sym)
+                    hist = t.history(period="1d", interval="1m")
+                    if hist is not None and not hist.empty:
+                        spot = float(hist["Close"].iloc[-1])
+                    else:
+                        info_fast = getattr(t, "fast_info", None)
+                        if info_fast is not None:
+                            spot = float(getattr(info_fast, "last_price", 0) or 0)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("radar spot unavailable %s: %s", sym, exc)
+                    spot = 0.0
+            if spot <= 0:
+                continue
+            found = find_explosive_calls(
+                sym,
+                spot,
+                score=score_map.get(sym, 0.0),
+                yahoo_symbol=aliases.get(sym),
+                min_ask=min_ask,
+                max_ask=max_ask,
+                otm_pct_max=otm_pct_max,
+                itm_pct_max=itm_pct_max,
+                limit=per_symbol,
+                min_best_mult=2.2,
+                min_mult_at_3pct=1.8,
+                min_mult_at_1pct=1.5,
+            )
+            for ec in found:
+                key = (ec.symbol, ec.expiry, ec.strike)
+                if key in have:
+                    continue
+                have.add(key)
+                board.append(ec)
+
+    board.sort(key=lambda x: (x.lottery_score, x.best_mult), reverse=True)
+    return [e.to_dict() for e in board[:max_total]]
 
 
 def build_explosive_board(

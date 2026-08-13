@@ -364,7 +364,7 @@ def decide_lottery_exit(
         contract=trade.get("contract"),
         strike=trade.get("strike"),
         expiry=trade.get("expiry"),
-        ask=trade.get("entry_ask"),
+        ask=bid,  # exit pricing — never entry ask (that zeroed P&L on fills)
         bid=bid,
         dte=trade.get("dte"),
         trade_id=trade.get("id"),
@@ -406,10 +406,13 @@ def decide_lottery_exit(
         playbook.append("trend_fail")
         strength = max(strength, 85.0)
 
-    if phase in {"final_30", "late"} and (unreal is None or unreal < 40):
-        reasons.append(f"{phase} — flatten lottery risk into the close")
+    # Desk practice: hard flatten lottery / 0DTE by ~15:45 ET (gamma into the close)
+    from odte_scanner.signals.hold_rules import past_odte_flatten
+
+    if past_odte_flatten(now) or phase in {"final_30", "late"}:
+        reasons.append("time-stop — flatten lottery by 15:45 ET (no gamma into the close)")
         playbook.append("time_stop")
-        strength = max(strength, 80.0)
+        strength = max(strength, 88.0)
 
     # Option mark collapsing vs entry even if underlying flat
     if ticket and entry > 0:

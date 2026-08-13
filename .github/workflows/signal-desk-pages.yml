@@ -1,0 +1,115 @@
+name: Signal Desk Pages
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekdays, roughly US market hours (UTC)
+    - cron: "15,45 13-20 * * 1-5"
+  push:
+    branches:
+      - main
+      - cursor/ddog-focus-universe-4571
+    paths:
+      - "odte_scanner/**"
+      - "config.yaml"
+      - "requirements.txt"
+      - ".github/workflows/signal-desk-pages.yml"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -e .
+
+      # Persist paper journals across Pages rebuilds so EXIT / closed P&L survive.
+      # outputs/ is gitignored — without this cache every deploy starts with empty ledgers.
+      - name: Restore desk ledgers
+        uses: actions/cache@v4
+        with:
+          path: |
+            outputs/signal_journal.json
+            outputs/recommendation_log.json
+            outputs/challenge_ledger.json
+            outputs/paper_ledger.json
+            outputs/webull_orders.json
+            outputs/ui_snapshot_cache.json
+            outputs/win_rate_table.json
+          key: desk-ledgers-${{ github.run_id }}
+          restore-keys: |
+            desk-ledgers-
+
+      - name: Focus scan
+        id: scan
+        continue-on-error: true
+        run: |
+          mkdir -p outputs
+          python -m odte_scanner scan --universe focus --no-paper
+        env:
+          PYTHONUNBUFFERED: "1"
+
+      - name: Export static site
+        run: |
+          mkdir -p outputs
+          python -m odte_scanner export-pages --out site
+          test -f site/index.html
+          test -f site/data/snapshot.json
+          # Bundle ledgers into the static site for transparency / debugging
+          mkdir -p site/data/ledgers
+          for f in signal_journal.json recommendation_log.json challenge_ledger.json paper_ledger.json webull_orders.json ui_snapshot_cache.json; do
+            if [ -f "outputs/$f" ]; then cp "outputs/$f" "site/data/ledgers/$f"; fi
+          done
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          meta = json.loads(Path("site/meta.json").read_text())
+          print("scores:", meta.get("scores"), "at", meta.get("generated_at"))
+          snap = json.loads(Path("site/data/snapshot.json").read_text())
+          assert "scores" in snap
+          acts = snap.get("actions") or {}
+          journ = (snap.get("insights") or {})
+          print(
+              "sell_now:", (acts.get("counts") or {}).get("sell_now"),
+              "buy_puts:", (acts.get("counts") or {}).get("buy_now_puts"),
+              "closed_journal:", journ.get("closed_trades") and len(journ.get("closed_trades") or []),
+              "just_exited:", len(acts.get("just_exited") or []),
+          )
+          PY
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
