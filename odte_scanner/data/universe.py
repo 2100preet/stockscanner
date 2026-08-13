@@ -46,6 +46,7 @@ MID_SMALL_UNIVERSE: list[str] = [
     "HIMS", "OSCR", "CLOV", "RXRX", "CRSP", "NTLA", "BEAM", "DNA", "TEM", "TDOC",
     "SOUN", "BBAI", "AI", "PLUG", "FCEL", "SPCE", "OPEN", "CVNA", "W", "CHWY",
     "PTON", "BYND", "SPWR", "LAZR", "VLDR", "NKLA", "GOEV", "FFIE",
+    "IREN",  # Iris Energy — high-beta AI / bitcoin infra optionable
 ]
 
 # Earnings Whispers–style most-anticipated names (often missing from S&P100 lists).
@@ -154,7 +155,7 @@ FOCUS_DEFAULT: list[str] = [
     # Most-anticipated / high-attention names (swing / earnings / focus scan)
     "CRWV", "CBRS", "FLY", "FIGR", "GEMI", "NBIS", "BETA", "XE",
     "CRCL", "NOW", "SMCI", "DELL",
-    "SE", "HIMS", "RKLB", "ASTS", "PLUG", "CSCO",
+    "SE", "HIMS", "RKLB", "ASTS", "PLUG", "CSCO", "IREN",
 ]
 
 
