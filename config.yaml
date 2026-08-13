@@ -126,10 +126,27 @@ regime:
   vix: "^VIX"
   spx: SPX
 
-# Universe: focus = options 0DTE list; liquid/screener ≈ S&P100+optionables; all = union
+# Universe: focus = options 0DTE list; liquid/screener ≈ S&P100+optionables; all = union; ml6 = neocloud earnings
 universe:
   mode: focus
   # liquid_tickers: []   # optional override of built-in liquid list
+
+# ML6 — earnings-catalyst neocloud / AI infra (separate from 0DTE ensemble)
+ml6:
+  enabled: true
+  # Hard gate: never auto BUY on the report alone
+  require_reaction_confirmation: true
+  min_price: 1.50
+  min_avg_volume: 150000
+  watchlist:
+    - FRMI   # Aug 13 BMO — WAIT_FOR_CONFIRMATION
+    - TSSI   # Aug 13 AMC — BUY_ONLY_IF_ACCEPTED (AH high/VWAP)
+    - IREN   # Aug 27 AMC — WATCH (AI ARR / contracted revenue)
+    - ORCL   # ~Sep 10 AMC
+    - APLD   # ~Oct 8 est
+    - CORZ   # ~Oct 23 est
+    - NBIS   # peer / reference
+    - CRWV   # peer / reference
 
 scan:
   min_score: 62
@@ -238,6 +255,12 @@ algos:
       pullback_entry: 1.5
       relative_strength_medium: 1.4
       mean_reversion_bottom: 1.2
+    ml6:
+      # Soft technical backdrop only — primary score is catalyst/drawdown/theme in ml6/
+      mean_reversion_bottom: 1.6
+      pullback_entry: 1.4
+      relative_strength_medium: 1.3
+      stage_analysis: 1.2
 
 backtest:
   start: "2023-01-01"

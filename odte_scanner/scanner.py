@@ -48,7 +48,15 @@ def run_scan(
     *,
     place_paper: bool = True,
     universe_mode: str | None = None,
+    horizon: str | None = None,
 ) -> dict[str, Any]:
+    # ML6 is a dedicated earnings/catalyst mode — not the 0DTE ensemble
+    hz = (horizon or "").lower().strip()
+    if hz == "ml6" or (universe_mode or "").lower() == "ml6":
+        from odte_scanner.ml6.board import run_ml6_scan
+
+        return run_ml6_scan(config_path, place_paper=False)
+
     cfg = load_config(config_path)
     uni_mode = universe_mode or (cfg.get("universe") or {}).get("mode") or "focus"
     tickers = resolve_scan_universe(cfg, mode=uni_mode)
@@ -101,8 +109,8 @@ def run_scan(
 
     # Options only for focus / high-score 0DTE+weekly (avoid blasting Yahoo on 100+ names)
     option_syms = set(focus)
-    for hz in ("0dte", "weekly"):
-        for ts in by_horizon.get(hz, []):
+    for hz_name in ("0dte", "weekly"):
+        for ts in by_horizon.get(hz_name, []):
             if ts.quality or ts.ensemble_score >= min_score:
                 if len(option_syms) < 40:
                     option_syms.add(ts.symbol)
@@ -178,6 +186,21 @@ def run_scan(
 
     ranked_0dte = sorted(by_horizon.get("0dte", []), key=lambda s: s.ensemble_score, reverse=True)
 
+    # Always attach ML6 board (cheap — curated sleeve only)
+    ml6_board = None
+    try:
+        from odte_scanner.ml6.board import build_ml6_board
+        from odte_scanner.ml6.watchlist import ml6_tickers as _ml6_syms
+
+        ml6_syms = _ml6_syms()
+        missing = [s for s in ml6_syms if s not in histories or histories[s] is None or len(histories[s]) < 5]
+        if missing:
+            extra = fetch_many(missing, period="1y", aliases=aliases)
+            histories.update(extra)
+        ml6_board = build_ml6_board(histories, symbols=ml6_syms)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ML6 board failed: %s", exc)
+
     report = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "session_weekday": WEEKDAY_NAMES[weekday],
@@ -192,12 +215,15 @@ def run_scan(
             "0dte": summarize_scan(ranked_0dte),
             "weekly": summarize_scan(by_horizon.get("weekly", [])),
             "swing": summarize_scan(by_horizon.get("swing", [])),
+            "ml6": (ml6_board or {}).get("watchlist") or [],
         },
+        "ml6": ml6_board,
         "scores": summarize_scan(ranked_0dte),  # backward compat
         "action_cards": {
             "0dte_quality": [t.to_dict() for t in ranked_0dte if t.quality][:max_show],
             "weekly_quality": weekly_cards,
             "swing_quality": swing_cards,
+            "ml6_watch": (ml6_board or {}).get("watchlist") or [],
         },
         "call_candidates": [c.to_dict() for c in top],
         "call_candidates_0dte": [c.to_dict() for c in zero[:max_show]],
@@ -206,7 +232,8 @@ def run_scan(
         "disclaimer": (
             "Educational / research tool only. Options can expire worthless. "
             "Past signals do not guarantee future results. Quality gates filter for "
-            "higher historical win rates (fewer trades). Not affiliated with Signa or Intellectia."
+            "higher historical win rates (fewer trades). Not affiliated with Signa or Intellectia. "
+            "ML6 never auto-BUYs on an earnings print alone — reaction confirmation required."
         ),
     }
 
@@ -229,13 +256,16 @@ def run_scan(
     path = out_dir / f"scan_{stamp}.json"
     path.write_text(json.dumps(report, indent=2))
     (out_dir / "latest_scan.json").write_text(json.dumps(report, indent=2))
+    if ml6_board:
+        (out_dir / "latest_ml6.json").write_text(json.dumps(ml6_board, indent=2))
     logger.info(
-        "Wrote %s (universe=%s n=%d 0DTE_calls=%d weekly=%d swing_cards=%d)",
+        "Wrote %s (universe=%s n=%d 0DTE_calls=%d weekly=%d swing_cards=%d ml6=%d)",
         path,
         uni_mode,
         len(tickers),
         len(zero),
         len(week),
         len(swing_cards),
+        len((ml6_board or {}).get("watchlist") or []),
     )
     return report

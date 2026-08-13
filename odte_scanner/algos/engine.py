@@ -5,13 +5,14 @@ from typing import Any
 
 import pandas as pd
 
-from odte_scanner.algos.base import HORIZONS, AlgoSignal, TickerScore
+from odte_scanner.algos.base import HORIZONS, TECH_HORIZONS, AlgoSignal, TickerScore
 from odte_scanner.algos import signals as S
 
 logger = logging.getLogger(__name__)
 
 # Horizon-specific algo sets — different tools for different holds
 # (Signa Action Card + Intellectia SwingMax style separation)
+# ML6 is earnings/catalyst scoring (see odte_scanner.ml6) — not this technical set.
 HORIZON_ALGOS: dict[str, list[str]] = {
     "0dte": [
         "gap_and_go",
@@ -44,6 +45,16 @@ HORIZON_ALGOS: dict[str, list[str]] = {
         "macd_momentum",
         "mean_reversion_bottom",
         "rsi_bounce",
+        "vix_regime",
+    ],
+    # Soft technical backdrop only — primary ML6 score lives in odte_scanner.ml6
+    "ml6": [
+        "mean_reversion_bottom",
+        "pullback_entry",
+        "relative_strength_medium",
+        "stage_analysis",
+        "rsi_bounce",
+        "volume_thrust",
         "vix_regime",
     ],
 }
@@ -82,6 +93,15 @@ DEFAULT_WEIGHTS: dict[str, dict[str, float]] = {
         "rsi_bounce": 0.9,
         "vix_regime": 0.8,
     },
+    "ml6": {
+        "mean_reversion_bottom": 1.6,
+        "pullback_entry": 1.4,
+        "relative_strength_medium": 1.3,
+        "stage_analysis": 1.2,
+        "rsi_bounce": 1.1,
+        "volume_thrust": 1.0,
+        "vix_regime": 0.8,
+    },
 }
 
 # Stricter gates → fewer signals, higher measured win rates
@@ -89,6 +109,8 @@ QUALITY_GATES: dict[str, dict[str, float | int]] = {
     "0dte": {"min_score": 72.0, "min_confirms": 3},
     "weekly": {"min_score": 70.0, "min_confirms": 3},
     "swing": {"min_score": 74.0, "min_confirms": 4},
+    # ML6 quality is driven by reaction gate in odte_scanner.ml6 — soft tech gate only
+    "ml6": {"min_score": 62.0, "min_confirms": 2},
 }
 
 
@@ -108,9 +130,9 @@ def _expected_move(df: pd.DataFrame, horizon: str = "0dte") -> float:
     close = float(df["Close"].iloc[-1])
     if close <= 0:
         return 1.0
-    mult = {"0dte": 0.85, "weekly": 2.2, "swing": 6.0}.get(horizon, 1.0)
+    mult = {"0dte": 0.85, "weekly": 2.2, "swing": 6.0, "ml6": 4.0}.get(horizon, 1.0)
     raw = (atr / close) * 100 * mult
-    caps = {"0dte": (0.5, 4.0), "weekly": (1.0, 8.0), "swing": (3.0, 25.0)}
+    caps = {"0dte": (0.5, 4.0), "weekly": (1.0, 8.0), "swing": (3.0, 25.0), "ml6": (2.0, 20.0)}
     lo, hi = caps.get(horizon, (0.5, 10.0))
     return max(lo, min(hi, raw))
 
@@ -129,8 +151,8 @@ def _levels(df: pd.DataFrame, horizon: str) -> tuple[float, float, float, float 
         axis=1,
     ).max(axis=1)
     atr = float(tr.tail(14).mean())
-    stop_mult = {"0dte": 0.6, "weekly": 1.2, "swing": 2.0}.get(horizon, 1.0)
-    tgt_mult = {"0dte": 1.2, "weekly": 2.5, "swing": 4.5}.get(horizon, 2.0)
+    stop_mult = {"0dte": 0.6, "weekly": 1.2, "swing": 2.0, "ml6": 1.8}.get(horizon, 1.0)
+    tgt_mult = {"0dte": 1.2, "weekly": 2.5, "swing": 4.5, "ml6": 3.5}.get(horizon, 2.0)
     entry = close
     stop = close - atr * stop_mult
     target = close + atr * tgt_mult
@@ -191,6 +213,9 @@ def score_ticker(
     quality_min_score: float | None = None,
 ) -> TickerScore:
     horizon = horizon if horizon in HORIZONS else "0dte"
+    if horizon == "ml6":
+        # Technical backdrop only; primary ML6 score is odte_scanner.ml6.scoring
+        pass
     base_w = dict(DEFAULT_WEIGHTS.get(horizon, DEFAULT_WEIGHTS["0dte"]))
     if weights:
         base_w.update({k: float(v) for k, v in weights.items()})
@@ -286,11 +311,16 @@ def scan_all_horizons(
     vix_df: pd.DataFrame | None,
     weights_by_horizon: dict[str, dict[str, float]] | None = None,
     min_score: float = 0.0,
+    include_ml6_tech: bool = False,
 ) -> dict[str, list[TickerScore]]:
-    """Score every symbol on 0DTE, weekly, and swing algo sets."""
+    """Score every symbol on 0DTE, weekly, and swing algo sets.
+
+    ML6 primary scoring is in odte_scanner.ml6 — optional soft technical backdrop
+    only when include_ml6_tech=True (avoids doubling runtime on full liquid scans).
+    """
     weights_by_horizon = weights_by_horizon or {}
     out: dict[str, list[TickerScore]] = {}
-    for hz in HORIZONS:
+    for hz in TECH_HORIZONS:
         out[hz] = scan_universe(
             histories,
             spy_df=spy_df,
@@ -298,6 +328,16 @@ def scan_all_horizons(
             weights=weights_by_horizon.get(hz),
             min_score=min_score,
             horizon=hz,
+            quality_only=False,
+        )
+    if include_ml6_tech:
+        out["ml6"] = scan_universe(
+            histories,
+            spy_df=spy_df,
+            vix_df=vix_df,
+            weights=weights_by_horizon.get("ml6"),
+            min_score=min_score,
+            horizon="ml6",
             quality_only=False,
         )
     return out

@@ -4,7 +4,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
-HORIZONS = ("0dte", "weekly", "swing")
+HORIZONS = ("0dte", "weekly", "swing", "ml6")
+# Technical ensemble horizons (ML6 uses a separate earnings/catalyst scorer)
+TECH_HORIZONS = ("0dte", "weekly", "swing")
 
 
 @dataclass

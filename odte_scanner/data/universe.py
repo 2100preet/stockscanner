@@ -29,6 +29,20 @@ LIQUID_UNIVERSE: list[str] = [
     # Energy / cyclicals / others
     "COP", "SLB", "OXY", "HAL", "F", "GM", "NKE", "LULU", "DE", "HON",
     "UNP", "RTX", "LMT", "NOC", "SPGI", "CME", "ICE", "SCHW", "C", "USB",
+    # ML6 neocloud / AI infra / data-center earnings sleeve (keep liquid mega names above)
+    "FRMI", "TSSI", "IREN", "APLD", "CORZ", "NBIS", "CRWV",
+]
+
+# ML6 earnings-catalyst neocloud sleeve (also listed in LIQUID_UNIVERSE)
+ML6_UNIVERSE: list[str] = [
+    "FRMI",  # Fermi — Aug 13 BMO
+    "TSSI",  # TSS Inc — Aug 13 AMC
+    "IREN",  # ~Aug 27 AMC
+    "ORCL",  # ~Sep 10 AMC (already in liquid mega)
+    "APLD",  # ~Oct 8 est
+    "CORZ",  # ~Oct 23 est
+    "NBIS",  # Nebius — peer / reference
+    "CRWV",  # CoreWeave — peer / reference
 ]
 
 # Focus list stays smaller for 0DTE options chains (rate limits)
@@ -52,6 +66,17 @@ def liquid_universe() -> list[str]:
     return out
 
 
+def ml6_universe() -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for s in ML6_UNIVERSE:
+        u = s.replace(".", "-").upper()
+        if u not in seen:
+            seen.add(u)
+            out.append(u)
+    return out
+
+
 def resolve_scan_universe(cfg: dict[str, Any], *, mode: str | None = None) -> list[str]:
     """
     mode:
@@ -59,6 +84,7 @@ def resolve_scan_universe(cfg: dict[str, Any], *, mode: str | None = None) -> li
       liquid   — liquid_universe screener set
       screener — alias of liquid
       all      — union of focus + liquid
+      ml6      — neocloud / AI infra earnings sleeve
     """
     uni = cfg.get("universe") or {}
     mode = (mode or uni.get("mode") or "focus").lower()
@@ -71,12 +97,15 @@ def resolve_scan_universe(cfg: dict[str, Any], *, mode: str | None = None) -> li
 
     if mode in ("liquid", "screener"):
         return liquid
+    if mode == "ml6":
+        return ml6_universe()
     if mode == "all":
         seen: set[str] = set()
         out: list[str] = []
-        for s in focus + liquid:
+        for s in focus + liquid + ml6_universe():
             if s not in seen:
                 seen.add(s)
                 out.append(s)
         return out
+    # focus: keep existing liquid names; also ensure ML6 sleeve is discoverable in "all"
     return focus

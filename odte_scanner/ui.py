@@ -107,10 +107,11 @@ PAGE = r"""
 <body>
   <div class="wrap">
     <h1 class="brand">Signal <em>Desk</em></h1>
-    <p class="lede">Signa-style action cards + Intellectia-style horizons: <strong>0DTE</strong>, <strong>1 week</strong>, and <strong>1–3 month swing</strong> — separate algos and win rates. Screener covers ~100 liquid names.</p>
+    <p class="lede">Signa-style action cards + Intellectia-style horizons: <strong>0DTE</strong>, <strong>1 week</strong>, <strong>1–3 month swing</strong>, and <strong>ML6</strong> earnings-catalyst neocloud / AI infra — separate algos and win rates. Screener covers ~100 liquid names.</p>
     <div class="toolbar">
       <button class="primary" id="btnScan">Scan focus</button>
       <button id="btnScanWide">Scan liquid universe</button>
+      <button id="btnScanMl6">Scan ML6</button>
       <button id="btnRefresh">Reload</button>
       <span class="pill" id="session">—</span>
       <span class="pill" id="universePill">—</span>
@@ -125,6 +126,7 @@ PAGE = r"""
       <button data-tab="explosive">Explosive</button>
       <button data-tab="weekly">1 Week</button>
       <button data-tab="swing">Swing 1–3M</button>
+      <button data-tab="ml6">ML6 Neocloud</button>
       <button data-tab="screener">Screener</button>
       <button data-tab="journal">Journal</button>
     </nav>
@@ -196,6 +198,24 @@ PAGE = r"""
       <h2>Swing — 1 to 3 months</h2>
       <p class="lede">Stage analysis, trend structure, medium RS, dip buys. Win% ≈ 42-session (~2mo) forward return.</p>
       <div class="cards" id="cardsSwing"></div>
+    </section>
+
+    <section class="tabpane" id="tab-ml6">
+      <h2>ML6 — earnings-catalyst neocloud / AI infra</h2>
+      <p class="lede" id="ml6Purpose">
+        Beaten-down AI / neocloud / data-center earnings upside (NBIS/CRWV style).
+        <strong>Not</strong> the 0DTE technical ensemble. Do <strong>not</strong> auto BUY on the report alone —
+        prefer WAIT until confirmed reaction (open/hold above key level, or AH high/VWAP acceptance).
+      </p>
+      <div class="panel" id="ml6BottomLine" style="margin-bottom:1rem">
+        <h2>Bottom-line rules</h2>
+        <div id="ml6Rules" class="empty">Loading ML6 rules…</div>
+      </div>
+      <div class="metric-row" id="ml6Metrics"></div>
+      <div class="panel">
+        <h2>ML6 board</h2>
+        <div id="ml6Board" class="empty">Run Scan ML6 to populate.</div>
+      </div>
     </section>
 
     <section class="tabpane" id="tab-screener">
@@ -406,6 +426,65 @@ PAGE = r"""
       table.innerHTML = head + list.map(rowHtml).join("") + "</tbody></table>";
     }
 
+    function renderMl6(ml6) {
+      const rulesEl = document.getElementById("ml6Rules");
+      const boardEl = document.getElementById("ml6Board");
+      const metricsEl = document.getElementById("ml6Metrics");
+      const purpose = document.getElementById("ml6Purpose");
+      if (!ml6 || (!ml6.watchlist && !ml6.bottom_line_rules)) {
+        if (rulesEl) rulesEl.innerHTML = `<div class="empty">No ML6 data — click Scan ML6.</div>`;
+        if (boardEl) boardEl.innerHTML = `<div class="empty">No ML6 board yet.</div>`;
+        return;
+      }
+      if (purpose && ml6.purpose) purpose.textContent = ml6.purpose;
+      const rules = ml6.bottom_line_rules || [];
+      rulesEl.innerHTML = rules.length ? rules.map(r => {
+        const st = (r.status||"WATCH").replace(/_/g," ");
+        const cls = r.status==="WAIT_FOR_CONFIRMATION" ? "wait" : (r.status==="BUY_ONLY_IF_ACCEPTED" ? "long" : "wait");
+        return `<article class="action-card ${cls}" style="margin-bottom:.55rem">
+          <div class="ac-top">
+            <div class="ac-sym">${r.ticker}</div>
+            <div class="ac-dir ${cls}">${st}</div>
+          </div>
+          <div class="ac-conf">${r.headline||""}</div>
+          <p class="why" style="max-width:none;margin:.35rem 0 0">${r.rule||""}</p>
+        </article>`;
+      }).join("") : `<div class="empty">No bottom-line rules.</div>`;
+
+      const c = ml6.counts || {};
+      const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
+      metricsEl.innerHTML = [
+        m("Names", c.names??(ml6.watchlist||[]).length),
+        m("WATCH", c.watch??0),
+        m("WAIT", c.wait??0, "down"),
+        m("BUY IF…", c.buy_if??0, "up"),
+        m("Liquid OK", c.liquidity_ok??0),
+      ].join("");
+
+      const rows = ml6.watchlist || [];
+      if (!rows.length) {
+        boardEl.innerHTML = `<div class="empty">Empty ML6 watchlist.</div>`;
+        return;
+      }
+      const statusBadge = (st) => {
+        const s = st||"WATCH";
+        const cls = s.includes("WAIT") ? "wait" : (s.includes("BUY") ? "buy" : "hold");
+        return `<span class="badge ${cls}">${s.replace(/_/g," ")}</span>`;
+      };
+      boardEl.innerHTML = `<table><thead><tr>
+        <th>Ticker</th><th>Earnings</th><th>Theme</th><th>Score</th><th>Status</th><th>DD%</th><th>Last</th><th>Gate</th>
+      </tr></thead><tbody>${rows.map(r => `<tr>
+        <td><strong>${r.symbol}</strong></td>
+        <td class="mono">${r.earnings_label||r.earnings_date||"—"}</td>
+        <td><span class="tag">${(r.theme||"").split(",")[0]||"—"}</span></td>
+        <td class="mono">${fmt(r.ensemble_score||r.score,1)}</td>
+        <td>${statusBadge(r.status)}</td>
+        <td class="mono">${r.drawdown_pct==null?"—":fmt(r.drawdown_pct,1)+"%"}</td>
+        <td class="mono">${r.last_price==null?"—":fmt(r.last_price,2)}</td>
+        <td class="why">${r.gate||r.action||""}</td>
+      </tr>`).join("")}</tbody></table>`;
+    }
+
     function renderScreener(horizons) {
       const el = document.getElementById("screener");
       const hz = horizons || {};
@@ -503,6 +582,7 @@ PAGE = r"""
       renderOptionTable("tableWeekly", (acts.all||[]).filter(r=>r.dte_bucket==="weekly"));
       renderExplosive(DATA.explosive || [], DATA.lottery || {});
       renderScreener(hz);
+      renderMl6(DATA.ml6 || { watchlist: (hz.ml6||[]), bottom_line_rules: (DATA.ml6&&DATA.ml6.bottom_line_rules)||[] });
       renderInsights(DATA.insights);
       document.getElementById("session").textContent = (DATA.session||"—") + " · " + (DATA.universe_mode||"focus");
       const uniPill = document.getElementById("universePill");
@@ -549,13 +629,14 @@ PAGE = r"""
     }
 
     async function runScan(mode) {
-      const btn = mode==="liquid" ? document.getElementById("btnScanWide") : document.getElementById("btnScan");
+      const btn = mode==="liquid" ? document.getElementById("btnScanWide")
+        : (mode==="ml6" ? document.getElementById("btnScanMl6") : document.getElementById("btnScan"));
       btn.disabled = true;
       const label = btn.textContent;
       btn.textContent = "Scanning…";
       try {
         await fetch("/api/scan?mode=" + encodeURIComponent(mode||"focus"), { method: "POST" });
-        await new Promise(r => setTimeout(r, mode==="liquid" ? 20000 : 10000));
+        await new Promise(r => setTimeout(r, mode==="liquid" ? 20000 : (mode==="ml6" ? 12000 : 10000)));
         await loadAll();
       } finally {
         btn.disabled = false;
@@ -566,6 +647,7 @@ PAGE = r"""
     document.getElementById("btnRefresh").onclick = loadAll;
     document.getElementById("btnScan").onclick = () => runScan("focus");
     document.getElementById("btnScanWide").onclick = () => runScan("liquid");
+    document.getElementById("btnScanMl6").onclick = () => runScan("ml6");
     loadAll();
     setInterval(loadAll, 15000);
   </script>
@@ -774,6 +856,18 @@ def create_app(config_path: str | None = None) -> Flask:
         focus_size = scan.get("focus_size") or len(scan.get("tickers") or [])
         liquid_size = len(liquid_universe())
 
+        ml6 = scan.get("ml6")
+        if not ml6:
+            ml6 = _read_json(ROOT / "outputs" / "latest_ml6.json")
+        if not ml6:
+            try:
+                from odte_scanner.ml6.board import build_ml6_board
+
+                ml6 = build_ml6_board()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("ML6 snapshot fallback failed: %s", exc)
+                ml6 = {}
+
         return jsonify(
             {
                 "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -789,6 +883,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 "call_candidates": refreshed,
                 "explosive": explosive,
                 "lottery": lottery,
+                "ml6": ml6,
                 "watch": {"quotes": quotes},
                 "ledger": ledger,
                 "actions": actions,
@@ -817,7 +912,9 @@ def create_app(config_path: str | None = None) -> Flask:
                     "scan",
                     "--no-paper",
                 ]
-                if mode in ("liquid", "screener", "all"):
+                if mode == "ml6":
+                    cmd.extend(["--horizon", "ml6"])
+                elif mode in ("liquid", "screener", "all"):
                     cmd.extend(["--universe", mode])
                 subprocess.run(cmd, cwd=str(ROOT), check=False)
             finally:
