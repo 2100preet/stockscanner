@@ -190,6 +190,9 @@ ml6:
   enabled: true
   # Hard gate: never auto BUY on the report alone
   require_reaction_confirmation: true
+  auto_trade: true          # paper BUY NOW / SELL NOW via journal when reaction clears
+  attach_calls: true        # pick weekly/swing listed calls for automation
+  min_buy_score: 70
   min_price: 1.50
   min_avg_volume: 150000
   watchlist:
