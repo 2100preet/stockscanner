@@ -9,8 +9,9 @@ def test_ew_liquid_names_curated_and_focus():
     for sym in ("SMCI", "CRWV", "NBIS", "SE", "HIMS", "RKLB", "ASTS", "PLUG", "CSCO", "AMAT"):
         assert sym in liquid_universe()
         assert sym in CURATED_EARNINGS
-    for sym in ("SMCI", "SE", "HIMS", "RKLB", "ASTS", "PLUG", "CSCO"):
+    for sym in ("SMCI", "SE", "HIMS", "RKLB", "ASTS", "PLUG", "CSCO", "IREN"):
         assert sym in FOCUS_DEFAULT
+    assert "IREN" in liquid_universe()
 
 
 def test_flow_score_flags_and_tiers():
