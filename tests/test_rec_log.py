@@ -84,8 +84,8 @@ def test_challenge_entry_persists_when_off_board(tmp_path: Path):
     assert board["open_recs"][0]["on_board"] is False
 
 
-def test_challenge_wait_not_opened_as_entry(tmp_path: Path):
-    """WAIT/HOLD must not open ENTRY recs — that starved EXIT/P&L history."""
+def test_challenge_wait_logged_as_wait_not_entry(tmp_path: Path):
+    """WAIT opens soft WAIT recs; only ENTRY opens as ENTRY."""
     log = RecommendationLog(tmp_path / "rec.json")
     log.sync_challenge(
         {
@@ -104,9 +104,84 @@ def test_challenge_wait_not_opened_as_entry(tmp_path: Path):
         }
     )
     board = log.board(section="challenge")
-    assert board["open"] == 1
-    assert board["open_recs"][0]["symbol"] == "MU"
-    assert board["open_recs"][0]["open_action"] == "ENTRY"
+    assert board["open"] >= 2
+    by_sym = {r["symbol"]: r for r in board["open_recs"]}
+    assert by_sym["MU"]["open_action"] == "ENTRY"
+    assert by_sym["TOST"]["open_action"] == "WAIT"
+    assert by_sym["AMZN"]["entry_price"] == 2.1
+
+
+def test_lottery_wait_logged_with_ask(tmp_path: Path):
+    log = RecommendationLog(tmp_path / "rec.json")
+    log.sync_lottery(
+        {
+            "buy_now": [],
+            "sell_now": [],
+            "wait": [
+                {
+                    "symbol": "SPY",
+                    "ask": 1.36,
+                    "bid": 1.35,
+                    "strike": 776,
+                    "contract": "SPY260813C00776000",
+                    "expiry": "2026-08-13",
+                    "dte": 0,
+                    "headline": "WAIT LOTTERY SPY",
+                    "detail": "no tape yet",
+                },
+                {
+                    "symbol": "GOOGL",
+                    "ask": 2.47,
+                    "contract": "GOOGL260814P00345000",
+                    "strike": 345,
+                    "headline": "WAIT LOTTERY GOOGL",
+                },
+            ],
+        }
+    )
+    board = log.board(section="lottery")
+    assert board["open"] == 2
+    spy = next(r for r in board["open_recs"] if r["symbol"] == "SPY")
+    assert spy["open_action"] == "WAIT"
+    assert spy["entry_price"] == 1.36
+    googl = next(r for r in board["open_recs"] if r["symbol"] == "GOOGL")
+    assert googl["right"] == "P"
+
+
+def test_wait_upgrades_to_buy_then_sell_pnl(tmp_path: Path):
+    log = RecommendationLog(tmp_path / "rec.json")
+    log.sync_lottery({"buy_now": [], "sell_now": [], "wait": [{"symbol": "NVDA", "ask": 1.0, "contract": "NVDA_C", "strike": 120}]})
+    log.sync_lottery(
+        {
+            "buy_now": [{"symbol": "NVDA", "ask": 1.2, "contract": "NVDA_C", "strike": 120, "headline": "BUY NOW"}],
+            "sell_now": [],
+            "wait": [],
+        }
+    )
+    open_rec = log.board(section="lottery")["open_recs"][0]
+    assert open_rec["open_action"] == "BUY_NOW"
+    assert open_rec["entry_price"] == 1.2  # locked at BUY ask, not WAIT 1.0
+    log.sync_lottery({"buy_now": [], "sell_now": [{"symbol": "NVDA", "bid": 2.4, "detail": "bank"}], "wait": []})
+    board = log.board(section="lottery")
+    assert board["wins"] == 1
+    assert board["closed_pnl_usd"] == 120.0
+
+
+def test_actions_wait_fills_odte_weekly_sections(tmp_path: Path):
+    log = RecommendationLog(tmp_path / "rec.json")
+    log.sync_actions(
+        {
+            "buy_now": [],
+            "sell_now": [],
+            "wait": [
+                {"symbol": "SPY", "ask": 1.36, "dte_bucket": "0dte", "contract": "SPY_C", "strike": 776, "headline": "WAIT SPY"},
+                {"symbol": "AAPL", "ask": 3.0, "dte_bucket": "weekly", "contract": "AAPL_P", "strike": 305, "right": "P", "headline": "WAIT AAPL"},
+            ],
+        }
+    )
+    assert log.board(section="odte")["open"] == 1
+    assert log.board(section="weekly")["open"] == 1
+    assert log.board(section="weekly")["open_recs"][0]["right"] == "P"
 
 
 def test_challenge_exit_closes_with_pnl(tmp_path: Path):
@@ -153,6 +228,8 @@ def test_actions_sections(tmp_path: Path):
 
 def test_clock_flatten_does_not_count_zero_as_loss(tmp_path: Path):
     """Off-board time-stop must lapse — never invent exit=entry $0 losses."""
+    from unittest.mock import patch
+
     log = RecommendationLog(tmp_path / "rec.json")
     log.note_entry(
         section="odte",
@@ -164,12 +241,11 @@ def test_clock_flatten_does_not_count_zero_as_loss(tmp_path: Path):
         contract="SMCI_OPT",
         strike=40,
     )
-    # Force recommended_at into the past so 0DTE clock fires
-    open_rec = log.book.recommendations[0]
-    open_rec.recommended_at = "2020-01-01T15:00:00+00:00"
-    open_rec.dte = 0
-    open_rec.horizon = "0dte"
-    log.mark_off_board("odte", live_keys=set())
+    with patch(
+        "odte_scanner.signals.hold_rules.time_stop_reason",
+        return_value="0DTE time-stop — flatten by 15:45 ET",
+    ):
+        log.mark_off_board("odte", live_keys=set())
     board = log.board(section="odte")
     assert board["open"] == 0
     assert board["losses"] == 0

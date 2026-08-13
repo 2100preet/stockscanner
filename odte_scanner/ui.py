@@ -289,8 +289,8 @@ PAGE = r"""
       <div class="panel">
         <h2>Recommendation log — entry / exit / P&amp;L</h2>
         <p class="lede" style="margin-top:0;font-size:.76rem">
-          Persistent history of lottery BUY NOW / SELL NOW. P&amp;L (1ct) = exit bid − entry ask × 100.
-          Yesterday’s picks stay here even when they drop off the live board.
+          Persistent history of lottery WAIT / BUY NOW / SELL NOW. WAIT shows the recommended ask while gated;
+          P&amp;L (1ct) locks when BUY NOW ask → SELL NOW bid both fire.
         </p>
         <div class="metric-row" id="lotteryRecLogMetrics"></div>
         <div id="lotteryRecLog" class="empty">—</div>
@@ -318,7 +318,7 @@ PAGE = r"""
 
     <section class="tabpane" id="tab-swing">
       <h2>Swing — 1 to 3 months</h2>
-      <p class="lede">Stage analysis, trend structure, medium RS, dip buys. Win% ≈ 42-session (~2mo) forward return.
+      <p class="lede">Stage analysis, trend structure, medium RS, dip buys. Win% / strike rate ≈ 21-session (~1 month) and 42-session (~2mo) forward returns.
         Near-term earnings (today / this week / next week) shared with the challenge desk below.</p>
       <div class="cards" id="cardsSwing"></div>
       <div class="panel">
@@ -554,9 +554,18 @@ PAGE = r"""
 
     function winLookup(symbol, hz) {
       const table = DATA.win_rates || {};
-      const row = (table.symbols || {})[symbol] || {};
-      const s = row[hz] || {};
-      return { pct: s.win_pct, n: s.trades || 0, hit1: s.hit_1pct, hit2: s.hit_2pct };
+      const row = (table.symbols || {})[String(symbol||"").toUpperCase()] || {};
+      let key = String(hz || "0dte").toLowerCase();
+      // Alias challenge / UI labels onto win-rate buckets (1 month ≈ monthly / leap)
+      if (key === "1w" || key === "week" || key === "1wk") key = "weekly";
+      if (["1m","1mo","1-month","1_month","month","monthly","leap"].includes(key)) key = "monthly";
+      if (key.includes("swing")) key = "swing";
+      if (key.includes("week")) key = "weekly";
+      let s = row[key] || {};
+      // Older caches: monthly falls back to swing strike-rate
+      if ((!s || s.hit_1pct == null) && key === "monthly") s = row.swing || s;
+      if ((!s || s.hit_1pct == null) && key === "swing") s = row.monthly || s;
+      return { pct: s.win_pct, n: s.trades || 0, hit1: s.hit_1pct, hit2: s.hit_2pct, hz: key };
     }
 
     function wallLookup(symbol) {
@@ -1073,12 +1082,15 @@ PAGE = r"""
         statusEl.innerHTML = !rows.length
           ? `<div class="empty">No ENTRY/HOLD/EXIT updates yet.</div>`
           : `<table><thead><tr>
-              <th>Status</th><th>Side</th><th>Symbol</th><th>Strike</th><th>Call/Put wall</th><th>Soft EXIT</th><th>Vol/OI</th><th>Opt $</th><th>Hold</th><th>Why</th>
+              <th>Status</th><th>Side</th><th>Symbol</th><th>Strike</th><th>Call/Put wall</th><th>Soft EXIT</th><th>Vol/OI</th><th>Opt $</th><th>Hist</th><th>Strike rate</th><th>Hold</th><th>Why</th>
             </tr></thead><tbody>${rows.map(t=>{
               const a=(t.action||"WAIT");
               const cls=a==="EXIT"?"sell":(a==="ENTRY"?"buy":(a==="HOLD"?"hold":"wait"));
               const mark=t.ask??t.option_last;
               const liqBad=(Number(t.volume||0)<=0 && Number(t.open_interest||0)<5000);
+              const hz = t.horizon || t.dte_bucket || (t.hold_style) || "swing";
+              const w = (t.hit_1pct!=null) ? {hit1:t.hit_1pct, hit2:t.hit_2pct} : winLookup(t.symbol, hz);
+              const sr = w.hit1==null ? "—" : `${fmt(w.hit1,0)}% ≥1%` + (w.hit2==null?"":` / ${fmt(w.hit2,0)}% ≥2%`);
               return `<tr>
                 <td><span class="badge ${cls}">${a}</span></td>
                 <td class="mono">${t.right==="P"?"PUT":"CALL"}</td>
@@ -1088,6 +1100,8 @@ PAGE = r"""
                 <td class="mono up"><strong>${t.soft_exit==null?"—":"$"+fmt(t.soft_exit,2)}</strong><div class="why">${t.primary_wall_side||""} wall${t.wall_buffer_usd!=null?" −$"+fmt(t.wall_buffer_usd,2):""}</div></td>
                 <td class="mono ${liqBad?"down":"up"}">${t.volume==null?"—":Number(t.volume).toLocaleString()} / ${t.open_interest==null?"—":Number(t.open_interest).toLocaleString()}</td>
                 <td class="mono"><strong>${mark==null?"—":"$"+fmt(mark,2)}</strong><div class="why">${t.mark_source||""}${t.target_ask!=null?" → $"+fmt(t.target_ask,2):""}</div></td>
+                <td class="mono up"><strong>${t.hist_win_pct==null?"—":fmt(t.hist_win_pct,0)+"%"}</strong><div class="why">n=${t.hist_samples??"—"}</div></td>
+                <td class="mono" title="Underlying ≥1% / ≥2% after signal (~1 month for leap/swing)"><strong>${sr}</strong></td>
                 <td class="mono"><strong>${holdLbl(t)}</strong></td>
                 <td class="why">${t.recommend_reason||t.status_detail||t.thesis||""}${t.wall_exit_hint?`<div><strong>Wall:</strong> ${t.wall_exit_hint}</div>`:""}</td>
               </tr>`;
@@ -1252,7 +1266,7 @@ PAGE = r"""
       if (ticketsEl) {
         if (!tickets.length) ticketsEl.innerHTML = `<div class="empty">No tickets.</div>`;
         else ticketsEl.innerHTML = `<table><thead><tr>
-          <th>Status</th><th>Side</th><th>Symbol</th><th>Strike</th><th>Call/Put wall</th><th>Soft EXIT</th><th>Vol / OI</th><th>Opt price</th><th>Hist</th><th>Hold</th><th>Reason</th>
+          <th>Status</th><th>Side</th><th>Symbol</th><th>Strike</th><th>Call/Put wall</th><th>Soft EXIT</th><th>Vol / OI</th><th>Opt price</th><th>Hist</th><th>Strike rate</th><th>Hold</th><th>Reason</th>
         </tr></thead><tbody>${tickets.map(t=>{
           const a=t.action||"WAIT";
           const cls=a==="EXIT"?"sell":(a==="ENTRY"?"buy":(a==="HOLD"?"hold":"wait"));
@@ -1260,6 +1274,9 @@ PAGE = r"""
           const markLbl = t.mark_source==="last"?"last":(t.mark_source==="ask"?"ask":(mark!=null?"mark":"zone"));
           const vol=t.volume, oi=t.open_interest;
           const liqBad = (vol==null && oi==null) || (Number(vol||0)<=0 && Number(oi||0)<5000) || (Number(vol||0)<25 && Number(oi||0)<200);
+          const hz = t.horizon || t.dte_bucket || t.hold_style || "swing";
+          const w = (t.hit_1pct!=null) ? {hit1:t.hit_1pct, hit2:t.hit_2pct} : winLookup(t.symbol, hz);
+          const sr = w.hit1==null ? "—" : `${fmt(w.hit1,0)}% ≥1%` + (w.hit2==null?"":` / ${fmt(w.hit2,0)}% ≥2%`);
           return `<tr>
           <td><span class="badge ${cls}">${a}</span></td>
           <td class="mono">${t.right==="P"?"PUT":"CALL"}</td>
@@ -1270,6 +1287,7 @@ PAGE = r"""
           <td class="mono ${liqBad?"down":"up"}"><strong>${vol==null?"—":Number(vol).toLocaleString()}</strong><div class="why">OI ${oi==null?"—":Number(oi).toLocaleString()}${liqBad?" · illiquid":""}</div></td>
           <td class="mono"><strong>${mark==null?"—":"$"+fmt(mark,2)}</strong><div class="why">${markLbl}${t.target_ask!=null?" → tgt $"+fmt(t.target_ask,2):""}</div></td>
           <td class="mono up"><strong>${fmt(t.hist_win_pct,0)}%</strong><div class="why">n=${t.hist_samples}</div></td>
+          <td class="mono" title="Underlying ≥1% / ≥2% rip rate over ~1 month (leap) or swing window"><strong>${sr}</strong></td>
           <td class="mono"><strong>${holdLbl(t)}</strong></td>
           <td class="why">${t.recommend_reason||t.status_detail||""}
             <div style="margin-top:.2rem"><strong>ENTER:</strong> ${t.enter_plan||"—"}</div>
