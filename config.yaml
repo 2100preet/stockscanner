@@ -77,6 +77,27 @@ tickers:
   - PLUG  # Plug Power — EW this week
   - CSCO  # Cisco — EW this week
   - IREN  # Iris Energy — liquid high-beta / AI infra; was missing from focus scan
+  # --- Curated high-potential adds (NOT full S&P 500 — keep focus small for chain rate limits) ---
+  # Memory / storage (DRAM sleeve → focus)
+  - SNDK  # Sandisk — memory, liquid options, was DRAM-only
+  - WDC   # Western Digital — storage cycle
+  - STX   # Seagate — storage cycle
+  # Semi equipment / interconnect (AI buildout)
+  - LRCX  # Lam Research
+  - KLAC  # KLA
+  - MRVL  # Marvell — custom AI silicon / connectivity
+  - ANET  # Arista — AI datacenter networking
+  - ALAB  # Astera Labs — AI connectivity
+  - CRDO  # Credo — high-speed connectivity
+  - APP   # AppLovin — liquid mid, high options volume
+  # Power / cooling for AI load
+  - VRT   # Vertiv — datacenter cooling/power
+  - CEG   # Constellation Energy — nuclear / AI power
+  - GEV   # GE Vernova — grid / power equipment
+  # Crypto + AI infra (alongside IREN)
+  - APLD  # Applied Digital — AI datacenter buildout
+  - CIFR  # Cipher Mining — liquid bitcoin miner
+  - WULF  # TeraWulf — liquid bitcoin / power narrative
   # CRM / AMAT already listed above under Friday weeklies
 
 # Yahoo Finance symbol overrides (indexes need ^ prefix for quotes/chains)
@@ -161,6 +182,22 @@ expiry_calendars:
     - PLUG
     - CSCO
     - IREN
+    - SNDK
+    - WDC
+    - STX
+    - LRCX
+    - KLAC
+    - MRVL
+    - ANET
+    - ALAB
+    - CRDO
+    - APP
+    - VRT
+    - CEG
+    - GEV
+    - APLD
+    - CIFR
+    - WULF
     - HYG
     - EEM
 
