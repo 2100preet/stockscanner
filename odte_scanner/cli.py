@@ -33,11 +33,52 @@ def _setup_logging(level: str = "INFO") -> None:
 
 
 def cmd_scan(args: argparse.Namespace) -> int:
+    horizon = getattr(args, "horizon", None)
+    universe = getattr(args, "universe", None)
+    if horizon and horizon.lower() == "ml6" and not universe:
+        universe = "ml6"
     report = run_scan(
         args.config,
         place_paper=not args.no_paper,
-        universe_mode=getattr(args, "universe", None),
+        universe_mode=universe,
+        horizon=horizon,
     )
+
+    # Dedicated ML6 board output
+    if (horizon or "").lower() == "ml6" or report.get("universe_mode") == "ml6" or report.get("horizon") == "ml6":
+        board = report if report.get("watchlist") else report.get("ml6") or report
+        rules = board.get("bottom_line_rules") or []
+        console.print("[bold cyan]ML6[/bold cyan] — earnings-catalyst neocloud / AI infra upside")
+        console.print(f"[dim]{board.get('purpose') or report.get('purpose') or ''}[/dim]\n")
+        if rules:
+            console.print("[bold]Bottom-line rules[/bold]")
+            for r in rules:
+                console.print(
+                    f"  [{r.get('status','WATCH')}] [bold]{r.get('ticker')}[/bold] — {r.get('rule')}"
+                )
+            console.print()
+        table = Table(title="ML6 board")
+        table.add_column("Ticker")
+        table.add_column("Earnings")
+        table.add_column("Theme")
+        table.add_column("Score", justify="right")
+        table.add_column("Status")
+        table.add_column("DD%", justify="right")
+        table.add_column("Gate / note")
+        for s in board.get("watchlist") or []:
+            table.add_row(
+                s.get("symbol", "?"),
+                s.get("earnings_label") or s.get("earnings_date") or "—",
+                (s.get("theme") or "")[:28],
+                f"{float(s.get('ensemble_score') or s.get('score') or 0):.1f}",
+                str(s.get("status") or "WATCH"),
+                "—" if s.get("drawdown_pct") is None else f"{s['drawdown_pct']:.1f}",
+                (s.get("gate") or s.get("action") or "")[:48],
+            )
+        console.print(table)
+        console.print(f"\n[dim]{board.get('disclaimer') or report.get('disclaimer')}[/dim]")
+        return 0
+
     session = report.get("session_weekday", "?")
     scores = report.get("scores", [])
     table = Table(
@@ -65,6 +106,13 @@ def cmd_scan(args: argparse.Namespace) -> int:
             ", ".join(rest) or "-",
         )
     console.print(table)
+
+    # Surface ML6 bottom-line strip when attached to a normal scan
+    ml6 = report.get("ml6") or {}
+    if ml6.get("bottom_line_rules"):
+        console.print("\n[bold cyan]ML6 bottom-line[/bold cyan]")
+        for r in ml6["bottom_line_rules"]:
+            console.print(f"  [{r.get('status')}] {r.get('ticker')}: {r.get('rule')}")
 
     calls = report.get("call_candidates", [])
     if calls:
@@ -250,9 +298,15 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--no-paper", action="store_true", help="Score only; do not paper trade")
     s.add_argument(
         "--universe",
-        choices=["focus", "liquid", "screener", "all"],
+        choices=["focus", "liquid", "screener", "all", "ml6"],
         default=None,
-        help="focus=options list; liquid/screener≈S&P100+; all=union",
+        help="focus=options list; liquid/screener≈S&P100+; all=union; ml6=neocloud earnings",
+    )
+    s.add_argument(
+        "--horizon",
+        choices=["0dte", "weekly", "swing", "ml6", "1w"],
+        default=None,
+        help="Score mode. ml6 = earnings-catalyst neocloud / AI infra (not 0DTE ensemble)",
     )
     s.set_defaults(func=cmd_scan)
 

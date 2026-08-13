@@ -110,12 +110,26 @@ LIQUID_UNIVERSE: list[str] = [
     # Energy / cyclicals / others
     "COP", "SLB", "OXY", "HAL", "F", "GM", "NKE", "LULU", "DE", "HON",
     "UNP", "RTX", "LMT", "NOC", "SPGI", "CME", "ICE", "SCHW", "C", "USB",
+    # ML6 neocloud / AI infra / data-center earnings sleeve (keep liquid mega names above)
+    "FRMI", "TSSI", "IREN", "APLD", "CORZ", "NBIS", "CRWV",
     # Mid / small sleeve
     *MID_SMALL_UNIVERSE,
     # DRAM / memory thematic
     *DRAM_MEMORY_UNIVERSE,
     # This week's most-anticipated earnings darlings
     *EARNINGS_DARLINGS_UNIVERSE,
+]
+
+# ML6 earnings-catalyst neocloud sleeve (also listed in LIQUID_UNIVERSE)
+ML6_UNIVERSE: list[str] = [
+    "FRMI",  # Fermi — Aug 13 BMO
+    "TSSI",  # TSS Inc — Aug 13 AMC
+    "IREN",  # ~Aug 27 AMC
+    "ORCL",  # ~Sep 10 AMC (already in liquid mega)
+    "APLD",  # ~Oct 8 est
+    "CORZ",  # ~Oct 23 est
+    "NBIS",  # Nebius — peer / reference
+    "CRWV",  # CoreWeave — peer / reference
 ]
 
 _ETF = {
@@ -177,6 +191,10 @@ def _dedupe(symbols: list[str]) -> list[str]:
     return out
 
 
+def ml6_universe() -> list[str]:
+    return _dedupe(list(ML6_UNIVERSE))
+
+
 def mid_small_universe() -> list[str]:
     return _dedupe(list(MID_SMALL_UNIVERSE))
 
@@ -221,6 +239,7 @@ def resolve_scan_universe(cfg: dict[str, Any], *, mode: str | None = None) -> li
       liquid   — liquid_universe screener set
       screener — alias of liquid
       all      — union of focus + liquid
+      ml6      — neocloud / AI infra earnings sleeve
     """
     uni = cfg.get("universe") or {}
     mode = (mode or uni.get("mode") or "focus").lower()
@@ -233,6 +252,8 @@ def resolve_scan_universe(cfg: dict[str, Any], *, mode: str | None = None) -> li
 
     if mode in ("liquid", "screener"):
         return liquid
+    if mode == "ml6":
+        return ml6_universe()
     if mode == "all":
-        return _dedupe(focus + liquid)
+        return _dedupe(focus + liquid + ml6_universe())
     return focus

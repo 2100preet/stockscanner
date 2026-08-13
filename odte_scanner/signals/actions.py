@@ -649,6 +649,7 @@ def build_action_board(
     odte_flatten_et: str = "15:45",
     now: datetime | None = None,
     require_live_confirm: bool = True,
+    red_flag: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     score_by_symbol = {
         str(s.get("symbol")): float(s.get("ensemble_score") or 0) for s in scores or []
@@ -747,7 +748,7 @@ def build_action_board(
         min_hist_win_samples=min_hist_win_samples,
     )
 
-    return {
+    board = {
         "primary": primary.to_dict() if primary else None,
         "all": [s.to_dict() for s in all_signals],
         "buy_now": [s.to_dict() for s in buys],
@@ -799,3 +800,10 @@ def build_action_board(
             "all": len(all_signals),
         },
     }
+
+    if red_flag:
+        from odte_scanner.signals.red_flag import apply_red_flag_to_actions
+
+        board = apply_red_flag_to_actions(board, red_flag)
+
+    return board

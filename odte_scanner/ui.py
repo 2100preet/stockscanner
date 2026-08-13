@@ -174,10 +174,11 @@ PAGE = r"""
 <body>
   <div class="wrap">
     <h1 class="brand">Signal <em>Desk</em></h1>
-    <p class="lede">Signa-style action cards + Intellectia-style horizons: <strong>0DTE</strong>, <strong>1 week</strong>, and <strong>1–3 month swing</strong> — separate algos and win rates. Screener covers ~100 liquid names.</p>
+    <p class="lede">Signa-style action cards + Intellectia-style horizons: <strong>0DTE</strong>, <strong>1 week</strong>, <strong>1–3 month swing</strong>, and <strong>ML6</strong> earnings-catalyst neocloud / AI infra — separate algos and win rates. Screener covers ~100 liquid names.</p>
     <div class="toolbar">
       <button class="primary" id="btnScan">Scan focus</button>
       <button id="btnScanWide">Scan liquid universe</button>
+      <button id="btnScanMl6">Scan ML6</button>
       <button id="btnRefresh">Reload</button>
       <button type="button" id="btnAlerts" title="Browser alerts for BUY/SELL call &amp; put recommendations">Enable alerts</button>
       <span class="pill" id="session">—</span>
@@ -195,6 +196,7 @@ PAGE = r"""
       <button data-tab="explosive">Explosive</button>
       <button data-tab="weekly">1 Week</button>
       <button data-tab="swing">Swing 1–3M</button>
+      <button data-tab="ml6">ML6 Neocloud</button>
       <button data-tab="echo">Flow Desk</button>
       <button data-tab="challenge">$1k→$1M</button>
       <button data-tab="screener">Screener</button>
@@ -211,6 +213,16 @@ PAGE = r"""
         <strong>BUY NOW gate</strong>: only symbols with hist win ≥80% and n≥5 are promoted (see hist-win gate card).
       </p>
       <div class="metric-row" id="histWinGate"></div>
+      <div class="panel" id="redFlagPanel">
+        <h2>Red Flag — VolSignals 0DTE framework (proxy)</h2>
+        <p class="lede" style="margin-top:0">Customer upside call-hedging / dealer short positioning + charm into the close can cap rallies. Blocks index 0DTE long calls when active.</p>
+        <div id="redFlagBody" class="empty">Loading Red Flag…</div>
+      </div>
+      <div class="panel" id="freeDealerPanel">
+        <h2>Free dealer / vol cockpit</h2>
+        <p class="lede" style="margin-top:0">Keyless feeds: CBOE SPX GEX, SqueezeMetrics DIX/GEX, VIX term (VIX1D/VIX3M/VVIX/SKEW). Delayed / modeled — not VS3D.</p>
+        <div id="freeDealerBody" class="empty">Loading free feeds…</div>
+      </div>
       <h2>Top action cards</h2>
       <div class="cards" id="overviewCards"></div>
       <div class="panel">
@@ -236,6 +248,7 @@ PAGE = r"""
       <h2>0DTE — same-day / next-session algos</h2>
       <p class="lede">Gap-and-go, breakout, volume thrust, VIX regime. Win% = next session green after quality signal. Strike rate = ≥1% / ≥2% underlying rip rate.
         Paper <strong>BUY NOW / SELL NOW</strong> fills update cash, equity, and P&amp;L on each ENTRY / EXIT.</p>
+      <div class="panel" id="redFlagOdtePanel"><div id="redFlagOdte" class="empty">—</div></div>
       <div class="cards" id="cards0dte"></div>
       <div class="panel"><div id="table0dte" class="empty"></div></div>
       <div class="panel">
@@ -332,6 +345,25 @@ PAGE = r"""
         </p>
         <div class="metric-row" id="swingRecLogMetrics"></div>
         <div id="swingRecLog" class="empty">—</div>
+      </div>
+    </section>
+
+
+    <section class="tabpane" id="tab-ml6">
+      <h2>ML6 — earnings-catalyst neocloud / AI infra</h2>
+      <p class="lede" id="ml6Purpose">
+        Beaten-down AI / neocloud / data-center earnings upside (NBIS/CRWV style).
+        <strong>Not</strong> the 0DTE technical ensemble. Do <strong>not</strong> auto BUY on the report alone —
+        prefer WAIT until confirmed reaction (open/hold above key level, or AH high/VWAP acceptance).
+      </p>
+      <div class="panel" id="ml6BottomLine" style="margin-bottom:1rem">
+        <h2>Bottom-line rules</h2>
+        <div id="ml6Rules" class="empty">Loading ML6 rules…</div>
+      </div>
+      <div class="metric-row" id="ml6Metrics"></div>
+      <div class="panel">
+        <h2>ML6 board</h2>
+        <div id="ml6Board" class="empty">Run Scan ML6 to populate.</div>
       </div>
     </section>
 
@@ -748,6 +780,140 @@ PAGE = r"""
         </div>
         <p class="why" style="margin:.45rem 0 0">${r.detail||r.headline||""}</p>
       </article>`;
+    }
+
+
+    function renderFreeDealer(fd) {
+      const el = document.getElementById("freeDealerBody");
+      if (!el) return;
+      if (!fd || !fd.ok) {
+        el.innerHTML = `<div class="empty">Free feeds unavailable.</div>`;
+        return;
+      }
+      const spx = fd.spx_gex || {};
+      const sm = fd.squeezemetrics || {};
+      const vol = (fd.vol_term || {}).levels || {};
+      const lvl = (k) => (vol[k] && vol[k].last != null) ? fmt(vol[k].last, 2) : "—";
+      const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
+      const summary = (fd.summary || []).map(s => `<li>${s}</li>`).join("");
+      el.innerHTML = `
+        <div class="metric-row">
+          ${m("SPX GEX", spx.regime||"—", spx.regime==="SHORT_GAMMA"?"down":"up")}
+          ${m("Call wall", spx.call_wall??"—")}
+          ${m("Flip", spx.zero_gamma_flip??"—")}
+          ${m("DIX", sm.dix??"—", sm.bias==="SUPPORTIVE"?"up":"")}
+          ${m("SM GEX $B", sm.gex_billions??"—")}
+          ${m("VIX", lvl("VIX"))}
+          ${m("VIX1D", lvl("VIX1D"))}
+          ${m("SKEW", lvl("SKEW"))}
+        </div>
+        <ul class="why" style="padding-left:1.1rem;margin:.6rem 0">${summary}</ul>
+        <p class="why" style="font-size:.72rem;color:var(--muted)">${fd.disclaimer||""}</p>
+      `;
+    }
+
+    function renderRedFlag(rf) {
+      const body = document.getElementById("redFlagBody");
+      const odte = document.getElementById("redFlagOdte");
+      if (!rf) {
+        const empty = `<div class="empty">Red Flag unavailable — run a scan.</div>`;
+        if (body) body.innerHTML = empty;
+        if (odte) odte.innerHTML = empty;
+        return;
+      }
+      const st = rf.state || "NEUTRAL";
+      const cls = st === "RED_FLAG" ? "down" : (st === "SUPPORTIVE" ? "up" : "");
+      const badgeCls = st === "RED_FLAG" ? "sell" : (st === "SUPPORTIVE" ? "buy" : "hold");
+      const strikes = (rf.resistance_strikes||[]).slice(0,4).map(s =>
+        `<span class="tag">$${s.strike} · OI ${s.open_interest}</span>`
+      ).join(" ");
+      const rules = (rf.bottom_line_rules||[]).map(r =>
+        `<li><strong>${r.ticker}</strong> (${r.when}): ${r.text}</li>`
+      ).join("");
+      const html = `<article class="action-card ${st==="RED_FLAG"?"wait":"long"}">
+        <div class="ac-top">
+          <div class="ac-sym">${rf.symbol||"SPY"}</div>
+          <div class="ac-dir ${cls||"wait"}"><span class="badge ${badgeCls}">${st.replace(/_/g," ")}</span></div>
+        </div>
+        <div class="ac-conf">Score ${fmt(rf.score,1)} · charm ${rf.charm_pressure||"—"} · expiry ${rf.expiry||"—"} · spot $${fmt(rf.spot,2)}</div>
+        <div class="bar"><i style="width:${Math.min(100, rf.score||50)}%"></i></div>
+        <p class="why" style="max-width:none">${(rf.reasons||[]).slice(0,5).join(" · ")||"—"}</p>
+        <p class="why" style="max-width:none;margin-top:.4rem"><strong>Equilibrium / call-wall:</strong> ${rf.equilibrium_strike?`$${rf.equilibrium_strike}`:"—"} ${strikes}</p>
+        <p class="why" style="max-width:none;margin-top:.4rem">${rf.strategy_hint||""}</p>
+        ${rf.cboe_gex && rf.cboe_gex.ok ? `<p class="why" style="max-width:none;margin-top:.4rem"><strong>CBOE SPX GEX:</strong> ${rf.cboe_gex.regime} · net ${fmt(rf.cboe_gex.net_gex/1e9,2)}B · call wall ${rf.cboe_gex.call_wall??"—"} · flip ${rf.cboe_gex.zero_gamma_flip??"—"} · contracts ${rf.cboe_gex.contracts_used??"—"}</p>` : ""}
+        <p class="why" style="max-width:none;margin-top:.4rem;font-size:.72rem;color:var(--muted)">${rf.volsignals_note||""}</p>
+        ${rf.block_0dte_long_calls ? `<p class="why down" style="margin-top:.5rem"><strong>Gate active:</strong> index 0DTE long calls blocked until Red Flag clears.</p>` : ""}
+        <div class="panel" style="margin-top:.8rem">
+          <h2 style="font-size:1rem;margin-bottom:.4rem">Bottom-line earnings watch (ML6)</h2>
+          <ul class="why" style="padding-left:1.1rem;margin:0">${rules}</ul>
+        </div>
+      </article>`;
+      if (body) body.innerHTML = html;
+      if (odte) odte.innerHTML = html;
+    }
+
+    function renderMl6(ml6) {
+      const rulesEl = document.getElementById("ml6Rules");
+      const boardEl = document.getElementById("ml6Board");
+      const metricsEl = document.getElementById("ml6Metrics");
+      const purpose = document.getElementById("ml6Purpose");
+      if (!ml6 || (!ml6.watchlist && !ml6.bottom_line_rules)) {
+        if (rulesEl) rulesEl.innerHTML = `<div class="empty">No ML6 data — click Scan ML6.</div>`;
+        if (boardEl) boardEl.innerHTML = `<div class="empty">No ML6 board yet.</div>`;
+        return;
+      }
+      if (purpose && ml6.purpose) purpose.textContent = ml6.purpose;
+      const rules = ml6.bottom_line_rules || [];
+      if (rulesEl) {
+        rulesEl.innerHTML = rules.length ? rules.map(r => {
+          const st = (r.status||"WATCH").replace(/_/g," ");
+          const cls = r.status==="WAIT_FOR_CONFIRMATION" ? "wait" : (r.status==="BUY_ONLY_IF_ACCEPTED" ? "long" : "wait");
+          return `<article class="action-card ${cls}" style="margin-bottom:.55rem">
+            <div class="ac-top">
+              <div class="ac-sym">${r.ticker}</div>
+              <div class="ac-dir ${cls}">${st}</div>
+            </div>
+            <div class="ac-conf">${r.headline||""}</div>
+            <p class="why" style="max-width:none;margin:.35rem 0 0">${r.rule||""}</p>
+          </article>`;
+        }).join("") : `<div class="empty">No bottom-line rules.</div>`;
+      }
+
+      const c = ml6.counts || {};
+      const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
+      if (metricsEl) {
+        metricsEl.innerHTML = [
+          m("Names", c.names??(ml6.watchlist||[]).length),
+          m("WATCH", c.watch??0),
+          m("WAIT", c.wait??0, "down"),
+          m("BUY IF…", c.buy_if??0, "up"),
+          m("Liquid OK", c.liquidity_ok??0),
+        ].join("");
+      }
+
+      const rows = ml6.watchlist || [];
+      if (!boardEl) return;
+      if (!rows.length) {
+        boardEl.innerHTML = `<div class="empty">Empty ML6 watchlist.</div>`;
+        return;
+      }
+      const statusBadge = (st) => {
+        const s = st||"WATCH";
+        const cls = s.includes("WAIT") ? "wait" : (s.includes("BUY") ? "buy" : "hold");
+        return `<span class="badge ${cls}">${s.replace(/_/g," ")}</span>`;
+      };
+      boardEl.innerHTML = `<table><thead><tr>
+        <th>Ticker</th><th>Earnings</th><th>Theme</th><th>Score</th><th>Status</th><th>DD%</th><th>Last</th><th>Gate</th>
+      </tr></thead><tbody>${rows.map(r => `<tr>
+        <td><strong>${r.symbol}</strong></td>
+        <td class="mono">${r.earnings_label||r.earnings_date||"—"}</td>
+        <td><span class="tag">${(r.theme||"").split(",")[0]||"—"}</span></td>
+        <td class="mono">${fmt(r.ensemble_score||r.score,1)}</td>
+        <td>${statusBadge(r.status)}</td>
+        <td class="mono">${r.drawdown_pct==null?"—":fmt(r.drawdown_pct,1)+"%"}</td>
+        <td class="mono">${r.last_price==null?"—":fmt(r.last_price,2)}</td>
+        <td class="why">${r.gate||r.action||""}</td>
+      </tr>`).join("")}</tbody></table>`;
     }
 
     function renderRadar(radar) {
@@ -2059,6 +2225,9 @@ PAGE = r"""
           : (hr.note || "");
       }
       renderExplosive(DATA.explosive || [], DATA.lottery || {});
+      renderRedFlag(DATA.red_flag);
+      renderFreeDealer(DATA.free_dealer);
+      renderMl6(DATA.ml6 || { watchlist: ((DATA.horizons||{}).ml6||[]), bottom_line_rules: (DATA.ml6&&DATA.ml6.bottom_line_rules)||[] });
       renderRadar(DATA.radar || {});
       renderEcho(DATA.echo || {});
       renderDarkpoolMini(DATA.echo || {});
@@ -2122,7 +2291,9 @@ PAGE = r"""
     }
 
     async function runScan(mode) {
-      const btn = mode==="liquid" ? document.getElementById("btnScanWide") : document.getElementById("btnScan");
+      const btn = mode==="liquid" ? document.getElementById("btnScanWide")
+        : (mode==="ml6" ? document.getElementById("btnScanMl6") : document.getElementById("btnScan"));
+      if (!btn) return;
       btn.disabled = true;
       const label = btn.textContent;
       btn.textContent = "Scanning…";
@@ -2136,7 +2307,7 @@ PAGE = r"""
           return;
         }
         // Poll until latest scan appears / scan lock frees (liquid can take several minutes)
-        const maxWaitMs = mode==="liquid" ? 12*60*1000 : 6*60*1000;
+        const maxWaitMs = mode==="liquid" ? 12*60*1000 : (mode==="ml6" ? 4*60*1000 : 6*60*1000);
         const startedAt = Date.now();
         let ready = false;
         while (Date.now() - startedAt < maxWaitMs) {
@@ -2161,6 +2332,8 @@ PAGE = r"""
     document.getElementById("btnRefresh").onclick = loadAll;
     document.getElementById("btnScan").onclick = () => runScan("focus");
     document.getElementById("btnScanWide").onclick = () => runScan("liquid");
+    const btnMl6 = document.getElementById("btnScanMl6");
+    if (btnMl6) btnMl6.onclick = () => runScan("ml6");
     const btnWb = document.getElementById("btnWebullSync");
     if (btnWb) btnWb.onclick = syncWebull;
 
@@ -2590,6 +2763,36 @@ def create_app(config_path: str | None = None) -> Flask:
                     row["entry"] = row.get("entry_ask")
                 journal_opens.append(row)
 
+        red_flag_snapshot = scan.get("red_flag")
+        rf_cfg = cfg.get("red_flag") or {}
+        if rf_cfg.get("enabled", True) and not offline:
+            try:
+                from odte_scanner.signals.red_flag import analyze_red_flag
+
+                rf_sym = str(rf_cfg.get("symbol") or (cfg.get("regime") or {}).get("spy") or "SPY")
+                red_flag_snapshot = analyze_red_flag(
+                    rf_sym,
+                    yahoo_symbol=rf_cfg.get("yahoo_symbol")
+                    or resolve_yahoo_symbol(rf_sym, cfg),
+                    otm_min_pct=float(rf_cfg.get("otm_min_pct", 0.15)),
+                    otm_max_pct=float(rf_cfg.get("otm_max_pct", 2.5)),
+                    min_oi=int(rf_cfg.get("min_oi", 500)),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Red Flag live refresh failed: %s", exc)
+
+        free_dealer = None
+        if not offline:
+            try:
+                from odte_scanner.signals.free_feeds import build_free_dealer_cockpit
+
+                free_dealer = build_free_dealer_cockpit()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Free dealer cockpit failed: %s", exc)
+                free_dealer = {"ok": False, "error": str(exc)}
+        else:
+            free_dealer = scan.get("free_dealer") or {"ok": False, "error": "offline"}
+
         actions = build_action_board(
             candidates=refreshed,
             scores=scan.get("scores") or [],
@@ -2610,6 +2813,7 @@ def create_app(config_path: str | None = None) -> Flask:
             odte_flatten_et=str(actions_cfg.get("odte_flatten_et") or "15:45"),
             # Pages offline has no live tape — still allow gated BUY so journal/exits can run
             require_live_confirm=not offline,
+            red_flag=red_flag_snapshot,
         )
 
         if journal is not None:
@@ -2651,6 +2855,7 @@ def create_app(config_path: str | None = None) -> Flask:
                     weekly_max_hold_days=int(actions_cfg.get("weekly_max_hold_days", 7)),
                     odte_flatten_et=str(actions_cfg.get("odte_flatten_et") or "15:45"),
                     require_live_confirm=not offline,
+                    red_flag=red_flag_snapshot,
                 )
                 more = journal.sync_from_actions(
                     actions,
@@ -3182,6 +3387,20 @@ def create_app(config_path: str | None = None) -> Flask:
             logger.warning("recommendation log unavailable: %s", exc)
             rec_log_payload = {"error": str(exc), "open_recs": [], "closed_recs": [], "by_section": {}}
 
+
+        ml6 = scan.get("ml6")
+        if not ml6:
+            ml6 = _read_json(ROOT / "outputs" / "latest_ml6.json")
+        if not ml6 and not offline:
+            try:
+                from odte_scanner.ml6.board import build_ml6_board
+
+                ml6 = build_ml6_board()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("ML6 snapshot fallback failed: %s", exc)
+                ml6 = {}
+        ml6 = ml6 or {}
+
         # Persist boards so /api/webull/sync + auto_sync see the same ENTER/EXIT set
         cache_path = ROOT / "outputs" / "ui_snapshot_cache.json"
         try:
@@ -3234,6 +3453,9 @@ def create_app(config_path: str | None = None) -> Flask:
                 "call_candidates": refreshed,
                 "explosive": explosive,
                 "lottery": lottery,
+                "ml6": ml6,
+                "red_flag": red_flag_snapshot,
+                "free_dealer": free_dealer,
                 "radar": radar,
                 "echo": echo,
                 "challenge": challenge,
@@ -3396,7 +3618,9 @@ def create_app(config_path: str | None = None) -> Flask:
                     "scan",
                     "--no-paper",
                 ]
-                if mode in ("liquid", "screener", "all"):
+                if mode == "ml6":
+                    cmd.extend(["--horizon", "ml6"])
+                elif mode in ("liquid", "screener", "all"):
                     cmd.extend(["--universe", mode])
                 subprocess.run(cmd, cwd=str(ROOT), check=False)
             finally:

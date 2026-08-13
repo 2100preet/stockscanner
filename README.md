@@ -7,8 +7,10 @@ Signa-style **action cards** (LONG/WAIT + entry/stop/R:R) and Intellectia-style 
 | **0DTE** | same / next session | gap-and-go, breakout, volume, VIX | 1 session |
 | **1 Week** | ~5 sessions | EMA/MACD/RS, pullbacks | 5 sessions |
 | **Swing** | 1–3 months | stage analysis, trend structure, medium RS | ~42 sessions |
+| **ML6** | earnings catalyst | drawdown + days-to-print + neocloud theme + liquidity; **reaction gate** (no blind BUY) | catalyst window |
+| **Red Flag** | 0DTE session | VolSignals-inspired dealer/charm proxy on SPY — blocks index 0DTE long calls when active | intraday |
 
-Quality gates (score + confirming algos) filter for **fewer, higher-conviction** signals to raise measured win rates.
+Quality gates (score + confirming algos) filter for **fewer, higher-conviction** signals to raise measured win rates. **ML6** is a separate earnings-catalyst neocloud / AI infra model (NBIS/CRWV style) — not the 0DTE ensemble. **Red Flag** uses public option-chain proxy data (not VS3D proprietary positioning).
 
 > **Not financial advice.** Options can go to zero. Research / paper-trading only. Not affiliated with Signa or Intellectia.
 
@@ -18,8 +20,9 @@ Quality gates (score + confirming algos) filter for **fewer, higher-conviction**
 2. Scores each symbol on **three separate ensembles**  
 3. Surfaces quality **action cards** + live 0DTE/1W call candidates  
 4. Screener covers ~100 liquid names (full market scan isn’t practical on free Yahoo limits)  
-5. Tabbed UI: Overview · 0DTE · 1 Week · Swing · Screener · Journal  
+5. Tabbed UI: Overview · 0DTE · 1 Week · Swing · **ML6 Neocloud** · Screener · Journal  
 6. Paper journal: enter on BUY NOW, exit on SELL NOW with profit%
+7. **ML6 board**: FRMI / TSSI / IREN (+ ORCL, APLD, CORZ, NBIS, CRWV) with earnings, theme, score, and WATCH / WAIT_FOR_CONFIRMATION / BUY_ONLY_IF_ACCEPTED statuses
 
 ## Quick start
 
@@ -33,6 +36,9 @@ python -m odte_scanner scan --no-paper
 
 # Broader liquid universe (~S&P100 + optionables)
 python -m odte_scanner scan --universe liquid --no-paper
+
+# ML6 — earnings-catalyst neocloud / AI infra (reaction-gated; no auto BUY on print)
+python -m odte_scanner scan --horizon ml6 --no-paper
 
 # Continuous 24/5 watch (extended-hours quotes + repeated scans). Ctrl+C to stop.
 python -m odte_scanner watch --interval 60
