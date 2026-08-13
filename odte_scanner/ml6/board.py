@@ -22,8 +22,11 @@ def build_ml6_board(
     *,
     quotes: dict[str, dict[str, Any]] | None = None,
     symbols: list[str] | None = None,
+    open_trades: list[dict[str, Any]] | None = None,
+    min_buy_score: float = 70.0,
+    attach_calls: bool = True,
 ) -> dict[str, Any]:
-    """Score ML6 watchlist and return board payload for CLI/UI."""
+    """Score ML6 watchlist + BUY NOW / SELL NOW action board."""
     syms = [s.upper() for s in (symbols or ml6_tickers())]
     quotes = quotes or {}
     histories = histories or {}
@@ -37,12 +40,16 @@ def build_ml6_board(
 
     rows.sort(
         key=lambda r: (
-            0 if r.get("status") == "WAIT_FOR_CONFIRMATION" else 1 if r.get("status") == "BUY_ONLY_IF_ACCEPTED" else 2,
+            0
+            if r.get("status") == "WAIT_FOR_CONFIRMATION"
+            else 1
+            if r.get("status") == "BUY_ONLY_IF_ACCEPTED"
+            else 2,
             -(r.get("ensemble_score") or 0),
         )
     )
 
-    return {
+    board: dict[str, Any] = {
         "horizon": "ml6",
         "label": "ML6 — earnings-catalyst neocloud / AI infra",
         "purpose": (
@@ -59,27 +66,67 @@ def build_ml6_board(
             "wait": sum(1 for r in rows if r.get("status") == "WAIT_FOR_CONFIRMATION"),
             "buy_if": sum(1 for r in rows if r.get("status") == "BUY_ONLY_IF_ACCEPTED"),
             "liquidity_ok": sum(1 for r in rows if r.get("liquidity_ok")),
+            "buy_now": 0,
+            "sell_now": 0,
         },
         "disclaimer": (
-            "ML6 is a research watch model with hard reaction gates. "
-            "Educational only — not auto-execution signals."
+            "ML6 BUY NOW / SELL NOW automation only fires after reaction confirmation "
+            "(paper journal when enabled). Never auto-buys the print blindly."
         ),
     }
+
+    try:
+        from odte_scanner.ml6.actions import build_ml6_action_board
+
+        actions = build_ml6_action_board(
+            rows,
+            quotes=quotes,
+            open_trades=list(open_trades or []),
+            min_score=float(min_buy_score),
+            attach_calls=bool(attach_calls),
+        )
+        board["actions"] = actions
+        board["counts"]["buy_now"] = int((actions.get("counts") or {}).get("buy_now") or 0)
+        board["counts"]["sell_now"] = int((actions.get("counts") or {}).get("sell_now") or 0)
+        by_act = {str(a.get("symbol")): a for a in (actions.get("all") or [])}
+        for r in rows:
+            a = by_act.get(str(r.get("symbol")))
+            if not a:
+                continue
+            r["trade_action"] = a.get("action")
+            r["trade_detail"] = a.get("detail")
+            r["trade_contract"] = a.get("contract")
+            r["trade_ask"] = a.get("ask")
+            if a.get("accepted"):
+                r["accepted"] = True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ML6 action board failed: %s", exc)
+        board["actions"] = {
+            "buy_now": [],
+            "sell_now": [],
+            "wait": [],
+            "watch": [],
+            "hold": [],
+            "counts": {},
+            "error": str(exc),
+        }
+
+    return board
 
 
 def run_ml6_scan(
     config_path: str | None = None,
     *,
-    place_paper: bool = False,  # noqa: ARG001 — ML6 never auto-papers on print alone
+    place_paper: bool = False,  # noqa: ARG001
 ) -> dict[str, Any]:
-    """Fetch history for ML6 sleeve + liquid context; write board to outputs."""
+    """Fetch history for ML6 sleeve; write board (+ optional paper BUY/SELL sync)."""
     cfg = load_config(config_path)
     aliases = {str(k).upper(): str(v) for k, v in (cfg.get("symbol_aliases") or {}).items()}
     tickers = ml6_tickers()
+    ml6_cfg = cfg.get("ml6") or {}
     logger.info("ML6 scan — %d neocloud/earnings names", len(tickers))
     histories = fetch_many(tickers, period="1y", aliases=aliases)
 
-    # Optional live quotes (best-effort)
     quotes: dict[str, dict[str, Any]] = {}
     try:
         from odte_scanner.data.live_quotes import fetch_live_quote
@@ -91,7 +138,48 @@ def run_ml6_scan(
     except Exception as exc:  # noqa: BLE001
         logger.warning("ML6 live quotes skipped: %s", exc)
 
-    board = build_ml6_board(histories, quotes=quotes, symbols=tickers)
+    open_trades: list[dict[str, Any]] = []
+    journal = None
+    jcfg = cfg.get("journal") or {}
+    if jcfg.get("enabled", True):
+        try:
+            from odte_scanner.trading.journal import SignalJournal
+
+            jpath = Path(jcfg.get("path", "outputs/signal_journal.json"))
+            if not jpath.is_absolute():
+                jpath = ROOT / jpath
+            journal = SignalJournal(jpath, starting_cash=float(jcfg.get("starting_cash", 5000)))
+            open_trades = [t.to_dict() for t in journal.book.trades if t.status == "open"]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("ML6 journal open trades skipped: %s", exc)
+
+    board = build_ml6_board(
+        histories,
+        quotes=quotes,
+        symbols=tickers,
+        open_trades=open_trades,
+        min_buy_score=float(ml6_cfg.get("min_buy_score", 70)),
+        attach_calls=bool(ml6_cfg.get("attach_calls", True)),
+    )
+
+    paper_trades: list[dict[str, Any]] = []
+    # Automation: paper enter/exit when journal auto flags on (still reaction-gated)
+    if journal is not None and bool(ml6_cfg.get("auto_trade", True)):
+        try:
+            sync = journal.sync_from_actions(
+                {"buy_now": [], "sell_now": [], "buy_now_0dte": [], "buy_now_weekly": []},
+                max_risk_usd=float(jcfg.get("max_risk_per_trade_usd", 250)),
+                auto_enter=bool(jcfg.get("auto_enter", True)),
+                auto_exit=bool(jcfg.get("auto_exit", True)),
+                ml6=board.get("actions"),
+            )
+            paper_trades = list(sync.get("entered") or []) + list(sync.get("exited") or [])
+            board["journal_sync"] = {
+                "entered": len(sync.get("entered") or []),
+                "exited": len(sync.get("exited") or []),
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("ML6 paper sync failed: %s", exc)
 
     out_dir = ROOT / "outputs"
     out_dir.mkdir(exist_ok=True)
@@ -102,12 +190,11 @@ def run_ml6_scan(
         **board,
         "universe_mode": "ml6",
         "universe_size": len(tickers),
-        "paper_trades": [],  # never auto-buy on earnings print alone
+        "paper_trades": paper_trades,
         "session_weekday": datetime.now(timezone.utc).strftime("%A"),
     }
-    path.write_text(json.dumps(payload, indent=2))
-    latest.write_text(json.dumps(payload, indent=2))
-    # Also merge a compact ml6 block into latest_scan if present (UI convenience)
+    path.write_text(json.dumps(payload, indent=2, default=str))
+    latest.write_text(json.dumps(payload, indent=2, default=str))
     latest_scan = out_dir / "latest_scan.json"
     if latest_scan.exists():
         try:
@@ -116,9 +203,15 @@ def run_ml6_scan(
             horizons = dict(scan.get("horizons") or {})
             horizons["ml6"] = board.get("watchlist") or []
             scan["horizons"] = horizons
-            latest_scan.write_text(json.dumps(scan, indent=2))
+            latest_scan.write_text(json.dumps(scan, indent=2, default=str))
         except Exception as exc:  # noqa: BLE001
             logger.warning("Could not merge ML6 into latest_scan: %s", exc)
 
-    logger.info("Wrote %s (n=%d)", path, len(tickers))
+    logger.info(
+        "Wrote %s (n=%d buy_now=%d sell_now=%d)",
+        path,
+        len(tickers),
+        board["counts"].get("buy_now", 0),
+        board["counts"].get("sell_now", 0),
+    )
     return payload

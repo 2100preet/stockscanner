@@ -361,6 +361,20 @@ PAGE = r"""
         <div id="ml6Rules" class="empty">Loading ML6 rules…</div>
       </div>
       <div class="metric-row" id="ml6Metrics"></div>
+      <div class="cards" id="ml6Primary"></div>
+      <div class="panel">
+        <h2>BUY NOW — ML6 automation</h2>
+        <p class="lede" style="margin-top:0">Reaction-gated only. Paper journal auto-enters when enabled (weekly/swing calls).</p>
+        <div id="ml6Buy" class="empty">No ML6 BUY NOW — waiting for post-print acceptance.</div>
+      </div>
+      <div class="panel">
+        <h2>SELL NOW — ML6 automation</h2>
+        <div id="ml6Sell" class="empty">No open ML6 exits.</div>
+      </div>
+      <div class="panel">
+        <h2>WAIT / WATCH (gated)</h2>
+        <div id="ml6Wait" class="empty">—</div>
+      </div>
       <div class="panel">
         <h2>ML6 board</h2>
         <div id="ml6Board" class="empty">Run Scan ML6 to populate.</div>
@@ -857,6 +871,10 @@ PAGE = r"""
       const boardEl = document.getElementById("ml6Board");
       const metricsEl = document.getElementById("ml6Metrics");
       const purpose = document.getElementById("ml6Purpose");
+      const buyEl = document.getElementById("ml6Buy");
+      const sellEl = document.getElementById("ml6Sell");
+      const waitEl = document.getElementById("ml6Wait");
+      const primaryEl = document.getElementById("ml6Primary");
       if (!ml6 || (!ml6.watchlist && !ml6.bottom_line_rules)) {
         if (rulesEl) rulesEl.innerHTML = `<div class="empty">No ML6 data — click Scan ML6.</div>`;
         if (boardEl) boardEl.innerHTML = `<div class="empty">No ML6 board yet.</div>`;
@@ -879,17 +897,55 @@ PAGE = r"""
         }).join("") : `<div class="empty">No bottom-line rules.</div>`;
       }
 
-      const c = ml6.counts || {};
+      const acts = ml6.actions || {};
+      const c = Object.assign({}, ml6.counts || {}, acts.counts || {});
       const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
       if (metricsEl) {
         metricsEl.innerHTML = [
-          m("Names", c.names??(ml6.watchlist||[]).length),
+          m("BUY NOW", c.buy_now??0, (c.buy_now||0)>0?"up":""),
+          m("SELL NOW", c.sell_now??0, (c.sell_now||0)>0?"down":""),
+          m("WAIT", c.wait??0),
           m("WATCH", c.watch??0),
-          m("WAIT", c.wait??0, "down"),
-          m("BUY IF…", c.buy_if??0, "up"),
+          m("Names", c.names??(ml6.watchlist||[]).length),
           m("Liquid OK", c.liquidity_ok??0),
         ].join("");
       }
+
+      const actionRows = (rows) => {
+        if (!rows || !rows.length) return `<div class="empty">None right now.</div>`;
+        return `<table><thead><tr>
+          <th>Action</th><th>Symbol</th><th>Contract</th><th>Ask/Bid</th><th>Strength</th><th>Why</th>
+        </tr></thead><tbody>${rows.map(r=>{
+          const a=(r.action||"WAIT").replaceAll("_"," ");
+          const cls=(r.action||"WAIT").toLowerCase().split("_")[0];
+          return `<tr>
+            <td><span class="badge ${cls}">${a}</span></td>
+            <td><strong>${r.symbol}</strong></td>
+            <td class="mono">${r.strike==null?"—":fmt(r.strike,2)+"c"} ${r.expiry||""} <span class="status">DTE ${r.dte??"—"}</span></td>
+            <td class="mono">${fmt(r.ask,2)} / ${fmt(r.bid,2)}</td>
+            <td class="mono">${fmt(r.strength,0)}</td>
+            <td class="why">${r.detail||""}</td>
+          </tr>`;
+        }).join("")}</tbody></table>`;
+      };
+
+      const actionable = [...(acts.sell_now||[]), ...(acts.buy_now||[])].slice(0,4);
+      if (primaryEl) {
+        primaryEl.innerHTML = actionable.length
+          ? actionable.map(r => {
+              const kind = (r.action||"").startsWith("BUY") ? "long" : "wait";
+              return `<article class="action-card ${kind}">
+                <div class="ac-top"><div class="ac-sym">${r.symbol}</div>
+                <div class="ac-dir ${kind}">${(r.action||"").replaceAll("_"," ")}</div></div>
+                <div class="ac-conf">Strength ${fmt(r.strength,0)} · score ${fmt(r.score,0)}</div>
+                <p class="why" style="max-width:none">${r.detail||r.headline||""}</p>
+              </article>`;
+            }).join("")
+          : `<div class="empty">${acts.note||"No ML6 BUY/SELL cleared — reaction gate still on."}</div>`;
+      }
+      if (buyEl) buyEl.innerHTML = actionRows(acts.buy_now||[]);
+      if (sellEl) sellEl.innerHTML = actionRows(acts.sell_now||[]);
+      if (waitEl) waitEl.innerHTML = actionRows([...(acts.wait||[]), ...(acts.watch||[]).slice(0,8)]);
 
       const rows = ml6.watchlist || [];
       if (!boardEl) return;
@@ -899,20 +955,21 @@ PAGE = r"""
       }
       const statusBadge = (st) => {
         const s = st||"WATCH";
-        const cls = s.includes("WAIT") ? "wait" : (s.includes("BUY") ? "buy" : "hold");
-        return `<span class="badge ${cls}">${s.replace(/_/g," ")}</span>`;
+        const cls = s.includes("SELL") ? "sell" : (s.includes("BUY") ? "buy" : (s.includes("WAIT") ? "wait" : "hold"));
+        return `<span class="badge ${cls}">${String(s).replace(/_/g," ")}</span>`;
       };
       boardEl.innerHTML = `<table><thead><tr>
-        <th>Ticker</th><th>Earnings</th><th>Theme</th><th>Score</th><th>Status</th><th>DD%</th><th>Last</th><th>Gate</th>
+        <th>Ticker</th><th>Earnings</th><th>Theme</th><th>Score</th><th>Gate</th><th>Trade</th><th>DD%</th><th>Last</th><th>Detail</th>
       </tr></thead><tbody>${rows.map(r => `<tr>
         <td><strong>${r.symbol}</strong></td>
         <td class="mono">${r.earnings_label||r.earnings_date||"—"}</td>
         <td><span class="tag">${(r.theme||"").split(",")[0]||"—"}</span></td>
         <td class="mono">${fmt(r.ensemble_score||r.score,1)}</td>
         <td>${statusBadge(r.status)}</td>
+        <td>${statusBadge(r.trade_action||"—")}</td>
         <td class="mono">${r.drawdown_pct==null?"—":fmt(r.drawdown_pct,1)+"%"}</td>
         <td class="mono">${r.last_price==null?"—":fmt(r.last_price,2)}</td>
-        <td class="why">${r.gate||r.action||""}</td>
+        <td class="why">${r.trade_detail||r.gate||r.action||""}</td>
       </tr>`).join("")}</tbody></table>`;
     }
 
@@ -3400,6 +3457,71 @@ def create_app(config_path: str | None = None) -> Flask:
                 logger.warning("ML6 snapshot fallback failed: %s", exc)
                 ml6 = {}
         ml6 = ml6 or {}
+
+        # Refresh ML6 BUY/SELL automation with live quotes + open journal trades
+        if not offline:
+            try:
+                from odte_scanner.data.fetcher import fetch_many as _fetch_many
+                from odte_scanner.data.live_quotes import fetch_live_quote as _flq
+                from odte_scanner.ml6.board import build_ml6_board as _bml6
+                from odte_scanner.ml6.watchlist import ml6_tickers as _ml6t
+
+                ml6_syms = _ml6t()
+                for s in ml6_syms:
+                    aliases.setdefault(s, resolve_yahoo_symbol(s, cfg))
+                ml6_quotes: dict = {}
+                for sym in ml6_syms:
+                    qq = quotes.get(sym)
+                    if not qq:
+                        lq = _flq(sym, yahoo_symbol=aliases.get(sym))
+                        if lq:
+                            qq = lq.to_dict() if hasattr(lq, "to_dict") else dict(lq)
+                    if qq:
+                        ml6_quotes[sym] = qq
+                        quotes[sym] = qq
+                open_ml6 = []
+                if journal is not None:
+                    open_ml6 = [t.to_dict() for t in journal.book.trades if t.status == "open"]
+                elif isinstance(ledger, dict):
+                    open_ml6 = [t for t in (ledger.get("trades") or []) if t.get("status") == "open"]
+                hist = _fetch_many(ml6_syms, period="1y", aliases=aliases)
+                ml6 = _bml6(
+                    hist,
+                    quotes=ml6_quotes,
+                    symbols=ml6_syms,
+                    open_trades=open_ml6,
+                    min_buy_score=float((cfg.get("ml6") or {}).get("min_buy_score", 70)),
+                    attach_calls=bool((cfg.get("ml6") or {}).get("attach_calls", True)),
+                )
+                # Paper sync ML6 BUY/SELL like lottery desk
+                if journal is not None and jcfg.get("enabled", True) and bool((cfg.get("ml6") or {}).get("auto_trade", True)):
+                    from odte_scanner.trading.insights import build_insights as _bi2
+
+                    ml6_sync = journal.sync_from_actions(
+                        {"buy_now": [], "sell_now": [], "buy_now_0dte": [], "buy_now_weekly": []},
+                        max_risk_usd=float(jcfg.get("max_risk_per_trade_usd", 250)),
+                        auto_enter=bool(jcfg.get("auto_enter", True)),
+                        auto_exit=bool(jcfg.get("auto_exit", True)),
+                        ml6=ml6.get("actions"),
+                    )
+                    if journal_sync is None:
+                        journal_sync = ml6_sync
+                    else:
+                        journal_sync = dict(journal_sync)
+                        journal_sync["entered"] = list(journal_sync.get("entered") or []) + list(
+                            ml6_sync.get("entered") or []
+                        )
+                        journal_sync["exited"] = list(journal_sync.get("exited") or []) + list(
+                            ml6_sync.get("exited") or []
+                        )
+                    if ml6_sync.get("exited") or ml6_sync.get("entered"):
+                        insights = _bi2(journal=journal, actions=actions, win_rates=win_table)
+                    ml6["journal_sync"] = {
+                        "entered": len(ml6_sync.get("entered") or []),
+                        "exited": len(ml6_sync.get("exited") or []),
+                    }
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("ML6 live action refresh failed: %s", exc)
 
         # Persist boards so /api/webull/sync + auto_sync see the same ENTER/EXIT set
         cache_path = ROOT / "outputs" / "ui_snapshot_cache.json"
