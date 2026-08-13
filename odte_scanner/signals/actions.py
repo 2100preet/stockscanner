@@ -9,6 +9,13 @@ from odte_scanner.signals.hold_rules import (
     past_no_new_0dte_entries,
     time_stop_reason,
 )
+from odte_scanner.time_cst import (
+    append_asked_cst,
+    load_signal_store,
+    resolve_first_signal_time,
+    save_signal_store,
+    signal_timestamps,
+)
 
 
 @dataclass
@@ -35,9 +42,27 @@ class ActionSignal:
     win_samples: int | None = None
     hit_1pct: float | None = None
     hit_2pct: float | None = None
+    signaled_at: str | None = None
+    signaled_at_cst: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        d = asdict(self)
+        if self.action in {"BUY_NOW", "SELL_NOW"} and not d.get("signaled_at"):
+            d.update(signal_timestamps())
+        return d
+
+
+def _apply_persisted_action(
+    sig: ActionSignal,
+    store: dict[str, Any],
+) -> tuple[ActionSignal, dict[str, Any]]:
+    if sig.action not in {"BUY_NOW", "SELL_NOW"}:
+        return sig, store
+    utc, cst, store = resolve_first_signal_time(store, symbol=sig.symbol, action=sig.action)
+    sig.signaled_at = utc
+    sig.signaled_at_cst = cst
+    sig.detail = append_asked_cst(sig.detail, action=sig.action, signaled_at_cst=cst)
+    return sig, store
 
 
 def _live_pct(quote: dict[str, Any] | None) -> float | None:
@@ -650,6 +675,7 @@ def build_action_board(
     now: datetime | None = None,
     require_live_confirm: bool = True,
     red_flag: dict[str, Any] | None = None,
+    signal_times_path: str | None = "outputs/signal_times.json",
 ) -> dict[str, Any]:
     score_by_symbol = {
         str(s.get("symbol")): float(s.get("ensemble_score") or 0) for s in scores or []
@@ -658,6 +684,7 @@ def build_action_board(
     merged = merge_exit_ledgers(ledger, journal_opens)
     open_trades = list(merged.get("trades") or [])
     open_symbols = {str(t.get("symbol")) for t in open_trades}
+    store = load_signal_store(signal_times_path)
 
     buys: list[ActionSignal] = []
     waits: list[ActionSignal] = []
@@ -680,6 +707,7 @@ def build_action_board(
             continue
         sig = _attach_win_stats(sig, win_rate_table)
         if sig.action == "SELL_NOW":
+            sig, store = _apply_persisted_action(sig, store)
             sells.append(sig)
         else:
             holds.append(sig)
@@ -707,11 +735,14 @@ def build_action_board(
             require_hist_win=require_hist_win,
         )
         if sig.action == "BUY_NOW":
+            sig, store = _apply_persisted_action(sig, store)
             buys.append(sig)
         elif sig.action == "HOLD":
             holds.append(sig)
         else:
             waits.append(sig)
+
+    save_signal_store(signal_times_path, store)
 
     # Rank buys by historical win% then strength
     buys.sort(key=lambda s: (s.win_pct or 0, s.strength), reverse=True)
@@ -799,6 +830,7 @@ def build_action_board(
             "wait": len(waits),
             "all": len(all_signals),
         },
+        "signal_times": store,
     }
 
     if red_flag:

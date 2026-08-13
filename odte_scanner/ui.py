@@ -725,7 +725,7 @@ PAGE = r"""
       const el = document.getElementById(elId);
       if (!rows || !rows.length) { el.innerHTML = `<div class="empty">No listed calls in this bucket.</div>`; return; }
       el.innerHTML = `<table><thead><tr>
-        <th>Action</th><th>Symbol</th><th>Side</th><th>Strike</th><th>Expiry</th><th>Bid/Ask</th><th>Score</th><th>Hist win</th><th>n</th><th>Strike rate</th><th>Why / EXIT plan</th>
+        <th>Action</th><th>Symbol</th><th>Asked (CST)</th><th>Side</th><th>Strike</th><th>Expiry</th><th>Bid/Ask</th><th>Score</th><th>Hist win</th><th>n</th><th>Strike rate</th><th>Why / EXIT plan</th>
       </tr></thead><tbody>${rows.map(r=>{
         const a=(r.action||"WAIT").replace("_"," ");
         const cls=(r.action||"WAIT").toLowerCase().split("_")[0];
@@ -733,10 +733,14 @@ PAGE = r"""
         const win=r.win_pct==null?"—":`${fmt(r.win_pct,0)}%`;
         const n=r.win_pct==null?"—":`${r.win_samples||0}`;
         const sr=r.hit_1pct==null?"—":`${fmt(r.hit_1pct,0)}% ≥1%`+(r.hit_2pct==null?"":` · ${fmt(r.hit_2pct,0)}% ≥2%`);
+        const when = (r.action==="BUY_NOW"||r.action==="SELL_NOW")
+          ? (r.signaled_at_cst || fmtCST(r.signaled_at) || "—")
+          : "—";
         const why=[r.detail||"", r.exit_plan||""].filter(Boolean).join(" · ");
         return `<tr>
           <td><span class="badge ${cls}">${a}</span></td>
           <td><strong>${r.symbol}</strong></td>
+          <td class="mono">${when}</td>
           <td class="mono">${side}</td>
           <td class="mono">${r.strike==null?"—":fmt(r.strike,2)}${(r.right||"C")==="P"?"p":"c"}</td>
           <td class="mono">${r.expiry||"—"} <span class="status">DTE ${r.dte??"—"}</span></td>
@@ -759,7 +763,7 @@ PAGE = r"""
           <div class="ac-sym">${r.symbol}</div>
           <div class="ac-dir ${kind}">${act.replaceAll("_"," ")}</div>
         </div>
-        <div class="ac-conf">Strength ${fmt(r.strength,0)} · ${r.confirms||0} confirms${r.best_mult!=null?` · ~${fmt(r.best_mult,0)}× upside`:""}</div>
+        <div class="ac-conf">Strength ${fmt(r.strength,0)} · ${r.confirms||0} confirms${r.best_mult!=null?` · ~${fmt(r.best_mult,0)}× upside`:""}${(r.action==="BUY_NOW"||r.action==="SELL_NOW")?` · asked ${r.signaled_at_cst||fmtCST(r.signaled_at)||"—"}`:""}</div>
         <div class="bar"><i style="width:${Math.min(100,r.strength||0)}%"></i></div>
         <div class="ac-meta">
           <div>Strike<strong>${r.strike==null?"—":fmt(r.strike,2)+"c"}</strong></div>
@@ -778,13 +782,17 @@ PAGE = r"""
     function lotteryActionRows(rows) {
       if (!rows || !rows.length) return `<div class="empty">None right now.</div>`;
       return `<table><thead><tr>
-        <th>Action</th><th>Symbol</th><th>Contract</th><th>Ask/Bid</th><th>@+3%</th><th>Strength</th><th>Why</th>
+        <th>Action</th><th>Symbol</th><th>Asked (CST)</th><th>Contract</th><th>Ask/Bid</th><th>@+3%</th><th>Strength</th><th>Why</th>
       </tr></thead><tbody>${rows.map(r=>{
         const a=(r.action||"WAIT").replaceAll("_"," ");
         const cls=(r.action||"WAIT").toLowerCase().split("_")[0];
+        const when = (r.action==="BUY_NOW"||r.action==="SELL_NOW")
+          ? (r.signaled_at_cst || fmtCST(r.signaled_at) || "—")
+          : "—";
         return `<tr>
           <td><span class="badge ${cls}">${a}</span></td>
           <td><strong>${r.symbol}</strong></td>
+          <td class="mono">${when}</td>
           <td class="mono">${r.strike==null?"—":fmt(r.strike,2)+"c"} ${r.expiry||""} <span class="status">DTE ${r.dte??"—"}</span></td>
           <td class="mono">${fmt(r.ask,2)} / ${fmt(r.bid,2)}</td>
           <td class="mono up">${fmt(r.mult_at_3pct,1)}×</td>
@@ -960,13 +968,15 @@ PAGE = r"""
       const actionRows = (rows) => {
         if (!rows || !rows.length) return `<div class="empty">None right now.</div>`;
         return `<table><thead><tr>
-          <th>Action</th><th>Symbol</th><th>Contract</th><th>Ask/Bid</th><th>Strength</th><th>Why</th>
+          <th>Action</th><th>Symbol</th><th>Asked (CST)</th><th>Contract</th><th>Ask/Bid</th><th>Strength</th><th>Why</th>
         </tr></thead><tbody>${rows.map(r=>{
           const a=(r.action||"WAIT").replaceAll("_"," ");
           const cls=(r.action||"WAIT").toLowerCase().split("_")[0];
+          const when = r.signaled_at_cst || fmtCST(r.signaled_at) || "—";
           return `<tr>
             <td><span class="badge ${cls}">${a}</span></td>
             <td><strong>${r.symbol}</strong></td>
+            <td class="mono">${when}</td>
             <td class="mono">${r.strike==null?"—":fmt(r.strike,2)+"c"} ${r.expiry||""} <span class="status">DTE ${r.dte??"—"}</span></td>
             <td class="mono">${fmt(r.ask,2)} / ${fmt(r.bid,2)}</td>
             <td class="mono">${fmt(r.strength,0)}</td>
@@ -980,10 +990,11 @@ PAGE = r"""
         primaryEl.innerHTML = actionable.length
           ? actionable.map(r => {
               const kind = (r.action||"").startsWith("BUY") ? "long" : "wait";
+              const when = r.signaled_at_cst || fmtCST(r.signaled_at);
               return `<article class="action-card ${kind}">
                 <div class="ac-top"><div class="ac-sym">${r.symbol}</div>
                 <div class="ac-dir ${kind}">${(r.action||"").replaceAll("_"," ")}</div></div>
-                <div class="ac-conf">Strength ${fmt(r.strength,0)} · score ${fmt(r.score,0)}</div>
+                <div class="ac-conf">Strength ${fmt(r.strength,0)} · score ${fmt(r.score,0)} · asked ${when||"—"}</div>
                 <p class="why" style="max-width:none">${r.detail||r.headline||""}</p>
               </article>`;
             }).join("")
@@ -1005,7 +1016,7 @@ PAGE = r"""
         return `<span class="badge ${cls}">${String(s).replace(/_/g," ")}</span>`;
       };
       boardEl.innerHTML = `<table><thead><tr>
-        <th>Ticker</th><th>Earnings</th><th>Theme</th><th>Score</th><th>Gate</th><th>Trade</th><th>DD%</th><th>Last</th><th>Detail</th>
+        <th>Ticker</th><th>Earnings</th><th>Theme</th><th>Score</th><th>Gate</th><th>Trade</th><th>Asked (CST)</th><th>DD%</th><th>Last</th><th>Detail</th>
       </tr></thead><tbody>${rows.map(r => `<tr>
         <td><strong>${r.symbol}</strong></td>
         <td class="mono">${r.earnings_label||r.earnings_date||"—"}</td>
@@ -1013,6 +1024,7 @@ PAGE = r"""
         <td class="mono">${fmt(r.ensemble_score||r.score,1)}</td>
         <td>${statusBadge(r.status)}</td>
         <td>${statusBadge(r.trade_action||"—")}</td>
+        <td class="mono">${r.buy_now_at_cst || ((r.trade_action||"").includes("BUY") ? fmtCST(r.buy_now_at) : "—")}</td>
         <td class="mono">${r.drawdown_pct==null?"—":fmt(r.drawdown_pct,1)+"%"}</td>
         <td class="mono">${r.last_price==null?"—":fmt(r.last_price,2)}</td>
         <td class="why">${r.trade_detail||r.gate||r.action||""}</td>
@@ -2383,7 +2395,7 @@ PAGE = r"""
       const lc = (DATA.lottery && DATA.lottery.counts) || {};
       const rc = (DATA.radar && DATA.radar.counts) || {};
       document.getElementById("counts").textContent =
-        `BUY ${c.buy_now||0} · SELL ${c.sell_now||0} · WAIT ${c.wait||0} · LOTTO B/S ${lc.buy_now||0}/${lc.sell_now||0} · RADAR HOT ${rc.hot||0}`;
+        `BUY ${c.buy_now||0} · SELL ${c.sell_now||0} · WAIT ${c.wait||0} · LOTTO B/S ${lc.buy_now||0}/${lc.sell_now||0} · ML6 B/S ${(DATA.ml6&&DATA.ml6.actions&&DATA.ml6.actions.counts&&DATA.ml6.actions.counts.buy_now)||0}/${(DATA.ml6&&DATA.ml6.actions&&DATA.ml6.actions.counts&&DATA.ml6.actions.counts.sell_now)||0} · RADAR HOT ${rc.hot||0}`;
       const gate = acts.hist_win_gate || DATA.hist_win_gate || {};
       const gateEl = document.getElementById("histWinGate");
       if (gateEl) {

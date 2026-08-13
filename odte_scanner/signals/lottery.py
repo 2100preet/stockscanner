@@ -20,6 +20,14 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from odte_scanner.time_cst import (
+    append_asked_cst,
+    load_signal_store,
+    resolve_first_signal_time,
+    save_signal_store,
+    signal_timestamps,
+)
+
 ET = ZoneInfo("America/New_York")
 
 
@@ -51,9 +59,27 @@ class LotteryAction:
     mom_15m_pct: float | None = None
     option_unrealized_pct: float | None = None
     trade_id: str | None = None
+    signaled_at: str | None = None
+    signaled_at_cst: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        d = asdict(self)
+        if self.action in {"BUY_NOW", "SELL_NOW"} and not d.get("signaled_at"):
+            d.update(signal_timestamps())
+        return d
+
+
+def _apply_persisted_lottery(
+    sig: LotteryAction,
+    store: dict[str, Any],
+) -> tuple[LotteryAction, dict[str, Any]]:
+    if sig.action not in {"BUY_NOW", "SELL_NOW"}:
+        return sig, store
+    utc, cst, store = resolve_first_signal_time(store, symbol=sig.symbol, action=sig.action)
+    sig.signaled_at = utc
+    sig.signaled_at_cst = cst
+    sig.detail = append_asked_cst(sig.detail, action=sig.action, signaled_at_cst=cst)
+    return sig, store
 
 
 def _et_now() -> datetime:
@@ -486,12 +512,14 @@ def build_lottery_board(
     min_lottery_score: float = 62.0,
     min_confirms: int = 4,
     now: datetime | None = None,
+    signal_times_path: str | None = "outputs/lottery_signal_times.json",
 ) -> dict[str, Any]:
     """Ranked lottery actions — only promote BUY/SELL when playbook clears."""
     quotes = quotes or {}
     score_map = _prefer_0dte_scores(scores)
     open_all = [t for t in (open_trades or []) if t.get("status") == "open"]
     open_contracts = {str(t.get("contract")) for t in open_all if t.get("contract")}
+    store = load_signal_store(signal_times_path)
 
     # Map tickets by contract for exit marks
     by_contract = {str(t.get("contract")): t for t in explosive if t.get("contract")}
@@ -524,6 +552,7 @@ def build_lottery_board(
         if not sig:
             continue
         if sig.action == "SELL_NOW":
+            sig, store = _apply_persisted_lottery(sig, store)
             sells.append(sig)
         else:
             holds.append(sig)
@@ -542,6 +571,7 @@ def build_lottery_board(
             now=now,
         )
         if sig.action == "BUY_NOW":
+            sig, store = _apply_persisted_lottery(sig, store)
             buys.append(sig)
         elif sig.action == "WAIT":
             waits.append(sig)
@@ -553,6 +583,8 @@ def build_lottery_board(
     buys.sort(key=lambda s: (s.strength, s.best_mult or 0), reverse=True)
     sells.sort(key=lambda s: s.strength, reverse=True)
     waits.sort(key=lambda s: (s.confirms, s.lottery_score or 0), reverse=True)
+
+    save_signal_store(signal_times_path, store)
 
     primary = None
     if sells:
@@ -574,9 +606,11 @@ def build_lottery_board(
             "hold": len(holds),
             "skip": len(skips),
         },
+        "signal_times": store,
         "playbook_note": (
             "Lottery BUY NOW requires convexity + liquidity + tape confirm + session timing "
             "+ underlying multi-algo score. SELL NOW banks +120%/+300% or cuts on tape/premium fail. "
+            "BUY NOW time shown in US Central (CST/CDT) from the first pulse. "
             "Research only — options can go to zero."
         ),
     }
