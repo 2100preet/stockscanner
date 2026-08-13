@@ -116,13 +116,74 @@ def analyze_red_flag(
     otm_min_pct: float = 0.15,
     otm_max_pct: float = 2.5,
     min_oi: int = 500,
+    use_cboe_spx: bool = True,
 ) -> dict[str, Any]:
-    """Estimate Red Flag state from 0DTE/near-0DTE call positioning above spot."""
+    """Estimate Red Flag state from 0DTE/near-0DTE call positioning above spot.
+
+    Prefer CBOE delayed SPX GEX when available; fall back to Yahoo chain skew.
+    """
+    cboe: dict[str, Any] | None = None
+    if use_cboe_spx:
+        try:
+            from odte_scanner.signals.cboe_gex import compute_spx_gex
+
+            cboe = compute_spx_gex(zero_dte_only=True)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("CBOE GEX unavailable: %s", exc)
+            cboe = None
+
     exp, calls, spot = _fetch_calls(symbol, yahoo_symbol=yahoo_symbol)
     reasons: list[str] = []
     resistance_strikes: list[dict[str, Any]] = []
 
+    # Merge CBOE SPX dealer-GEX regime into the Red Flag decision when present
+    if cboe and cboe.get("ok"):
+        regime = str(cboe.get("regime") or "")
+        call_wall = cboe.get("call_wall")
+        flip = cboe.get("zero_gamma_flip")
+        net = cboe.get("net_gex")
+        reasons.append(
+            f"CBOE SPX 0DTE GEX regime={regime} net≈{net:,.0f}" if isinstance(net, (int, float))
+            else f"CBOE SPX 0DTE GEX regime={regime}"
+        )
+        if call_wall:
+            reasons.append(f"CBOE call wall ≈ SPX {call_wall}")
+        if flip:
+            reasons.append(f"CBOE zero-gamma flip ≈ SPX {flip}")
+
     if calls is None or calls.empty or spot is None or spot <= 0:
+        # Still usable from CBOE alone
+        if cboe and cboe.get("ok"):
+            regime = str(cboe.get("regime") or "NEUTRAL")
+            state: RedFlagState = "RED_FLAG" if regime == "SHORT_GAMMA" else (
+                "SUPPORTIVE" if regime == "LONG_GAMMA" else "NEUTRAL"
+            )
+            score = 72.0 if state == "RED_FLAG" else (38.0 if state == "SUPPORTIVE" else 50.0)
+            mins_left = _minutes_to_close_et()
+            charm = "unknown"
+            if mins_left is not None:
+                charm = "high" if mins_left <= 90 else ("moderate" if mins_left <= 180 else "low")
+            block = state == "RED_FLAG" and charm in {"high", "moderate"}
+            return {
+                "symbol": "SPX",
+                "state": state,
+                "score": score,
+                "expiry": None,
+                "spot": cboe.get("spot"),
+                "reasons": reasons or ["CBOE SPX GEX only (Yahoo chain missing)"],
+                "resistance_strikes": [
+                    {"strike": cboe.get("call_wall"), "open_interest": None, "volume": None, "moneyness_pct": None}
+                ] if cboe.get("call_wall") else [],
+                "equilibrium_strike": cboe.get("call_wall") or cboe.get("zero_gamma_flip"),
+                "charm_pressure": charm,
+                "minutes_to_close": round(mins_left, 1) if mins_left is not None else None,
+                "block_0dte_long_calls": block,
+                "strategy_hint": _strategy_hint(state),
+                "volsignals_note": VOLSIGNALS_NOTE,
+                "bottom_line_rules": BOTTOM_LINE_RULES,
+                "cboe_gex": cboe,
+                "proxy": True,
+            }
         return {
             "symbol": symbol,
             "state": "NEUTRAL",
@@ -136,6 +197,7 @@ def analyze_red_flag(
             "strategy_hint": _strategy_hint("NEUTRAL"),
             "volsignals_note": VOLSIGNALS_NOTE,
             "bottom_line_rules": BOTTOM_LINE_RULES,
+            "cboe_gex": cboe,
             "proxy": True,
         }
 
@@ -220,6 +282,23 @@ def analyze_red_flag(
         score -= 12
         reasons.append("Put OI below spot dominates — mild supportive / range bias")
 
+    # Blend CBOE SPX GEX regime (better index read than SPY Yahoo skew alone)
+    if cboe and cboe.get("ok"):
+        regime = str(cboe.get("regime") or "")
+        if regime == "SHORT_GAMMA":
+            score += 12
+            reasons.append("CBOE SPX short-gamma regime reinforces Red Flag")
+        elif regime == "LONG_GAMMA":
+            score -= 10
+            reasons.append("CBOE SPX long-gamma regime softens Red Flag")
+        if cboe.get("call_wall") and pin is None:
+            # Map SPX wall loosely — keep SPY pin if present; else surface SPX wall
+            pin = float(cboe["call_wall"]) / 10.0  # rough SPX→SPY scale (~10x)
+            reasons.append(
+                f"Using CBOE SPX call wall {cboe['call_wall']} as equilibrium proxy "
+                f"(~SPY {pin:.0f})"
+            )
+
     score = max(0.0, min(100.0, score))
 
     if score >= 68:
@@ -228,6 +307,11 @@ def analyze_red_flag(
         state = "SUPPORTIVE"
     else:
         state = "NEUTRAL"
+
+    # CBOE short gamma can force RED_FLAG even if Yahoo skew is middling
+    if cboe and cboe.get("regime") == "SHORT_GAMMA" and state == "NEUTRAL" and score >= 58:
+        state = "RED_FLAG"
+        reasons.insert(0, "Upgraded to RED_FLAG from CBOE SPX short-gamma")
 
     block = state == "RED_FLAG" and charm in {"high", "moderate"}
 
@@ -255,6 +339,7 @@ def analyze_red_flag(
         "strategy_hint": _strategy_hint(state),
         "volsignals_note": VOLSIGNALS_NOTE,
         "bottom_line_rules": BOTTOM_LINE_RULES,
+        "cboe_gex": cboe,
         "proxy": True,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }

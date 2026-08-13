@@ -460,6 +460,7 @@ PAGE = r"""
         <p class="why" style="max-width:none">${(rf.reasons||[]).slice(0,5).join(" · ")||"—"}</p>
         <p class="why" style="max-width:none;margin-top:.4rem"><strong>Equilibrium / call-wall:</strong> ${rf.equilibrium_strike?`$${rf.equilibrium_strike}`:"—"} ${strikes}</p>
         <p class="why" style="max-width:none;margin-top:.4rem">${rf.strategy_hint||""}</p>
+        ${rf.cboe_gex && rf.cboe_gex.ok ? `<p class="why" style="max-width:none;margin-top:.4rem"><strong>CBOE SPX GEX:</strong> ${rf.cboe_gex.regime} · net ${fmt(rf.cboe_gex.net_gex/1e9,2)}B · call wall ${rf.cboe_gex.call_wall??"—"} · flip ${rf.cboe_gex.zero_gamma_flip??"—"} · contracts ${rf.cboe_gex.contracts_used??"—"}</p>` : ""}
         <p class="why" style="max-width:none;margin-top:.4rem;font-size:.72rem;color:var(--muted)">${rf.volsignals_note||""}</p>
         ${rf.block_0dte_long_calls ? `<p class="why down" style="margin-top:.5rem"><strong>Gate active:</strong> index 0DTE long calls blocked until Red Flag clears.</p>` : ""}
         <div class="panel" style="margin-top:.8rem">
