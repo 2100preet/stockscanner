@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from odte_scanner.time_cst import to_cst_label
+
 logger = logging.getLogger(__name__)
 
 
@@ -28,6 +30,7 @@ class JournalTrade:
     entry_score: float | None
     entry_reason: str
     entry_spot: float | None = None
+    entered_at_cst: str | None = None
     right: str = "C"  # C | P
     # Exit (SELL NOW / force close)
     status: str = "open"  # open | closed
@@ -154,6 +157,7 @@ class SignalJournal:
         right = str(signal.get("right") or "C").upper()
         if right not in {"C", "P"}:
             right = "C"
+        entered = signal.get("signaled_at") or _now()
         trade = JournalTrade(
             id=f"{symbol}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
             symbol=symbol,
@@ -161,11 +165,12 @@ class SignalJournal:
             expiry=signal.get("expiry"),
             strike=signal.get("strike"),
             dte_bucket=signal.get("dte_bucket"),
-            entered_at=_now(),
+            entered_at=entered,
             entry_ask=ask,
             entry_score=signal.get("score"),
             entry_reason=signal.get("detail") or signal.get("headline") or "BUY_NOW",
             entry_spot=signal.get("live_last"),
+            entered_at_cst=signal.get("signaled_at_cst") or to_cst_label(entered),
             right=right,
             contracts=contracts,
             cost=cost,

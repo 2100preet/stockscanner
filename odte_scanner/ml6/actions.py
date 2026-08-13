@@ -11,6 +11,13 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from odte_scanner.ml6.watchlist import ML6_WATCHLIST, STATUS_BUY_IF, STATUS_WAIT, STATUS_WATCH
+from odte_scanner.time_cst import (
+    append_asked_cst,
+    load_signal_store,
+    resolve_first_signal_time,
+    save_signal_store,
+    signal_timestamps,
+)
 
 
 @dataclass
@@ -35,11 +42,21 @@ class ML6Action:
     desk: str = "ml6"
     right: str = "C"
     reasons: list[str] | None = None
+    signaled_at: str | None = None
+    signaled_at_cst: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         d["reasons"] = list(self.reasons or [])
         return d
+
+
+def _stamp(action: ML6Action) -> ML6Action:
+    if action.action in {"BUY_NOW", "SELL_NOW"} and not action.signaled_at:
+        ts = signal_timestamps()
+        action.signaled_at = ts["signaled_at"]
+        action.signaled_at_cst = ts["signaled_at_cst"]
+    return action
 
 
 def _live_pct(quote: dict[str, Any] | None) -> float | None:
@@ -244,24 +261,26 @@ def decide_ml6_entry(
         + (8 if live and live >= 3 else 0)
         + (5 if status == STATUS_BUY_IF else 0),
     )
-    return ML6Action(
-        action="BUY_NOW",
-        strength=round(strength, 1),
-        headline=f"BUY NOW ML6 {symbol}",
-        detail=(
-            f"{call.get('expiry')} {float(call['strike']):g}c @ ${float(call['ask']):.2f} · "
-            f"score {score:.0f} · " + " · ".join(why[:4])
-        ),
-        accepted=True,
-        strike=float(call["strike"]),
-        expiry=str(call.get("expiry")),
-        ask=float(call["ask"]),
-        bid=float(call.get("bid") or 0) or None,
-        contract=str(call.get("contract")),
-        dte=int(call.get("dte") or 0),
-        dte_bucket=str(call.get("dte_bucket") or "weekly"),
-        reasons=why,
-        **base_kw,
+    return _stamp(
+        ML6Action(
+            action="BUY_NOW",
+            strength=round(strength, 1),
+            headline=f"BUY NOW ML6 {symbol}",
+            detail=(
+                f"{call.get('expiry')} {float(call['strike']):g}c @ ${float(call['ask']):.2f} · "
+                f"score {score:.0f} · " + " · ".join(why[:4])
+            ),
+            accepted=True,
+            strike=float(call["strike"]),
+            expiry=str(call.get("expiry")),
+            ask=float(call["ask"]),
+            bid=float(call.get("bid") or 0) or None,
+            contract=str(call.get("contract")),
+            dte=int(call.get("dte") or 0),
+            dte_bucket=str(call.get("dte_bucket") or "weekly"),
+            reasons=why,
+            **base_kw,
+        )
     )
 
 
@@ -322,21 +341,23 @@ def decide_ml6_exit(
             reasons=["hold"],
         )
 
-    return ML6Action(
-        action="SELL_NOW",
-        symbol=symbol,
-        strength=88.0,
-        headline=f"SELL NOW ML6 {symbol}",
-        detail=" · ".join(reasons),
-        contract=trade.get("contract"),
-        strike=trade.get("strike"),
-        expiry=trade.get("expiry"),
-        ask=bid,
-        bid=bid,
-        score=row.get("ensemble_score") if row else trade.get("entry_score"),
-        live_change_pct=live,
-        desk="ml6",
-        reasons=reasons,
+    return _stamp(
+        ML6Action(
+            action="SELL_NOW",
+            symbol=symbol,
+            strength=88.0,
+            headline=f"SELL NOW ML6 {symbol}",
+            detail=" · ".join(reasons),
+            contract=trade.get("contract"),
+            strike=trade.get("strike"),
+            expiry=trade.get("expiry"),
+            ask=bid,
+            bid=bid,
+            score=row.get("ensemble_score") if row else trade.get("entry_score"),
+            live_change_pct=live,
+            desk="ml6",
+            reasons=reasons,
+        )
     )
 
 
@@ -347,11 +368,15 @@ def build_ml6_action_board(
     open_trades: list[dict[str, Any]] | None = None,
     min_score: float = 70.0,
     attach_calls: bool = True,
+    signal_times_path: str | None = None,
 ) -> dict[str, Any]:
     quotes = quotes or {}
     open_trades = open_trades or []
     open_syms = {str(t.get("symbol")) for t in open_trades if t.get("status") == "open"}
     by_sym = {str(r.get("symbol")): r for r in watchlist}
+
+    path = signal_times_path or "outputs/ml6_signal_times.json"
+    store: dict[str, Any] = load_signal_store(path)
 
     buys: list[ML6Action] = []
     waits: list[ML6Action] = []
@@ -359,12 +384,22 @@ def build_ml6_action_board(
     holds: list[ML6Action] = []
     sells: list[ML6Action] = []
 
+    def _apply_persisted(sig: ML6Action) -> ML6Action:
+        nonlocal store
+        if sig.action not in {"BUY_NOW", "SELL_NOW"}:
+            return sig
+        utc, cst, store = resolve_first_signal_time(store, symbol=sig.symbol, action=sig.action)
+        sig.signaled_at = utc
+        sig.signaled_at_cst = cst
+        sig.detail = append_asked_cst(sig.detail, action=sig.action, signaled_at_cst=cst)
+        return sig
+
     for t in open_trades:
         sig = decide_ml6_exit(t, quote=quotes.get(str(t.get("symbol"))), row=by_sym.get(str(t.get("symbol"))))
         if not sig:
             continue
         if sig.action == "SELL_NOW":
-            sells.append(sig)
+            sells.append(_apply_persisted(sig))
         else:
             holds.append(sig)
 
@@ -377,7 +412,7 @@ def build_ml6_action_board(
             attach_call=attach_calls,
         )
         if sig.action == "BUY_NOW":
-            buys.append(sig)
+            buys.append(_apply_persisted(sig))
         elif sig.action == "HOLD":
             holds.append(sig)
         elif sig.action == "WATCH":
@@ -387,6 +422,8 @@ def build_ml6_action_board(
 
     buys.sort(key=lambda s: s.strength, reverse=True)
     sells.sort(key=lambda s: s.strength, reverse=True)
+
+    save_signal_store(path, store)
 
     primary = None
     if sells:
@@ -414,8 +451,9 @@ def build_ml6_action_board(
             "watch": len(watches),
             "hold": len(holds),
         },
+        "signal_times": store,
         "note": (
             "ML6 BUY NOW only after reaction confirmation (never blind on the print). "
-            "Paper journal auto-enters/exits when enabled — same pattern as lottery desk."
+            "BUY NOW time is shown in US Central (CST/CDT) and kept from the first pulse."
         ),
     }

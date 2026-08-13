@@ -97,6 +97,8 @@ def build_ml6_board(
             r["trade_detail"] = a.get("detail")
             r["trade_contract"] = a.get("contract")
             r["trade_ask"] = a.get("ask")
+            r["buy_now_at"] = a.get("signaled_at")
+            r["buy_now_at_cst"] = a.get("signaled_at_cst")
             if a.get("accepted"):
                 r["accepted"] = True
     except Exception as exc:  # noqa: BLE001
