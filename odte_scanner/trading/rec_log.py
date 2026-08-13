@@ -39,7 +39,7 @@ _CLOSE_ACTIONS = {
     "CLOSE",
 }
 
-# Soft opens (radar / quality) — track on board, never auto P&L-close
+# Soft opens (radar / quality / WAIT) — track on board, never auto P&L-close at entry
 _SOFT_OPEN_ACTIONS = {
     "RADAR_HOT",
     "RADAR_WATCH",
@@ -47,6 +47,7 @@ _SOFT_OPEN_ACTIONS = {
     "WATCH",
     "QUALITY",
     "QUALITY_CARD",
+    "WAIT",
 }
 
 
@@ -77,8 +78,24 @@ def _section_from_bucket(bucket: Any) -> str:
 
 
 def _right_of(row: dict[str, Any], default: str = "C") -> str:
-    right = str(row.get("right") or default).upper()
-    return right if right in {"C", "P"} else default
+    right = str(row.get("right") or "").upper()
+    if right in {"C", "P"}:
+        return right
+    # Infer from OCC-style contract …C00123000 / …P00123000
+    contract = str(row.get("contract") or "")
+    if len(contract) >= 15:
+        # Yahoo OCC: ROOT + YYMMDD + C/P + strike
+        for i, ch in enumerate(contract):
+            if ch in {"C", "P"} and i >= 6 and contract[i - 6 : i].isdigit():
+                return ch
+        # Fallback: last C/P before trailing digits
+        for ch in reversed(contract):
+            if ch in {"C", "P"}:
+                return ch
+    headline = str(row.get("headline") or row.get("action") or "").upper()
+    if " PUT" in f" {headline}" or headline.endswith("PUT"):
+        return "P"
+    return default
 
 
 def _metrics(recs: list[Recommendation]) -> dict[str, Any]:
@@ -192,11 +209,35 @@ class RecommendationLog:
             raw = json.loads(self.path.read_text())
             recs = [Recommendation.from_dict(r) for r in (raw.get("recommendations") or [])]
             self.book = RecBook(updated_at=str(raw.get("updated_at") or ""), recommendations=recs)
-            if self._scrub_bogus_zero_closes():
+            scrubbed = self._scrub_bogus_zero_closes()
+            scrubbed = self._scrub_fake_quality_opens() or scrubbed
+            if scrubbed:
                 self.save()
         except Exception as exc:  # noqa: BLE001
             logger.warning("recommendation log load failed: %s", exc)
             self.book = RecBook()
+
+    def _scrub_fake_quality_opens(self) -> bool:
+        """Lapse leftover QUALITY card opens that used stock last as option entry."""
+        changed = False
+        for r in self.book.recommendations:
+            if r.status != "open":
+                continue
+            headline = (r.headline or "").upper()
+            is_quality = headline.startswith("QUALITY") or r.source == "quality"
+            no_contract = not r.contract
+            stockish = r.entry_price is not None and float(r.entry_price) >= 50.0 and no_contract
+            if is_quality or (stockish and r.open_action == "BUY_NOW" and r.strike is None):
+                r.status = "lapsed"
+                r.close_action = "LAPSE"
+                r.on_board = False
+                r.closed_at = _now()
+                r.exit_price = None
+                r.profit_pct = None
+                r.pnl_usd = None
+                r.exit_reason = "reclassed — quality/stock last was not an option BUY NOW"
+                changed = True
+        return changed
 
     def _scrub_bogus_zero_closes(self) -> bool:
         """Convert fake $0 clock-flatten closes (exit==entry) into lapses — not losses."""
@@ -309,7 +350,13 @@ class RecommendationLog:
         if existing:
             existing.last_recommended_at = now
             existing.on_board = True
-            if price and (existing.entry_price is None or existing.entry_price <= 0):
+            # Upgrade WAIT → BUY_NOW / ENTRY: lock entry ask at the BUY pulse for P&L
+            if act in _OPEN_ACTIONS:
+                existing.open_action = act
+                existing.source = source or existing.source
+                if price and price > 0:
+                    existing.entry_price = price
+            elif price and (existing.entry_price is None or existing.entry_price <= 0):
                 existing.entry_price = price
             if contract and not existing.contract:
                 existing.contract = contract
@@ -328,12 +375,20 @@ class RecommendationLog:
                 self._append_event(existing, action=act, price=price, detail=reason or headline)
             return existing
 
+        open_act = act
+        if act in _OPEN_ACTIONS:
+            open_act = act
+        elif act in _SOFT_OPEN_ACTIONS:
+            open_act = act
+        else:
+            open_act = "ENTRY"
+
         rec = Recommendation(
             id=f"rec-{uuid.uuid4().hex[:10]}",
             section=str(section).lower(),
             symbol=sym,
             right=str(right or "C").upper(),
-            open_action=act if act in _OPEN_ACTIONS else ("ENTRY" if act not in _SOFT_OPEN_ACTIONS else act),
+            open_action=open_act,
             recommended_at=now,
             last_recommended_at=now,
             entry_price=price,
@@ -483,6 +538,15 @@ class RecommendationLog:
             r.on_board = key in live_keys
             if r.on_board:
                 continue
+            # WAIT left the live board → keep history as lapse (recommended ask preserved, no P&L)
+            if r.open_action == "WAIT":
+                self.note_lapse(
+                    section=r.section,
+                    symbol=r.symbol,
+                    right=r.right,
+                    reason="WAIT left live board — never upgraded to BUY NOW / ENTRY",
+                )
+                continue
             # Soft sources (radar / quality): just leave off-board — never invent a $0 loss
             if soft or r.source in {"radar", "quality"} or r.open_action in _SOFT_OPEN_ACTIONS:
                 continue
@@ -546,7 +610,24 @@ class RecommendationLog:
                 n += 1
                 continue
             if action in ("WAIT", "HOLD"):
-                # Do not open a BUY/ENTRY rec for WAIT/HOLD — that starved EXIT/P&L history
+                # Log WAIT as soft recommendation so challenge history isn't empty
+                self.note_entry(
+                    section="challenge",
+                    symbol=sym,
+                    action="WAIT",
+                    right=right,
+                    price=price,
+                    spot=_f(row.get("spot")),
+                    contract=str(row.get("contract") or "") or None,
+                    expiry=str(row.get("expiry") or "") or None,
+                    strike=_f(row.get("strike")),
+                    dte=int(row["dte"]) if row.get("dte") is not None else None,
+                    horizon=str(row.get("horizon") or "") or None,
+                    reason=reason or f"challenge {action}",
+                    headline=str(row.get("headline") or f"{action} {sym} {right}"),
+                    source="board",
+                )
+                n += 1
                 continue
             # ENTRY only opens a lasting recommendation
             self.note_entry(
@@ -611,14 +692,33 @@ class RecommendationLog:
             )
             live.add(self._key("lottery", sym, right))
             n += 1
-        # WAIT tickets are not open BUY_NOW recs — only keep them "live" for off-board marking
-        for row in (lottery.get("wait") or [])[:5]:
+        # WAIT tickets: log recommended ask so Explosive history isn't empty while gated
+        for row in (lottery.get("wait") or [])[:12]:
             if not isinstance(row, dict):
                 continue
             sym = str(row.get("symbol") or "")
             if not sym:
                 continue
-            live.add(self._key("lottery", sym, _right_of(row)))
+            right = _right_of(row)
+            ask = _f(row.get("ask") or row.get("entry_ask") or row.get("mark"))
+            self.note_entry(
+                section="lottery",
+                symbol=sym,
+                action="WAIT",
+                right=right,
+                price=ask,
+                spot=_f(row.get("spot") or row.get("live_last")),
+                contract=str(row.get("contract") or "") or None,
+                expiry=str(row.get("expiry") or "") or None,
+                strike=_f(row.get("strike")),
+                dte=int(row["dte"]) if row.get("dte") is not None else None,
+                horizon="0dte",
+                reason=str(row.get("detail") or row.get("thesis") or row.get("headline") or "WAIT lottery"),
+                headline=str(row.get("headline") or f"WAIT {sym}"),
+                source="board",
+            )
+            live.add(self._key("lottery", sym, right))
+            n += 1
         self.mark_off_board("lottery", live)
         return n
 
@@ -743,7 +843,7 @@ class RecommendationLog:
                 allow_stub=True,
             )
             n += 1
-        # WAIT / HOLD stay on-board for marking only — do not open BUY_NOW with null P&L
+        # WAIT / HOLD: log priced option recommendations into odte/weekly/swing history
         for row in (actions.get("wait") or []) + (actions.get("hold") or []):
             if not isinstance(row, dict):
                 continue
@@ -754,6 +854,29 @@ class RecommendationLog:
             if not sym:
                 continue
             right = _right_of(row)
+            ask = _f(row.get("ask") or row.get("entry_ask") or row.get("mark"))
+            # Only log real option WAIT rows (ask + strike/contract) — skip bare stock
+            if ask is not None and ask > 0 and (row.get("contract") or row.get("strike")):
+                act = str(row.get("action") or "WAIT").upper()
+                if act not in _SOFT_OPEN_ACTIONS:
+                    act = "WAIT"
+                self.note_entry(
+                    section=sec,
+                    symbol=sym,
+                    action=act,
+                    right=right,
+                    price=ask,
+                    spot=_f(row.get("spot") or row.get("live_last")),
+                    contract=str(row.get("contract") or "") or None,
+                    expiry=str(row.get("expiry") or "") or None,
+                    strike=_f(row.get("strike")),
+                    dte=int(row["dte"]) if row.get("dte") is not None else None,
+                    horizon=str(row.get("dte_bucket") or row.get("horizon") or "") or None,
+                    reason=str(row.get("thesis") or row.get("reason") or row.get("detail") or f"{act} desk"),
+                    headline=str(row.get("headline") or f"{act} {sym}"),
+                    source="board",
+                )
+                n += 1
             live.add(self._key(sec, sym, right))
         for sec in ("odte", "weekly", "swing"):
             self.mark_off_board(sec, {k for k in live if k.startswith(sec.upper())})
