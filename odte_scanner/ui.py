@@ -146,6 +146,11 @@ PAGE = r"""
         <p class="lede" style="margin-top:0">Customer upside call-hedging / dealer short positioning + charm into the close can cap rallies. Blocks index 0DTE long calls when active.</p>
         <div id="redFlagBody" class="empty">Loading Red Flag…</div>
       </div>
+      <div class="panel" id="freeDealerPanel">
+        <h2>Free dealer / vol cockpit</h2>
+        <p class="lede" style="margin-top:0">Keyless feeds: CBOE SPX GEX, SqueezeMetrics DIX/GEX, VIX term (VIX1D/VIX3M/VVIX/SKEW). Delayed / modeled — not VS3D.</p>
+        <div id="freeDealerBody" class="empty">Loading free feeds…</div>
+      </div>
       <h2>Top action cards</h2>
       <div class="cards" id="overviewCards"></div>
       <div class="panel">
@@ -432,6 +437,35 @@ PAGE = r"""
       table.innerHTML = head + list.map(rowHtml).join("") + "</tbody></table>";
     }
 
+    function renderFreeDealer(fd) {
+      const el = document.getElementById("freeDealerBody");
+      if (!el) return;
+      if (!fd || !fd.ok) {
+        el.innerHTML = `<div class="empty">Free feeds unavailable.</div>`;
+        return;
+      }
+      const spx = fd.spx_gex || {};
+      const sm = fd.squeezemetrics || {};
+      const vol = (fd.vol_term || {}).levels || {};
+      const lvl = (k) => (vol[k] && vol[k].last != null) ? fmt(vol[k].last, 2) : "—";
+      const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
+      const summary = (fd.summary || []).map(s => `<li>${s}</li>`).join("");
+      el.innerHTML = `
+        <div class="metric-row">
+          ${m("SPX GEX", spx.regime||"—", spx.regime==="SHORT_GAMMA"?"down":"up")}
+          ${m("Call wall", spx.call_wall??"—")}
+          ${m("Flip", spx.zero_gamma_flip??"—")}
+          ${m("DIX", sm.dix??"—", sm.bias==="SUPPORTIVE"?"up":"")}
+          ${m("SM GEX $B", sm.gex_billions??"—")}
+          ${m("VIX", lvl("VIX"))}
+          ${m("VIX1D", lvl("VIX1D"))}
+          ${m("SKEW", lvl("SKEW"))}
+        </div>
+        <ul class="why" style="padding-left:1.1rem;margin:.6rem 0">${summary}</ul>
+        <p class="why" style="font-size:.72rem;color:var(--muted)">${fd.disclaimer||""}</p>
+      `;
+    }
+
     function renderRedFlag(rf) {
       const body = document.getElementById("redFlagBody");
       const odte = document.getElementById("redFlagOdte");
@@ -628,6 +662,7 @@ PAGE = r"""
       renderOptionTable("tableWeekly", (acts.all||[]).filter(r=>r.dte_bucket==="weekly"));
       renderExplosive(DATA.explosive || [], DATA.lottery || {});
       renderRedFlag(DATA.red_flag);
+      renderFreeDealer(DATA.free_dealer);
       renderScreener(hz);
       renderMl6(DATA.ml6 || { watchlist: (hz.ml6||[]), bottom_line_rules: (DATA.ml6&&DATA.ml6.bottom_line_rules)||[] });
       renderInsights(DATA.insights);
@@ -822,6 +857,15 @@ def create_app(config_path: str | None = None) -> Flask:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Red Flag live refresh failed: %s", exc)
 
+        free_dealer = None
+        try:
+            from odte_scanner.signals.free_feeds import build_free_dealer_cockpit
+
+            free_dealer = build_free_dealer_cockpit()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Free dealer cockpit failed: %s", exc)
+            free_dealer = {"ok": False, "error": str(exc)}
+
         actions = build_action_board(
             candidates=refreshed,
             scores=scan.get("scores") or [],
@@ -952,6 +996,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 "lottery": lottery,
                 "ml6": ml6,
                 "red_flag": red_flag_snapshot,
+                "free_dealer": free_dealer,
                 "watch": {"quotes": quotes},
                 "ledger": ledger,
                 "actions": actions,
