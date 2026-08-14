@@ -276,6 +276,54 @@ def test_challenge_board_hold_and_exit_from_open_trade(tmp_path):
     assert t0["hold_days"] == 40.0
 
 
+def test_eligible_rows_widens_beyond_single_perfect():
+    from odte_scanner.challenge.million import _eligible_rows
+
+    win_table = {
+        "symbols": {
+            "TOST": {"swing": {"win_pct": 100.0, "trades": 4, "wins": 4, "hit_1pct": 75.0}},
+            "DKNG": {"swing": {"win_pct": 78.0, "trades": 4, "wins": 3, "hit_1pct": 70.0}},
+            "JPM": {"weekly": {"win_pct": 85.0, "trades": 6, "wins": 5, "hit_1pct": 80.0}},
+        }
+    }
+    rows = _eligible_rows(win_table)
+    syms = {r["symbol"] for r in rows}
+    assert "TOST" in syms
+    assert "JPM" in syms
+    assert len(syms) >= 2
+
+
+def test_challenge_hist_universe_covers_mid_small_breadth():
+    from odte_scanner.data.universe import challenge_hist_universe
+
+    syms = challenge_hist_universe()
+    assert len(syms) >= 30
+    assert "TOST" in syms
+    assert "DKNG" in syms
+
+
+def test_challenge_board_multiple_tickets_not_single_name():
+    win_table = {
+        "symbols": {
+            "TOST": {"swing": {"win_pct": 100.0, "trades": 4, "wins": 4, "hit_1pct": 75.0, "hit_2pct": 50.0}},
+            "JPM": {"weekly": {"win_pct": 100.0, "trades": 5, "wins": 5, "hit_1pct": 80.0, "hit_2pct": 60.0}},
+            "SLV": {"swing": {"win_pct": 90.9, "trades": 11, "wins": 10, "hit_1pct": 90.9, "hit_2pct": 90.9}},
+            "DKNG": {"swing": {"win_pct": 100.0, "trades": 5, "wins": 5, "hit_1pct": 80.0, "hit_2pct": 60.0}},
+        }
+    }
+    board = build_challenge_board(
+        win_table=win_table,
+        scores=[],
+        quotes={},
+        fetch_contracts=False,
+        fetch_earnings=False,
+        max_tickets=8,
+    )
+    syms = [t["symbol"] for t in board["tickets"]]
+    assert len(syms) >= 3
+    assert syms.count("TOST") == 1
+
+
 def test_tracker_enter_hold_exit_call_and_put(tmp_path):
     path = tmp_path / "challenge_ledger.json"
     tr = ChallengeTracker(path, starting_cash=1000)

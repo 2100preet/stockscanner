@@ -56,7 +56,7 @@ jobs:
             outputs/paper_ledger.json
             outputs/webull_orders.json
             outputs/ui_snapshot_cache.json
-            outputs/win_rate_table.json
+            outputs/win_rates.json
           key: desk-ledgers-${{ github.run_id }}
           restore-keys: |
             desk-ledgers-

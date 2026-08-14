@@ -292,9 +292,9 @@ def run_scan(
     try:
         from odte_scanner.backtest.win_rates import build_win_rate_table
 
-        from odte_scanner.data.universe import mid_small_universe
+        from odte_scanner.data.universe import challenge_hist_universe
 
-        # Cover every quality card + challenge-relevant names so swing/1M strike rates show
+        # Cover quality cards + full challenge sleeve so $1k→$1M isn't stuck on one name
         ac = report.get("action_cards") or {}
         card_syms = {
             str(r.get("symbol") or "").upper()
@@ -307,7 +307,7 @@ def run_scan(
             | {c["symbol"] for c in swing_cards[:12]}
             | card_syms
             | set(focus[:20])
-            | set(mid_small_universe()[:15])  # challenge mid/small hist breadth
+            | set(challenge_hist_universe())
         )
         win_table = build_win_rate_table(wr_syms, config_path=config_path)
         report["win_rates"] = win_table
