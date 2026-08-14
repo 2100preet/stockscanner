@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, time
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -27,8 +27,70 @@ def test_session_phase_power_hour():
 def test_resolve_includes_specials_priority_and_focus():
     cfg = {"tickers": ["SPY", "TSLA", "NVDA", "AAPL", "NU", "CAPR"], "actions": {"power_hour_symbols": "focus"}}
     syms = resolve_power_hour_symbols("focus", config=cfg)
-    for s in ("NU", "NVDA", "CAPR", "ETON", "HTFL", "TSLA", "GOOGL", "NXPI", "SPY", "AAPL", "NBIS", "CRWV", "AVGO", "IWM"):
+    for s in (
+        "NU",
+        "NVDA",
+        "CAPR",
+        "ETON",
+        "HTFL",
+        "TSLA",
+        "GOOGL",
+        "NXPI",
+        "SPY",
+        "AAPL",
+        "NBIS",
+        "CRWV",
+        "AVGO",
+        "IWM",
+        "NFLX",
+        "COIN",
+        "MARA",
+        "IREN",
+    ):
         assert s in syms
+
+
+def test_power_hour_window_mom_bounce_promotes_long():
+    """CRWV/AVGO-style: weak day but green 15:00–16:00 ET window should add long confluence."""
+    from odte_scanner.signals.power_hour import power_hour_window_mom
+
+    now = datetime(2026, 8, 14, 15, 40, tzinfo=ET)
+    idx = pd.date_range("2026-08-14 09:30", periods=390, freq="1min", tz=ET)
+    # Flat/down early, then rip after 15:00
+    closes = []
+    for ts in idx:
+        if ts.time() < time(15, 0):
+            closes.append(100.0 - (ts.hour - 9) * 0.2)
+        else:
+            # climb from ~98.8 to ~100.5 during PH
+            mins = (ts.hour - 15) * 60 + ts.minute
+            closes.append(98.8 + mins * 0.04)
+    df = pd.DataFrame(
+        {
+            "Open": closes,
+            "High": [c + 0.05 for c in closes],
+            "Low": [c - 0.05 for c in closes],
+            "Close": closes,
+            "Volume": [1000] * len(closes),
+        },
+        index=idx,
+    )
+    mom = power_hour_window_mom(df, now=now)
+    assert mom is not None and mom >= 0.5
+    sig = decide_power_hour(
+        "CRWV",
+        quote={"last": closes[-1], "day_high": 102.0, "day_low": 97.0, "session_change_pct": -2.0, "vwap": 99.0},
+        bars_1m=df,
+        qqq_quote={"last": 480.0, "vwap": 478.0},
+        qqq_vwap=478.0,
+        phase="power_hour",
+        now=now,
+        score_row={"ensemble_score": 61, "bullish": True},
+        flow_row={"flow_score": 40, "sentiment": "bullish"},
+    )
+    assert sig.power_hour_mom_pct is not None and sig.power_hour_mom_pct >= 0.5
+    assert sig.action in {"LONG", "WATCH"}
+    assert float(sig.confluence or 0) >= 20
 
 
 def test_nxpi_requires_qqq():

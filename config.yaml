@@ -77,7 +77,8 @@ tickers:
   - PLUG  # Plug Power — EW this week
   - CSCO  # Cisco — EW this week
   - IREN  # Iris Energy — liquid high-beta / AI infra; was missing from focus scan
-  # Power Hour named playbooks (15m VWAP)
+  - MARA  # Marathon Digital — crypto beta; Power Hour priority sleeve
+  # Power Hour named playbooks (15m VWAP) + priority sleeve (NFLX/COIN/MARA/IREN/NBIS/…)
   - NU    # Nu Holdings — VWAP reclaim + candle-high break
   - CAPR  # Capricor — tight 15m base break
   - ETON  # Eton Pharma — VWAP pullback reclaim
@@ -188,6 +189,7 @@ expiry_calendars:
     - PLUG
     - CSCO
     - IREN
+    - MARA
     - SNDK
     - WDC
     - STX

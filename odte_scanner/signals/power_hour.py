@@ -48,6 +48,10 @@ PRIORITY_TICKERS = (
     "TSLA",
     "AAPL",
     "AMD",
+    "NFLX",
+    "COIN",
+    "MARA",
+    "IREN",
     "SPY",
     "QQQ",
 )
@@ -147,6 +151,7 @@ class PowerHourSignal:
     flow_score: float | None = None
     ensemble_score: float | None = None
     session_change_pct: float | None = None
+    power_hour_mom_pct: float | None = None
     mover_rank: int | None = None
     gex_regime: str | None = None
     gex_bias: str | None = None  # trend | mean_revert | unknown
@@ -328,6 +333,29 @@ def _quote_vwap_proxy(quote: dict[str, Any] | None) -> float | None:
     return None
 
 
+def power_hour_window_mom(bars_1m: pd.DataFrame | None, *, now: datetime | None = None) -> float | None:
+    """% move from 15:00 ET open to latest print (actual power-hour tape)."""
+    if bars_1m is None or bars_1m.empty or "Close" not in bars_1m.columns:
+        return None
+    try:
+        df = _to_et(bars_1m)
+        now_et = now.astimezone(ET) if now and now.tzinfo else (now.replace(tzinfo=ET) if now else datetime.now(ET))
+        day = now_et.date()
+        day_df = df[df.index.date == day]
+        if day_df.empty:
+            day_df = df
+        ph = day_df.between_time(POWER_HOUR_START, POWER_HOUR_END)
+        if ph.empty:
+            return None
+        open_px = float(ph["Open"].iloc[0]) if "Open" in ph.columns else float(ph["Close"].iloc[0])
+        last_px = float(ph["Close"].iloc[-1])
+        if open_px <= 0:
+            return None
+        return (last_px / open_px - 1.0) * 100.0
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def index_flow_by_symbol(option_flow: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
     for p in list((option_flow or {}).get("prints") or (option_flow or {}).get("golden") or []):
@@ -489,6 +517,7 @@ def compute_confluence(
     mover_row: dict[str, Any] | None = None,
     qqq_above: bool | None = None,
     last_f: float | None = None,
+    ph_mom: float | None = None,
 ) -> dict[str, Any]:
     """Multi-factor confluence score used to promote leaders + fire LONG/SHORT without bars."""
     score_row = score_row or {}
@@ -530,7 +559,15 @@ def compute_confluence(
         short_votes += 1.0
         notes.append("Bearish 15m structure")
 
-    # 2) Momentum / movers
+    # 2) Momentum / movers — prefer *power-hour window* mom when available
+    #    (today: CRWV/AVGO/MU bounced in 15:00–16:00 ET despite weak day %)
+    if ph_mom is not None:
+        if ph_mom >= 0.35:
+            long_votes += 1.35 if ph_mom >= 0.8 else 1.0
+            notes.append(f"PH window {ph_mom:+.2f}%")
+        elif ph_mom <= -0.35:
+            short_votes += 1.35 if ph_mom <= -0.8 else 1.0
+            notes.append(f"PH window {ph_mom:+.2f}%")
     if mom15 is not None:
         if mom15 >= 0.08:
             long_votes += 1.0
@@ -543,8 +580,13 @@ def compute_confluence(
             long_votes += 1.1 if (mover_i is not None and mover_i < 25) else 0.85
             notes.append(f"Day {day_chg:+.2f}%")
         elif day_chg <= -0.35:
-            short_votes += 1.1 if (mover_i is not None and mover_i < 25) else 0.85
-            notes.append(f"Day {day_chg:+.2f}%")
+            # Soften day dump if power hour is already reclaiming (bounce tape)
+            if ph_mom is not None and ph_mom >= 0.5:
+                notes.append(f"Day {day_chg:+.2f}% but PH reclaim")
+                long_votes += 0.35
+            else:
+                short_votes += 1.1 if (mover_i is not None and mover_i < 25) else 0.85
+                notes.append(f"Day {day_chg:+.2f}%")
     if mover_i is not None and mover_i < 15:
         notes.append(f"Mover #{mover_i + 1}")
         if day_chg is not None and day_chg > 0:
@@ -580,11 +622,15 @@ def compute_confluence(
     gex_s_ok, gex_s_note = _gex_short_ok(gex=gex_row, below=below, day_chg=day_chg)
     if gex_row.get("regime"):
         notes.append(gex_row.get("mm_note") or gex_l_note)
-        if gex_row.get("gex_bias") == "trend" and day_chg is not None and day_chg > 0:
+        if gex_row.get("gex_bias") == "trend" and (
+            (day_chg is not None and day_chg > 0) or (ph_mom is not None and ph_mom > 0.3)
+        ):
             long_votes += 0.6
-        if gex_row.get("gex_bias") == "mean_revert" and above:
+        if gex_row.get("gex_bias") == "mean_revert" and (above or (ph_mom is not None and ph_mom >= 0.5)):
             long_votes += 0.45
-        if gex_row.get("gex_bias") == "trend" and day_chg is not None and day_chg < 0:
+        if gex_row.get("gex_bias") == "trend" and day_chg is not None and day_chg < 0 and not (
+            ph_mom is not None and ph_mom >= 0.5
+        ):
             short_votes += 0.6
 
     # Mega breadth soft penalty (hard block applied later)
@@ -598,7 +644,7 @@ def compute_confluence(
     if symbol in PRIORITY_TICKERS and short_votes > long_votes:
         short_votes += 0.25
 
-    confluence = round(max(long_votes, short_votes) * 12.5, 1)  # ~ scale to 0–100-ish
+    confluence = round(max(long_votes, short_votes) * 12.5, 1)
     bias = "long" if long_votes > short_votes + 0.35 else ("short" if short_votes > long_votes + 0.35 else "neutral")
 
     return {
@@ -618,6 +664,7 @@ def compute_confluence(
         "gex_long_note": gex_l_note,
         "gex_short_note": gex_s_note,
         "day_chg": day_chg,
+        "ph_mom": ph_mom,
     }
 
 
@@ -670,6 +717,7 @@ def decide_power_hour(
         vwap = _quote_vwap_proxy(q)
     bars_15 = resample_15m(bars_1m) if bars_1m is not None else None
     st = _structure_from_15m(bars_15)
+    ph_mom = power_hour_window_mom(bars_1m, now=now)
 
     vs_vwap = None
     above = below = False
@@ -886,6 +934,7 @@ def decide_power_hour(
         mover_row=mover_row,
         qqq_above=qqq_above,
         last_f=last_f,
+        ph_mom=ph_mom,
     )
     long_votes = float(conf["long_votes"])
     short_votes = float(conf["short_votes"])
@@ -1038,6 +1087,7 @@ def decide_power_hour(
         flow_score=conf.get("flow_score"),
         ensemble_score=conf.get("ensemble_score"),
         session_change_pct=day_chg,
+        power_hour_mom_pct=round(ph_mom, 3) if ph_mom is not None else None,
         mover_rank=conf.get("mover_rank"),
         gex_regime=conf.get("gex_regime"),
         gex_bias=conf.get("gex_bias"),
@@ -1405,7 +1455,8 @@ def build_power_hour_board(
             "Confluence stack: 15m VWAP structure + mover momentum + ensemble score + option flow + dealer GEX.",
             "Positive GEX (MM long gamma): mean-revert / VWAP-reclaim longs — do not chase melt-ups.",
             "Negative GEX (MM short gamma): favor trend continuation with momentum.",
-            "Leaders board lists high-confluence names (NBIS/CRWV/AVGO/IWM/GOOGL/…) even when WATCH.",
+            "Leaders board lists high-confluence names (NBIS/CRWV/AVGO/IWM/GOOGL/NFLX/COIN/MARA/IREN/…) even when WATCH.",
+            "When 1m bars exist, weight the actual 15:00–16:00 ET window move (PH bounce can override a weak day %).",
             "Window: prep 14:30 ET · power hour 15:00–16:00 ET · no new entries after 15:45 ET.",
             "Mega longs (NVDA/GOOGL/TSLA/AVGO/MU/…): require QQQ ≥ VWAP.",
             "Named playbooks still apply for NU / NVDA / CAPR / ETON / HTFL / GOOGL / NXPI / TSLA.",

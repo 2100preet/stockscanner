@@ -318,7 +318,8 @@ PAGE = r"""
         Stack: <strong>15m VWAP</strong> + mover momentum + ensemble + option flow + <strong>dealer GEX</strong>
         (MM long gamma = mean-revert; MM short gamma = trend).
         Named playbooks: <strong>NU · NVDA · CAPR · ETON · HTFL · GOOGL · NXPI</strong> (+ <strong>TSLA</strong>).
-        Leaders board surfaces <strong>NBIS · CRWV · AVGO · IWM · GOOGL</strong> and other high-confluence names.
+        Leaders board surfaces <strong>NBIS · CRWV · AVGO · IWM · GOOGL · NFLX · COIN · MARA · IREN</strong>
+        and other high-confluence names.
       </p>
       <div class="metric-row" id="powerHourMetrics"></div>
       <div class="cards" id="powerHourPrimary"></div>
