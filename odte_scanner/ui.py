@@ -312,14 +312,20 @@ PAGE = r"""
     </section>
 
     <section class="tabpane" id="tab-powerhour">
-      <h2>Power Hour — LONG / SHORT · 15m VWAP</h2>
+      <h2>Power Hour — confluence LONG / SHORT</h2>
       <p class="lede">
         Prep <strong>14:30</strong> · Power hour <strong>15:00–16:00 ET</strong>.
-        Named playbooks: <strong>NU · NVDA · CAPR · ETON · HTFL · GOOGL · NXPI</strong> (+ <strong>TSLA</strong> and the full focus sleeve).
-        Each row shows whether to go <strong>LONG or SHORT</strong>, the 15-minute trigger, and the risk line / stop.
+        Stack: <strong>15m VWAP</strong> + mover momentum + ensemble + option flow + <strong>dealer GEX</strong>
+        (MM long gamma = mean-revert; MM short gamma = trend).
+        Named playbooks: <strong>NU · NVDA · CAPR · ETON · HTFL · GOOGL · NXPI</strong> (+ <strong>TSLA</strong>).
+        Leaders board surfaces <strong>NBIS · CRWV · AVGO · IWM · GOOGL</strong> and other high-confluence names.
       </p>
       <div class="metric-row" id="powerHourMetrics"></div>
       <div class="cards" id="powerHourPrimary"></div>
+      <div class="panel">
+        <h2>Leaders — confluence desk</h2>
+        <div id="powerHourLeaders" class="empty">—</div>
+      </div>
       <div class="panel">
         <h2>Closing bell — top bullish flow (market movers)</h2>
         <div id="powerHourClosingBell" class="empty">—</div>
@@ -1861,6 +1867,7 @@ PAGE = r"""
     function renderPowerHour(board) {
       const metrics = document.getElementById("powerHourMetrics");
       const primaryEl = document.getElementById("powerHourPrimary");
+      const leadersEl = document.getElementById("powerHourLeaders");
       const closingEl = document.getElementById("powerHourClosingBell");
       const specialEl = document.getElementById("powerHourSpecial");
       const longEl = document.getElementById("powerHourLong");
@@ -1881,7 +1888,7 @@ PAGE = r"""
         m("Phase", String(phase).replace("_"," "), phase==="power_hour"?"up":""),
         m("LONG", c.long??0, (c.long||0)>0?"up":""),
         m("SHORT", c.short??0, (c.short||0)>0?"down":""),
-        m("WATCH", c.watch??0),
+        m("Leaders", c.leaders??0, (c.leaders||0)>0?"up":""),
         m("Tape", (c.with_last??0)+"/"+(c.names??0), (c.with_last||0)>0?"up":"down"),
         m("QQQ ≥ VWAP", b.qqq_above_vwap===true?"YES":(b.qqq_above_vwap===false?"NO":"—"), b.qqq_above_vwap?"up":""),
       ].join("");
@@ -1896,7 +1903,7 @@ PAGE = r"""
           <th>Side</th><th>Symbol</th><th>Last</th><th>VWAP</th><th>vs VWAP</th><th>15m%</th><th>Stop</th><th>Trigger</th><th>Risk line</th><th>Asked (CST)</th>
         </tr></thead><tbody>${rows.map(r=>`<tr>
           <td>${sideBadge(r.action)}</td>
-          <td><strong>${r.symbol}</strong>${r.special?` <span class="tag">playbook</span>`:""}</td>
+          <td><strong>${r.symbol}</strong>${r.special?` <span class="tag">playbook</span>`:(r.playbook==="confluence"?` <span class="tag">confluence</span>`:"")}</td>
           <td class="mono">${r.last==null?"—":"$"+fmt(r.last,2)}</td>
           <td class="mono">${r.vwap==null?"—":"$"+fmt(r.vwap,2)}</td>
           <td class="mono ${pctClass(r.vs_vwap_pct)}">${r.vs_vwap_pct==null?"—":fmt(r.vs_vwap_pct,2)+"%"}</td>
@@ -1911,20 +1918,40 @@ PAGE = r"""
       const p0 = b.primary;
       if (primaryEl) {
         const gap = (!dq.tape_ok && dq.note) ? `<div class="empty" style="margin-bottom:.5rem">${dq.note}</div>` : "";
-        if (!p0) primaryEl.innerHTML = gap + `<div class="empty">No power-hour LONG/SHORT with live tape yet — check named playbooks + watch list.</div>`;
+        if (!p0) primaryEl.innerHTML = gap + `<div class="empty">No power-hour LONG/SHORT with live tape yet — check leaders + named playbooks.</div>`;
         else {
           const kind = p0.action==="LONG"?"long":(p0.action==="SHORT"?"short":"wait");
           primaryEl.innerHTML = gap + `<article class="action-card ${kind}">
             <div class="ac-top">
-              <div class="ac-sym">${p0.symbol} ${sideBadge(p0.action)} ${p0.special?`<span class="tag">named playbook</span>`:""}</div>
+              <div class="ac-sym">${p0.symbol} ${sideBadge(p0.action)} ${p0.special?`<span class="tag">named playbook</span>`:(p0.playbook==="confluence"?`<span class="tag">confluence</span>`:"")}</div>
               <div class="ac-dir ${kind}">${p0.action||"WAIT"} · ${String(p0.session_phase||"").replace("_"," ")}</div>
             </div>
-            <div class="ac-conf">Strength ${fmt(p0.strength,0)} · last ${p0.last==null?"—":"$"+fmt(p0.last,2)} · VWAP ${p0.vwap==null?"—":"$"+fmt(p0.vwap,2)}
+            <div class="ac-conf">Strength ${fmt(p0.strength,0)} · conf ${p0.confluence==null?"—":fmt(p0.confluence,0)} · last ${p0.last==null?"—":"$"+fmt(p0.last,2)} · VWAP ${p0.vwap==null?"—":"$"+fmt(p0.vwap,2)}
               ${p0.signaled_at_cst?` · asked ${p0.signaled_at_cst}`:""}</div>
             <p class="why" style="margin:.55rem 0 0"><strong>Trigger:</strong> ${p0.trigger||""}</p>
             <p class="why" style="margin:.35rem 0 0"><strong>Risk:</strong> ${p0.risk_line||""}</p>
-            <p class="why" style="margin:.35rem 0 0">${p0.detail||""}</p>
+            <p class="why" style="margin:.35rem 0 0">${p0.detail||""}${p0.mm_note?` · <em>${p0.mm_note}</em>`:""}</p>
           </article>`;
+        }
+      }
+
+      if (leadersEl) {
+        const rows = b.leaders || [];
+        if (!rows.length) leadersEl.innerHTML = `<div class="empty">No confluence leaders yet — waiting on tape / movers / flow.</div>`;
+        else {
+          leadersEl.innerHTML = `<table><thead><tr>
+            <th>Side</th><th>Symbol</th><th>Conf</th><th>Day %</th><th>Flow</th><th>Score</th><th>GEX / MM</th><th>Mover</th><th>Why</th>
+          </tr></thead><tbody>${rows.map(r=>`<tr>
+            <td>${sideBadge(r.action)}</td>
+            <td><strong>${r.symbol}</strong>${r.special?` <span class="tag">playbook</span>`:(r.playbook==="confluence"?` <span class="tag">confluence</span>`:"")}</td>
+            <td class="mono up">${r.confluence==null?"—":fmt(r.confluence,0)}</td>
+            <td class="mono ${pctClass(r.session_change_pct)}">${r.session_change_pct==null?"—":fmt(r.session_change_pct,2)+"%"}</td>
+            <td class="mono ${(r.flow_score||0)>=0?"up":"down"}">${r.flow_score==null?"—":fmt(r.flow_score,0)}</td>
+            <td class="mono">${r.ensemble_score==null?"—":fmt(r.ensemble_score,0)}</td>
+            <td class="why">${r.gex_regime?String(r.gex_regime).replaceAll("_"," "):"—"}${r.mm_note?` · ${r.mm_note}`:""}</td>
+            <td class="mono">${r.mover_rank==null?"—":("#"+(r.mover_rank+1))}</td>
+            <td class="why">${r.detail||r.trigger||""}</td>
+          </tr>`).join("")}</tbody></table>`;
         }
       }
 
@@ -3862,12 +3889,16 @@ def create_app(config_path: str | None = None) -> Flask:
             logger.warning("odte_1k board unavailable: %s", exc)
             odte_1k = {"error": str(exc), "put_now": [], "disclaimer": "0DTE $1K board unavailable."}
 
+        # Warm Power Hour quotes early (board built after market movers + GEX are ready)
         power_hour: dict = {}
+        ph_syms: list[str] = []
+        ph_fetch_bars = False
+        ph_max_bars = 16
         try:
             if bool(actions_cfg.get("power_hour_enabled", True)):
                 from odte_scanner.signals.power_hour import (
+                    PRIORITY_TICKERS,
                     SPECIAL_TICKERS,
-                    build_power_hour_board,
                     resolve_power_hour_symbols,
                     seed_quotes_from_scan,
                 )
@@ -3876,8 +3907,6 @@ def create_app(config_path: str | None = None) -> Flask:
                     actions_cfg.get("power_hour_symbols"),
                     config=cfg,
                 )
-                # Pages offline used to skip all PH quotes/bars → empty tape and a stuck NU WAIT primary.
-                # Allow a capped live fan-out even offline so Power Hour can fire LONG/SHORT.
                 ph_live_offline = bool(actions_cfg.get("power_hour_live_offline", True))
                 max_q = int(actions_cfg.get("power_hour_max_quote_fetch", 48))
                 if offline:
@@ -3887,8 +3916,7 @@ def create_app(config_path: str | None = None) -> Flask:
                     scores=scan.get("scores") or [],
                 )
                 if (not offline) or ph_live_offline:
-                    # Prioritize QQQ + named playbooks, then remaining sleeve
-                    ph_quote_order = ["QQQ", *SPECIAL_TICKERS]
+                    ph_quote_order = ["QQQ", *SPECIAL_TICKERS, *PRIORITY_TICKERS]
                     seen_q: set[str] = set()
                     ordered: list[str] = []
                     for s in list(ph_quote_order) + list(ph_syms):
@@ -3899,7 +3927,6 @@ def create_app(config_path: str | None = None) -> Flask:
                         ordered.append(key)
                     for s in ordered[:max_q]:
                         cur = quotes.get(s) or {}
-                        # Refresh when missing last, or always live when online
                         if (not offline) or cur.get("last") is None:
                             aliases.setdefault(s, resolve_yahoo_symbol(s, cfg))
                             try:
@@ -3908,25 +3935,14 @@ def create_app(config_path: str | None = None) -> Flask:
                                     quotes[s] = q.to_dict()
                             except Exception:  # noqa: BLE001
                                 pass
-                fetch_bars = bool(actions_cfg.get("power_hour_fetch_bars", True)) and (
+                ph_fetch_bars = bool(actions_cfg.get("power_hour_fetch_bars", True)) and (
                     (not offline) or bool(actions_cfg.get("power_hour_fetch_bars_offline", True))
                 )
-                max_bars = int(actions_cfg.get("power_hour_max_bar_fetch", 16))
+                ph_max_bars = int(actions_cfg.get("power_hour_max_bar_fetch", 16))
                 if offline:
-                    max_bars = min(max_bars, int(actions_cfg.get("power_hour_max_bar_fetch_offline", 12)))
-                power_hour = build_power_hour_board(
-                    quotes=quotes,
-                    symbols=ph_syms,
-                    config=cfg,
-                    fetch_bars=fetch_bars,
-                    max_bar_fetch=max_bars,
-                    aliases=aliases,
-                    scores=scan.get("scores") or [],
-                    option_flow=(echo or {}).get("option_flow"),
-                )
+                    ph_max_bars = min(ph_max_bars, int(actions_cfg.get("power_hour_max_bar_fetch_offline", 12)))
         except Exception as exc:  # noqa: BLE001
-            logger.warning("power hour board unavailable: %s", exc)
-            power_hour = {"error": str(exc), "long": [], "short": [], "disclaimer": "Power Hour board unavailable."}
+            logger.warning("power hour quote warm unavailable: %s", exc)
 
         market = {}
         try:
@@ -3969,24 +3985,34 @@ def create_app(config_path: str | None = None) -> Flask:
             logger.warning("market board unavailable: %s", exc)
             market = {"error": str(exc), "by_earnings": [], "by_volume": [], "by_score": []}
 
-        # Attach closing-bell bullish flow after market movers exist
-        if power_hour and not power_hour.get("error"):
-            try:
-                from odte_scanner.signals.power_hour import seed_quotes_from_scan, top_closing_bell_bullish
-
-                power_hour["closing_bell_bullish"] = top_closing_bell_bullish(
-                    option_flow=(echo or {}).get("option_flow"),
-                    market=market,
-                    n=2,
+        # Power Hour board — after market movers so confluence can rank NBIS/IWM/AVGO/…
+        try:
+            if bool(actions_cfg.get("power_hour_enabled", True)):
+                from odte_scanner.signals.power_hour import (
+                    build_power_hour_board,
+                    seed_quotes_from_scan,
                 )
-                # Re-seed quote gaps from market.last when PH live fetch missed a name
+
                 quotes = seed_quotes_from_scan(
                     quotes,
                     scores=scan.get("scores") or [],
                     market=market,
                 )
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("closing bell flow attach failed: %s", exc)
+                power_hour = build_power_hour_board(
+                    quotes=quotes,
+                    symbols=ph_syms or None,
+                    config=cfg,
+                    fetch_bars=ph_fetch_bars,
+                    max_bar_fetch=ph_max_bars,
+                    aliases=aliases,
+                    scores=scan.get("scores") or [],
+                    market=market,
+                    option_flow=(echo or {}).get("option_flow"),
+                    dealer_edge=(echo or {}).get("dealer_edge"),
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("power hour board unavailable: %s", exc)
+            power_hour = {"error": str(exc), "long": [], "short": [], "disclaimer": "Power Hour board unavailable."}
 
         # Unified walls map for all recommended surfaces (challenge + echo + action cards)
         walls_by_symbol: dict[str, dict] = {}
