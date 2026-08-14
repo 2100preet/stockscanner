@@ -7,7 +7,7 @@ Used by the 0DTE $1K Challenge put playbook (break + hold ORB Low / retest).
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -16,7 +16,6 @@ import pandas as pd
 ET = ZoneInfo("America/New_York")
 RTH_OPEN = time(9, 30)
 ORB_END = time(9, 45)
-RTH_CLOSE = time(16, 0)
 
 
 @dataclass
