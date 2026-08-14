@@ -316,6 +316,18 @@ actions:
   # Soft EXIT on underlying = wall ± this buffer (call wall − buffer / put wall + buffer)
   wall_exit_buffer_usd: 0.10
   challenge_fetch_walls: true
+  # 0DTE $1K Challenge — Green Friday ORB15 puts (separate from swing $1M path)
+  odte_1k_enabled: true
+  odte_1k_start_usd: 1000
+  odte_1k_position_size_usd: 850
+  odte_1k_position_pct: 0.85
+  odte_1k_max_trades_per_day: 2
+  odte_1k_symbols: ["SPY", "QQQ"]
+  odte_1k_ledger_path: outputs/odte_1k_ledger.json
+  odte_1k_fetch_bars: true
+  odte_1k_fetch_contracts: true
+  odte_1k_auto_enter: false
+  odte_1k_auto_exit: true
   # Hold / time-stop (industry desk practice)
   odte_flatten_et: "15:45"       # hard flatten 0DTE by 15:45 ET
   weekly_max_hold_days: 7        # max calendar days for weekly tickets

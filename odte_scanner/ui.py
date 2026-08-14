@@ -197,6 +197,7 @@ PAGE = r"""
     <nav class="tabs" id="tabs">
       <button class="active" data-tab="overview">Overview</button>
       <button data-tab="odte">0DTE</button>
+      <button data-tab="odte1k">0DTE $1K</button>
       <button data-tab="explosive">Explosive</button>
       <button data-tab="weekly">1 Week</button>
       <button data-tab="swing">Swing 1–3M</button>
@@ -277,6 +278,35 @@ PAGE = r"""
         <div class="metric-row" id="odteRecLogMetrics"></div>
         <div id="odteRecLog" class="empty">—</div>
       </div>
+    </section>
+
+    <section class="tabpane" id="tab-odte1k">
+      <h2>0DTE $1K Challenge — Green Friday · ORB15 puts</h2>
+      <p class="lede">
+        Separate from the swing <strong>$1k→$1M</strong> path. Paper sleeve starts at <strong>$1,000</strong>,
+        sizes ~<strong>$850</strong> (~85%), max <strong>2 trades/day</strong>.
+        Playbook: Green Friday + <strong>break/hold ORB15 Low</strong> (or retest from below) → <strong>PUT NOW</strong>.
+        Surfaces conflict when call “safe zone” still likes SPY calls.
+      </p>
+      <div class="metric-row" id="odte1kMetrics"></div>
+      <div class="cards" id="odte1kPrimary"></div>
+      <div class="panel">
+        <h2>ORB15 levels (09:30–09:45 ET)</h2>
+        <div id="odte1kOrb" class="empty">—</div>
+      </div>
+      <div class="panel">
+        <h2>PUT NOW / EXIT / WATCH</h2>
+        <div id="odte1kActions" class="empty">—</div>
+      </div>
+      <div class="panel">
+        <h2>Sleeve book — cash · equity · 2× progress</h2>
+        <div id="odte1kBook" class="empty">—</div>
+      </div>
+      <div class="panel">
+        <h2>Playbook rules</h2>
+        <div id="odte1kRules" class="empty">—</div>
+      </div>
+      <p class="lede" id="odte1kDisclaimer" style="font-size:.72rem"></p>
     </section>
 
     <section class="tabpane" id="tab-explosive">
@@ -1630,6 +1660,160 @@ PAGE = r"""
       renderRecLog("challengeRecLog", rec, "No challenge recommendations logged yet.", "challengeRecLogMetrics");
     }
 
+    function renderOdte1k(board) {
+      const metrics = document.getElementById("odte1kMetrics");
+      const primaryEl = document.getElementById("odte1kPrimary");
+      const orbEl = document.getElementById("odte1kOrb");
+      const actEl = document.getElementById("odte1kActions");
+      const bookEl = document.getElementById("odte1kBook");
+      const rulesEl = document.getElementById("odte1kRules");
+      const disc = document.getElementById("odte1kDisclaimer");
+      const b = board || {};
+      if (!Object.keys(b).length) {
+        if (actEl) actEl.innerHTML = `<div class="empty">0DTE $1K board loading…</div>`;
+        return;
+      }
+      const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
+      const book = b.book || {};
+      const c = b.counts || {};
+      const equity = book.equity!=null ? book.equity : b.equity;
+      const cash = book.cash!=null ? book.cash : b.cash;
+      if (metrics) metrics.innerHTML = [
+        m("Sleeve cash", cash!=null?`$${Number(cash).toLocaleString(undefined,{maximumFractionDigits:0})}`:"—"),
+        m("Sleeve equity", equity!=null?`$${Number(equity).toLocaleString(undefined,{maximumFractionDigits:0})}`:"—", (b.doubled||book.doubled)?"up":""),
+        m("→ 2× ($2k)", `${fmt(b.progress_2x_pct??book.progress_2x_pct,1)}%`, (b.doubled||book.doubled)?"up":""),
+        m("Size / trade", b.position_size_usd!=null?`$${fmt(b.position_size_usd,0)}`:"—"),
+        m("Trades today", `${b.trades_today??c.trades_today??0} / ${b.max_trades_per_day??2}`),
+        m("PUT NOW", c.put_now??0, (c.put_now||0)>0?"up":""),
+        m("Green Friday", b.green_friday?"YES":"no", b.green_friday?"up":""),
+        m("Call conflict", b.call_safe_zone_conflict?"YES":"no", b.call_safe_zone_conflict?"down":""),
+      ].join("");
+
+      const p0 = b.primary;
+      if (primaryEl) {
+        if (!p0) primaryEl.innerHTML = `<div class="empty">No ORB15 signal yet.</div>`;
+        else {
+          const act = p0.action||"WAIT";
+          const kind = act==="EXIT"?"short":(act==="PUT_NOW"||act==="HOLD"?"long":"wait");
+          primaryEl.innerHTML = `<article class="action-card ${kind}">
+            <div class="ac-top">
+              <div class="ac-sym">${p0.symbol} <span class="tag">PUT</span>
+                ${p0.green_friday?`<span class="badge buy">GREEN FRIDAY</span>`:""}
+                ${p0.call_safe_zone_conflict?`<span class="badge sell">CALL CONFLICT</span>`:""}
+              </div>
+              <div class="ac-dir ${kind}">${String(act).replaceAll("_"," ")}</div>
+            </div>
+            <div class="ac-conf">Strength ${fmt(p0.strength,0)} · ORB Low ${p0.orb_low==null?"—":"$"+fmt(p0.orb_low,2)} · High ${p0.orb_high==null?"—":"$"+fmt(p0.orb_high,2)}
+              ${p0.signaled_at_cst?` · asked ${p0.signaled_at_cst}`:""}</div>
+            <div class="ac-meta">
+              <div>Spot<strong>${p0.spot==null?"—":"$"+fmt(p0.spot,2)}</strong></div>
+              <div>Strike / expiry<strong>${p0.strike==null?"—":fmt(p0.strike,2)+"p"} · ${p0.expiry||"—"}</strong></div>
+              <div>Ask / Bid<strong>${fmt(p0.ask,2)} / ${fmt(p0.bid,2)}</strong></div>
+              <div>Size / cts<strong>${p0.position_size_usd==null?"—":"$"+fmt(p0.position_size_usd,0)} · ${p0.contracts??"—"}</strong></div>
+              <div>Break / hold<strong>${p0.broke_orb_low?"YES":"—"} / ${p0.holds_below_low?"YES":"—"}</strong></div>
+              <div>Retest<strong>${p0.retest_orb_low?"YES":"—"}</strong></div>
+            </div>
+            <p class="why" style="margin:.55rem 0 0">${p0.detail||""}</p>
+            ${(act==="PUT_NOW" && p0.ask!=null)?`<div class="playbook" style="margin-top:.45rem"><button type="button" class="tag" id="odte1kEnter">Paper ENTER put</button></div>`:""}
+          </article>`;
+          const ent = document.getElementById("odte1kEnter");
+          if (ent) ent.addEventListener("click", async ()=>{
+            ent.textContent = "Entering…";
+            try {
+              if (window.SIGNAL_DESK_STATIC) { alert("Paper 0DTE $1K needs a live host"); return; }
+              const r = await fetch("/api/odte1k/enter", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({symbol: p0.symbol})});
+              const j = await r.json();
+              if (!r.ok) throw new Error(j.error||"enter failed");
+              await loadAll();
+            } catch(e){ ent.textContent = "ENTER failed"; alert(e.message||e); }
+          });
+        }
+      }
+
+      if (orbEl) {
+        const orb = b.orb || {};
+        const rows = Object.keys(orb).map(sym => orb[sym]);
+        orbEl.innerHTML = !rows.length ? `<div class="empty">No ORB15 levels.</div>` : `<table><thead><tr>
+          <th>Symbol</th><th>Status</th><th>ORB High</th><th>ORB Low</th><th>Bars</th><th>Note</th>
+        </tr></thead><tbody>${rows.map(r=>`<tr>
+          <td><strong>${r.symbol}</strong></td>
+          <td><span class="badge ${r.status==="ready"?"buy":(r.status==="forming"?"wait":"skip")}">${r.status||"—"}</span></td>
+          <td class="mono up"><strong>${r.high==null?"—":"$"+fmt(r.high,2)}</strong></td>
+          <td class="mono down"><strong>${r.low==null?"—":"$"+fmt(r.low,2)}</strong></td>
+          <td class="mono">${r.bars??"—"}</td>
+          <td class="why">${r.note||""}</td>
+        </tr>`).join("")}</tbody></table>`;
+      }
+
+      if (actEl) {
+        const rows = [...(b.exit_now||[]), ...(b.put_now||[]), ...(b.hold||[]), ...(b.watch||[])];
+        actEl.innerHTML = !rows.length ? `<div class="empty">No signals.</div>` : `<table><thead><tr>
+          <th>Action</th><th>Symbol</th><th>Asked (CST)</th><th>ORB L/H</th><th>Spot</th><th>Strike</th><th>Ask</th><th>Why</th>
+        </tr></thead><tbody>${rows.map(r=>{
+          const a=(r.action||"WAIT");
+          const cls=a==="EXIT"||a==="PUT_NOW"?(a==="EXIT"?"sell":"buy"):(a==="HOLD"?"hold":"wait");
+          return `<tr>
+            <td><span class="badge ${cls}">${String(a).replaceAll("_"," ")}</span>${r.call_safe_zone_conflict?` <span class="badge sell">CALL CONFLICT</span>`:""}</td>
+            <td><strong>${r.symbol}</strong>${r.green_friday?` <span class="tag">GF</span>`:""}</td>
+            <td class="mono">${r.signaled_at_cst||fmtCST(r.signaled_at)||"—"}</td>
+            <td class="mono">${r.orb_low==null?"—":"$"+fmt(r.orb_low,2)} / ${r.orb_high==null?"—":"$"+fmt(r.orb_high,2)}</td>
+            <td class="mono">${r.spot==null?"—":"$"+fmt(r.spot,2)}</td>
+            <td class="mono">${r.strike==null?"—":fmt(r.strike,2)+"p"}</td>
+            <td class="mono">${fmt(r.ask,2)}</td>
+            <td class="why">${r.detail||""}</td>
+          </tr>`;
+        }).join("")}</tbody></table>`;
+      }
+
+      if (bookEl) {
+        const open=(book.trades||[]).filter(t=>t.status==="open");
+        const closed=(book.trades||[]).filter(t=>t.status==="closed").slice(-8).reverse();
+        bookEl.innerHTML = `
+          <div class="ac-meta" style="margin-bottom:.5rem">
+            <div>Start<strong>$${Number(b.starting_cash||book.starting_cash||1000).toLocaleString()}</strong></div>
+            <div>Cash<strong>$${Number(cash||0).toLocaleString(undefined,{maximumFractionDigits:0})}</strong></div>
+            <div>Equity<strong>$${Number(equity||0).toLocaleString(undefined,{maximumFractionDigits:0})}</strong></div>
+            <div>W/L<strong>${book.wins||0}/${book.losses||0}</strong></div>
+            <div>Today<strong>${book.trades_today??b.trades_today??0} / ${b.max_trades_per_day||2}</strong></div>
+          </div>
+          ${open.length?open.map(t=>`<article class="action-card long" style="margin-bottom:.55rem">
+            <div class="ac-top"><div class="ac-sym">${t.symbol} PUT</div><div class="ac-dir long">OPEN</div></div>
+            <div class="ac-meta">
+              <div>Entered (CST)<strong>${fmtCST(t.entered_at)}</strong></div>
+              <div>Entry → mark<strong>$${fmt(t.entry_ask,2)} → $${fmt(t.mark,2)}</strong></div>
+              <div>Unreal%<strong class="${pctClass(t.unrealized_pct)}">${t.unrealized_pct==null?"—":fmt(t.unrealized_pct,1)+"%"}</strong></div>
+              <div>ORB Low<strong>${t.orb_low==null?"—":"$"+fmt(t.orb_low,2)}</strong></div>
+              <div>Cost<strong>$${fmt(t.cost,0)}</strong></div>
+            </div>
+            <div class="playbook" style="margin-top:.4rem"><button type="button" class="tag" data-odte1k-exit="${t.id}">Paper EXIT</button></div>
+          </article>`).join(""):`<div class="empty">No open 0DTE $1K flip — Paper ENTER on PUT NOW.</div>`}
+          ${closed.length?`<div class="status" style="margin-top:.6rem">CLOSED</div><div class="cards">${closed.map(t=>`<article class="action-card ${((t.profit_pct||0)>=0)?"long":"short"}">
+            <div class="ac-top"><div class="ac-sym">${t.symbol}</div><div class="ac-dir">EXIT</div></div>
+            <div class="ac-meta">
+              <div>P&amp;L<strong class="${pctClass(t.profit_pct)}">${t.profit_pct==null?"—":fmt(t.profit_pct,1)+"%"} · $${fmt(t.pnl_usd,2)}</strong></div>
+              <div>In → out<strong>$${fmt(t.entry_ask,2)} → $${fmt(t.exit_bid,2)}</strong></div>
+            </div>
+          </article>`).join("")}</div>`:""}`;
+        bookEl.querySelectorAll("[data-odte1k-exit]").forEach(btn=>{
+          btn.addEventListener("click", async ()=>{
+            btn.textContent = "Exiting…";
+            try {
+              if (window.SIGNAL_DESK_STATIC) { alert("Paper 0DTE $1K needs a live host"); return; }
+              const r = await fetch("/api/odte1k/exit", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({trade_id: btn.getAttribute("data-odte1k-exit")})});
+              const j = await r.json();
+              if (!r.ok) throw new Error(j.error||"exit failed");
+              await loadAll();
+            } catch(e){ btn.textContent = "EXIT failed"; alert(e.message||e); }
+          });
+        });
+      }
+
+      if (rulesEl) {
+        rulesEl.innerHTML = `<ul class="lede" style="font-size:.78rem">${(b.playbook||[]).map(r=>`<li>${r}</li>`).join("")}</ul>`;
+      }
+      if (disc) disc.textContent = b.disclaimer || "";
+    }
+
     function renderDarkpoolMini(echo) {
       const el = document.getElementById("darkpoolMini");
       if (!el) return;
@@ -2383,6 +2567,7 @@ PAGE = r"""
       renderEcho(DATA.echo || {});
       renderDarkpoolMini(DATA.echo || {});
       renderChallenge(DATA.challenge || {});
+      renderOdte1k(DATA.odte_1k || {});
       renderScreener(hz, DATA.market || {});
       renderInsights(DATA.insights);
       renderRecLogAll(DATA.rec_log || {});
@@ -3457,6 +3642,68 @@ def create_app(config_path: str | None = None) -> Flask:
             logger.warning("challenge board unavailable: %s", exc)
             challenge = {"error": str(exc), "tickets": [], "disclaimer": "Challenge board unavailable."}
 
+        odte_1k: dict = {}
+        try:
+            if bool(actions_cfg.get("odte_1k_enabled", True)):
+                from odte_scanner.challenge.odte_1k import build_odte_1k_board
+                from odte_scanner.challenge.odte_1k_tracker import Odte1kTracker
+
+                o1k_path = Path(actions_cfg.get("odte_1k_ledger_path", "outputs/odte_1k_ledger.json"))
+                if not o1k_path.is_absolute():
+                    o1k_path = ROOT / o1k_path
+                o1k_tracker = Odte1kTracker(
+                    o1k_path,
+                    starting_cash=float(actions_cfg.get("odte_1k_start_usd", 1000)),
+                    max_trades_per_day=int(actions_cfg.get("odte_1k_max_trades_per_day", 2)),
+                    default_size_usd=float(actions_cfg.get("odte_1k_position_size_usd", 850)),
+                )
+                o1k_syms = [str(s).upper() for s in (actions_cfg.get("odte_1k_symbols") or ["SPY", "QQQ"])]
+                # Ensure quotes for ORB symbols
+                if not offline:
+                    for s in o1k_syms:
+                        if s not in quotes:
+                            aliases.setdefault(s, resolve_yahoo_symbol(s, cfg))
+                            try:
+                                q = fetch_live_quote(s, yahoo_symbol=aliases.get(s))
+                                if q:
+                                    quotes[s] = q.to_dict()
+                            except Exception:  # noqa: BLE001
+                                pass
+                odte_1k = build_odte_1k_board(
+                    quotes=quotes,
+                    red_flag=red_flag_snapshot if isinstance(red_flag_snapshot, dict) else None,
+                    actions=actions if isinstance(actions, dict) else None,
+                    symbols=o1k_syms,
+                    open_trades=[t.to_dict() for t in o1k_tracker.book.trades],
+                    book=o1k_tracker.book.to_dict(),
+                    starting_cash=float(actions_cfg.get("odte_1k_start_usd", 1000)),
+                    position_size_usd=float(actions_cfg.get("odte_1k_position_size_usd", 850)),
+                    position_pct=float(actions_cfg.get("odte_1k_position_pct", 0.85)),
+                    max_trades_per_day=int(actions_cfg.get("odte_1k_max_trades_per_day", 2)),
+                    fetch_bars=bool(actions_cfg.get("odte_1k_fetch_bars", True)) and not offline,
+                    fetch_contracts=bool(actions_cfg.get("odte_1k_fetch_contracts", True)) and not offline,
+                    flatten_et=str(actions_cfg.get("odte_flatten_et", "15:45")),
+                    aliases=aliases,
+                )
+                # Auto EXIT open puts when board says EXIT
+                if bool(actions_cfg.get("odte_1k_auto_exit", True)):
+                    for sig in odte_1k.get("exit_now") or []:
+                        sym = str(sig.get("symbol") or "")
+                        for t in list(o1k_tracker.open_trades()):
+                            if t.symbol != sym:
+                                continue
+                            mark = float(sig.get("bid") or sig.get("ask") or t.mark or t.entry_ask or 0)
+                            o1k_tracker.exit_trade(t.id, exit_bid=mark, reason=str(sig.get("detail") or "AUTO EXIT"))
+                    odte_1k["book"] = o1k_tracker.book.to_dict()
+                    odte_1k["cash"] = odte_1k["book"].get("cash")
+                    odte_1k["equity"] = odte_1k["book"].get("equity")
+                    odte_1k["doubled"] = odte_1k["book"].get("doubled")
+                    odte_1k["progress_2x_pct"] = odte_1k["book"].get("progress_2x_pct")
+                    odte_1k["trades_today"] = odte_1k["book"].get("trades_today")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("odte_1k board unavailable: %s", exc)
+            odte_1k = {"error": str(exc), "put_now": [], "disclaimer": "0DTE $1K board unavailable."}
+
         market = {}
         try:
             from odte_scanner.market import build_market_board
@@ -3705,6 +3952,7 @@ def create_app(config_path: str | None = None) -> Flask:
                         "actions": actions,
                         "lottery": lottery,
                         "challenge": challenge,
+                        "odte_1k": odte_1k,
                         "radar": radar,
                         "chase_radar": chase_radar,
                     },
@@ -3754,6 +4002,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 "chase_radar": chase_radar,
                 "echo": echo,
                 "challenge": challenge,
+                "odte_1k": odte_1k,
                 "market": market,
                 "walls_by_symbol": walls_by_symbol,
                 "watch": {"quotes": quotes},
@@ -3876,6 +4125,70 @@ def create_app(config_path: str | None = None) -> Flask:
             pass
         reason = body.get("reason") or trade.last_action_detail or "Manual paper EXIT"
         out = tracker.exit_trade(trade_id, exit_bid=mark, reason=str(reason))
+        if not out:
+            return jsonify({"ok": False, "error": "exit failed"}), 409
+        return jsonify({"ok": True, "trade": out.to_dict(), "book": tracker.book.to_dict()})
+
+    def _odte1k_tracker():
+        from odte_scanner.challenge.odte_1k_tracker import Odte1kTracker
+
+        path = Path(actions_cfg.get("odte_1k_ledger_path", "outputs/odte_1k_ledger.json"))
+        if not path.is_absolute():
+            path = ROOT / path
+        return Odte1kTracker(
+            path,
+            starting_cash=float(actions_cfg.get("odte_1k_start_usd", 1000)),
+            max_trades_per_day=int(actions_cfg.get("odte_1k_max_trades_per_day", 2)),
+            default_size_usd=float(actions_cfg.get("odte_1k_position_size_usd", 850)),
+        )
+
+    @app.post("/api/odte1k/enter")
+    def odte1k_enter():
+        from odte_scanner.challenge.odte_1k import build_odte_1k_board
+
+        body = request.get_json(silent=True) or {}
+        symbol = str(body.get("symbol") or "SPY").upper()
+        tracker = _odte1k_tracker()
+        alias = resolve_yahoo_symbol(symbol, cfg)
+        q = fetch_live_quote(symbol, yahoo_symbol=alias)
+        quotes = {symbol: q.to_dict()} if q else {}
+        board = build_odte_1k_board(
+            quotes=quotes,
+            symbols=[symbol],
+            open_trades=[t.to_dict() for t in tracker.book.trades],
+            book=tracker.book.to_dict(),
+            starting_cash=float(actions_cfg.get("odte_1k_start_usd", 1000)),
+            position_size_usd=float(actions_cfg.get("odte_1k_position_size_usd", 850)),
+            position_pct=float(actions_cfg.get("odte_1k_position_pct", 0.85)),
+            max_trades_per_day=int(actions_cfg.get("odte_1k_max_trades_per_day", 2)),
+            fetch_bars=True,
+            fetch_contracts=True,
+            flatten_et=str(actions_cfg.get("odte_flatten_et", "15:45")),
+            aliases={symbol: alias},
+        )
+        sig = next(
+            (s for s in (board.get("put_now") or []) if str(s.get("symbol")) == symbol),
+            board.get("primary"),
+        )
+        if not sig or sig.get("action") != "PUT_NOW":
+            return jsonify({"ok": False, "error": "no PUT NOW signal for " + symbol, "board": board}), 409
+        if not sig.get("ask"):
+            return jsonify({"ok": False, "error": "need live put ask before ENTER", "signal": sig}), 409
+        trade = tracker.enter(sig)
+        if not trade:
+            return jsonify({"ok": False, "error": "enter rejected (day cap / cash / size)"}), 409
+        return jsonify({"ok": True, "trade": trade.to_dict(), "book": tracker.book.to_dict()})
+
+    @app.post("/api/odte1k/exit")
+    def odte1k_exit():
+        body = request.get_json(silent=True) or {}
+        trade_id = str(body.get("trade_id") or "")
+        tracker = _odte1k_tracker()
+        trade = next((t for t in tracker.open_trades() if t.id == trade_id), None)
+        if not trade:
+            return jsonify({"ok": False, "error": "open trade not found"}), 404
+        mark = float(body.get("exit_bid") or trade.mark or trade.entry_ask or 0)
+        out = tracker.exit_trade(trade_id, exit_bid=mark, reason=str(body.get("reason") or "Manual paper EXIT"))
         if not out:
             return jsonify({"ok": False, "error": "exit failed"}), 409
         return jsonify({"ok": True, "trade": out.to_dict(), "book": tracker.book.to_dict()})

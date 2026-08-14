@@ -53,6 +53,7 @@ jobs:
             outputs/signal_journal.json
             outputs/recommendation_log.json
             outputs/challenge_ledger.json
+            outputs/odte_1k_ledger.json
             outputs/paper_ledger.json
             outputs/webull_orders.json
             outputs/ui_snapshot_cache.json
@@ -78,7 +79,7 @@ jobs:
           test -f site/data/snapshot.json
           # Bundle ledgers into the static site for transparency / debugging
           mkdir -p site/data/ledgers
-          for f in signal_journal.json recommendation_log.json challenge_ledger.json paper_ledger.json webull_orders.json ui_snapshot_cache.json; do
+          for f in signal_journal.json recommendation_log.json challenge_ledger.json odte_1k_ledger.json paper_ledger.json webull_orders.json ui_snapshot_cache.json; do
             if [ -f "outputs/$f" ]; then cp "outputs/$f" "site/data/ledgers/$f"; fi
           done
           python - <<'PY'
