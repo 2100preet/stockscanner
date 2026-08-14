@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime, time
+from datetime import datetime, time
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -28,6 +28,92 @@ from odte_scanner.time_cst import signal_timestamps, to_cst_label
 logger = logging.getLogger(__name__)
 ET = ZoneInfo("America/New_York")
 FLATTEN_ET = time(15, 45)
+
+# Always keep these near the front of the ORB fetch queue
+_ORB_PRIORITY = (
+    "SPY",
+    "QQQ",
+    "IWM",
+    "DIA",
+    "SPX",
+    "XSP",
+    "TSLA",
+    "NVDA",
+    "AAPL",
+    "NBIS",
+    "SLV",
+    "SPCX",
+    "NOW",
+    "AMZN",
+    "META",
+    "AMD",
+    "MSFT",
+    "CRWV",
+    "PLTR",
+    "SMCI",
+)
+
+
+def resolve_odte_1k_symbols(
+    symbols: list[str] | str | None = None,
+    *,
+    config: dict[str, Any] | None = None,
+) -> list[str]:
+    """Resolve 0DTE $1K watchlist.
+
+    - list → that list
+    - \"focus\" / \"all\" / None → config tickers (full focus sleeve)
+    Always de-dupes and keeps priority names first when present.
+    """
+    cfg = config or {}
+    raw = symbols
+    if raw is None:
+        raw = (cfg.get("actions") or {}).get("odte_1k_symbols")
+    if isinstance(raw, str):
+        key = raw.strip().lower()
+        if key in {"", "focus", "all", "tickers", "universe"}:
+            raw = list(cfg.get("tickers") or [])
+        else:
+            raw = [raw]
+    if not raw:
+        raw = list(cfg.get("tickers") or _ORB_PRIORITY)
+
+    seen: set[str] = set()
+    out: list[str] = []
+    for sym in list(_ORB_PRIORITY) + [str(s).upper() for s in raw]:
+        key = str(sym).replace(".", "-").upper()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
+
+
+def orb_from_quote_proxy(symbol: str, quote: dict[str, Any] | None) -> Orb15Levels | None:
+    """Day high/low proxy when 1m ORB15 bars were not fetched."""
+    q = quote or {}
+    high = q.get("day_high")
+    low = q.get("day_low")
+    if high is None or low is None:
+        return None
+    try:
+        hi = float(high)
+        lo = float(low)
+    except Exception:  # noqa: BLE001
+        return None
+    if hi <= 0 or lo <= 0 or hi < lo:
+        return None
+    return Orb15Levels(
+        symbol=str(symbol).upper(),
+        session_date=datetime.now(ET).date().isoformat(),
+        high=round(hi, 4),
+        low=round(lo, 4),
+        open=float(q["session_open"]) if q.get("session_open") is not None else None,
+        bars=0,
+        status="proxy",
+        asof=str(q.get("asof") or datetime.now(ET).isoformat()),
+        note=f"Day H/L proxy ${hi:.2f} / ${lo:.2f} (ORB15 1m not fetched)",
+    )
 
 
 @dataclass
@@ -276,7 +362,7 @@ def decide_odte_1k_entry(
             reasons=[orb.note or "forming", "Puts preferred after ORB Low prints"],
         )
 
-    if orb.status != "ready" or orb.low is None:
+    if orb.status not in {"ready", "proxy"} or orb.low is None:
         return Odte1kSignal(
             action="WAIT",
             symbol=symbol,
@@ -428,7 +514,8 @@ def build_odte_1k_board(
     quotes: dict[str, dict[str, Any]] | None = None,
     red_flag: dict[str, Any] | None = None,
     actions: dict[str, Any] | None = None,
-    symbols: list[str] | None = None,
+    symbols: list[str] | str | None = None,
+    config: dict[str, Any] | None = None,
     orb_map: dict[str, Orb15Levels] | None = None,
     open_trades: list[dict[str, Any]] | None = None,
     book: dict[str, Any] | None = None,
@@ -436,16 +523,18 @@ def build_odte_1k_board(
     position_size_usd: float = 850.0,
     position_pct: float | None = 0.85,
     max_trades_per_day: int = 2,
+    max_orb_fetch: int = 20,
+    max_contract_fetch: int = 8,
     fetch_bars: bool = True,
     fetch_contracts: bool = False,
     flatten_et: str = "15:45",
     aliases: dict[str, str] | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Build the 0DTE $1K Challenge board (SPY primary, optional QQQ)."""
+    """Build the 0DTE $1K Challenge board (full focus sleeve; capped live ORB fetches)."""
     quotes = quotes or {}
     aliases = aliases or {}
-    symbols = [s.upper() for s in (symbols or ["SPY", "QQQ"])]
+    symbols = resolve_odte_1k_symbols(symbols, config=config)
     open_trades = open_trades or []
     book = book or {}
     cash = float(book.get("cash") if book.get("cash") is not None else starting_cash)
@@ -480,13 +569,42 @@ def build_odte_1k_board(
         if str(t.get("status") or "open") == "open"
     }
 
+    # Rank which names get expensive 1m ORB fetches (priority + weakest tape first)
+    def _tape_rank(sym: str) -> tuple:
+        q = quotes.get(sym) or {}
+        live = q.get("session_change_pct")
+        if live is None:
+            live = q.get("change_pct")
+        mom = q.get("mom_5m_pct")
+        # Lower = fetch sooner (priority index, then weakest tape)
+        try:
+            pri = list(_ORB_PRIORITY).index(sym)
+        except ValueError:
+            pri = 100 + symbols.index(sym) if sym in symbols else 999
+        weak = float(live) if live is not None else 0.0
+        mom_f = float(mom) if mom is not None else 0.0
+        return (0 if sym in open_by_sym else 1, pri, weak, mom_f)
+
+    fetch_queue = sorted(symbols, key=_tape_rank)[: max(1, int(max_orb_fetch))]
+    fetch_set = set(fetch_queue) if fetch_bars else set()
+
     levels: dict[str, Any] = {}
     signals: list[Odte1kSignal] = []
+    contract_fetches = 0
     for sym in symbols:
         orb = (orb_map or {}).get(sym)
-        if orb is None:
-            bars = fetch_orb15_bars(sym, yahoo_symbol=aliases.get(sym)) if fetch_bars else None
+        if orb is None and sym in fetch_set:
+            bars = fetch_orb15_bars(sym, yahoo_symbol=aliases.get(sym))
             orb = compute_orb15(bars, symbol=sym, now=now)
+        if orb is None:
+            orb = orb_from_quote_proxy(sym, quotes.get(sym))
+        if orb is None:
+            orb = Orb15Levels(
+                symbol=sym,
+                session_date=now_et.date().isoformat(),
+                status="incomplete",
+                note="No ORB15 bars / day range yet",
+            )
         elif not isinstance(orb, Orb15Levels):
             orb = Orb15Levels(
                 symbol=str(orb.get("symbol") or sym),
@@ -501,6 +619,7 @@ def build_odte_1k_board(
                 note=orb.get("note"),
             )
         levels[sym] = orb.to_dict()
+        # First pass without contracts — attach live asks only for top PUT_NOW after rank
         sig = decide_odte_1k_entry(
             orb=orb,
             quote=quotes.get(sym),
@@ -512,12 +631,37 @@ def build_odte_1k_board(
             trades_today=trades_today,
             max_trades_per_day=max_trades_per_day,
             open_trade=open_by_sym.get(sym),
-            fetch_contract=fetch_contracts,
+            fetch_contract=False,
             yahoo_symbol=aliases.get(sym),
             flatten_et=flatten_et,
             now=now,
         )
         signals.append(sig)
+
+    # Attach live 0DTE puts for top PUT_NOW / EXIT names (capped)
+    if fetch_contracts:
+        for sig in sorted(signals, key=lambda s: (0 if s.action in {"PUT_NOW", "EXIT"} else 1, -s.strength)):
+            if sig.action not in {"PUT_NOW", "EXIT", "HOLD"}:
+                continue
+            if contract_fetches >= int(max_contract_fetch):
+                break
+            if sig.ask is not None and sig.contract:
+                continue
+            last = sig.spot or (quotes.get(sig.symbol) or {}).get("last")
+            if not last:
+                continue
+            contract = _pick_0dte_put(sig.symbol, float(last), yahoo_symbol=aliases.get(sig.symbol))
+            contract_fetches += 1
+            if not contract:
+                continue
+            sig.strike = contract.get("strike")
+            sig.expiry = contract.get("expiry")
+            sig.dte = int(contract.get("dte") or 0)
+            sig.ask = float(contract["ask"]) if contract.get("ask") is not None else None
+            sig.bid = float(contract["bid"]) if contract.get("bid") is not None else None
+            sig.contract = contract.get("contract")
+            if sig.ask:
+                sig.contracts = _contracts_for_size(sig.ask, size, cash) or None
 
     puts = [s for s in signals if s.action == "PUT_NOW"]
     exits = [s for s in signals if s.action == "EXIT"]
@@ -543,6 +687,8 @@ def build_odte_1k_board(
         "trades_today": trades_today,
         "green_friday": green,
         "call_safe_zone_conflict": conflict,
+        "symbols": symbols,
+        "orb_fetched": sorted(fetch_set),
         "orb": levels,
         "primary": primary.to_dict() if primary else None,
         "put_now": [s.to_dict() for s in puts],
@@ -556,18 +702,23 @@ def build_odte_1k_board(
             "hold": len(holds),
             "watch": len(watches),
             "trades_today": trades_today,
+            "names": len(symbols),
+            "orb_ready": sum(1 for v in levels.values() if v.get("status") in {"ready", "proxy"}),
+            "orb_fetched": len(fetch_set),
         },
         "book": book,
         "playbook": [
             "Green Friday: session green — prefer puts on ORB weakness (not chase calls).",
-            "ORB15 = first 15m RTH High/Low (09:30–09:45 ET).",
+            "ORB15 = first 15m RTH High/Low (09:30–09:45 ET). Full focus sleeve (SPY/QQQ/IWM/TSLA/NVDA/NBIS/AAPL/SLV/SPCX/NOW/…). ",
             "PUT NOW on break + hold of ORB Low, or retest of ORB Low from below.",
             "Size ~85% of sleeve (~$850 on $1k). Max 2 trades / day.",
             "Flatten by 15:45 ET. Invalidation = reclaim above ORB Low.",
             "If call safe-zone / Red Flag SUPPORTIVE still shows SPY calls — treat as conflict, not confirmation.",
         ],
         "disclaimer": (
-            "Educational / research only. Models ORB15 from delayed Yahoo 1m bars. "
-            "Not affiliated with any Discord. Options can expire worthless."
+            "Educational / research only. Models ORB15 from delayed Yahoo 1m bars "
+            "(capped live fetch; others use day H/L proxy). "
+            "Not affiliated with any Discord. Options can expire worthless. "
+            "PUT NOW is the actionable entry — Paper ENTER on a live host."
         ),
     }

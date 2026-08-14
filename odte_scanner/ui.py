@@ -285,8 +285,9 @@ PAGE = r"""
       <p class="lede">
         Separate from the swing <strong>$1k→$1M</strong> path. Paper sleeve starts at <strong>$1,000</strong>,
         sizes ~<strong>$850</strong> (~85%), max <strong>2 trades/day</strong>.
-        Playbook: Green Friday + <strong>break/hold ORB15 Low</strong> (or retest from below) → <strong>PUT NOW</strong>.
-        Surfaces conflict when call “safe zone” still likes SPY calls.
+        Full focus sleeve: <strong>SPY · QQQ · IWM · TSLA · NVDA · NBIS · AAPL · SLV · SPCX · NOW</strong> + the rest of the focus list.
+        Playbook: Green Friday + <strong>break/hold ORB15 Low</strong> (or retest) → <strong>PUT NOW</strong>
+        (actionable entry — Paper ENTER on a live host). Surfaces conflict when call “safe zone” still likes index calls.
       </p>
       <div class="metric-row" id="odte1kMetrics"></div>
       <div class="cards" id="odte1kPrimary"></div>
@@ -1685,6 +1686,8 @@ PAGE = r"""
         m("Size / trade", b.position_size_usd!=null?`$${fmt(b.position_size_usd,0)}`:"—"),
         m("Trades today", `${b.trades_today??c.trades_today??0} / ${b.max_trades_per_day??2}`),
         m("PUT NOW", c.put_now??0, (c.put_now||0)>0?"up":""),
+        m("Names", c.names??(b.symbols||[]).length??0),
+        m("ORB ready", c.orb_ready??0),
         m("Green Friday", b.green_friday?"YES":"no", b.green_friday?"up":""),
         m("Call conflict", b.call_safe_zone_conflict?"YES":"no", b.call_safe_zone_conflict?"down":""),
       ].join("");
@@ -1735,14 +1738,18 @@ PAGE = r"""
         const rows = Object.keys(orb).map(sym => orb[sym]);
         orbEl.innerHTML = !rows.length ? `<div class="empty">No ORB15 levels.</div>` : `<table><thead><tr>
           <th>Symbol</th><th>Status</th><th>ORB High</th><th>ORB Low</th><th>Bars</th><th>Note</th>
-        </tr></thead><tbody>${rows.map(r=>`<tr>
+        </tr></thead><tbody>${rows.slice(0,40).map(r=>{
+          const st=r.status||"—";
+          const cls=st==="ready"?"buy":(st==="proxy"?"wait":(st==="forming"?"wait":"skip"));
+          return `<tr>
           <td><strong>${r.symbol}</strong></td>
-          <td><span class="badge ${r.status==="ready"?"buy":(r.status==="forming"?"wait":"skip")}">${r.status||"—"}</span></td>
+          <td><span class="badge ${cls}">${st}</span></td>
           <td class="mono up"><strong>${r.high==null?"—":"$"+fmt(r.high,2)}</strong></td>
           <td class="mono down"><strong>${r.low==null?"—":"$"+fmt(r.low,2)}</strong></td>
           <td class="mono">${r.bars??"—"}</td>
           <td class="why">${r.note||""}</td>
-        </tr>`).join("")}</tbody></table>`;
+        </tr>`;
+        }).join("")}</tbody></table>${rows.length>40?`<p class="lede" style="font-size:.72rem">Showing 40 / ${rows.length} names — full list in PUT NOW / WATCH table.</p>`:""}`;
       }
 
       if (actEl) {
@@ -3645,7 +3652,7 @@ def create_app(config_path: str | None = None) -> Flask:
         odte_1k: dict = {}
         try:
             if bool(actions_cfg.get("odte_1k_enabled", True)):
-                from odte_scanner.challenge.odte_1k import build_odte_1k_board
+                from odte_scanner.challenge.odte_1k import build_odte_1k_board, resolve_odte_1k_symbols
                 from odte_scanner.challenge.odte_1k_tracker import Odte1kTracker
 
                 o1k_path = Path(actions_cfg.get("odte_1k_ledger_path", "outputs/odte_1k_ledger.json"))
@@ -3657,10 +3664,14 @@ def create_app(config_path: str | None = None) -> Flask:
                     max_trades_per_day=int(actions_cfg.get("odte_1k_max_trades_per_day", 2)),
                     default_size_usd=float(actions_cfg.get("odte_1k_position_size_usd", 850)),
                 )
-                o1k_syms = [str(s).upper() for s in (actions_cfg.get("odte_1k_symbols") or ["SPY", "QQQ"])]
-                # Ensure quotes for ORB symbols
+                o1k_syms = resolve_odte_1k_symbols(
+                    actions_cfg.get("odte_1k_symbols"),
+                    config=cfg,
+                )
+                max_q = int(actions_cfg.get("odte_1k_max_quote_fetch", 48))
+                # Ensure quotes for ORB symbols (capped — full focus sleeve is large)
                 if not offline:
-                    for s in o1k_syms:
+                    for s in o1k_syms[:max_q]:
                         if s not in quotes:
                             aliases.setdefault(s, resolve_yahoo_symbol(s, cfg))
                             try:
@@ -3674,12 +3685,15 @@ def create_app(config_path: str | None = None) -> Flask:
                     red_flag=red_flag_snapshot if isinstance(red_flag_snapshot, dict) else None,
                     actions=actions if isinstance(actions, dict) else None,
                     symbols=o1k_syms,
+                    config=cfg,
                     open_trades=[t.to_dict() for t in o1k_tracker.book.trades],
                     book=o1k_tracker.book.to_dict(),
                     starting_cash=float(actions_cfg.get("odte_1k_start_usd", 1000)),
                     position_size_usd=float(actions_cfg.get("odte_1k_position_size_usd", 850)),
                     position_pct=float(actions_cfg.get("odte_1k_position_pct", 0.85)),
                     max_trades_per_day=int(actions_cfg.get("odte_1k_max_trades_per_day", 2)),
+                    max_orb_fetch=int(actions_cfg.get("odte_1k_max_orb_fetch", 20)),
+                    max_contract_fetch=int(actions_cfg.get("odte_1k_max_contract_fetch", 8)),
                     fetch_bars=bool(actions_cfg.get("odte_1k_fetch_bars", True)) and not offline,
                     fetch_contracts=bool(actions_cfg.get("odte_1k_fetch_contracts", True)) and not offline,
                     flatten_et=str(actions_cfg.get("odte_flatten_et", "15:45")),

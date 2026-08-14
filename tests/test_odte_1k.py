@@ -7,7 +7,11 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from odte_scanner.challenge.odte_1k import build_odte_1k_board, decide_odte_1k_entry
+from odte_scanner.challenge.odte_1k import (
+    build_odte_1k_board,
+    decide_odte_1k_entry,
+    resolve_odte_1k_symbols,
+)
 from odte_scanner.challenge.odte_1k_tracker import Odte1kTracker
 from odte_scanner.challenge.orb15 import Orb15Levels, classify_vs_orb, compute_orb15
 
@@ -101,6 +105,39 @@ def test_watch_when_inside_range():
         now=now,
     )
     assert sig.action == "WATCH"
+
+
+def test_resolve_includes_user_names_and_now():
+    cfg = {
+        "tickers": ["SPY", "QQQ", "IWM", "TSLA", "NVDA", "NBIS", "AAPL", "SLV", "SPCX", "NOW", "PLTR"],
+        "actions": {"odte_1k_symbols": "focus"},
+    }
+    syms = resolve_odte_1k_symbols("focus", config=cfg)
+    for need in ("SPY", "IWM", "TSLA", "NVDA", "NBIS", "AAPL", "SLV", "SPCX", "NOW"):
+        assert need in syms
+    assert syms.index("SPY") < syms.index("PLTR")
+
+
+def test_put_now_action_is_emitted():
+    """PUT NOW is the actionable entry (user asked if NOW is included — ticker + action)."""
+    orb = Orb15Levels(
+        symbol="NOW",
+        session_date="2026-08-14",
+        high=900.0,
+        low=890.0,
+        status="ready",
+        bars=15,
+    )
+    now = datetime(2026, 8, 14, 10, 20, tzinfo=ET)
+    sig = decide_odte_1k_entry(
+        orb=orb,
+        quote={"last": 888.0, "session_change_pct": 0.5, "mom_5m_pct": -0.2},
+        symbol="NOW",
+        fetch_contract=False,
+        now=now,
+    )
+    assert sig.action == "PUT_NOW"
+    assert sig.symbol == "NOW"
 
 
 def test_board_builds_with_injected_orb():
