@@ -322,7 +322,11 @@ actions:
   odte_1k_position_size_usd: 850
   odte_1k_position_pct: 0.85
   odte_1k_max_trades_per_day: 2
-  odte_1k_symbols: ["SPY", "QQQ"]
+  # "focus" = full config tickers (SPY/QQQ/IWM/TSLA/NVDA/NBIS/AAPL/SLV/SPCX/NOW/…)
+  odte_1k_symbols: focus
+  odte_1k_max_orb_fetch: 20
+  odte_1k_max_quote_fetch: 48
+  odte_1k_max_contract_fetch: 8
   odte_1k_ledger_path: outputs/odte_1k_ledger.json
   odte_1k_fetch_bars: true
   odte_1k_fetch_contracts: true

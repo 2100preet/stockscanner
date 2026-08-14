@@ -166,7 +166,7 @@ def classify_vs_orb(
         "dist_to_low_usd": None,
         "dist_to_high_usd": None,
     }
-    if last is None or orb.low is None or orb.high is None or orb.status not in {"ready", "forming"}:
+    if last is None or orb.low is None or orb.high is None or orb.status not in {"ready", "forming", "proxy"}:
         return out
     low = float(orb.low)
     high = float(orb.high)
