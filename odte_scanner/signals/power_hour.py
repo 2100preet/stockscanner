@@ -37,7 +37,7 @@ POWER_HOUR_END = time(16, 0)
 PREP_START = time(14, 30)
 
 # Explicit playbook cards always shown first
-SPECIAL_TICKERS = ("NU", "NVDA", "CAPR", "ETON", "HTFL", "TSLA")
+SPECIAL_TICKERS = ("NU", "NVDA", "CAPR", "ETON", "HTFL", "TSLA", "GOOGL")
 
 SPECIAL_RULES: dict[str, dict[str, str]] = {
     "NU": {
@@ -67,9 +67,32 @@ SPECIAL_RULES: dict[str, dict[str, str]] = {
     },
     "TSLA": {
         "bias": "BOTH",
-        "trigger": "Power-hour LONG above VWAP with bullish 15m structure; SHORT below VWAP with bearish 15m",
-        "risk": "Stop beyond the signal 15m candle (long: below low · short: above high)",
+        "trigger": "Power-hour LONG above VWAP with bullish 15m structure; SHORT below VWAP with bearish 15m (QQQ breadth preferred)",
+        "risk": "Stop beyond the signal 15m candle (long: below low · short: above high); no average down",
     },
+    "GOOGL": {
+        "bias": "LONG",
+        "trigger": "Long only if QQQ is also above VWAP and GOOGL holds a 15m higher low / VWAP reclaim",
+        "risk": "Stop below the higher-low / reclaim candle; no chase after a spike",
+    },
+}
+
+# Mega-cap / high-beta names that should not long against QQQ weakness
+MEGA_BREADTH = {
+    "GOOGL",
+    "GOOG",
+    "META",
+    "AMZN",
+    "MSFT",
+    "AAPL",
+    "AVGO",
+    "AMD",
+    "TSLA",
+    "NFLX",
+    "CRM",
+    "NVDA",
+    "ARM",
+    "PLTR",
 }
 
 
@@ -416,6 +439,26 @@ def decide_power_hour(
         else:
             detail = "ETON: waiting for VWAP-hold pullback + reclaim"
 
+    elif sym == "GOOGL":
+        hl = bool(st.get("higher_low")) or bool(st.get("bullish_reclaim")) or (
+            mom15 is not None and mom15 > 0 and above
+        )
+        qqq_ok = qqq_above is True
+        if qqq_ok and hl and above and not st.get("spike_risk") and phase in {"prep", "power_hour", "regular"}:
+            action = "LONG"
+            strength = 80.0
+            stop = float(st["last_low"]) if st.get("last_low") is not None else (candle_low or last_f)
+            detail = "GOOGL: QQQ ≥ VWAP + higher low / reclaim"
+            reasons += ["QQQ above VWAP", "Higher low or VWAP reclaim", "No spike chase"]
+        else:
+            detail = "GOOGL: need QQQ ≥ VWAP + constructive 15m (no spike)"
+            if qqq_above is False:
+                reasons.append("QQQ below VWAP — no GOOGL long")
+            if st.get("spike_risk"):
+                reasons.append("Spike — wait for base")
+            if not above:
+                reasons.append("GOOGL below VWAP")
+
     elif sym == "HTFL":
         near_hod = dist_hod is not None and dist_hod >= -1.0
         consol = bool(st.get("tight_base")) or (near_hod and not st.get("spike_risk"))
@@ -434,7 +477,7 @@ def decide_power_hour(
                 reasons.append("Not near HOD yet")
 
     else:
-        # Generic TSLA + focus sleeve
+        # Generic focus sleeve (incl. TSLA path when structure clear)
         bull = above and (
             bool(st.get("higher_low"))
             or bool(st.get("bullish_reclaim"))
@@ -469,6 +512,68 @@ def decide_power_hour(
             else:
                 reasons.append("VWAP / 15m structure incomplete")
 
+    # --- Shared filters that were previously missing ---
+    # 1) Dead-zone chop at VWAP
+    if action in {"LONG", "SHORT"} and vs_vwap is not None and abs(float(vs_vwap)) < 0.08:
+        action = "WATCH"
+        strength = min(strength, 40.0)
+        detail = f"{sym}: VWAP chop zone (|vs VWAP| < 0.08%) — stand aside"
+        reasons.append("VWAP dead zone — no edge")
+
+    # 2) Spike veto (generic + megas; HTFL already gated)
+    if action in {"LONG", "SHORT"} and st.get("spike_risk") and sym not in {"CAPR"}:
+        action = "WATCH"
+        strength = min(strength, 42.0)
+        detail = f"{sym}: spike bar — wait for base/reclaim (no chase)"
+        reasons.append("Spike veto")
+
+    # 3) QQQ breadth for mega-cap longs
+    if action == "LONG" and sym in MEGA_BREADTH and qqq_above is False:
+        action = "WAIT"
+        strength = min(strength, 38.0)
+        detail = f"{sym}: blocked — QQQ below VWAP (breadth filter)"
+        reasons.append("Mega long needs QQQ ≥ VWAP")
+
+    now_et = now.astimezone(ET) if now and now.tzinfo else (now.replace(tzinfo=ET) if now else datetime.now(ET))
+    tnow = now_et.time()
+
+    # 4) Early power-hour chaos (15:00–15:15): demote fresh generic entries
+    if (
+        action in {"LONG", "SHORT"}
+        and phase == "power_hour"
+        and POWER_HOUR_START <= tnow < time(15, 15)
+        and not special
+    ):
+        strength = min(strength, 55.0)
+        reasons.append("First 15m of power hour — size down / wait for confirm")
+
+    # 5) No new entries after 15:45 ET flatten clock
+    if phase == "power_hour" and tnow >= time(15, 45):
+        if action in {"LONG", "SHORT"}:
+            action = "WAIT"
+            strength = 30.0
+            detail = f"{sym}: no new entries after 15:45 ET — flatten / manage only"
+        reasons.append("Past 15:45 flatten — no new risk")
+        if action not in {"LONG", "SHORT"} and not detail:
+            detail = f"{sym}: no new entries after 15:45 ET — flatten / manage only"
+
+    # 6) Prep window: keep named playbooks as PREP strength; generics stay WATCH-ish
+    if phase == "prep" and action in {"LONG", "SHORT"} and not special:
+        strength = min(strength, 52.0)
+        reasons.append("Prep only — wait for 15:00 ET to size in")
+
+    # 7) TSLA: require clearer structure; prefer QQQ aligned on longs
+    if sym == "TSLA" and action == "LONG" and qqq_above is False:
+        action = "WAIT"
+        strength = min(strength, 40.0)
+        detail = "TSLA: long blocked while QQQ < VWAP"
+        reasons.append("TSLA long prefers QQQ ≥ VWAP")
+    if sym == "TSLA" and action == "SHORT" and qqq_above is True and vs_vwap is not None and abs(float(vs_vwap)) < 0.35:
+        # Weak short against strong QQQ near VWAP
+        action = "WATCH"
+        strength = min(strength, 45.0)
+        reasons.append("TSLA short soft — QQQ still ≥ VWAP")
+
     if phase == "closed" and action in {"LONG", "SHORT"}:
         reasons.append("After close — treat as plan for next power hour")
         strength = min(strength, 55.0)
@@ -476,6 +581,8 @@ def decide_power_hour(
     risk_line = rule_risk
     if stop is not None:
         risk_line = f"{rule_risk} · stop ≈ ${float(stop):.2f}"
+    if "average" not in risk_line.lower() and "avg" not in risk_line.lower():
+        risk_line = f"{risk_line} · never average down"
 
     headline = f"{action} {sym}"
     if special:
@@ -631,9 +738,12 @@ def build_power_hour_board(
             "names": len(symbols),
         },
         "playbook": [
-            "Window: prep 14:30 ET · power hour 15:00–16:00 ET.",
+            "Window: prep 14:30 ET · power hour 15:00–16:00 ET · no new entries after 15:45 ET.",
+            "Shared: skip VWAP chop (|vs VWAP|<0.08%); spike veto; never average down; half-size first 15m of PH on generics.",
+            "Mega longs (NVDA/GOOGL/TSLA/AAPL/…): require QQQ ≥ VWAP.",
             "NU: 15m close above VWAP → break that candle high · exit close back below VWAP.",
             "NVDA: QQQ also above VWAP + NVDA higher low · stop below HL candle.",
+            "GOOGL: QQQ ≥ VWAP + higher low / VWAP reclaim · no spike chase.",
             "CAPR: tight 15m base break with volume · stop below base low · no average down.",
             "ETON: pullback holds VWAP → 15m bullish reclaim · stop below VWAP/pullback low.",
             "HTFL: consolidation near HOD breakout — not a spike chase.",
