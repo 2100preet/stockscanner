@@ -25,8 +25,47 @@ def test_session_phase_power_hour():
 def test_resolve_includes_specials_and_focus():
     cfg = {"tickers": ["SPY", "TSLA", "NVDA", "AAPL", "NU", "CAPR"], "actions": {"power_hour_symbols": "focus"}}
     syms = resolve_power_hour_symbols("focus", config=cfg)
-    for s in ("NU", "NVDA", "CAPR", "ETON", "HTFL", "TSLA", "SPY", "AAPL"):
+    for s in ("NU", "NVDA", "CAPR", "ETON", "HTFL", "TSLA", "GOOGL", "SPY", "AAPL"):
         assert s in syms
+
+
+def test_no_new_entries_after_1545():
+    now = datetime(2026, 8, 14, 15, 50, tzinfo=ET)
+    sig = decide_power_hour(
+        "NU",
+        quote={"last": 12.5, "day_high": 12.6, "day_low": 11.8, "mom_15m_pct": 0.3, "vwap": 12.0},
+        phase="power_hour",
+        now=now,
+    )
+    assert sig.action == "WAIT"
+    assert any("15:45" in r or "flatten" in r.lower() for r in sig.reasons)
+
+
+def test_googl_requires_qqq():
+    now = datetime(2026, 8, 14, 15, 20, tzinfo=ET)
+    sig = decide_power_hour(
+        "GOOGL",
+        quote={"last": 180.0, "day_high": 181.0, "day_low": 176.0, "mom_15m_pct": 0.2, "vwap": 178.0},
+        qqq_quote={"last": 400.0, "day_high": 402.0, "day_low": 398.0},
+        qqq_vwap=401.0,
+        phase="power_hour",
+        now=now,
+    )
+    assert sig.action != "LONG"
+
+
+def test_vwap_chop_dead_zone():
+    now = datetime(2026, 8, 14, 15, 20, tzinfo=ET)
+    sig = decide_power_hour(
+        "AAPL",
+        quote={"last": 100.05, "day_high": 101.0, "day_low": 99.0, "mom_15m_pct": 0.2, "vwap": 100.0},
+        qqq_quote={"last": 480.0, "vwap": 478.0},
+        qqq_vwap=478.0,
+        phase="power_hour",
+        now=now,
+    )
+    # |vs VWAP| ~0.05% → chop
+    assert sig.action in {"WATCH", "WAIT"}
 
 
 def test_nu_long_above_vwap():
