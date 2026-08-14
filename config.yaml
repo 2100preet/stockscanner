@@ -344,6 +344,11 @@ actions:
   power_hour_max_bar_fetch: 16
   power_hour_max_quote_fetch: 48
   power_hour_fetch_bars: true
+  # Pages offline still needs a capped Yahoo fan-out or PH stays empty (NU WAIT only)
+  power_hour_live_offline: true
+  power_hour_fetch_bars_offline: true
+  power_hour_max_quote_fetch_offline: 24
+  power_hour_max_bar_fetch_offline: 12
   # Hold / time-stop (industry desk practice)
   odte_flatten_et: "15:45"       # hard flatten 0DTE by 15:45 ET
   weekly_max_hold_days: 7        # max calendar days for weekly tickets

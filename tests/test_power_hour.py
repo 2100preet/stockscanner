@@ -11,7 +11,9 @@ from odte_scanner.signals.power_hour import (
     build_power_hour_board,
     decide_power_hour,
     resolve_power_hour_symbols,
+    seed_quotes_from_scan,
     session_phase,
+    top_closing_bell_bullish,
 )
 
 ET = ZoneInfo("America/New_York")
@@ -161,3 +163,83 @@ def test_board_long_short_buckets():
     assert actions.get("TSLA") == "SHORT"
     assert "long" in board and "short" in board
     assert board["special_rules"]["CAPR"]["risk"]
+    # Primary should prefer actionable LONG/SHORT over blind NU WAIT
+    assert board["primary"] is not None
+    assert board["primary"]["action"] in {"LONG", "SHORT"}
+    assert board["primary"]["symbol"] != "NU" or board["primary"]["action"] == "LONG"
+    assert board["data_quality"]["tape_ok"] is True
+    assert any(r["symbol"] == "TSLA" and r["action"] == "SHORT" for r in board["short"])
+
+
+def test_empty_tape_does_not_pin_nu_primary():
+    now = datetime(2026, 8, 14, 15, 20, tzinfo=ET)
+    board = build_power_hour_board(
+        quotes={},
+        symbols=["NU", "NVDA", "TSLA"],
+        fetch_bars=False,
+        now=now,
+    )
+    assert board["primary"] is None
+    assert board["data_quality"]["tape_ok"] is False
+    assert board["counts"]["with_last"] == 0
+
+
+def test_seed_quotes_from_scan_scores():
+    seeded = seed_quotes_from_scan(
+        {},
+        scores=[{"symbol": "MU", "last_price": 965.0}, {"symbol": "AAPL", "entry": 230.0}],
+        market={"by_score": [{"symbol": "MU", "last": 966.0, "change_pct": 1.5}]},
+    )
+    assert seeded["MU"]["last"] == 965.0  # existing score last kept; market only fills gaps
+    assert seeded["AAPL"]["last"] == 230.0
+    assert seeded["MU"]["session_change_pct"] == 1.5
+
+
+def test_closing_bell_bullish_prefers_movers():
+    flow = {
+        "prints": [
+            {
+                "symbol": "ZZZ",
+                "flow_score": 99,
+                "sentiment": "bullish",
+                "tier": "golden",
+                "right": "C",
+                "strike": 10,
+                "expiry": "2026-08-17",
+                "premium_notional": 1e6,
+            },
+            {
+                "symbol": "MU",
+                "flow_score": 88,
+                "sentiment": "bullish",
+                "tier": "golden",
+                "right": "C",
+                "strike": 965,
+                "expiry": "2026-08-17",
+                "premium_notional": 6e6,
+            },
+            {
+                "symbol": "AAPL",
+                "flow_score": 82,
+                "sentiment": "bullish",
+                "tier": "golden",
+                "right": "C",
+                "strike": 305,
+                "expiry": "2026-08-17",
+                "premium_notional": 1.5e6,
+            },
+        ]
+    }
+    market = {
+        "by_score": [
+            {"symbol": "MU", "change_pct": 1.6},
+            {"symbol": "AAPL", "change_pct": 0.4},
+            {"symbol": "XLE", "change_pct": 1.2},
+        ]
+    }
+    top = top_closing_bell_bullish(option_flow=flow, market=market, n=2)
+    # Among movers, highest bullish flow first (AAPL 82 < MU 88 in this fixture → MU, AAPL)
+    assert [r["symbol"] for r in top["rows"]] == ["MU", "AAPL"]
+    assert top["rows"][0]["in_movers"] is True
+    # ZZZ has higher flow but is not a market mover — stays out of top 2
+    assert "ZZZ" not in {r["symbol"] for r in top["rows"]}

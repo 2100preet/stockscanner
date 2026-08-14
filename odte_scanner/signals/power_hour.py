@@ -677,6 +677,170 @@ def resolve_power_hour_symbols(
     return out
 
 
+def seed_quotes_from_scan(
+    quotes: dict[str, dict[str, Any]] | None,
+    *,
+    scores: list[dict[str, Any]] | None = None,
+    market: dict[str, Any] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Fill missing Power Hour quotes from scan scores / market movers (Pages offline)."""
+    out: dict[str, dict[str, Any]] = {str(k).upper(): dict(v) for k, v in (quotes or {}).items() if isinstance(v, dict)}
+
+    def _ensure(sym: str, patch: dict[str, Any]) -> None:
+        key = str(sym).upper()
+        if not key:
+            return
+        cur = out.get(key) or {}
+        merged = dict(cur)
+        for k, v in patch.items():
+            if v is None:
+                continue
+            if merged.get(k) is None:
+                merged[k] = v
+        if merged.get("last") is None and merged.get("live_last") is not None:
+            merged["last"] = merged["live_last"]
+        if merged:
+            out[key] = merged
+
+    for row in scores or []:
+        sym = str(row.get("symbol") or "").upper()
+        if not sym:
+            continue
+        last = row.get("last_price")
+        if last is None:
+            last = row.get("entry")
+        _ensure(
+            sym,
+            {
+                "last": float(last) if last is not None else None,
+                "live_last": float(last) if last is not None else None,
+                "session_change_pct": row.get("session_change_pct") or row.get("change_pct"),
+            },
+        )
+
+    market = market or {}
+    for key in ("by_score", "by_volume", "by_earnings"):
+        for row in market.get(key) or []:
+            sym = str(row.get("symbol") or "").upper()
+            if not sym:
+                continue
+            last = row.get("last")
+            _ensure(
+                sym,
+                {
+                    "last": float(last) if last is not None else None,
+                    "live_last": float(last) if last is not None else None,
+                    "session_change_pct": row.get("change_pct") or row.get("session_change_pct"),
+                    "day_volume": row.get("day_volume"),
+                },
+            )
+    return out
+
+
+def top_closing_bell_bullish(
+    *,
+    option_flow: dict[str, Any] | None = None,
+    market: dict[str, Any] | None = None,
+    n: int = 2,
+    mover_top_n: int = 25,
+) -> dict[str, Any]:
+    """Top N tickers with bullish option flow among leading market movers (closing-bell desk)."""
+    flow = option_flow or {}
+    prints = list(flow.get("prints") or flow.get("golden") or [])
+    bullish = [
+        p
+        for p in prints
+        if float(p.get("flow_score") or 0) > 0
+        and str(p.get("sentiment") or "").lower() in {"", "bullish"}
+    ]
+    movers = list((market or {}).get("by_score") or [])[: max(1, int(mover_top_n))]
+    mover_rank = {str(r.get("symbol") or "").upper(): i for i, r in enumerate(movers) if r.get("symbol")}
+    mover_meta = {str(r.get("symbol") or "").upper(): r for r in movers if r.get("symbol")}
+
+    by_sym: dict[str, dict[str, Any]] = {}
+    for p in bullish:
+        sym = str(p.get("symbol") or "").upper()
+        if not sym:
+            continue
+        sc = float(p.get("flow_score") or 0)
+        prem = float(p.get("premium_notional") or p.get("premium") or 0)
+        cur = by_sym.get(sym)
+        if cur is None or sc > float(cur.get("flow_score") or 0):
+            mm = mover_meta.get(sym) or {}
+            by_sym[sym] = {
+                "symbol": sym,
+                "flow_score": sc,
+                "premium_notional": prem,
+                "tier": p.get("tier"),
+                "right": p.get("right") or p.get("call_put") or "C",
+                "strike": p.get("strike"),
+                "expiry": p.get("expiry") or p.get("expiration"),
+                "spot": p.get("spot") or mm.get("last"),
+                "change_pct": mm.get("change_pct") or mm.get("session_change_pct"),
+                "mover_rank": mover_rank.get(sym),
+                "in_movers": sym in mover_rank,
+                "sentiment": "bullish",
+                "detail": (
+                    f"Bullish {p.get('tier') or 'flow'} · "
+                    f"{'call' if str(p.get('right') or 'C').upper().startswith('C') else 'put'} "
+                    f"${p.get('strike')} exp {p.get('expiry') or p.get('expiration')}"
+                ),
+            }
+        else:
+            by_sym[sym]["premium_notional"] = float(by_sym[sym].get("premium_notional") or 0) + prem
+
+    # Prefer names on the movers board; among those, strongest bullish flow first.
+    # If fewer than n movers have bullish flow, fill from remaining bullish prints.
+    ranked = sorted(
+        by_sym.values(),
+        key=lambda r: (
+            0 if r.get("in_movers") else 1,
+            -float(r.get("flow_score") or 0),
+            -float(r.get("premium_notional") or 0),
+            int(r.get("mover_rank") if r.get("mover_rank") is not None else 10_000),
+        ),
+    )
+    top = ranked[: max(1, int(n))]
+    return {
+        "title": "Closing bell — top bullish flow (market movers)",
+        "n": len(top),
+        "rows": top,
+        "mover_top_n": int(mover_top_n),
+        "note": (
+            f"Among top {int(mover_top_n)} market movers, ranked by bullish option-flow score then premium. "
+            "Yahoo chain proxy — not OPRA tape."
+        ),
+    }
+
+
+def _pick_primary(longs: list[PowerHourSignal], shorts: list[PowerHourSignal], specials: list[PowerHourSignal], watches: list[PowerHourSignal]) -> PowerHourSignal | None:
+    """Prefer actionable tape; never pin NU solely because it is first in SPECIAL_TICKERS."""
+
+    def _scored(pool: list[PowerHourSignal]) -> list[PowerHourSignal]:
+        return sorted(
+            pool,
+            key=lambda s: (
+                0 if s.last is not None else 1,
+                0 if s.vwap is not None else 1,
+                -float(s.strength or 0),
+                0 if s.special else 1,
+                s.symbol or "",
+            ),
+        )
+
+    for pool in (longs, shorts):
+        ranked = _scored(pool)
+        if ranked:
+            return ranked[0]
+    # Prefer specials / watches that actually have a quote
+    for pool in (specials, watches):
+        ranked = [s for s in _scored(pool) if s.last is not None]
+        if ranked:
+            return ranked[0]
+    # If nothing has tape, do not highlight a blind WAIT primary
+    return None
+
+
 def build_power_hour_board(
     *,
     quotes: dict[str, dict[str, Any]] | None = None,
@@ -687,8 +851,11 @@ def build_power_hour_board(
     max_bar_fetch: int = 16,
     aliases: dict[str, str] | None = None,
     now: datetime | None = None,
+    scores: list[dict[str, Any]] | None = None,
+    market: dict[str, Any] | None = None,
+    option_flow: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    quotes = quotes or {}
+    quotes = seed_quotes_from_scan(quotes, scores=scores, market=market)
     aliases = aliases or {}
     bars_map = dict(bars_map or {})
     symbols = resolve_power_hour_symbols(symbols, config=config)
@@ -708,11 +875,15 @@ def build_power_hour_board(
             break
         fetch_list.append(s)
 
+    bars_fetched = 0
     if fetch_bars:
         for s in fetch_list:
-            if s in bars_map:
+            if s in bars_map and bars_map[s] is not None:
                 continue
-            bars_map[s] = fetch_intraday_1m(s, yahoo_symbol=aliases.get(s))  # type: ignore[assignment]
+            df = fetch_intraday_1m(s, yahoo_symbol=aliases.get(s))
+            bars_map[s] = df  # type: ignore[assignment]
+            if df is not None and not getattr(df, "empty", True):
+                bars_fetched += 1
 
     qqq_bars = bars_map.get("QQQ")
     qqq_vwap = compute_vwap(qqq_bars) if qqq_bars is not None else _quote_vwap_proxy(quotes.get("QQQ"))
@@ -736,12 +907,16 @@ def build_power_hour_board(
     specials = [s for s in signals if s.special]
     longs.sort(key=lambda s: s.strength, reverse=True)
     shorts.sort(key=lambda s: s.strength, reverse=True)
+    specials = sorted(
+        specials,
+        key=lambda s: (0 if s.last is not None else 1, -float(s.strength or 0), s.symbol or ""),
+    )
 
-    primary = None
-    for pool in (longs, shorts, specials, watches):
-        if pool:
-            primary = pool[0]
-            break
+    primary = _pick_primary(longs, shorts, specials, watches)
+    with_last = sum(1 for s in signals if s.last is not None)
+    with_vwap = sum(1 for s in signals if s.vwap is not None)
+    tape_ok = with_last > 0
+    closing = top_closing_bell_bullish(option_flow=option_flow, market=market, n=2)
 
     return {
         "desk": "power_hour",
@@ -762,12 +937,27 @@ def build_power_hour_board(
         "special": [s.to_dict() for s in specials],
         "watch": [s.to_dict() for s in watches],
         "all": [s.to_dict() for s in signals],
+        "closing_bell_bullish": closing,
+        "data_quality": {
+            "quotes_with_last": with_last,
+            "quotes_with_vwap": with_vwap,
+            "bars_fetched": bars_fetched,
+            "fetch_bars": bool(fetch_bars),
+            "tape_ok": tape_ok,
+            "note": (
+                None
+                if tape_ok
+                else "No underlying tape for Power Hour — quotes/bars missing. LONG/SHORT stay WAIT."
+            ),
+        },
         "counts": {
             "long": len(longs),
             "short": len(shorts),
             "watch": len(watches),
             "special": len(specials),
             "names": len(symbols),
+            "with_last": with_last,
+            "with_vwap": with_vwap,
         },
         "playbook": [
             "Window: prep 14:30 ET · power hour 15:00–16:00 ET · no new entries after 15:45 ET.",

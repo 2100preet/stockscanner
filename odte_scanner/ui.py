@@ -321,6 +321,10 @@ PAGE = r"""
       <div class="metric-row" id="powerHourMetrics"></div>
       <div class="cards" id="powerHourPrimary"></div>
       <div class="panel">
+        <h2>Closing bell — top bullish flow (market movers)</h2>
+        <div id="powerHourClosingBell" class="empty">—</div>
+      </div>
+      <div class="panel">
         <h2>Named playbooks — trigger · risk</h2>
         <div id="powerHourSpecial" class="empty">—</div>
       </div>
@@ -1857,6 +1861,7 @@ PAGE = r"""
     function renderPowerHour(board) {
       const metrics = document.getElementById("powerHourMetrics");
       const primaryEl = document.getElementById("powerHourPrimary");
+      const closingEl = document.getElementById("powerHourClosingBell");
       const specialEl = document.getElementById("powerHourSpecial");
       const longEl = document.getElementById("powerHourLong");
       const shortEl = document.getElementById("powerHourShort");
@@ -1870,13 +1875,14 @@ PAGE = r"""
       }
       const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
       const c = b.counts || {};
+      const dq = b.data_quality || {};
       const phase = b.session_phase || "—";
       if (metrics) metrics.innerHTML = [
         m("Phase", String(phase).replace("_"," "), phase==="power_hour"?"up":""),
         m("LONG", c.long??0, (c.long||0)>0?"up":""),
         m("SHORT", c.short??0, (c.short||0)>0?"down":""),
         m("WATCH", c.watch??0),
-        m("Names", c.names??0),
+        m("Tape", (c.with_last??0)+"/"+(c.names??0), (c.with_last||0)>0?"up":"down"),
         m("QQQ ≥ VWAP", b.qqq_above_vwap===true?"YES":(b.qqq_above_vwap===false?"NO":"—"), b.qqq_above_vwap?"up":""),
       ].join("");
 
@@ -1904,10 +1910,11 @@ PAGE = r"""
 
       const p0 = b.primary;
       if (primaryEl) {
-        if (!p0) primaryEl.innerHTML = `<div class="empty">No power-hour signal yet.</div>`;
+        const gap = (!dq.tape_ok && dq.note) ? `<div class="empty" style="margin-bottom:.5rem">${dq.note}</div>` : "";
+        if (!p0) primaryEl.innerHTML = gap + `<div class="empty">No power-hour LONG/SHORT with live tape yet — check named playbooks + watch list.</div>`;
         else {
           const kind = p0.action==="LONG"?"long":(p0.action==="SHORT"?"short":"wait");
-          primaryEl.innerHTML = `<article class="action-card ${kind}">
+          primaryEl.innerHTML = gap + `<article class="action-card ${kind}">
             <div class="ac-top">
               <div class="ac-sym">${p0.symbol} ${sideBadge(p0.action)} ${p0.special?`<span class="tag">named playbook</span>`:""}</div>
               <div class="ac-dir ${kind}">${p0.action||"WAIT"} · ${String(p0.session_phase||"").replace("_"," ")}</div>
@@ -1918,6 +1925,28 @@ PAGE = r"""
             <p class="why" style="margin:.35rem 0 0"><strong>Risk:</strong> ${p0.risk_line||""}</p>
             <p class="why" style="margin:.35rem 0 0">${p0.detail||""}</p>
           </article>`;
+        }
+      }
+
+      if (closingEl) {
+        const cb = b.closing_bell_bullish || {};
+        const rows = cb.rows || [];
+        if (!rows.length) {
+          closingEl.innerHTML = `<div class="empty">No bullish flow among market movers yet.</div>`;
+        } else {
+          closingEl.innerHTML = `<table><thead><tr>
+            <th>#</th><th>Symbol</th><th>Flow</th><th>Tier</th><th>Contract</th><th>Premium</th><th>Day %</th><th>Mover #</th>
+          </tr></thead><tbody>${rows.map((r,i)=>`<tr>
+            <td class="mono">${i+1}</td>
+            <td><strong>${r.symbol}</strong></td>
+            <td class="mono up">${fmt(r.flow_score,1)}</td>
+            <td><span class="badge ${r.tier==="golden"?"golden":"buy"}">${(r.tier||"").toUpperCase()}</span></td>
+            <td class="why">${r.right||"C"} $${r.strike==null?"—":fmt(r.strike,2)} · ${r.expiry||"—"}</td>
+            <td class="mono">$${Number(r.premium_notional||0).toLocaleString()}</td>
+            <td class="mono ${pctClass(r.change_pct)}">${r.change_pct==null?"—":fmt(r.change_pct,2)+"%"}</td>
+            <td class="mono">${r.mover_rank==null?"—":(r.mover_rank+1)}</td>
+          </tr>`).join("")}</tbody></table>
+          <p class="lede" style="font-size:.72rem;margin:.4rem 0 0">${cb.note||""}</p>`;
         }
       }
 
@@ -3837,18 +3866,41 @@ def create_app(config_path: str | None = None) -> Flask:
         try:
             if bool(actions_cfg.get("power_hour_enabled", True)):
                 from odte_scanner.signals.power_hour import (
+                    SPECIAL_TICKERS,
                     build_power_hour_board,
                     resolve_power_hour_symbols,
+                    seed_quotes_from_scan,
                 )
 
                 ph_syms = resolve_power_hour_symbols(
                     actions_cfg.get("power_hour_symbols"),
                     config=cfg,
                 )
+                # Pages offline used to skip all PH quotes/bars → empty tape and a stuck NU WAIT primary.
+                # Allow a capped live fan-out even offline so Power Hour can fire LONG/SHORT.
+                ph_live_offline = bool(actions_cfg.get("power_hour_live_offline", True))
                 max_q = int(actions_cfg.get("power_hour_max_quote_fetch", 48))
-                if not offline:
-                    for s in (["QQQ"] + ph_syms)[:max_q]:
-                        if s not in quotes:
+                if offline:
+                    max_q = min(max_q, int(actions_cfg.get("power_hour_max_quote_fetch_offline", 24)))
+                quotes = seed_quotes_from_scan(
+                    quotes,
+                    scores=scan.get("scores") or [],
+                )
+                if (not offline) or ph_live_offline:
+                    # Prioritize QQQ + named playbooks, then remaining sleeve
+                    ph_quote_order = ["QQQ", *SPECIAL_TICKERS]
+                    seen_q: set[str] = set()
+                    ordered: list[str] = []
+                    for s in list(ph_quote_order) + list(ph_syms):
+                        key = str(s).upper()
+                        if not key or key in seen_q:
+                            continue
+                        seen_q.add(key)
+                        ordered.append(key)
+                    for s in ordered[:max_q]:
+                        cur = quotes.get(s) or {}
+                        # Refresh when missing last, or always live when online
+                        if (not offline) or cur.get("last") is None:
                             aliases.setdefault(s, resolve_yahoo_symbol(s, cfg))
                             try:
                                 q = fetch_live_quote(s, yahoo_symbol=aliases.get(s))
@@ -3856,13 +3908,21 @@ def create_app(config_path: str | None = None) -> Flask:
                                     quotes[s] = q.to_dict()
                             except Exception:  # noqa: BLE001
                                 pass
+                fetch_bars = bool(actions_cfg.get("power_hour_fetch_bars", True)) and (
+                    (not offline) or bool(actions_cfg.get("power_hour_fetch_bars_offline", True))
+                )
+                max_bars = int(actions_cfg.get("power_hour_max_bar_fetch", 16))
+                if offline:
+                    max_bars = min(max_bars, int(actions_cfg.get("power_hour_max_bar_fetch_offline", 12)))
                 power_hour = build_power_hour_board(
                     quotes=quotes,
                     symbols=ph_syms,
                     config=cfg,
-                    fetch_bars=bool(actions_cfg.get("power_hour_fetch_bars", True)) and not offline,
-                    max_bar_fetch=int(actions_cfg.get("power_hour_max_bar_fetch", 16)),
+                    fetch_bars=fetch_bars,
+                    max_bar_fetch=max_bars,
                     aliases=aliases,
+                    scores=scan.get("scores") or [],
+                    option_flow=(echo or {}).get("option_flow"),
                 )
         except Exception as exc:  # noqa: BLE001
             logger.warning("power hour board unavailable: %s", exc)
@@ -3908,6 +3968,25 @@ def create_app(config_path: str | None = None) -> Flask:
         except Exception as exc:  # noqa: BLE001
             logger.warning("market board unavailable: %s", exc)
             market = {"error": str(exc), "by_earnings": [], "by_volume": [], "by_score": []}
+
+        # Attach closing-bell bullish flow after market movers exist
+        if power_hour and not power_hour.get("error"):
+            try:
+                from odte_scanner.signals.power_hour import seed_quotes_from_scan, top_closing_bell_bullish
+
+                power_hour["closing_bell_bullish"] = top_closing_bell_bullish(
+                    option_flow=(echo or {}).get("option_flow"),
+                    market=market,
+                    n=2,
+                )
+                # Re-seed quote gaps from market.last when PH live fetch missed a name
+                quotes = seed_quotes_from_scan(
+                    quotes,
+                    scores=scan.get("scores") or [],
+                    market=market,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("closing bell flow attach failed: %s", exc)
 
         # Unified walls map for all recommended surfaces (challenge + echo + action cards)
         walls_by_symbol: dict[str, dict] = {}
