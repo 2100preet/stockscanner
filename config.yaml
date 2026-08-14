@@ -82,6 +82,7 @@ tickers:
   - CAPR  # Capricor — tight 15m base break
   - ETON  # Eton Pharma — VWAP pullback reclaim
   - HTFL  # Heartflow — HOD consolidation breakout
+  - NXPI  # NXP Semiconductors — QQQ≥VWAP + HL/reclaim (semi sleeve)
   # --- Curated high-potential adds (NOT full S&P 500 — keep focus small for chain rate limits) ---
   # Memory / storage (DRAM sleeve → focus)
   - SNDK  # Sandisk — memory, liquid options, was DRAM-only

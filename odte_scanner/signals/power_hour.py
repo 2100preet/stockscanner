@@ -10,6 +10,8 @@ Named playbooks (user rules):
   ETON — Prefer pullback that holds VWAP, then 15m bullish reclaim;
          stop below VWAP / pullback low
   HTFL — Breakout after consolidation near HOD, not immediately after a spike
+  NXPI — Semi: QQQ ≥ VWAP + 15m HL / VWAP reclaim (no spike chase);
+         stop below HL / reclaim candle
 
 Generic sleeve (TSLA + full focus list): LONG above VWAP with bullish 15m
 structure; SHORT below VWAP with bearish 15m structure; else WAIT.
@@ -37,7 +39,7 @@ POWER_HOUR_END = time(16, 0)
 PREP_START = time(14, 30)
 
 # Explicit playbook cards always shown first
-SPECIAL_TICKERS = ("NU", "NVDA", "CAPR", "ETON", "HTFL", "TSLA", "GOOGL")
+SPECIAL_TICKERS = ("NU", "NVDA", "CAPR", "ETON", "HTFL", "TSLA", "GOOGL", "NXPI")
 
 SPECIAL_RULES: dict[str, dict[str, str]] = {
     "NU": {
@@ -75,6 +77,11 @@ SPECIAL_RULES: dict[str, dict[str, str]] = {
         "trigger": "Long only if QQQ is also above VWAP and GOOGL holds a 15m higher low / VWAP reclaim",
         "risk": "Stop below the higher-low / reclaim candle; no chase after a spike",
     },
+    "NXPI": {
+        "bias": "LONG",
+        "trigger": "Semi long only if QQQ ≥ VWAP and NXPI holds a 15m higher low / VWAP reclaim (no spike)",
+        "risk": "Stop below the higher-low / reclaim candle; never average down",
+    },
 }
 
 # Mega-cap / high-beta names that should not long against QQQ weakness
@@ -93,6 +100,11 @@ MEGA_BREADTH = {
     "NVDA",
     "ARM",
     "PLTR",
+    "NXPI",
+    "QCOM",
+    "MU",
+    "AMAT",
+    "TSM",
 }
 
 
@@ -459,6 +471,26 @@ def decide_power_hour(
             if not above:
                 reasons.append("GOOGL below VWAP")
 
+    elif sym == "NXPI":
+        hl = bool(st.get("higher_low")) or bool(st.get("bullish_reclaim")) or (
+            mom15 is not None and mom15 > 0 and above
+        )
+        qqq_ok = qqq_above is True
+        if qqq_ok and hl and above and not st.get("spike_risk") and phase in {"prep", "power_hour", "regular"}:
+            action = "LONG"
+            strength = 78.0
+            stop = float(st["last_low"]) if st.get("last_low") is not None else (candle_low or last_f)
+            detail = "NXPI: QQQ ≥ VWAP + semi HL / VWAP reclaim"
+            reasons += ["QQQ above VWAP", "Semi higher low or VWAP reclaim", "No spike chase"]
+        else:
+            detail = "NXPI: need QQQ ≥ VWAP + constructive 15m (no spike)"
+            if qqq_above is False:
+                reasons.append("QQQ below VWAP — no NXPI long")
+            if st.get("spike_risk"):
+                reasons.append("Spike — wait for base")
+            if not above:
+                reasons.append("NXPI below VWAP")
+
     elif sym == "HTFL":
         near_hod = dist_hod is not None and dist_hod >= -1.0
         consol = bool(st.get("tight_base")) or (near_hod and not st.get("spike_risk"))
@@ -744,6 +776,7 @@ def build_power_hour_board(
             "NU: 15m close above VWAP → break that candle high · exit close back below VWAP.",
             "NVDA: QQQ also above VWAP + NVDA higher low · stop below HL candle.",
             "GOOGL: QQQ ≥ VWAP + higher low / VWAP reclaim · no spike chase.",
+            "NXPI: semi — QQQ ≥ VWAP + HL / VWAP reclaim · no spike chase · never average down.",
             "CAPR: tight 15m base break with volume · stop below base low · no average down.",
             "ETON: pullback holds VWAP → 15m bullish reclaim · stop below VWAP/pullback low.",
             "HTFL: consolidation near HOD breakout — not a spike chase.",
