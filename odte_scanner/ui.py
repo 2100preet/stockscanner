@@ -198,6 +198,7 @@ PAGE = r"""
       <button class="active" data-tab="overview">Overview</button>
       <button data-tab="odte">0DTE</button>
       <button data-tab="odte1k">0DTE $1K</button>
+      <button data-tab="powerhour">Power Hour</button>
       <button data-tab="explosive">Explosive</button>
       <button data-tab="weekly">1 Week</button>
       <button data-tab="swing">Swing 1–3M</button>
@@ -308,6 +309,38 @@ PAGE = r"""
         <div id="odte1kRules" class="empty">—</div>
       </div>
       <p class="lede" id="odte1kDisclaimer" style="font-size:.72rem"></p>
+    </section>
+
+    <section class="tabpane" id="tab-powerhour">
+      <h2>Power Hour — LONG / SHORT · 15m VWAP</h2>
+      <p class="lede">
+        Prep <strong>14:30</strong> · Power hour <strong>15:00–16:00 ET</strong>.
+        Named playbooks: <strong>NU · NVDA · CAPR · ETON · HTFL</strong> (+ <strong>TSLA</strong> and the full focus sleeve).
+        Each row shows whether to go <strong>LONG or SHORT</strong>, the 15-minute trigger, and the risk line / stop.
+      </p>
+      <div class="metric-row" id="powerHourMetrics"></div>
+      <div class="cards" id="powerHourPrimary"></div>
+      <div class="panel">
+        <h2>Named playbooks — trigger · risk</h2>
+        <div id="powerHourSpecial" class="empty">—</div>
+      </div>
+      <div class="panel">
+        <h2>LONG now</h2>
+        <div id="powerHourLong" class="empty">—</div>
+      </div>
+      <div class="panel">
+        <h2>SHORT now</h2>
+        <div id="powerHourShort" class="empty">—</div>
+      </div>
+      <div class="panel">
+        <h2>WATCH / WAIT — full sleeve</h2>
+        <div id="powerHourWatch" class="empty">—</div>
+      </div>
+      <div class="panel">
+        <h2>Rules</h2>
+        <div id="powerHourRules" class="empty">—</div>
+      </div>
+      <p class="lede" id="powerHourDisclaimer" style="font-size:.72rem"></p>
     </section>
 
     <section class="tabpane" id="tab-explosive">
@@ -1821,6 +1854,87 @@ PAGE = r"""
       if (disc) disc.textContent = b.disclaimer || "";
     }
 
+    function renderPowerHour(board) {
+      const metrics = document.getElementById("powerHourMetrics");
+      const primaryEl = document.getElementById("powerHourPrimary");
+      const specialEl = document.getElementById("powerHourSpecial");
+      const longEl = document.getElementById("powerHourLong");
+      const shortEl = document.getElementById("powerHourShort");
+      const watchEl = document.getElementById("powerHourWatch");
+      const rulesEl = document.getElementById("powerHourRules");
+      const disc = document.getElementById("powerHourDisclaimer");
+      const b = board || {};
+      if (!Object.keys(b).length) {
+        if (longEl) longEl.innerHTML = `<div class="empty">Power Hour board loading…</div>`;
+        return;
+      }
+      const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
+      const c = b.counts || {};
+      const phase = b.session_phase || "—";
+      if (metrics) metrics.innerHTML = [
+        m("Phase", String(phase).replace("_"," "), phase==="power_hour"?"up":""),
+        m("LONG", c.long??0, (c.long||0)>0?"up":""),
+        m("SHORT", c.short??0, (c.short||0)>0?"down":""),
+        m("WATCH", c.watch??0),
+        m("Names", c.names??0),
+        m("QQQ ≥ VWAP", b.qqq_above_vwap===true?"YES":(b.qqq_above_vwap===false?"NO":"—"), b.qqq_above_vwap?"up":""),
+      ].join("");
+
+      const sideBadge = (a) => {
+        const cls = a==="LONG"?"buy":(a==="SHORT"?"sell":"wait");
+        return `<span class="badge ${cls}">${a||"WAIT"}</span>`;
+      };
+      const rowTable = (rows, emptyMsg) => {
+        if (!rows || !rows.length) return `<div class="empty">${emptyMsg}</div>`;
+        return `<table><thead><tr>
+          <th>Side</th><th>Symbol</th><th>Last</th><th>VWAP</th><th>vs VWAP</th><th>15m%</th><th>Stop</th><th>Trigger</th><th>Risk line</th><th>Asked (CST)</th>
+        </tr></thead><tbody>${rows.map(r=>`<tr>
+          <td>${sideBadge(r.action)}</td>
+          <td><strong>${r.symbol}</strong>${r.special?` <span class="tag">playbook</span>`:""}</td>
+          <td class="mono">${r.last==null?"—":"$"+fmt(r.last,2)}</td>
+          <td class="mono">${r.vwap==null?"—":"$"+fmt(r.vwap,2)}</td>
+          <td class="mono ${pctClass(r.vs_vwap_pct)}">${r.vs_vwap_pct==null?"—":fmt(r.vs_vwap_pct,2)+"%"}</td>
+          <td class="mono ${pctClass(r.mom_15m_pct)}">${r.mom_15m_pct==null?"—":fmt(r.mom_15m_pct,2)+"%"}</td>
+          <td class="mono">${r.stop==null?"—":"$"+fmt(r.stop,2)}</td>
+          <td class="why">${r.trigger||r.detail||""}</td>
+          <td class="why">${r.risk_line||""}</td>
+          <td class="mono">${r.signaled_at_cst||fmtCST(r.signaled_at)||"—"}</td>
+        </tr>`).join("")}</tbody></table>`;
+      };
+
+      const p0 = b.primary;
+      if (primaryEl) {
+        if (!p0) primaryEl.innerHTML = `<div class="empty">No power-hour signal yet.</div>`;
+        else {
+          const kind = p0.action==="LONG"?"long":(p0.action==="SHORT"?"short":"wait");
+          primaryEl.innerHTML = `<article class="action-card ${kind}">
+            <div class="ac-top">
+              <div class="ac-sym">${p0.symbol} ${sideBadge(p0.action)} ${p0.special?`<span class="tag">named playbook</span>`:""}</div>
+              <div class="ac-dir ${kind}">${p0.action||"WAIT"} · ${String(p0.session_phase||"").replace("_"," ")}</div>
+            </div>
+            <div class="ac-conf">Strength ${fmt(p0.strength,0)} · last ${p0.last==null?"—":"$"+fmt(p0.last,2)} · VWAP ${p0.vwap==null?"—":"$"+fmt(p0.vwap,2)}
+              ${p0.signaled_at_cst?` · asked ${p0.signaled_at_cst}`:""}</div>
+            <p class="why" style="margin:.55rem 0 0"><strong>Trigger:</strong> ${p0.trigger||""}</p>
+            <p class="why" style="margin:.35rem 0 0"><strong>Risk:</strong> ${p0.risk_line||""}</p>
+            <p class="why" style="margin:.35rem 0 0">${p0.detail||""}</p>
+          </article>`;
+        }
+      }
+
+      if (specialEl) {
+        const rules = b.special_rules || {};
+        const specialRows = (b.special||[]).length ? (b.special||[]) : Object.keys(rules).map(sym => ({
+          symbol: sym, action: "WAIT", trigger: rules[sym].trigger, risk_line: rules[sym].risk, special: true
+        }));
+        specialEl.innerHTML = rowTable(specialRows, "No named playbooks.");
+      }
+      if (longEl) longEl.innerHTML = rowTable(b.long||[], "No LONG setups right now.");
+      if (shortEl) shortEl.innerHTML = rowTable(b.short||[], "No SHORT setups right now.");
+      if (watchEl) watchEl.innerHTML = rowTable((b.watch||[]).slice(0,40), "Empty watch list.");
+      if (rulesEl) rulesEl.innerHTML = `<ul class="lede" style="font-size:.78rem">${(b.playbook||[]).map(r=>`<li>${r}</li>`).join("")}</ul>`;
+      if (disc) disc.textContent = b.disclaimer || "";
+    }
+
     function renderDarkpoolMini(echo) {
       const el = document.getElementById("darkpoolMini");
       if (!el) return;
@@ -2575,6 +2689,7 @@ PAGE = r"""
       renderDarkpoolMini(DATA.echo || {});
       renderChallenge(DATA.challenge || {});
       renderOdte1k(DATA.odte_1k || {});
+      renderPowerHour(DATA.power_hour || {});
       renderScreener(hz, DATA.market || {});
       renderInsights(DATA.insights);
       renderRecLogAll(DATA.rec_log || {});
@@ -3718,6 +3833,41 @@ def create_app(config_path: str | None = None) -> Flask:
             logger.warning("odte_1k board unavailable: %s", exc)
             odte_1k = {"error": str(exc), "put_now": [], "disclaimer": "0DTE $1K board unavailable."}
 
+        power_hour: dict = {}
+        try:
+            if bool(actions_cfg.get("power_hour_enabled", True)):
+                from odte_scanner.signals.power_hour import (
+                    build_power_hour_board,
+                    resolve_power_hour_symbols,
+                )
+
+                ph_syms = resolve_power_hour_symbols(
+                    actions_cfg.get("power_hour_symbols"),
+                    config=cfg,
+                )
+                max_q = int(actions_cfg.get("power_hour_max_quote_fetch", 48))
+                if not offline:
+                    for s in (["QQQ"] + ph_syms)[:max_q]:
+                        if s not in quotes:
+                            aliases.setdefault(s, resolve_yahoo_symbol(s, cfg))
+                            try:
+                                q = fetch_live_quote(s, yahoo_symbol=aliases.get(s))
+                                if q:
+                                    quotes[s] = q.to_dict()
+                            except Exception:  # noqa: BLE001
+                                pass
+                power_hour = build_power_hour_board(
+                    quotes=quotes,
+                    symbols=ph_syms,
+                    config=cfg,
+                    fetch_bars=bool(actions_cfg.get("power_hour_fetch_bars", True)) and not offline,
+                    max_bar_fetch=int(actions_cfg.get("power_hour_max_bar_fetch", 16)),
+                    aliases=aliases,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("power hour board unavailable: %s", exc)
+            power_hour = {"error": str(exc), "long": [], "short": [], "disclaimer": "Power Hour board unavailable."}
+
         market = {}
         try:
             from odte_scanner.market import build_market_board
@@ -4017,6 +4167,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 "echo": echo,
                 "challenge": challenge,
                 "odte_1k": odte_1k,
+                "power_hour": power_hour,
                 "market": market,
                 "walls_by_symbol": walls_by_symbol,
                 "watch": {"quotes": quotes},
