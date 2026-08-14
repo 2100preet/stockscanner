@@ -308,6 +308,34 @@ def load_win_rate_table(cache_path: str | Path | None = None) -> dict[str, Any] 
         return None
 
 
+def ensure_challenge_win_table(
+    win_table: dict[str, Any] | None,
+    *,
+    config_path: str | Path | None = None,
+    cache_path: str | Path | None = None,
+    max_age_hours: float = 168.0,
+) -> dict[str, Any]:
+    """Ensure hist win rates cover the challenge sleeve (not just today's focus scan)."""
+    from odte_scanner.data.universe import challenge_hist_universe
+
+    target = challenge_hist_universe()
+    have = set((win_table or {}).get("symbols") or {})
+    if have and set(target).issubset(have):
+        return win_table or {}
+    need = sorted(set(target) | have)
+    built = build_win_rate_table(
+        need,
+        config_path=config_path,
+        cache_path=cache_path,
+        max_age_hours=max_age_hours,
+    )
+    if not win_table:
+        return built
+    merged_syms = dict((built.get("symbols") or {}))
+    merged_syms.update((win_table.get("symbols") or {}))
+    return {**built, **win_table, "symbols": merged_syms}
+
+
 def summarize_hist_win_gate(
     table: dict[str, Any] | None,
     *,

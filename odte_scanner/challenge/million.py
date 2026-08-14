@@ -282,6 +282,29 @@ def _eligible_rows(
             -int(r.get("trades") or 0),
         )
     )
+    # If strict perfect/elite leaves too few names, widen to ≥75% with n≥3
+    if len(rows) < 4:
+        watch = summarize_hist_win_gate(
+            win_table,
+            min_hist_win_pct=75.0,
+            min_hist_win_samples=3,
+            horizons=["swing", "weekly"],
+        )
+        for r in watch.get("eligible") or []:
+            key = (r["symbol"], r["horizon"])
+            if key not in seen:
+                rows.append(r)
+                seen.add(key)
+        rows.sort(
+            key=lambda r: (
+                0 if prefer_weekly and r.get("horizon") == "weekly" else 1,
+                0 if r.get("horizon") == "swing" else 1,
+                0 if float(r.get("win_pct") or 0) >= 99.9 else 1,
+                -float(r.get("win_pct") or 0),
+                -float(r.get("hit_2pct") or r.get("hit_1pct") or 0),
+                -int(r.get("trades") or 0),
+            )
+        )
     return rows
 
 

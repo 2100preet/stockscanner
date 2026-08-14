@@ -211,6 +211,28 @@ def liquid_universe() -> list[str]:
     return _dedupe(list(LIQUID_UNIVERSE))
 
 
+def challenge_hist_universe(
+    *,
+    max_mid_small: int = 45,
+    max_liquid: int = 35,
+    max_darlings: int = 25,
+) -> list[str]:
+    """Symbols that need walk-forward hist win rates for the $1k→$1M challenge board."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for sym in (
+        mid_small_universe()[:max_mid_small]
+        + earnings_darlings_universe()[:max_darlings]
+        + dram_memory_universe()
+        + liquid_universe()[:max_liquid]
+    ):
+        key = str(sym).replace(".", "-").upper()
+        if key and key not in seen:
+            seen.add(key)
+            out.append(key)
+    return out
+
+
 def market_cap_tier(symbol: str) -> str:
     """Return etf | mega_large | mid | small | dram_memory | unknown for challenge reasons."""
     s = str(symbol).replace(".", "-").upper()

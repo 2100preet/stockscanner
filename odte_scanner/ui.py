@@ -14,7 +14,11 @@ from flask import Flask, jsonify, render_template_string, request
 
 from odte_scanner.config import load_config
 from odte_scanner.signals.actions import build_action_board
-from odte_scanner.backtest.win_rates import build_win_rate_table, load_win_rate_table
+from odte_scanner.backtest.win_rates import (
+    build_win_rate_table,
+    ensure_challenge_win_table,
+    load_win_rate_table,
+)
 
 logger = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parents[1]
@@ -2789,21 +2793,43 @@ def create_app(config_path: str | None = None) -> Flask:
                 logger.warning("win rates unavailable: %s", exc)
                 win_table = {}
 
+        # Challenge needs hist rates across mid/small + darlings — not just focus scan names
+        try:
+            from odte_scanner.challenge.million import _eligible_rows
+
+            max_ch_tix = int(actions_cfg.get("challenge_max_tickets", 8))
+            eligible_n = len(_eligible_rows(win_table if isinstance(win_table, dict) else None))
+            if offline or eligible_n < max_ch_tix:
+                win_table = ensure_challenge_win_table(
+                    win_table if isinstance(win_table, dict) else None,
+                    config_path=config_path,
+                    max_age_hours=168.0 if offline else 24.0,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("challenge win table ensure failed: %s", exc)
+
         # Challenge-eligible + DRAM/memory sleeve need live/cache quotes (often outside focus)
         challenge_syms: list[str] = []
         dram_syms: list[str] = []
         try:
             from odte_scanner.challenge.million import _eligible_rows
-            from odte_scanner.data.universe import dram_memory_universe, liquid_universe
+            from odte_scanner.data.universe import challenge_hist_universe, dram_memory_universe, liquid_universe
 
             # Only pull challenge/DRAM live quotes when we already have scan scores —
             # otherwise empty first paint waits minutes on Yahoo and the UI aborts.
             has_scan_scores = bool(scan.get("scores"))
             # Cap live quote fan-out — full challenge/DRAM sleeves make snapshot >3 min
-            challenge_syms = [
-                str(r["symbol"])
-                for r in _eligible_rows(win_table if isinstance(win_table, dict) else None)[:6]
-            ] if has_scan_scores else []
+            if has_scan_scores:
+                challenge_syms = [
+                    str(r["symbol"])
+                    for r in _eligible_rows(win_table if isinstance(win_table, dict) else None)[
+                        : max(12, int(actions_cfg.get("challenge_max_tickets", 8)) + 4)
+                    ]
+                ]
+                if len(challenge_syms) < 4:
+                    challenge_syms = sorted(
+                        set(challenge_syms) | set(challenge_hist_universe()[:12])
+                    )
             dram_syms = dram_memory_universe()[:4] if has_scan_scores else []
             # Aliases for full liquid universe (earnings/volume board — no extra quotes)
             for s in liquid_universe():
@@ -2811,7 +2837,11 @@ def create_app(config_path: str | None = None) -> Flask:
         except Exception:  # noqa: BLE001
             challenge_syms = []
             dram_syms = []
-        quote_syms = [] if offline else sorted(set(syms[:8]))  # keep snapshot interactive; skip DRAM/challenge fan-out
+        quote_syms = (
+            []
+            if offline
+            else sorted(set(syms[:8]) | set(challenge_syms[:12]) | set(dram_syms))
+        )
         for s in quote_syms:
             aliases.setdefault(s, resolve_yahoo_symbol(s, cfg))
 
