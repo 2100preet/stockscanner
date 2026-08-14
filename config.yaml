@@ -77,6 +77,11 @@ tickers:
   - PLUG  # Plug Power — EW this week
   - CSCO  # Cisco — EW this week
   - IREN  # Iris Energy — liquid high-beta / AI infra; was missing from focus scan
+  # Power Hour named playbooks (15m VWAP)
+  - NU    # Nu Holdings — VWAP reclaim + candle-high break
+  - CAPR  # Capricor — tight 15m base break
+  - ETON  # Eton Pharma — VWAP pullback reclaim
+  - HTFL  # Heartflow — HOD consolidation breakout
   # --- Curated high-potential adds (NOT full S&P 500 — keep focus small for chain rate limits) ---
   # Memory / storage (DRAM sleeve → focus)
   - SNDK  # Sandisk — memory, liquid options, was DRAM-only
@@ -332,6 +337,12 @@ actions:
   odte_1k_fetch_contracts: true
   odte_1k_auto_enter: false
   odte_1k_auto_exit: true
+  # Power Hour — 15m VWAP LONG/SHORT (NU/NVDA/CAPR/ETON/HTFL + focus sleeve)
+  power_hour_enabled: true
+  power_hour_symbols: focus
+  power_hour_max_bar_fetch: 16
+  power_hour_max_quote_fetch: 48
+  power_hour_fetch_bars: true
   # Hold / time-stop (industry desk practice)
   odte_flatten_et: "15:45"       # hard flatten 0DTE by 15:45 ET
   weekly_max_hold_days: 7        # max calendar days for weekly tickets
