@@ -25,8 +25,31 @@ def test_session_phase_power_hour():
 def test_resolve_includes_specials_and_focus():
     cfg = {"tickers": ["SPY", "TSLA", "NVDA", "AAPL", "NU", "CAPR"], "actions": {"power_hour_symbols": "focus"}}
     syms = resolve_power_hour_symbols("focus", config=cfg)
-    for s in ("NU", "NVDA", "CAPR", "ETON", "HTFL", "TSLA", "GOOGL", "SPY", "AAPL"):
+    for s in ("NU", "NVDA", "CAPR", "ETON", "HTFL", "TSLA", "GOOGL", "NXPI", "SPY", "AAPL"):
         assert s in syms
+
+
+def test_nxpi_requires_qqq():
+    now = datetime(2026, 8, 14, 15, 20, tzinfo=ET)
+    blocked = decide_power_hour(
+        "NXPI",
+        quote={"last": 220.0, "day_high": 222.0, "day_low": 215.0, "mom_15m_pct": 0.25, "vwap": 218.0},
+        qqq_quote={"last": 400.0, "day_high": 402.0, "day_low": 398.0},
+        qqq_vwap=401.0,
+        phase="power_hour",
+        now=now,
+    )
+    assert blocked.action != "LONG"
+    ok = decide_power_hour(
+        "NXPI",
+        quote={"last": 220.0, "day_high": 222.0, "day_low": 215.0, "mom_15m_pct": 0.25, "vwap": 218.0},
+        qqq_quote={"last": 480.0, "day_high": 482.0, "day_low": 475.0},
+        qqq_vwap=478.0,
+        phase="power_hour",
+        now=now,
+    )
+    assert ok.action == "LONG"
+    assert ok.special is True
 
 
 def test_no_new_entries_after_1545():
