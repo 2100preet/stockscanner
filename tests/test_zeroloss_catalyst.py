@@ -69,6 +69,9 @@ def test_catalyst_universe_includes_mrna():
     assert "MP" in FOCUS_DEFAULT
     assert "USAR" in FOCUS_DEFAULT
     assert "PFE" in FOCUS_DEFAULT
+    assert "NKE" in FOCUS_DEFAULT
+    assert "NKE" in uni
+    assert "NKE" in LIQUID_UNIVERSE
 
 
 def test_resolve_catalyst_mode_includes_mrna():
@@ -114,11 +117,11 @@ def test_board_pins_mp_usar_pfe():
         }
     )
     board = build_zeroloss_board(
-        {s: quiet for s in ["KO", "MP", "USAR", "PFE"]},
+        {s: quiet for s in ["KO", "MP", "USAR", "PFE", "NKE"]},
         fetch_news=False,
     )
     pin = [r["symbol"] for r in board["pinned"]]
-    assert "MP" in pin and "USAR" in pin and "PFE" in pin
+    assert "MP" in pin and "USAR" in pin and "PFE" in pin and "NKE" in pin
     all_syms = [r["symbol"] for r in board["all"]]
     assert all_syms.index("MP") < all_syms.index("KO") or "KO" not in all_syms
 
@@ -144,3 +147,5 @@ def test_ui_must_trade_is_not_radar():
     from odte_scanner.data.universe import FOCUS_DEFAULT
 
     assert "MP" in FOCUS_DEFAULT
+    assert "PFE" in FOCUS_DEFAULT
+    assert "NKE" in FOCUS_DEFAULT

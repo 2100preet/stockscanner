@@ -272,7 +272,7 @@ PAGE = r"""
     <section class="tabpane active" id="tab-zeroloss">
       <div class="metric-row" id="zlMetrics"></div>
       <p class="lede" id="zlNote" style="margin-top:0"></p>
-      <h2>Pinned watch — MP / USAR / PFE / MRNA</h2>
+      <h2>Pinned watch — MP / USAR / PFE / NKE / MRNA</h2>
       <p class="lede" style="margin-top:0;font-size:.76rem">Always listed, even on a quiet day. Quiet ≠ buy.</p>
       <div id="zlPinned" class="empty">—</div>
       <h2>Do not miss — WATCH, not ENTER NOW</h2>

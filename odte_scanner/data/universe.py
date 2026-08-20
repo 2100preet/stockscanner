@@ -232,7 +232,7 @@ FOCUS_DEFAULT: list[str] = [
     "SNDK", "WDC", "STX", "LRCX", "KLAC", "MRVL", "ANET", "ALAB", "CRDO", "APP",
     "VRT", "CEG", "GEV", "APLD", "CIFR", "WULF",
     # Event tape — never drop MRNA-class names from focus again
-    "MRNA", "BNTX", "XBI", "LLY", "NVO", "MRK", "PFE",
+    "MRNA", "BNTX", "XBI", "LLY", "NVO", "MRK", "PFE", "NKE",
     # Critical minerals / rare earth / uranium — MP/USAR were the same miss class
     "MP", "USAR", "UUUU", "CCJ", "ALB", "TMC",
 ]
@@ -300,6 +300,8 @@ def catalyst_universe() -> list[str]:
             "PLTR",
             "OKLO",
             "SMR",
+            "PFE",
+            "NKE",
         ]
     )
 

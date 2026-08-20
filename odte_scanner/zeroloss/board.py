@@ -20,7 +20,7 @@ DISCLAIMER = (
 )
 
 # Always keep these on the published board even on a quiet session.
-PINNED_SYMBOLS = ("MRNA", "MP", "USAR", "PFE", "BNTX", "XBI", "UUUU", "CCJ", "ALB")
+PINNED_SYMBOLS = ("MRNA", "MP", "USAR", "PFE", "NKE", "BNTX", "XBI", "UUUU", "CCJ", "ALB")
 
 
 def build_zeroloss_board(
