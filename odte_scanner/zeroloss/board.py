@@ -19,6 +19,9 @@ DISCLAIMER = (
     "not financial advice. Not affiliated with Bullflow, Unusual Whales, or Signa."
 )
 
+# Always keep these on the published board even on a quiet session.
+PINNED_SYMBOLS = ("MRNA", "MP", "USAR", "PFE", "BNTX", "XBI", "UUUU", "CCJ", "ALB")
+
 
 def build_zeroloss_board(
     histories: dict[str, pd.DataFrame],
@@ -65,9 +68,11 @@ def build_zeroloss_board(
             updated = score_session(df, symbol=key, news_titles=titles)
             row.update(updated)
         rows.sort(key=lambda r: float(r.get("miss_score") or 0), reverse=True)
+    pinned = [r for r in rows if str(r.get("symbol") or "").upper() in PINNED_SYMBOLS]
     do_not_miss = [r for r in rows if r.get("lane") == LANE_DO_NOT_MISS]
     catalyst = [r for r in rows if r.get("lane") == "CATALYST"]
     tape = [r for r in rows if r.get("lane") == "TAPE"]
+    rest = [r for r in rows if str(r.get("symbol") or "").upper() not in PINNED_SYMBOLS]
 
     prints = list((flow or {}).get("prints") or [])
     prints = sorted(prints, key=lambda p: abs(float(p.get("flow_score") or 0)), reverse=True)[:40]
@@ -87,7 +92,8 @@ def build_zeroloss_board(
         "do_not_miss": do_not_miss[:20],
         "catalyst": catalyst[:20],
         "tape": tape[:20],
-        "all": rows[:80],
+        "pinned": pinned,
+        "all": (pinned + rest)[:80],
         "flow_prints": prints,
         "mrna_note": (
             "MRNA was missing because it was not on the focus or liquid scan lists. "

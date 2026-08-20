@@ -99,6 +99,28 @@ def test_board_ranks_mrna_first():
     assert board["counts"]["do_not_miss"] >= 1
     assert board["do_not_miss"][0]["symbol"] == "MRNA"
     assert board["brand"] == "ZeroLoss"
+    pin = {r["symbol"] for r in board.get("pinned") or []}
+    assert "MRNA" in pin
+
+
+def test_board_pins_mp_usar_pfe():
+    quiet = pd.DataFrame(
+        {
+            "Open": [10.0, 10.1],
+            "High": [10.2, 10.3],
+            "Low": [9.9, 10.0],
+            "Close": [10.05, 10.12],
+            "Volume": [800_000, 810_000],
+        }
+    )
+    board = build_zeroloss_board(
+        {s: quiet for s in ["KO", "MP", "USAR", "PFE"]},
+        fetch_news=False,
+    )
+    pin = [r["symbol"] for r in board["pinned"]]
+    assert "MP" in pin and "USAR" in pin and "PFE" in pin
+    all_syms = [r["symbol"] for r in board["all"]]
+    assert all_syms.index("MP") < all_syms.index("KO") or "KO" not in all_syms
 
 
 def test_ui_must_trade_is_not_radar():

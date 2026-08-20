@@ -233,7 +233,9 @@ PAGE = r"""
     <section class="tabpane active" id="tab-zeroloss">
       <div class="metric-row" id="zlMetrics"></div>
       <p class="lede" id="zlNote" style="margin-top:0"></p>
-      <h2>Do not miss</h2>
+      <h2>Pinned watch — MP / USAR / PFE / MRNA</h2>
+      <p class="lede" style="margin-top:0;font-size:.76rem">Always listed, even on a quiet day. Quiet ≠ buy.</p>
+      <div id="zlPinned" class="empty">—</div>
       <p class="lede" style="margin-top:0;font-size:.78rem">
         Lane fires on gap ≥8%, day ≥12%, or ≥5× relative volume — the class of tape MRNA printed on the Phase 3 melanoma day.
         Not a buy ticket. Same pattern can print −70% on a failed trial.
@@ -2800,6 +2802,22 @@ PAGE = r"""
           ${ticketHtml(r.symbol, r)}
         </div>`;
       };
+
+      const pinEl = document.getElementById("zlPinned");
+      const pinRows = zl.pinned || [];
+      if (pinEl) {
+        if (!pinRows.length) pinEl.innerHTML = `<div class="empty">Pinned names not in this snapshot.</div>`;
+        else pinEl.innerHTML = `<table class="zl-tape"><thead><tr>
+          <th>Sym</th><th>Lane</th><th>Gap</th><th>Day</th><th>Vol</th><th>Why</th>
+        </tr></thead><tbody>${pinRows.map(r => `<tr>
+          <td><strong>${r.symbol}</strong></td>
+          <td><span class="badge ${r.lane==="DO_NOT_MISS"?"dnm":(r.lane==="CATALYST"?"unusual":"wait")}">${r.lane}</span></td>
+          <td class="mono ${pctClass(r.gap_pct)}">${r.gap_pct==null?"—":fmt(r.gap_pct,1)+"%"}</td>
+          <td class="mono ${pctClass(r.day_change_pct)}">${r.day_change_pct==null?"—":fmt(r.day_change_pct,1)+"%"}</td>
+          <td class="mono">${r.rel_volume==null?"—":fmt(r.rel_volume,1)+"x"}</td>
+          <td class="why">${r.why||""}</td>
+        </tr>`).join("")}</tbody></table>`;
+      }
 
       const dnmRows = zl.do_not_miss || [];
       if (dnm) dnm.innerHTML = dnmRows.length
