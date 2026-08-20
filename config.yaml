@@ -104,6 +104,13 @@ tickers:
   - APLD  # Applied Digital — AI datacenter buildout
   - CIFR  # Cipher Mining — liquid bitcoin miner
   - WULF  # TeraWulf — liquid bitcoin / power narrative
+  # Event / biotech — MRNA was absent on 2026-08-19 (+177% Phase 3 day)
+  - MRNA
+  - BNTX
+  - XBI
+  - LLY
+  - NVO
+  - MRK
   # CRM / AMAT already listed above under Friday weeklies
 
 # Yahoo Finance symbol overrides (indexes need ^ prefix for quotes/chains)

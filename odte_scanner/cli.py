@@ -271,7 +271,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
 
 
 def cmd_ui(args: argparse.Namespace) -> int:
-    console.print(f"[green]Signal Desk UI[/green] → http://127.0.0.1:{args.port}")
+    console.print(f"[green]ZeroLoss UI[/green] → http://127.0.0.1:{args.port}")
     run_ui(host=args.host, port=args.port, config_path=args.config)
     return 0
 
@@ -298,9 +298,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--no-paper", action="store_true", help="Score only; do not paper trade")
     s.add_argument(
         "--universe",
-        choices=["focus", "liquid", "screener", "all", "ml6"],
+        choices=["focus", "liquid", "screener", "all", "ml6", "catalyst", "zeroloss"],
         default=None,
-        help="focus=options list; liquid/screener≈S&P100+; all=union; ml6=neocloud earnings",
+        help="focus=options list; liquid/screener≈S&P100+; all=union; ml6=neocloud; catalyst=event sleeve",
     )
     s.add_argument(
         "--horizon",

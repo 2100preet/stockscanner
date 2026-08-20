@@ -248,6 +248,20 @@ def run_scan(
     except Exception as exc:  # noqa: BLE001
         logger.warning("Red Flag analysis failed: %s", exc)
 
+    zeroloss_board: dict[str, Any] | None = None
+    try:
+        from odte_scanner.data.universe import catalyst_universe
+        from odte_scanner.zeroloss.board import build_zeroloss_board
+
+        extra = [s for s in catalyst_universe() if s not in histories]
+        if extra:
+            histories.update(fetch_many(extra, period="6mo", aliases=aliases))
+        # News is best-effort and ranked after the first pass so MRNA-class
+        # gap/volume names are fetched first, not whatever dict order Yahoo used.
+        zeroloss_board = build_zeroloss_board(histories, fetch_news=True, max_news=12)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ZeroLoss catalyst board failed: %s", exc)
+
     report = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "session_weekday": WEEKDAY_NAMES[weekday],
@@ -281,6 +295,7 @@ def run_scan(
         "put_candidates_weekly": [c.to_dict() for c in put_week[:max_show]],
         "option_candidates": [c.to_dict() for c in board_candidates],
         "paper_trades": paper_trades,
+        "zeroloss": zeroloss_board,
         "disclaimer": (
             "Educational / research tool only. Options can expire worthless. "
             "Past signals do not guarantee future results. Quality gates filter for "
@@ -323,7 +338,7 @@ def run_scan(
     if ml6_board:
         (out_dir / "latest_ml6.json").write_text(json.dumps(ml6_board, indent=2))
     logger.info(
-        "Wrote %s (universe=%s n=%d 0DTE_calls=%d weekly=%d puts=%d swing_cards=%d ml6=%d)",
+        "Wrote %s (universe=%s n=%d 0DTE_calls=%d weekly=%d puts=%d swing_cards=%d ml6=%d zeroloss_dnm=%d)",
         path,
         uni_mode,
         len(tickers),
@@ -332,5 +347,6 @@ def run_scan(
         len(top_puts),
         len(swing_cards),
         len((ml6_board or {}).get("watchlist") or []),
+        len((zeroloss_board or {}).get("do_not_miss") or []),
     )
     return report

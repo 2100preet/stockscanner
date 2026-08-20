@@ -1,4 +1,4 @@
-"""Export a static Signal Desk for GitHub Pages (read-only snapshot)."""
+"""Export a static ZeroLoss desk for GitHub Pages (read-only snapshot)."""
 
 from __future__ import annotations
 
@@ -23,18 +23,15 @@ def _static_html(page: str) -> str:
         'const res = await fetch((window.SIGNAL_DESK_DATA_URL||"./data/snapshot.json") + "?t=" + Date.now(), { signal: ctrl.signal, cache: "no-store" });',
     )
     html = html.replace(
-        "    async function runScan(mode) {\n"
-        '      const btn = mode==="liquid" ? document.getElementById("btnScanWide") : document.getElementById("btnScan");\n'
-        "      btn.disabled = true;\n",
+        "    async function runScan(mode) {\n",
         "    async function runScan(mode) {\n"
         "      if (window.SIGNAL_DESK_STATIC) {\n"
         '        const note = document.getElementById("loadNote");\n'
         '        note.style.display = "block";\n'
-        '        note.textContent = "Scan is disabled on GitHub Pages — Actions re-publishes the board on a schedule. Use workflow_dispatch to refresh now.";\n'
+        '        note.textContent = "Scan is disabled on GitHub Pages — Actions re-publishes ZeroLoss on a schedule. Use workflow_dispatch to refresh now.";\n'
         "        return;\n"
-        "      }\n"
-        '      const btn = mode==="liquid" ? document.getElementById("btnScanWide") : document.getElementById("btnScan");\n'
-        "      btn.disabled = true;\n",
+        "      }\n",
+        1,
     )
     html = html.replace(
         "    async function syncWebull() {\n",
@@ -66,7 +63,7 @@ def _static_html(page: str) -> str:
         "          const b = document.createElement('div');\n"
         "          b.id = 'pagesHostBadge';\n"
         "          b.style.cssText = 'color:var(--accent);font-size:.85rem;margin:.2rem 0 .6rem;';\n"
-        "          b.textContent = 'Hosted on GitHub Pages · auto-scan via Actions · read-only snapshot';\n"
+        "          b.textContent = 'ZeroLoss on GitHub Pages · auto-scan via Actions · read-only snapshot · not only-winners';\n"
         "          lede.insertAdjacentElement('afterend', b);\n"
         "        }\n"
         "      }\n"
@@ -144,6 +141,7 @@ def export_pages(
         "buy_now_puts": (acts.get("counts") or {}).get("buy_now_puts"),
         "just_exited": len(acts.get("just_exited") or []),
         "closed_journal": len(insights.get("closed_trades") or []),
+        "zeroloss_dnm": len(((payload.get("zeroloss") or {}).get("do_not_miss") or [])),
         "url_hint": "https://2100preet.github.io/stockscanner/",
     }
     (out / "meta.json").write_text(json.dumps(meta, indent=2))

@@ -1,28 +1,18 @@
-# Signal Desk — Multi-Horizon Call / Swing Scanner
+# ZeroLoss — miss-prevention desk
 
-Signa-style **action cards** (LONG/WAIT + entry/stop/R:R) and Intellectia-style **horizons** with separate algos and win rates:
+This is **not** an only-winning-stocks indicator. Nothing will recover a half-million on a promise. ZeroLoss exists because the previous Signal Desk **never scanned MRNA** on 2026-08-19 (Phase 3 melanoma readout: gap ~+84%, close +177%, ~45× volume). The hist-win ≥80% gate hid movers; the focus list was AI/0DTE names.
 
-| Horizon | Hold | Algos emphasize | Win% forward |
-|---------|------|-----------------|--------------|
-| **0DTE** | same / next session | gap-and-go, breakout, volume, VIX | 1 session |
-| **1 Week** | ~5 sessions | EMA/MACD/RS, pullbacks | 5 sessions |
-| **Swing** | 1–3 months | stage analysis, trend structure, medium RS | ~42 sessions |
-| **ML6** | earnings catalyst | drawdown + days-to-print + neocloud theme + liquidity; **reaction gate** (no blind BUY) | catalyst window |
-| **Red Flag** | 0DTE session | VolSignals-inspired dealer/charm proxy on SPY — blocks index 0DTE long calls when active | intraday |
+**What changed**
+- Always-on **biotech / event sleeve** (MRNA, BNTX, XBI, LLY, MRK, …)
+- **Do not miss** lane: gap ≥8% **or** day ≥12% **or** ≥5× relative volume **or** news + move
+- Bullflow-style flow table from **Yahoo chains + delayed FINRA ATS** — not OPRA, not affiliated with [bullflow.io](https://bullflow.io)
 
-Quality gates (score + confirming algos) filter for **fewer, higher-conviction** signals to raise measured win rates. **ML6** is a separate earnings-catalyst neocloud / AI infra model (NBIS/CRWV style) — not the 0DTE ensemble. **Red Flag** uses public option-chain proxy data (not VS3D proprietary positioning).
+Live Pages site (same GitHub Pages URL until this branch is merged):  
+https://2100preet.github.io/stockscanner/
 
-> **Not financial advice.** Options can go to zero. Research / paper-trading only. Not affiliated with Signa or Intellectia.
+> **Not financial advice.** Options can go to zero. Binary events gap both ways. Paper / research only.
 
-## What it does
-
-1. Pulls daily OHLCV (and VIX) via Yahoo Finance  
-2. Scores each symbol on **three separate ensembles**  
-3. Surfaces quality **action cards** + live 0DTE/1W call candidates  
-4. Screener covers ~100 liquid names (full market scan isn’t practical on free Yahoo limits)  
-5. Tabbed UI: Overview · 0DTE · 1 Week · Swing · **ML6 Neocloud** · Screener · Journal  
-6. Paper journal: enter on BUY NOW, exit on SELL NOW with profit%
-7. **ML6 board**: FRMI / TSSI / IREN (+ ORCL, APLD, CORZ, NBIS, CRWV) with earnings, theme, score, and WATCH / WAIT_FOR_CONFIRMATION / BUY_ONLY_IF_ACCEPTED statuses
+The older multi-horizon desks (0DTE / 1W / swing / ML6) are still in the app under other tabs.
 
 ## Quick start
 
@@ -31,8 +21,11 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# Focus list (options 0DTE names)
+# Focus list (options 0DTE names) — also scores ZeroLoss catalyst sleeve
 python -m odte_scanner scan --no-paper
+
+# Event / biotech sleeve + focus (MRNA-class names)
+python -m odte_scanner scan --universe catalyst --no-paper
 
 # Broader liquid universe (~S&P100 + optionables)
 python -m odte_scanner scan --universe liquid --no-paper

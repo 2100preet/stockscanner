@@ -29,7 +29,7 @@ PAGE = r"""
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Signal Desk — Multi-Horizon</title>
+  <title>ZeroLoss — Do Not Miss</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
@@ -173,14 +173,19 @@ PAGE = r"""
     .alert-toast strong { display: block; font-size: .86rem; margin-bottom: .15rem; }
     .alert-toast .at-meta { color: var(--muted); font-family: "JetBrains Mono", monospace; font-size: .7rem; }
     button.alerts-on { border-color: rgba(62,207,142,.55); color: var(--long); }
+    .zl-tape { font-size: .8rem; }
+    .zl-tape tbody tr:hover { background: rgba(62,207,142,.06); }
+    .badge.dnm { background: rgba(62,207,142,.22); color: var(--long); letter-spacing: .06em; }
+    .tabs button[data-tab="zeroloss"].active { color: var(--long); }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <h1 class="brand">Signal <em>Desk</em></h1>
-    <p class="lede">Signa-style action cards + Intellectia-style horizons: <strong>0DTE</strong>, <strong>1 week</strong>, <strong>1–3 month swing</strong>, and <strong>ML6</strong> earnings-catalyst neocloud / AI infra — separate algos and win rates. Screener covers ~100 liquid names.</p>
+    <h1 class="brand">Zero<em>Loss</em></h1>
+    <p class="lede">Miss-prevention desk — catch <strong>gap + volume + news</strong> names the old hist-win gate hid (MRNA +177% on 2026-08-19 was never even in the universe). This is <strong>not</strong> an only-winners indicator and it will not get a half-million back. Binary biotech can gap both ways. Paper research only.</p>
     <div class="toolbar">
       <button class="primary" id="btnScan">Scan focus</button>
+      <button id="btnScanCatalyst">Scan catalyst</button>
       <button id="btnScanWide">Scan liquid universe</button>
       <button id="btnScanMl6">Scan ML6</button>
       <button id="btnRefresh">Reload</button>
@@ -195,7 +200,8 @@ PAGE = r"""
     <div id="alertToasts" aria-live="assertive"></div>
 
     <nav class="tabs" id="tabs">
-      <button class="active" data-tab="overview">Overview</button>
+      <button class="active" data-tab="zeroloss">ZeroLoss</button>
+      <button data-tab="overview">Overview</button>
       <button data-tab="odte">0DTE</button>
       <button data-tab="odte1k">0DTE $1K</button>
       <button data-tab="powerhour">Power Hour</button>
@@ -209,7 +215,31 @@ PAGE = r"""
       <button data-tab="journal">Journal</button>
     </nav>
 
-    <section class="tabpane active" id="tab-overview">
+    <section class="tabpane active" id="tab-zeroloss">
+      <div class="metric-row" id="zlMetrics"></div>
+      <p class="lede" id="zlNote" style="margin-top:0"></p>
+      <h2>Do not miss</h2>
+      <p class="lede" style="margin-top:0;font-size:.78rem">
+        Lane fires on gap ≥8%, day ≥12%, or ≥5× relative volume — the class of tape MRNA printed on the Phase 3 melanoma day.
+        Not a buy ticket. Same pattern can print −70% on a failed trial.
+      </p>
+      <div class="cards" id="zlDoNotMiss"></div>
+      <div class="panel">
+        <h2>Catalyst / unusual tape</h2>
+        <div id="zlTape" class="empty">—</div>
+      </div>
+      <div class="panel">
+        <h2>Unusual options flow</h2>
+        <p class="lede" style="margin-top:0;font-size:.76rem">
+          Bullflow-style tape from Yahoo chain snapshots — delayed, not OPRA, not affiliated with bullflow.io.
+          Sweeps / dark-pool prints need a paid OPRA feed this repo does not have.
+        </p>
+        <div id="zlFlow" class="empty">—</div>
+      </div>
+      <p class="lede" id="zlDisclaimer" style="font-size:.72rem"></p>
+    </section>
+
+    <section class="tabpane" id="tab-overview">
       <div class="metric-row" id="perfCards"></div>
       <p class="lede" id="insightSummary"></p>
       <p class="lede" id="winLegend" style="font-size:.78rem">
@@ -643,8 +673,9 @@ PAGE = r"""
     </section>
 
     <footer>
-      Quality gates require score + multiple confirming algos before a signal counts — fewer trades, higher measured win rates.
-      Win% is underlying direction, not option P&amp;L. Research only — not affiliated with Signa, Intellectia, or Trade Echo.
+      ZeroLoss flags names you must not miss. It does not pick only winning stocks.
+      Hist-win ≥80% hid movers; the catalyst sleeve (MRNA, BNTX, XBI, …) is always scanned.
+      Win% is underlying direction, not option P&amp;L. Research only — not affiliated with Bullflow, Signa, Intellectia, or Trade Echo.
     </footer>
   </div>
   <script>
@@ -2644,9 +2675,91 @@ PAGE = r"""
         <div class="pb-grid">${grid}</div>`;
     }
 
+    function renderZeroLoss(zl) {
+      const metrics = document.getElementById("zlMetrics");
+      const dnm = document.getElementById("zlDoNotMiss");
+      const tape = document.getElementById("zlTape");
+      const flow = document.getElementById("zlFlow");
+      const note = document.getElementById("zlNote");
+      const disc = document.getElementById("zlDisclaimer");
+      if (!zl || !Object.keys(zl).length) {
+        if (dnm) dnm.innerHTML = `<div class="empty">No ZeroLoss board yet — tap Scan focus or Scan catalyst.</div>`;
+        return;
+      }
+      const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
+      const c = zl.counts || {};
+      if (metrics) metrics.innerHTML = [
+        m("Scanned", c.scanned||0),
+        m("Do not miss", c.do_not_miss||0, (c.do_not_miss||0)>0?"up":""),
+        m("Catalyst", c.catalyst||0),
+        m("Tape", c.tape||0),
+        m("Flow prints", (zl.flow_prints||[]).length),
+      ].join("");
+      if (note) note.textContent = zl.purpose ? (zl.purpose + " " + (zl.mrna_note||"")) : (zl.mrna_note||"");
+      if (disc) disc.textContent = zl.disclaimer || "";
+
+      const rowCard = (r) => {
+        const ch = r.live_change_pct != null ? r.live_change_pct : r.day_change_pct;
+        const cls = (ch||0) >= 0 ? "up" : "down";
+        const lane = String(r.lane||"").replaceAll("_"," ");
+        return `<div class="action-card ${r.lane==="DO_NOT_MISS"?"long":"wait"}">
+          <div class="ac-top">
+            <div class="ac-sym">${r.symbol}</div>
+            <div class="ac-dir ${cls}"><span class="badge dnm">${lane}</span></div>
+          </div>
+          <div class="ac-conf">Miss score ${Math.round(Number(r.miss_score||0)*100)}</div>
+          <div class="bar"><i style="width:${Math.min(100, Number(r.miss_score||0)*100)}%"></i></div>
+          <div class="ac-meta">
+            <div>Gap<strong class="${pctClass(r.gap_pct)}">${r.gap_pct==null?"—":fmt(r.gap_pct,1)+"%"}</strong></div>
+            <div>Day<strong class="${pctClass(ch)}">${ch==null?"—":fmt(ch,1)+"%"}</strong></div>
+            <div>Rel vol<strong>${r.rel_volume==null?"—":fmt(r.rel_volume,1)+"x"}</strong></div>
+            <div>Last<strong class="mono">${r.live_last||r.last||"—"}</strong></div>
+          </div>
+          <p class="pc-why">${r.why||""}</p>
+          <p class="pc-why">${r.risk||""}</p>
+        </div>`;
+      };
+
+      const dnmRows = zl.do_not_miss || [];
+      if (dnm) dnm.innerHTML = dnmRows.length
+        ? dnmRows.map(rowCard).join("")
+        : `<div class="empty">No gap/volume bombs this session. That is normal — the desk is for misses, not a daily buy list.</div>`;
+
+      const tapeRows = [...(zl.catalyst||[]), ...(zl.tape||[])].slice(0, 16);
+      if (tape) {
+        if (!tapeRows.length) tape.innerHTML = `<div class="empty">Quiet tape in the catalyst sleeve.</div>`;
+        else tape.innerHTML = `<table class="zl-tape"><thead><tr>
+          <th>Sym</th><th>Lane</th><th>Gap</th><th>Day</th><th>Vol</th><th>Why</th>
+        </tr></thead><tbody>${tapeRows.map(r => `<tr>
+          <td><strong>${r.symbol}</strong></td>
+          <td><span class="badge ${r.lane==="CATALYST"?"unusual":"wait"}">${r.lane}</span></td>
+          <td class="mono ${pctClass(r.gap_pct)}">${r.gap_pct==null?"—":fmt(r.gap_pct,1)+"%"}</td>
+          <td class="mono ${pctClass(r.day_change_pct)}">${r.day_change_pct==null?"—":fmt(r.day_change_pct,1)+"%"}</td>
+          <td class="mono">${r.rel_volume==null?"—":fmt(r.rel_volume,1)+"x"}</td>
+          <td class="why">${r.why||""}</td>
+        </tr>`).join("")}</tbody></table>`;
+      }
+
+      const prints = zl.flow_prints || [];
+      if (flow) {
+        if (!prints.length) flow.innerHTML = `<div class="empty">No unusual options prints in this snapshot (Yahoo chain, not OPRA). Open Flow Desk for filters.</div>`;
+        else flow.innerHTML = `<table class="zl-tape"><thead><tr>
+          <th>Tier</th><th>Sym</th><th>Side</th><th>Strike</th><th>Prem</th><th>Score</th>
+        </tr></thead><tbody>${prints.slice(0,20).map(p => `<tr>
+          <td><span class="badge ${p.tier||"aggressive"}">${(p.tier||"").toUpperCase()}</span></td>
+          <td><strong>${p.symbol}</strong></td>
+          <td class="mono ${p.right==="C"?"up":"down"}">${p.right}</td>
+          <td class="mono">${fmt(p.strike,2)}</td>
+          <td class="mono">${p.premium_notional!=null?Math.round(p.premium_notional).toLocaleString():"—"}</td>
+          <td class="mono">${fmt(p.flow_score,1)}</td>
+        </tr>`).join("")}</tbody></table>`;
+      }
+    }
+
     function paint() {
       renderMustTradeBanner();
       maybeFireTradeAlerts();
+      renderZeroLoss(DATA.zeroloss || {});
       const ac = DATA.action_cards || {};
       const hz = DATA.horizons || {};
       renderCards("overviewCards", [
@@ -2750,7 +2863,8 @@ PAGE = r"""
 
     async function runScan(mode) {
       const btn = mode==="liquid" ? document.getElementById("btnScanWide")
-        : (mode==="ml6" ? document.getElementById("btnScanMl6") : document.getElementById("btnScan"));
+        : (mode==="ml6" ? document.getElementById("btnScanMl6")
+        : (mode==="catalyst" || mode==="zeroloss" ? document.getElementById("btnScanCatalyst") : document.getElementById("btnScan")));
       if (!btn) return;
       btn.disabled = true;
       const label = btn.textContent;
@@ -2789,6 +2903,8 @@ PAGE = r"""
 
     document.getElementById("btnRefresh").onclick = loadAll;
     document.getElementById("btnScan").onclick = () => runScan("focus");
+    const btnCat = document.getElementById("btnScanCatalyst");
+    if (btnCat) btnCat.onclick = () => runScan("catalyst");
     document.getElementById("btnScanWide").onclick = () => runScan("liquid");
     const btnMl6 = document.getElementById("btnScanMl6");
     if (btnMl6) btnMl6.onclick = () => runScan("ml6");
@@ -2920,7 +3036,7 @@ PAGE = r"""
       if (!host) return;
       const el = document.createElement("div");
       el.className = `alert-toast ${alert.kind || "buy"}`;
-      el.innerHTML = `<strong>${alert.title}</strong><div>${alert.body || ""}</div><div class="at-meta">Signal Desk · keep tab open for alerts</div>`;
+      el.innerHTML = `<strong>${alert.title}</strong><div>${alert.body || ""}</div><div class="at-meta">ZeroLoss · keep tab open for alerts</div>`;
       host.prepend(el);
       setTimeout(() => el.remove(), 12000);
     }
@@ -4142,6 +4258,48 @@ def create_app(config_path: str | None = None) -> Flask:
                 logger.warning("webull auto_sync failed: %s", exc)
                 webull_payload = {**(webull_payload or {}), "auto_sync_error": str(exc)}
 
+        zeroloss = scan.get("zeroloss") if isinstance(scan.get("zeroloss"), dict) else {}
+        if zeroloss:
+            zeroloss = dict(zeroloss)
+            oflow = (echo.get("option_flow") or {}) if isinstance(echo, dict) else {}
+            prints = list(oflow.get("prints") or zeroloss.get("flow_prints") or [])
+            zeroloss["flow_prints"] = prints[:40]
+            counts = dict(zeroloss.get("counts") or {})
+            counts["flow_prints"] = len(zeroloss["flow_prints"])
+            zeroloss["counts"] = counts
+            for row in list(zeroloss.get("do_not_miss") or []) + list(zeroloss.get("all") or []):
+                if not isinstance(row, dict):
+                    continue
+                q = quotes.get(str(row.get("symbol") or "").upper())
+                if isinstance(q, dict):
+                    if q.get("last"):
+                        row["live_last"] = q.get("last")
+                    ch = q.get("session_change_pct", q.get("change_pct"))
+                    if ch is not None:
+                        row["live_change_pct"] = ch
+        else:
+            from odte_scanner.zeroloss.board import DISCLAIMER as ZL_DISCLAIMER
+
+            oflow = (echo.get("option_flow") or {}) if isinstance(echo, dict) else {}
+            zeroloss = {
+                "brand": "ZeroLoss",
+                "purpose": "Do not miss the tape. Catch gap/volume/news names the hist-win gate hid.",
+                "disclaimer": ZL_DISCLAIMER,
+                "counts": {
+                    "scanned": 0,
+                    "do_not_miss": 0,
+                    "catalyst": 0,
+                    "tape": 0,
+                    "flow_prints": len(oflow.get("prints") or []),
+                },
+                "do_not_miss": [],
+                "catalyst": [],
+                "tape": [],
+                "all": [],
+                "flow_prints": list(oflow.get("prints") or [])[:40],
+                "mrna_note": "Run Scan focus or Scan catalyst so MRNA-class names are scored.",
+            }
+
         return jsonify(
             {
                 "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -4168,6 +4326,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 "challenge": challenge,
                 "odte_1k": odte_1k,
                 "power_hour": power_hour,
+                "zeroloss": zeroloss,
                 "market": market,
                 "walls_by_symbol": walls_by_symbol,
                 "watch": {"quotes": quotes},
@@ -4393,7 +4552,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 ]
                 if mode == "ml6":
                     cmd.extend(["--horizon", "ml6"])
-                elif mode in ("liquid", "screener", "all"):
+                elif mode in ("liquid", "screener", "all", "catalyst", "zeroloss"):
                     cmd.extend(["--universe", mode])
                 subprocess.run(cmd, cwd=str(ROOT), check=False)
             finally:
@@ -4555,5 +4714,5 @@ def create_app(config_path: str | None = None) -> Flask:
 
 def run_ui(host: str = "0.0.0.0", port: int = 8787, config_path: str | None = None) -> None:
     app = create_app(config_path)
-    logger.info("Signal Desk UI at http://%s:%s", host if host != "0.0.0.0" else "127.0.0.1", port)
+    logger.info("ZeroLoss UI at http://%s:%s", host if host != "0.0.0.0" else "127.0.0.1", port)
     app.run(host=host, port=port, debug=False, use_reloader=False)

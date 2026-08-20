@@ -1,4 +1,4 @@
-name: Signal Desk Pages
+name: ZeroLoss Pages
 
 on:
   workflow_dispatch:
@@ -8,6 +8,7 @@ on:
   push:
     branches:
       - main
+      - cursor/zeroloss-desk
       - cursor/ddog-focus-universe-4571
     paths:
       - "odte_scanner/**"
@@ -89,6 +90,9 @@ jobs:
           print("scores:", meta.get("scores"), "at", meta.get("generated_at"))
           snap = json.loads(Path("site/data/snapshot.json").read_text())
           assert "scores" in snap
+          assert "zeroloss" in snap
+          zl = snap.get("zeroloss") or {}
+          print("zeroloss dnm:", len(zl.get("do_not_miss") or []), "scanned:", (zl.get("counts") or {}).get("scanned"))
           acts = snap.get("actions") or {}
           journ = (snap.get("insights") or {})
           print(

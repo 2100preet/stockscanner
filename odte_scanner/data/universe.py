@@ -51,6 +51,32 @@ MID_SMALL_UNIVERSE: list[str] = [
     "ALAB", "CRDO", "VRT", "APLD", "CIFR", "WULF", "CEG", "GEV",
 ]
 
+# Event / biotech sleeve — MRNA was missing from every scan list on 2026-08-19
+# when it gapped +84% / closed +177% on a Phase 3 melanoma readout.
+BIOTECH_CATALYST_UNIVERSE: list[str] = [
+    "MRNA",
+    "BNTX",
+    "NVAX",
+    "REGN",
+    "VRTX",
+    "GILD",
+    "AMGN",
+    "BIIB",
+    "MRK",
+    "BMY",
+    "LLY",
+    "NVO",
+    "PFE",
+    "JNJ",
+    "ABBV",
+    "XBI",
+    "IBB",
+    "CRSP",
+    "NTLA",
+    "BEAM",
+    "RXRX",
+]
+
 # Earnings Whispers–style most-anticipated names (often missing from S&P100 lists).
 # Keep in liquid + earnings watch even when Yahoo coverage lags on new IPOs.
 EARNINGS_DARLINGS_UNIVERSE: list[str] = [
@@ -93,7 +119,8 @@ LIQUID_UNIVERSE: list[str] = [
     # Mega / large
     "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "GOOG", "META", "TSLA", "AVGO", "BRK-B",
     "JPM", "V", "MA", "UNH", "XOM", "JNJ", "WMT", "PG", "HD", "COST",
-    "ABBV", "MRK", "CVX", "PEP", "KO", "BAC", "CRM", "AMD", "NFLX", "ADBE",
+    "ABBV", "MRK", "MRNA", "BNTX", "NVAX", "LLY", "NVO", "BMY", "XBI", "IBB",
+    "CVX", "PEP", "KO", "BAC", "CRM", "AMD", "NFLX", "ADBE",
     "TMO", "ACN", "CSCO", "MCD", "LIN", "ABT", "DHR", "WFC", "TXN", "DIS",
     "INTC", "QCOM", "AMAT", "INTU", "IBM", "GE", "CAT", "BA", "GS", "MS",
     "AXP", "BLK", "BKNG", "ISRG", "AMGN", "PFE", "PM", "T", "VZ", "NEE",
@@ -118,6 +145,8 @@ LIQUID_UNIVERSE: list[str] = [
     *DRAM_MEMORY_UNIVERSE,
     # This week's most-anticipated earnings darlings
     *EARNINGS_DARLINGS_UNIVERSE,
+    # Biotech / event names the 0DTE focus list previously dropped
+    *BIOTECH_CATALYST_UNIVERSE,
 ]
 
 # ML6 earnings-catalyst neocloud sleeve (also listed in LIQUID_UNIVERSE)
@@ -177,6 +206,8 @@ FOCUS_DEFAULT: list[str] = [
     # Curated high-potential (memory / AI infra / power / liquid mid) — not full S&P 500
     "SNDK", "WDC", "STX", "LRCX", "KLAC", "MRVL", "ANET", "ALAB", "CRDO", "APP",
     "VRT", "CEG", "GEV", "APLD", "CIFR", "WULF",
+    # Event tape — never drop MRNA-class names from focus again
+    "MRNA", "BNTX", "XBI", "LLY", "NVO", "MRK",
 ]
 
 
@@ -209,6 +240,38 @@ def earnings_darlings_universe() -> list[str]:
 
 def liquid_universe() -> list[str]:
     return _dedupe(list(LIQUID_UNIVERSE))
+
+
+def biotech_catalyst_universe() -> list[str]:
+    return _dedupe(list(BIOTECH_CATALYST_UNIVERSE))
+
+
+def catalyst_universe() -> list[str]:
+    """Always-on sleeve for ZeroLoss Do-Not-Miss (gaps, news, unusual volume)."""
+    return _dedupe(
+        list(BIOTECH_CATALYST_UNIVERSE)
+        + list(EARNINGS_DARLINGS_UNIVERSE)
+        + [
+            "SPY",
+            "QQQ",
+            "IWM",
+            "NVDA",
+            "TSLA",
+            "SMCI",
+            "CRWV",
+            "NBIS",
+            "AAPL",
+            "MSFT",
+            "AMZN",
+            "META",
+            "GOOGL",
+            "AMD",
+            "MU",
+            "COIN",
+            "MSTR",
+            "PLTR",
+        ]
+    )
 
 
 def challenge_hist_universe(
@@ -262,6 +325,7 @@ def resolve_scan_universe(cfg: dict[str, Any], *, mode: str | None = None) -> li
       screener — alias of liquid
       all      — union of focus + liquid
       ml6      — neocloud / AI infra earnings sleeve
+      catalyst / zeroloss — event + biotech sleeve unioned with focus
     """
     uni = cfg.get("universe") or {}
     mode = (mode or uni.get("mode") or "focus").lower()
@@ -276,6 +340,8 @@ def resolve_scan_universe(cfg: dict[str, Any], *, mode: str | None = None) -> li
         return liquid
     if mode == "ml6":
         return ml6_universe()
+    if mode in ("catalyst", "zeroloss"):
+        return _dedupe(catalyst_universe() + focus)
     if mode == "all":
         return _dedupe(focus + liquid + ml6_universe())
     return focus
