@@ -72,10 +72,31 @@ PAGE = r"""
       background: var(--panel); backdrop-filter: blur(8px);
       transition: transform .2s ease, border-color .2s ease;
     }
-    .action-card:hover { transform: translateY(-2px); border-color: rgba(62,207,142,.35); }
+    .action-card.enter-now:hover { border-color: rgba(180,255,220,.85); }
     .action-card.long { box-shadow: inset 3px 0 0 var(--long); }
     .action-card.wait { box-shadow: inset 3px 0 0 var(--wait); }
     .action-card.short { box-shadow: inset 3px 0 0 var(--short); }
+    .action-card.enter-now,
+    .pulse-card.must {
+      background:
+        linear-gradient(165deg, rgba(62,207,142,.55) 0%, rgba(18,72,48,.92) 46%, rgba(8,28,22,.96) 100%);
+      border-color: rgba(140,245,198,.7);
+      box-shadow: inset 4px 0 0 #8cf5c6, 0 10px 28px rgba(62,207,142,.22);
+    }
+    .action-card.enter-now .ac-sym,
+    .pulse-card.must .pc-sym { color: #f2fff8; }
+    .action-card.enter-now .ac-dir,
+    .pulse-card.must .pc-tag {
+      color: #062016;
+      background: var(--long);
+      padding: .16rem .42rem;
+      border-radius: .32rem;
+    }
+    .pulse-card.exit {
+      background:
+        linear-gradient(165deg, rgba(255,107,90,.38) 0%, rgba(72,22,18,.9) 50%, rgba(28,10,8,.96) 100%);
+      border-color: rgba(255,160,150,.55);
+    }
     .ac-top { display: flex; justify-content: space-between; align-items: baseline; gap: .5rem; }
     .ac-sym { font-family: "Instrument Serif", Georgia, serif; font-size: 1.45rem; }
     .ac-dir { font-family: "JetBrains Mono", monospace; font-size: .72rem; letter-spacing: .08em; font-weight: 500; }
@@ -139,16 +160,13 @@ PAGE = r"""
       border: 1px solid var(--line); border-radius: .7rem; padding: .7rem .8rem;
       background: rgba(8,16,14,.55);
     }
-    .pulse-card.must { box-shadow: inset 3px 0 0 var(--long); }
-    .pulse-card.exit { box-shadow: inset 3px 0 0 var(--short); }
     .pulse-card .pc-top { display: flex; justify-content: space-between; gap: .5rem; align-items: baseline; }
     .pulse-card .pc-sym { font-family: "Instrument Serif", Georgia, serif; font-size: 1.35rem; }
     .pulse-card .pc-tag {
       font-family: "JetBrains Mono", monospace; font-size: .68rem; letter-spacing: .06em;
       font-weight: 500;
     }
-    .pulse-card .pc-tag.must { color: var(--long); }
-    .pulse-card .pc-tag.exit { color: var(--short); }
+    .pulse-card .pc-tag.exit { color: #fff; background: var(--short); padding: .16rem .42rem; border-radius: .32rem; }
     .pulse-card .pc-meta {
       display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .25rem .55rem;
       margin-top: .45rem; font-size: .78rem;
@@ -187,6 +205,21 @@ PAGE = r"""
     html[data-theme="light"] .action-card,
     html[data-theme="light"] .metric,
     html[data-theme="light"] .pulse-card { background: var(--panel); }
+    html[data-theme="light"] .action-card.enter-now,
+    html[data-theme="light"] .pulse-card.must {
+      background: linear-gradient(165deg, rgba(13,138,86,.32), rgba(232,255,244,.98) 52%);
+      border-color: rgba(13,138,86,.55);
+      box-shadow: inset 4px 0 0 var(--long), 0 8px 20px rgba(13,138,86,.12);
+    }
+    html[data-theme="light"] .action-card.enter-now .ac-dir,
+    html[data-theme="light"] .pulse-card.must .pc-tag {
+      color: #fff;
+      background: var(--long);
+    }
+    html[data-theme="light"] .pulse-card.exit {
+      background: linear-gradient(165deg, rgba(196,60,50,.22), rgba(255,244,242,.98) 52%);
+      border-color: rgba(196,60,50,.45);
+    }
     html[data-theme="light"] .alert-toast { background: rgba(255,255,255,.94); color: var(--ink); }
     .zl-tape { font-size: .8rem; }
     .zl-tape tbody tr:hover { background: rgba(62,207,142,.06); }
@@ -948,11 +981,12 @@ PAGE = r"""
     function lotteryCard(r) {
       const act = (r.action||"WAIT");
       const kind = act.startsWith("BUY") ? "long" : act.startsWith("SELL") ? "short" : "wait";
+      const enter = act === "BUY_NOW" && (Number(r.win_pct ?? r.hist_win_pct) >= 80) && (Number(r.win_samples ?? r.hist_samples) >= 3);
       const tags = (r.playbook||[]).slice(0,6).map(p => `<span class="tag">${p}</span>`).join("");
-      return `<article class="action-card ${kind}">
+      return `<article class="action-card ${enter ? "enter-now" : kind}">
         <div class="ac-top">
           <div class="ac-sym">${r.symbol}</div>
-          <div class="ac-dir ${kind}">${act.replaceAll("_"," ")}</div>
+          <div class="ac-dir ${enter ? "" : kind}">${enter ? "ENTER NOW" : act.replaceAll("_"," ")}</div>
         </div>
         <div class="ac-conf">Strength ${fmt(r.strength,0)} · ${r.confirms||0} confirms${r.best_mult!=null?` · ~${fmt(r.best_mult,0)}× upside`:""}${(r.action==="BUY_NOW"||r.action==="SELL_NOW")?` · asked ${r.signaled_at_cst||fmtCST(r.signaled_at)||"—"}`:""}</div>
         <div class="bar"><i style="width:${Math.min(100,r.strength||0)}%"></i></div>
@@ -1181,11 +1215,12 @@ PAGE = r"""
       if (primaryEl) {
         primaryEl.innerHTML = actionable.length
           ? actionable.map(r => {
-              const kind = (r.action||"").startsWith("BUY") ? "long" : "wait";
+              const enter = (r.action||"").startsWith("BUY");
+              const kind = enter ? "enter-now" : "wait";
               const when = r.signaled_at_cst || fmtCST(r.signaled_at);
               return `<article class="action-card ${kind}">
                 <div class="ac-top"><div class="ac-sym">${r.symbol}</div>
-                <div class="ac-dir ${kind}">${(r.action||"").replaceAll("_"," ")}</div></div>
+                <div class="ac-dir ${enter ? "" : "wait"}">${enter ? "ENTER NOW" : (r.action||"").replaceAll("_"," ")}</div></div>
                 <div class="ac-conf">Strength ${fmt(r.strength,0)} · score ${fmt(r.score,0)} · asked ${when||"—"}</div>
                 <p class="why" style="max-width:none">${r.detail||r.headline||""}</p>
               </article>`;
@@ -1316,10 +1351,10 @@ PAGE = r"""
         if (r.status === "lapsed" || r.profit_pct == null) return "";
         return r.profit_pct > 0 ? "long" : (r.profit_pct < 0 ? "short" : "");
       };
-      const cardOpen = (r) => `<article class="action-card long">
+      const cardOpen = (r) => `<article class="action-card enter-now">
         <div class="ac-top">
           <div class="ac-sym">${r.symbol} <span class="tag">${r.section||""}</span></div>
-          <div class="ac-dir long">${r.open_action||"ENTRY"}${r.on_board?"":" · OFF BOARD"}</div>
+          <div class="ac-dir">${r.open_action||"ENTER NOW"}${r.on_board?"":" · OFF BOARD"}</div>
         </div>
         <div class="ac-meta">
           <div>Strike / expiry<strong>${strikeTxt(r)} · ${r.expiry||"—"}${r.dte!=null?` (${r.dte}DTE)`:""}</strong></div>
@@ -1560,11 +1595,12 @@ PAGE = r"""
         else {
           const tier = t0.certainty_tier||"strong";
           const act = t0.action||"WAIT";
-          const kind = act==="EXIT"?"short":(act==="ENTRY"||act==="HOLD"?"long":"wait");
+          const enter = act === "ENTRY";
+          const kind = act==="EXIT"?"short":(enter?"enter-now":(act==="HOLD"?"long":"wait"));
           primaryEl.innerHTML = `<article class="action-card ${kind}">
             <div class="ac-top">
               <div class="ac-sym">${t0.symbol} <span class="tag">${t0.right==="P"?"PUT":"CALL"}</span> <span class="tag">${(t0.market_cap_tier||"").replace("_","/")}</span> ${earnBadge(t0)} ${spotBadge(t0)}${t0.fits_4mo_500k?` <span class="badge buy">4MO $500k</span>`:""}</div>
-              <div class="ac-dir ${kind}">${act} · ${tier.toUpperCase()}</div>
+              <div class="ac-dir ${enter ? "" : kind}">${enter ? "ENTER NOW" : act} · ${tier.toUpperCase()}</div>
             </div>
             <div class="ac-conf">Hist win ${fmt(t0.hist_win_pct,0)}% · n=${t0.hist_samples} · <strong>approx hold ${holdLbl(t0)}</strong></div>
             <div class="bar"><i style="width:${Math.min(100,t0.hist_win_pct||0)}%"></i></div>
@@ -2722,7 +2758,7 @@ PAGE = r"""
       }
 
       const card = (row, kind) => {
-        const tag = kind === "must" ? "MUST TRADE" : "EXIT NOW";
+        const tag = kind === "must" ? "ENTER NOW" : "EXIT NOW";
         const tk = ticketLines(row.symbol, row);
         const strikeTxt = row.strike == null ? "—" : `${Number(row.strike).toFixed(Number(row.strike) % 1 ? 2 : 0)}${(row.right || "C") === "P" ? "p" : "c"}`;
         const dteTxt = row.dte == null ? "" : ` · ${row.dte}DTE`;
@@ -2801,7 +2837,7 @@ PAGE = r"""
         const ch = r.live_change_pct != null ? r.live_change_pct : r.day_change_pct;
         const cls = (ch||0) >= 0 ? "up" : "down";
         const lane = String(r.lane||"").replaceAll("_"," ");
-        return `<div class="action-card ${r.lane==="DO_NOT_MISS"?"long":"wait"}">
+        return `<div class="action-card wait">
           <div class="ac-top">
             <div class="ac-sym">${r.symbol}</div>
             <div class="ac-dir ${cls}"><span class="badge dnm">WATCH · not ENTER</span></div>

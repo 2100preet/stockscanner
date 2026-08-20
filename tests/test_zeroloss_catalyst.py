@@ -136,6 +136,7 @@ def test_ui_must_trade_is_not_radar():
     assert "Reload snapshot" in page
     assert "ENTER time (CST)" in page
     assert "strike rate ≥1%" in page
+    assert "action-card.enter-now" in page
     assert "...topRadar.map" not in page
     from odte_scanner.data.universe import FOCUS_DEFAULT
 
