@@ -7,8 +7,8 @@ This is **not** an only-winning-stocks indicator. Nothing will recover a half-mi
 - **Do not miss** lane: gap ≥8% **or** day ≥12% **or** ≥5× relative volume **or** news + move
 - Bullflow-style flow table from **Yahoo chains + delayed FINRA ATS** — not OPRA, not affiliated with [bullflow.io](https://bullflow.io)
 
-Live Pages site (same GitHub Pages URL until this branch is merged):  
-https://2100preet.github.io/stockscanner/
+Live Pages site:  
+https://2100preet.github.io/zeroloss/
 
 > **Not financial advice.** Options can go to zero. Binary events gap both ways. Paper / research only.
 
@@ -45,9 +45,9 @@ python -m odte_scanner ui
 ## Always-on (24×7) hosting
 
 **Public desk (GitHub Pages — uses your GitHub only):**  
-https://2100preet.github.io/stockscanner/
+https://2100preet.github.io/zeroloss/
 
-Actions runs a focus scan on a weekday schedule and publishes a **read-only** snapshot. Tap **Actions → Signal Desk Pages → Run workflow** to refresh now. Scan / Webull buttons need a live Flask host.
+Actions runs a focus scan on a weekday schedule and publishes a **read-only** snapshot. Tap **Actions → ZeroLoss Pages → Run workflow** to refresh now. Scan / Webull buttons need a live Flask host.
 
 Cursor cloud agents and free tunnels (`trycloudflare`, `localhost.run`) are **ephemeral** — they die when the agent sleeps.
 

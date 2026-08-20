@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -256,9 +257,8 @@ def run_scan(
         extra = [s for s in catalyst_universe() if s not in histories]
         if extra:
             histories.update(fetch_many(extra, period="6mo", aliases=aliases))
-        # News is best-effort and ranked after the first pass so MRNA-class
-        # gap/volume names are fetched first, not whatever dict order Yahoo used.
-        zeroloss_board = build_zeroloss_board(histories, fetch_news=True, max_news=12)
+        fetch_news = os.environ.get("GITHUB_ACTIONS") != "true"
+        zeroloss_board = build_zeroloss_board(histories, fetch_news=fetch_news, max_news=12)
     except Exception as exc:  # noqa: BLE001
         logger.warning("ZeroLoss catalyst board failed: %s", exc)
 

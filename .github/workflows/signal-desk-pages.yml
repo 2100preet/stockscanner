@@ -66,6 +66,7 @@ jobs:
       - name: Focus scan
         id: scan
         continue-on-error: true
+        timeout-minutes: 8
         run: |
           mkdir -p outputs
           python -m odte_scanner scan --universe focus --no-paper

@@ -142,7 +142,7 @@ def export_pages(
         "just_exited": len(acts.get("just_exited") or []),
         "closed_journal": len(insights.get("closed_trades") or []),
         "zeroloss_dnm": len(((payload.get("zeroloss") or {}).get("do_not_miss") or [])),
-        "url_hint": "https://2100preet.github.io/stockscanner/",
+        "url_hint": "https://2100preet.github.io/zeroloss/",
     }
     (out / "meta.json").write_text(json.dumps(meta, indent=2))
     return out
