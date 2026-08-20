@@ -99,3 +99,16 @@ def test_board_ranks_mrna_first():
     assert board["counts"]["do_not_miss"] >= 1
     assert board["do_not_miss"][0]["symbol"] == "MRNA"
     assert board["brand"] == "ZeroLoss"
+
+
+def test_ui_must_trade_is_not_radar():
+    from pathlib import Path
+
+    page = (Path(__file__).resolve().parents[1] / "odte_scanner" / "ui.py").read_text()
+    assert "btnTheme" in page
+    assert "ticketHtml" in page
+    assert "Radar HOT wings (cheap SPY/DIA) are" in page
+    assert "...topRadar.map" not in page
+    from odte_scanner.data.universe import FOCUS_DEFAULT
+
+    assert "MP" in FOCUS_DEFAULT

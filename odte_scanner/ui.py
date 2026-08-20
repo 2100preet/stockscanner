@@ -172,7 +172,21 @@ PAGE = r"""
     .alert-toast.sell { box-shadow: inset 3px 0 0 var(--short), 0 8px 28px rgba(0,0,0,.35); }
     .alert-toast strong { display: block; font-size: .86rem; margin-bottom: .15rem; }
     .alert-toast .at-meta { color: var(--muted); font-family: "JetBrains Mono", monospace; font-size: .7rem; }
-    button.alerts-on { border-color: rgba(62,207,142,.55); color: var(--long); }
+    html[data-theme="light"] {
+      --bg: #f3f6f4; --panel: rgba(255,255,255,.88); --ink: #122018; --muted: #5a6d65;
+      --line: rgba(18,32,24,.12); --long: #0d8a56; --short: #c43c32; --wait: #a87410;
+      --accent: #1a7a68;
+    }
+    html[data-theme="light"] body {
+      background:
+        radial-gradient(900px 480px at 8% -5%, rgba(13,138,86,.12), transparent 55%),
+        radial-gradient(700px 420px at 95% 5%, rgba(26,122,104,.08), transparent 50%),
+        linear-gradient(165deg, #f8fbf9, var(--bg) 40%, #e8eeea);
+    }
+    html[data-theme="light"] .action-card,
+    html[data-theme="light"] .metric,
+    html[data-theme="light"] .pulse-card { background: var(--panel); }
+    html[data-theme="light"] .alert-toast { background: rgba(255,255,255,.94); color: var(--ink); }
     .zl-tape { font-size: .8rem; }
     .zl-tape tbody tr:hover { background: rgba(62,207,142,.06); }
     .badge.dnm { background: rgba(62,207,142,.22); color: var(--long); letter-spacing: .06em; }
@@ -189,6 +203,7 @@ PAGE = r"""
       <button id="btnScanWide">Scan liquid universe</button>
       <button id="btnScanMl6">Scan ML6</button>
       <button id="btnRefresh">Reload</button>
+      <button type="button" id="btnTheme" title="Toggle light / dark">Light mode</button>
       <button type="button" id="btnAlerts" title="Browser alerts for BUY/SELL call &amp; put recommendations">Enable alerts</button>
       <span class="pill" id="session">—</span>
       <span class="pill" id="universePill">—</span>
@@ -235,6 +250,15 @@ PAGE = r"""
           Sweeps / dark-pool prints need a paid OPRA feed this repo does not have.
         </p>
         <div id="zlFlow" class="empty">—</div>
+      </div>
+      <div class="panel">
+        <h2>Recommended tickets — ENTER / EXIT / P&amp;L</h2>
+        <p class="lede" style="margin-top:0;font-size:.76rem">
+          One card per recommendation: entry ask, exit bid, profit % and $ P&amp;L (1 contract).
+          Radar HOT is not a ticket. Empty P&amp;L means the desk has not paper-filled yet.
+        </p>
+        <div class="metric-row" id="zlTicketMetrics"></div>
+        <div id="zlTickets" class="empty">—</div>
       </div>
       <p class="lede" id="zlDisclaimer" style="font-size:.72rem"></p>
     </section>
@@ -708,6 +732,65 @@ PAGE = r"""
       }
     }
 
+    function allTickets() {
+      const rec = DATA.rec_log || {};
+      const out = [];
+      const push = (rows) => { (rows || []).forEach(r => { if (r) out.push(r); }); };
+      push(rec.open_recs); push(rec.closed_recs);
+      const by = rec.by_section || {};
+      Object.keys(by).forEach(k => { push(by[k].open_recs); push(by[k].closed_recs); });
+      const ins = DATA.insights || {};
+      (ins.open_trades || []).forEach(t => out.push({
+        symbol: t.symbol, contract: t.contract, strike: t.strike, expiry: t.expiry,
+        entry_price: t.entry_ask, exit_price: t.exit_bid, pnl_usd: t.pnl_usd,
+        profit_pct: t.profit_pct, status: t.status || "open",
+        headline: t.entry_reason, reason: t.exit_reason, section: "journal",
+        recommended_at: t.entered_at, closed_at: t.exited_at, right: t.right,
+      }));
+      (ins.closed_trades || []).forEach(t => out.push({
+        symbol: t.symbol, contract: t.contract, strike: t.strike, expiry: t.expiry,
+        entry_price: t.entry_ask, exit_price: t.exit_bid, pnl_usd: t.pnl_usd,
+        profit_pct: t.profit_pct, status: t.status || "closed",
+        headline: t.entry_reason, reason: t.exit_reason, section: "journal",
+        recommended_at: t.entered_at, closed_at: t.exited_at, right: t.right,
+      }));
+      return out;
+    }
+
+    function ticketFor(sym, contract) {
+      const u = String(sym || "").toUpperCase();
+      const c = String(contract || "");
+      const rows = allTickets();
+      let hit = c ? rows.find(r => String(r.symbol||"").toUpperCase()===u && String(r.contract||"")===c) : null;
+      if (!hit) hit = rows.find(r => String(r.symbol||"").toUpperCase()===u);
+      return hit || {};
+    }
+
+    function ticketLines(sym, row) {
+      const t = ticketFor(sym, row && row.contract);
+      const entry = t.entry_price ?? row?.ask ?? row?.entry_ask ?? row?.entry;
+      const exitPx = t.exit_price ?? row?.bid ?? row?.exit_bid;
+      const planIn = row?.enter_plan || t.headline || t.reason || (entry != null ? `BUY ask $${fmt(entry,2)}` : "No fill yet");
+      const planOut = row?.exit_plan || t.reason || t.close_reason || "TP / SL / 15:45 ET clock — no live EXIT until an ENTRY exists";
+      const pnl = t.pnl_usd;
+      const pct = t.profit_pct;
+      const st = t.status || (entry != null && exitPx == null ? "open" : (pnl != null ? "closed" : "unfilled"));
+      return { entry, exitPx, planIn, planOut, pnl, pct, status: st };
+    }
+
+    function ticketHtml(sym, row) {
+      const t = ticketLines(sym, row || {});
+      const pnlTxt = t.pnl==null && t.pct==null ? "unfilled" : `${t.pct==null?"—":fmt(t.pct,1)+"%"}${t.pnl==null?"":" · $"+fmt(t.pnl,2)}`;
+      return `<div class="ac-meta" style="margin-top:.4rem">
+        <div>ENTER<strong>${t.entry==null?"—":"$"+fmt(t.entry,2)}</strong></div>
+        <div>EXIT mark<strong>${t.exitPx==null?"—":"$"+fmt(t.exitPx,2)}</strong></div>
+        <div>P&amp;L (1ct)<strong class="${t.pnl==null&&t.pct==null?"":pctClass(t.pct??t.pnl)}">${pnlTxt}</strong></div>
+        <div>Status<strong>${t.status}</strong></div>
+      </div>
+      <p class="pc-why"><strong>ENTER:</strong> ${t.planIn}</p>
+      <p class="pc-why"><strong>EXIT:</strong> ${t.planOut}</p>`;
+    }
+
     document.querySelectorAll("#tabs button").forEach(btn => {
       btn.onclick = () => {
         document.querySelectorAll("#tabs button").forEach(b => b.classList.remove("active"));
@@ -810,6 +893,7 @@ PAGE = r"""
         </div>
         <p class="why" style="margin:.55rem 0 0">${(t.reasons||[]).filter(r=>!r.includes("/")).slice(0,4).join(" · ")||"—"}</p>
         ${softHint?`<p class="why" style="margin:.35rem 0 0"><strong>Wall EXIT:</strong> ${softHint}</p>`:""}
+        ${ticketHtml(t.symbol, t)}
       </article>`;
     }
 
@@ -824,18 +908,17 @@ PAGE = r"""
       const el = document.getElementById(elId);
       if (!rows || !rows.length) { el.innerHTML = `<div class="empty">No listed calls in this bucket.</div>`; return; }
       el.innerHTML = `<table><thead><tr>
-        <th>Action</th><th>Symbol</th><th>Asked (CST)</th><th>Side</th><th>Strike</th><th>Expiry</th><th>Bid/Ask</th><th>Score</th><th>Hist win</th><th>n</th><th>Strike rate</th><th>Why / EXIT plan</th>
+        <th>Action</th><th>Symbol</th><th>Asked (CST)</th><th>Side</th><th>Strike</th><th>Expiry</th><th>ENTER</th><th>EXIT</th><th>P&amp;L</th><th>Why / EXIT plan</th>
       </tr></thead><tbody>${rows.map(r=>{
         const a=(r.action||"WAIT").replace("_"," ");
         const cls=(r.action||"WAIT").toLowerCase().split("_")[0];
         const side=(r.right||"C")==="P"?"PUT":"CALL";
-        const win=r.win_pct==null?"—":`${fmt(r.win_pct,0)}%`;
-        const n=r.win_pct==null?"—":`${r.win_samples||0}`;
-        const sr=r.hit_1pct==null?"—":`${fmt(r.hit_1pct,0)}% ≥1%`+(r.hit_2pct==null?"":` · ${fmt(r.hit_2pct,0)}% ≥2%`);
         const when = (r.action==="BUY_NOW"||r.action==="SELL_NOW")
           ? (r.signaled_at_cst || fmtCST(r.signaled_at) || "—")
           : "—";
-        const why=[r.detail||"", r.exit_plan||""].filter(Boolean).join(" · ");
+        const tk = ticketLines(r.symbol, r);
+        const why=[r.detail||"", r.exit_plan||tk.planOut||""].filter(Boolean).join(" · ");
+        const pnl = tk.pnl==null && tk.pct==null ? "—" : `${tk.pct==null?"—":fmt(tk.pct,1)+"%"}${tk.pnl==null?"":" · $"+fmt(tk.pnl,2)}`;
         return `<tr>
           <td><span class="badge ${cls}">${a}</span></td>
           <td><strong>${r.symbol}</strong></td>
@@ -843,11 +926,9 @@ PAGE = r"""
           <td class="mono">${side}</td>
           <td class="mono">${r.strike==null?"—":fmt(r.strike,2)}${(r.right||"C")==="P"?"p":"c"}</td>
           <td class="mono">${r.expiry||"—"} <span class="status">DTE ${r.dte??"—"}</span></td>
-          <td class="mono">${fmt(r.bid,2)} / ${fmt(r.ask,2)}</td>
-          <td class="mono">${fmt(r.score,0)}</td>
-          <td class="mono">${win}</td>
-          <td class="mono" title="Historical sample size">${n}</td>
-          <td class="mono" title="Underlying rip frequency after signal">${sr}</td>
+          <td class="mono">${tk.entry==null?"—":"$"+fmt(tk.entry,2)}</td>
+          <td class="mono">${tk.exitPx==null?"—":"$"+fmt(tk.exitPx,2)}</td>
+          <td class="mono ${tk.pnl==null&&tk.pct==null?"":pctClass(tk.pct??tk.pnl)}">${pnl}</td>
           <td class="why">${why}</td>
         </tr>`;
       }).join("")}</tbody></table>`;
@@ -874,6 +955,7 @@ PAGE = r"""
           ${levelsMeta(r)}
         </div>
         <p class="why" style="margin:.55rem 0 0">${r.detail||r.headline||"—"}</p>
+        ${ticketHtml(r.symbol, r)}
         <div class="playbook">${tags}</div>
       </article>`;
     }
@@ -2588,18 +2670,8 @@ PAGE = r"""
       };
 
       (acts.buy_now || []).filter(r => r.headline || r.exit_plan || r.detail).forEach(r => pushMust(r, "Options"));
-      (lot.buy_now || []).forEach(r => pushMust(r, "Explosive"));
+      (lot.buy_now || []).filter(r => (Number(r.win_pct ?? r.hist_win_pct) >= 80) && (Number(r.win_samples ?? r.hist_samples) >= 3)).forEach(r => pushMust(r, "Explosive"));
       (ch.entry || []).forEach(r => pushMust(r, "Challenge"));
-      // Radar HOT is a separate discretionary pulse — labeled RADAR, not MUST TRADE hist-gated
-      const radarHot = ((DATA.radar || {}).hot || []).map(r => ({
-        ...r,
-        desk: "Radar",
-        certainty: "radar",
-        win_pct: null,
-        win_samples: null,
-        detail: r.detail || r.headline || "Discord-style radar HOT",
-      }));
-      // Prefer perfect/elite hist certainty first
       must.sort((a, b) => {
         const tier = (t) => t === "perfect" ? 0 : t === "elite" ? 1 : 2;
         const tw = (Number(b.win_pct) || 0) - (Number(a.win_pct) || 0);
@@ -2617,58 +2689,66 @@ PAGE = r"""
 
       const topMust = must.slice(0, 4);
       const topExit = exits.slice(0, 4);
-      const topRadar = radarHot.slice(0, 3);
-      if (!topMust.length && !topExit.length && !topRadar.length) {
-        el.classList.remove("active");
-        el.innerHTML = "";
+      el.classList.add("active");
+      if (!topMust.length && !topExit.length) {
+        el.innerHTML = `
+          <div class="pb-head">
+            <div>
+              <h2 class="pb-title">Must trade <em>sure-shot</em> + exits</h2>
+              <div class="pb-sub">No hist-gated BUY NOW and no live EXIT this snapshot. Radar HOT wings (cheap SPY/DIA) are <strong>not</strong> sure-shots and are not shown here — open the Radar tab. Empty ENTER/EXIT means nothing was paper-filled.</div>
+            </div>
+            <div class="status">MUST 0 · EXIT 0</div>
+          </div>
+          <div class="pulse-empty">Waiting on hist-win ≥80% BUY NOW, or an open ticket that hits TP / SL / 15:45 ET.</div>`;
         return;
       }
 
       const card = (row, kind) => {
-        const tag = kind === "must" ? "MUST TRADE" : (kind === "radar" ? "RADAR HOT" : "EXIT NOW");
+        const tag = kind === "must" ? "MUST TRADE" : "EXIT NOW";
+        const tk = ticketLines(row.symbol, row);
         const strikeTxt = row.strike == null ? "—" : `${Number(row.strike).toFixed(Number(row.strike) % 1 ? 2 : 0)}${(row.right || "C") === "P" ? "p" : "c"}`;
         const dteTxt = row.dte == null ? "" : ` · ${row.dte}DTE`;
         const winTxt = row.win_pct == null ? "—" : `${fmt(row.win_pct, 0)}%`;
         const nTxt = row.win_samples == null ? "" : ` n=${row.win_samples}`;
         const srTxt = row.hit_1pct == null ? "—" : `${fmt(row.hit_1pct, 0)}%`;
-        const askTxt = row.ask == null ? "—" : `$${fmt(row.ask, 2)}`;
-        const pnlLine = kind === "exit" && (row.profit_pct != null || row.pnl_usd != null)
-          ? `<div><span>P&amp;L</span><br><strong class="${pctClass(row.profit_pct ?? row.pnl_usd)}">${row.profit_pct==null?"—":fmt(row.profit_pct,1)+"%"}${row.pnl_usd==null?"":" · $"+fmt(row.pnl_usd,2)}</strong></div>`
-          : "";
-        const exitTime = kind === "exit" && row.exited_at
-          ? `<div><span>Exited (CST)</span><br><strong>${fmtCST(row.exited_at)}</strong></div>`
-          : "";
-        return `<div class="pulse-card ${kind === "radar" ? "must" : kind}">
+        const enterTxt = tk.entry == null ? "—" : `$${fmt(tk.entry, 2)}`;
+        const exitTxt = kind === "exit"
+          ? (row.ask == null && tk.exitPx == null ? "—" : `$${fmt(row.ask ?? tk.exitPx, 2)}`)
+          : (tk.exitPx == null ? "—" : `$${fmt(tk.exitPx, 2)}`);
+        const pnlTxt = (tk.pct == null && tk.pnl == null && row.profit_pct == null && row.pnl_usd == null)
+          ? "unfilled"
+          : `${fmt(tk.pct ?? row.profit_pct, 1)}%${(tk.pnl ?? row.pnl_usd)==null?"":" · $"+fmt(tk.pnl ?? row.pnl_usd, 2)}`;
+        return `<div class="pulse-card ${kind}">
           <div class="pc-top">
             <div class="pc-sym">${row.symbol}</div>
-            <div class="pc-tag ${kind === "radar" ? "must" : kind}">${tag} · ${row.desk}</div>
+            <div class="pc-tag ${kind}">${tag} · ${row.desk}</div>
           </div>
           <div class="pc-meta">
             <div><span>Strike</span><br><strong>${strikeTxt}</strong></div>
             <div><span>Expiry</span><br><strong>${row.expiry || "—"}${dteTxt}</strong></div>
-            <div><span>${kind === "radar" ? "OTM %" : "Hist win"}</span><br><strong class="up">${kind === "radar" ? (row.moneyness_pct==null?"—":fmt(row.moneyness_pct,2)+"%") : winTxt}</strong><span>${kind === "radar" ? "" : nTxt}</span></div>
-            <div><span>${kind === "radar" ? "~1% mult" : "Strike rate ≥1%"}</span><br><strong>${kind === "radar" ? (row.mult_at_1pct==null?"—":fmt(row.mult_at_1pct,1)+"×") : srTxt}</strong></div>
-            <div><span>${kind === "must" || kind === "radar" ? "Ask" : "Exit $"}</span><br><strong>${askTxt}</strong></div>
+            <div><span>Hist win</span><br><strong class="up">${winTxt}</strong><span>${nTxt}</span></div>
+            <div><span>Strike rate ≥1%</span><br><strong>${srTxt}</strong></div>
+            <div><span>ENTER</span><br><strong>${enterTxt}</strong></div>
+            <div><span>EXIT</span><br><strong>${exitTxt}</strong></div>
+            <div><span>P&amp;L (1ct)</span><br><strong class="${pnlTxt==="unfilled"?"":pctClass(tk.pct ?? row.profit_pct ?? tk.pnl)}">${pnlTxt}</strong></div>
             <div><span>Contract</span><br><strong class="mono" style="font-size:.72rem">${row.contract || "—"}</strong></div>
-            ${pnlLine}${exitTime}
             ${levelsMeta(row)}
           </div>
-          <p class="pc-why">${row.detail || ""}${row.exit_plan && kind==="must" ? ` · <strong>EXIT:</strong> ${row.exit_plan}` : ""}</p>
+          <p class="pc-why"><strong>ENTER:</strong> ${tk.planIn}</p>
+          <p class="pc-why"><strong>EXIT:</strong> ${row.exit_plan || tk.planOut}</p>
         </div>`;
       };
 
       const grid = [
         ...topMust.map(r => card(r, "must")),
-        ...topRadar.map(r => card(r, "radar")),
         ...topExit.map(r => card(r, "exit")),
       ].join("");
 
-      el.classList.add("active");
       el.innerHTML = `
         <div class="pb-head">
           <div>
             <h2 class="pb-title">Must trade <em>sure-shot</em> + exits</h2>
-            <div class="pb-sub">Hist-gated tickets with strike, strike-rate, and expiry up top. EXIT cards are live positions/tickets the desk says leave now. Hist edge ≠ guaranteed future profit.</div>
+            <div class="pb-sub">Only hist-gated BUY NOW and live EXIT tickets. Each card shows ENTER, EXIT, and P&amp;L. Radar HOT is not a sure-shot. Hist edge ≠ guaranteed future profit.</div>
           </div>
           <div class="status">MUST ${topMust.length} · EXIT ${topExit.length}</div>
         </div>
@@ -2717,6 +2797,7 @@ PAGE = r"""
           </div>
           <p class="pc-why">${r.why||""}</p>
           <p class="pc-why">${r.risk||""}</p>
+          ${ticketHtml(r.symbol, r)}
         </div>`;
       };
 
@@ -2753,6 +2834,12 @@ PAGE = r"""
           <td class="mono">${p.premium_notional!=null?Math.round(p.premium_notional).toLocaleString():"—"}</td>
           <td class="mono">${fmt(p.flow_score,1)}</td>
         </tr>`).join("")}</tbody></table>`;
+      }
+
+      const rec = DATA.rec_log || {};
+      const tixEl = document.getElementById("zlTickets");
+      if (tixEl) {
+        renderRecLog("zlTickets", rec, "No paper tickets yet — ENTER/EXIT/P&L appear after a hist-gated BUY NOW fill, not from Radar HOT.", "zlTicketMetrics");
       }
     }
 
@@ -2902,6 +2989,19 @@ PAGE = r"""
     }
 
     document.getElementById("btnRefresh").onclick = loadAll;
+    (function themeInit() {
+      const apply = (mode) => {
+        document.documentElement.setAttribute("data-theme", mode);
+        try { localStorage.setItem("zerolossTheme", mode); } catch (_) {}
+        const btn = document.getElementById("btnTheme");
+        if (btn) btn.textContent = mode === "light" ? "Dark mode" : "Light mode";
+      };
+      let mode = "dark";
+      try { mode = localStorage.getItem("zerolossTheme") || "dark"; } catch (_) {}
+      apply(mode === "light" ? "light" : "dark");
+      const btn = document.getElementById("btnTheme");
+      if (btn) btn.onclick = () => apply(document.documentElement.getAttribute("data-theme") === "light" ? "dark" : "light");
+    })();
     document.getElementById("btnScan").onclick = () => runScan("focus");
     const btnCat = document.getElementById("btnScanCatalyst");
     if (btnCat) btnCat.onclick = () => runScan("catalyst");
