@@ -3222,11 +3222,12 @@ def create_app(config_path: str | None = None) -> Flask:
 
             max_ch_tix = int(actions_cfg.get("challenge_max_tickets", 8))
             eligible_n = len(_eligible_rows(win_table if isinstance(win_table, dict) else None))
-            if offline or eligible_n < max_ch_tix:
+            # Pages/offline: never rebuild hist tables from Yahoo — that hung the first deploy.
+            if (not offline) and eligible_n < max_ch_tix:
                 win_table = ensure_challenge_win_table(
                     win_table if isinstance(win_table, dict) else None,
                     config_path=config_path,
-                    max_age_hours=168.0 if offline else 24.0,
+                    max_age_hours=24.0,
                 )
         except Exception as exc:  # noqa: BLE001
             logger.warning("challenge win table ensure failed: %s", exc)

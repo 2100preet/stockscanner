@@ -74,6 +74,9 @@ jobs:
           PYTHONUNBUFFERED: "1"
 
       - name: Export static site
+        id: export
+        continue-on-error: true
+        timeout-minutes: 6
         run: |
           mkdir -p outputs
           python -m odte_scanner export-pages --out site
@@ -103,6 +106,43 @@ jobs:
               "just_exited:", len(acts.get("just_exited") or []),
           )
           PY
+
+      - name: Fallback static shell
+        if: steps.export.outcome != 'success'
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from odte_scanner.pages_export import _static_html
+          from odte_scanner.ui import PAGE
+          out = Path("site")
+          (out / "data").mkdir(parents=True, exist_ok=True)
+          (out / "index.html").write_text(_static_html(PAGE))
+          (out / ".nojekyll").write_text("")
+          snap = {
+              "generated_at": None,
+              "offline": True,
+              "host": "github-pages",
+              "scores": [],
+              "zeroloss": {
+                  "brand": "ZeroLoss",
+                  "purpose": "Do not miss the tape.",
+                  "do_not_miss": [],
+                  "catalyst": [],
+                  "tape": [],
+                  "all": [],
+                  "flow_prints": [],
+                  "counts": {"scanned": 0, "do_not_miss": 0, "catalyst": 0, "tape": 0, "flow_prints": 0},
+                  "disclaimer": "Scan timed out on this publish. Refresh via Actions after market data is cached.",
+                  "mrna_note": "MRNA-class names are in the universe; this snapshot has no bars yet.",
+              },
+          }
+          (out / "data" / "snapshot.json").write_text(json.dumps(snap, indent=2))
+          (out / "meta.json").write_text(json.dumps({"generated_at": None, "fallback": True}, indent=2))
+          print("wrote fallback site")
+          PY
+          test -f site/index.html
+          test -f site/data/snapshot.json
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
