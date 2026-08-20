@@ -129,7 +129,13 @@ def test_ui_must_trade_is_not_radar():
     page = (Path(__file__).resolve().parents[1] / "odte_scanner" / "ui.py").read_text()
     assert "btnTheme" in page
     assert "ticketHtml" in page
-    assert "Radar HOT wings (cheap SPY/DIA) are" in page
+    assert "WATCH, not ENTER NOW" in page
+    assert "ENTER NOW" in page
+    assert "WATCH ${row.symbol} — not ENTER" in page
+    assert "Run scan on GitHub Actions" in page
+    assert "Reload snapshot" in page
+    assert "ENTER time (CST)" in page
+    assert "strike rate ≥1%" in page
     assert "...topRadar.map" not in page
     from odte_scanner.data.universe import FOCUS_DEFAULT
 

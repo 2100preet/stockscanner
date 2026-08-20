@@ -28,7 +28,8 @@ def _static_html(page: str) -> str:
         "      if (window.SIGNAL_DESK_STATIC) {\n"
         '        const note = document.getElementById("loadNote");\n'
         '        note.style.display = "block";\n'
-        '        note.textContent = "Scan is disabled on GitHub Pages — Actions re-publishes ZeroLoss on a schedule. Use workflow_dispatch to refresh now.";\n'
+        '        note.innerHTML = "This GitHub Pages site cannot scan from your browser. Reload snapshot re-reads the last publish. To pull fresh Yahoo data open <a href=\\"https://github.com/2100preet/zeroloss/actions/workflows/signal-desk-pages.yml\\" target=\\"_blank\\" rel=\\"noopener\\" style=\\"color:var(--accent)\\">Actions → ZeroLoss Pages → Run workflow</a>.";\n'
+        "        if (typeof loadAll === 'function') loadAll();\n"
         "        return;\n"
         "      }\n",
         1,

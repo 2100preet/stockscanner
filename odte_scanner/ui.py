@@ -170,6 +170,7 @@ PAGE = r"""
     }
     .alert-toast.buy { box-shadow: inset 3px 0 0 var(--long), 0 8px 28px rgba(0,0,0,.35); }
     .alert-toast.sell { box-shadow: inset 3px 0 0 var(--short), 0 8px 28px rgba(0,0,0,.35); }
+    .alert-toast.watch { box-shadow: inset 3px 0 0 var(--accent), 0 8px 28px rgba(0,0,0,.35); }
     .alert-toast strong { display: block; font-size: .86rem; margin-bottom: .15rem; }
     .alert-toast .at-meta { color: var(--muted); font-family: "JetBrains Mono", monospace; font-size: .7rem; }
     html[data-theme="light"] {
@@ -203,8 +204,9 @@ PAGE = r"""
       <button id="btnScanWide">Scan liquid universe</button>
       <button id="btnScanMl6">Scan ML6</button>
       <button id="btnRefresh">Reload</button>
+      <a class="pill" id="pagesScanHelp" href="https://github.com/2100preet/zeroloss/actions/workflows/signal-desk-pages.yml" target="_blank" rel="noopener" style="display:none;text-decoration:none">Run scan on GitHub Actions</a>
       <button type="button" id="btnTheme" title="Toggle light / dark">Light mode</button>
-      <button type="button" id="btnAlerts" title="Browser alerts for BUY/SELL call &amp; put recommendations">Enable alerts</button>
+      <button type="button" id="btnAlerts" title="Alerts: ENTER NOW on hist-gated BUY, EXIT on SELL, WATCH on Do-not-miss (not a buy)">Enable alerts</button>
       <span class="pill" id="session">—</span>
       <span class="pill" id="universePill">—</span>
       <span class="status" id="counts"></span>
@@ -236,9 +238,11 @@ PAGE = r"""
       <h2>Pinned watch — MP / USAR / PFE / MRNA</h2>
       <p class="lede" style="margin-top:0;font-size:.76rem">Always listed, even on a quiet day. Quiet ≠ buy.</p>
       <div id="zlPinned" class="empty">—</div>
+      <h2>Do not miss — WATCH, not ENTER NOW</h2>
       <p class="lede" style="margin-top:0;font-size:.78rem">
-        Lane fires on gap ≥8%, day ≥12%, or ≥5× relative volume — the class of tape MRNA printed on the Phase 3 melanoma day.
-        Not a buy ticket. Same pattern can print −70% on a failed trial.
+        This is a <strong>miss-prevention flag</strong> (gap ≥8%, day ≥12%, or ≥5× volume — MRNA’s Phase 3 class).
+        It does <strong>not</strong> mean enter now. Enable Alerts will ping <strong>WATCH</strong> for these names, not ENTER.
+        ENTER NOW only fires on hist-gated BUY NOW tickets (hist win ≥80%, strike rate shown on the card).
       </p>
       <div class="cards" id="zlDoNotMiss"></div>
       <div class="panel">
@@ -777,17 +781,22 @@ PAGE = r"""
       const pnl = t.pnl_usd;
       const pct = t.profit_pct;
       const st = t.status || (entry != null && exitPx == null ? "open" : (pnl != null ? "closed" : "unfilled"));
-      return { entry, exitPx, planIn, planOut, pnl, pct, status: st };
+      return { entry, exitPx, planIn, planOut, pnl, pct, status: st, recommended_at: t.recommended_at || t.entered_at };
     }
 
     function ticketHtml(sym, row) {
       const t = ticketLines(sym, row || {});
+      const w = winLookup(sym, row?.dte_bucket || row?.horizon || "0dte");
+      const enterAt = row?.signaled_at_cst || fmtCST(row?.signaled_at || row?.recommended_at || t.recommended_at);
+      const sr = w.hit1==null ? "—" : `${fmt(w.hit1,0)}% ≥1%` + (w.hit2==null?"":` / ${fmt(w.hit2,0)}% ≥2%`);
       const pnlTxt = t.pnl==null && t.pct==null ? "unfilled" : `${t.pct==null?"—":fmt(t.pct,1)+"%"}${t.pnl==null?"":" · $"+fmt(t.pnl,2)}`;
       return `<div class="ac-meta" style="margin-top:.4rem">
         <div>ENTER<strong>${t.entry==null?"—":"$"+fmt(t.entry,2)}</strong></div>
         <div>EXIT mark<strong>${t.exitPx==null?"—":"$"+fmt(t.exitPx,2)}</strong></div>
         <div>P&amp;L (1ct)<strong class="${t.pnl==null&&t.pct==null?"":pctClass(t.pct??t.pnl)}">${pnlTxt}</strong></div>
         <div>Status<strong>${t.status}</strong></div>
+        <div>Strike rate<strong>${sr}</strong></div>
+        <div>ENTER time (CST)<strong>${enterAt}</strong></div>
       </div>
       <p class="pc-why"><strong>ENTER:</strong> ${t.planIn}</p>
       <p class="pc-why"><strong>EXIT:</strong> ${t.planOut}</p>`;
@@ -1315,7 +1324,8 @@ PAGE = r"""
         <div class="ac-meta">
           <div>Strike / expiry<strong>${strikeTxt(r)} · ${r.expiry||"—"}${r.dte!=null?` (${r.dte}DTE)`:""}</strong></div>
           <div>Entry ask<strong>${r.entry_price==null?"—":"$"+fmt(r.entry_price,2)}</strong></div>
-          <div>First entry (CST)<strong>${fmtCST(r.recommended_at)}</strong></div>
+          <div>ENTER time (CST)<strong>${fmtCST(r.recommended_at)}</strong></div>
+          <div>Strike rate ≥1%<strong>${(() => { const w=winLookup(r.symbol, r.horizon||r.dte_bucket||"0dte"); return w.hit1==null?"—":fmt(w.hit1,0)+"%"; })()}</strong></div>
           <div>Last seen (CST)<strong>${fmtCST(r.last_recommended_at||r.recommended_at)}</strong></div>
           <div>Contract<strong class="mono" style="font-size:.72rem">${r.contract||"—"}</strong></div>
           <div>Status<strong>${r.on_board?"On board":"Off board"}</strong></div>
@@ -1338,6 +1348,7 @@ PAGE = r"""
           <div>In ask → out bid<strong>${r.entry_price==null?"—":"$"+fmt(r.entry_price,2)} → ${r.exit_price==null?"—":"$"+fmt(r.exit_price,2)}</strong></div>
           <div>Entry (CST)<strong>${fmtCST(r.recommended_at)}</strong></div>
           <div>Exit (CST)<strong>${fmtCST(r.closed_at)}</strong></div>
+          <div>Strike rate ≥1%<strong>${(() => { const w=winLookup(r.symbol, r.horizon||r.dte_bucket||"0dte"); return w.hit1==null?"—":fmt(w.hit1,0)+"%"; })()}</strong></div>
           <div>Profit %<strong class="${r.profit_pct==null?"":pctClass(r.profit_pct)}">${pctLabel}</strong></div>
           <div>P&amp;L (1ct)<strong class="${r.pnl_usd==null?"":pctClass(r.pnl_usd)}">${pnlLabel}</strong></div>
           ${levelsMeta(r)}
@@ -2633,6 +2644,11 @@ PAGE = r"""
           put_wall: row.put_wall,
           soft_exit: row.soft_exit,
           wall_buffer_usd: row.wall_buffer_usd,
+          signaled_at: row.signaled_at,
+          signaled_at_cst: row.signaled_at_cst,
+          recommended_at: row.recommended_at || row.signaled_at,
+          dte_bucket: row.dte_bucket || row.horizon,
+          enter_plan: row.enter_plan || row.headline,
         });
       };
       const pushExit = (row, desk) => {
@@ -2731,6 +2747,7 @@ PAGE = r"""
             <div><span>Hist win</span><br><strong class="up">${winTxt}</strong><span>${nTxt}</span></div>
             <div><span>Strike rate ≥1%</span><br><strong>${srTxt}</strong></div>
             <div><span>ENTER</span><br><strong>${enterTxt}</strong></div>
+            <div><span>ENTER time (CST)</span><br><strong>${row.signaled_at_cst || fmtCST(row.signaled_at || row.recommended_at)}</strong></div>
             <div><span>EXIT</span><br><strong>${exitTxt}</strong></div>
             <div><span>P&amp;L (1ct)</span><br><strong class="${pnlTxt==="unfilled"?"":pctClass(tk.pct ?? row.profit_pct ?? tk.pnl)}">${pnlTxt}</strong></div>
             <div><span>Contract</span><br><strong class="mono" style="font-size:.72rem">${row.contract || "—"}</strong></div>
@@ -2787,7 +2804,7 @@ PAGE = r"""
         return `<div class="action-card ${r.lane==="DO_NOT_MISS"?"long":"wait"}">
           <div class="ac-top">
             <div class="ac-sym">${r.symbol}</div>
-            <div class="ac-dir ${cls}"><span class="badge dnm">${lane}</span></div>
+            <div class="ac-dir ${cls}"><span class="badge dnm">WATCH · not ENTER</span></div>
           </div>
           <div class="ac-conf">Miss score ${Math.round(Number(r.miss_score||0)*100)}</div>
           <div class="bar"><i style="width:${Math.min(100, Number(r.miss_score||0)*100)}%"></i></div>
@@ -2799,7 +2816,6 @@ PAGE = r"""
           </div>
           <p class="pc-why">${r.why||""}</p>
           <p class="pc-why">${r.risk||""}</p>
-          ${ticketHtml(r.symbol, r)}
         </div>`;
       };
 
@@ -3028,6 +3044,20 @@ PAGE = r"""
     if (btnMl6) btnMl6.onclick = () => runScan("ml6");
     const btnWb = document.getElementById("btnWebullSync");
     if (btnWb) btnWb.onclick = syncWebull;
+    (function applyStaticHost() {
+      if (!window.SIGNAL_DESK_STATIC) return;
+      const scan = document.getElementById("btnScan");
+      if (scan) {
+        scan.textContent = "Reload snapshot";
+        scan.onclick = () => loadAll();
+      }
+      ["btnScanCatalyst", "btnScanWide", "btnScanMl6"].forEach((id) => {
+        const b = document.getElementById(id);
+        if (b) b.style.display = "none";
+      });
+      const help = document.getElementById("pagesScanHelp");
+      if (help) help.style.display = "inline-flex";
+    })();
 
     // --- Browser BUY/SELL alerts (calls & puts) ---
     const ALERT_KEY = "signalDeskAlertsOn";
@@ -3088,10 +3118,14 @@ PAGE = r"""
       collectTradeAlerts().forEach(a => alertSeen.add(a.key));
       alertPrimed = true;
       saveAlertSeen();
+      const now = collectTradeAlerts();
+      const nEnter = now.filter(a => a.kind === "buy").length;
+      const nExit = now.filter(a => a.kind === "sell").length;
+      const nWatch = now.filter(a => a.kind === "watch").length;
       pushToast({
-        kind: "buy",
-        title: "Alerts armed",
-        body: "Browser + on-page alerts for BUY/SELL call & put recommendations. Keep this tab open (or allow notifications).",
+        kind: nEnter ? "buy" : "watch",
+        title: "Alerts armed — keep this tab open",
+        body: `On the board now: ${nEnter} ENTER NOW (hist-gated BUY, with strike rate + ENTER time) · ${nExit} EXIT NOW · ${nWatch} WATCH (Do-not-miss, not a buy). New names after this will toast. Existing ones will not re-fire.`,
       });
     }
 
@@ -3103,6 +3137,12 @@ PAGE = r"""
 
     function collectTradeAlerts() {
       const out = [];
+      const strikeRate = (row) => {
+        const w = winLookup(row.symbol, row.dte_bucket || row.horizon || "0dte");
+        if (w.hit1 == null) return null;
+        return `strike rate ≥1% ${fmt(w.hit1,0)}%` + (w.hit2==null?"":` / ≥2% ${fmt(w.hit2,0)}%`);
+      };
+      const when = (row) => row.signaled_at_cst || fmtCST(row.signaled_at || row.recommended_at);
       const push = (row, side, desk) => {
         if (!row || !row.symbol) return;
         const act = String(row.action || side || "").toUpperCase();
@@ -3123,14 +3163,33 @@ PAGE = r"""
         out.push({
           key,
           kind: isBuy ? "buy" : "sell",
-          title: `${isBuy ? "BUY" : "SELL"} ${row.symbol} ${right}`,
+          title: `${isBuy ? "ENTER NOW" : "EXIT NOW"} ${row.symbol} ${right}`,
           body: [
             desk,
+            when(row) && when(row) !== "—" ? `ENTER time ${when(row)}` : null,
             row.expiry || null,
             row.strike != null ? `${Number(row.strike)}${right === "PUT" ? "p" : "c"}` : null,
             px != null ? `@ $${Number(px).toFixed(2)}` : null,
+            (row.win_pct ?? row.hist_win_pct) != null ? `hist win ${fmt(row.win_pct ?? row.hist_win_pct, 0)}%` : null,
+            strikeRate(row),
             row.dte != null ? `${row.dte}DTE` : (row.dte_bucket || null),
             row.detail || row.headline || row.exit_plan || "",
+          ].filter(Boolean).join(" · "),
+        });
+      };
+      const pushWatch = (row) => {
+        if (!row || !row.symbol) return;
+        const key = `WATCH|DNM|${String(row.symbol).toUpperCase()}|${row.lane||""}|${row.day_change_pct??""}`;
+        out.push({
+          key,
+          kind: "watch",
+          title: `WATCH ${row.symbol} — not ENTER`,
+          body: [
+            "Do not miss tape",
+            row.why || "",
+            row.gap_pct != null ? `gap ${fmt(row.gap_pct,1)}%` : null,
+            row.day_change_pct != null ? `day ${fmt(row.day_change_pct,1)}%` : null,
+            "This is not a buy ticket",
           ].filter(Boolean).join(" · "),
         });
       };
@@ -3140,12 +3199,13 @@ PAGE = r"""
       (acts.just_exited || []).forEach(r => push({...r, action: "SELL_NOW"}, "SELL", "Options"));
       (acts.recent_exits || []).forEach(r => push({...r, action: "SELL_NOW"}, "SELL", "Options"));
       const lot = DATA.lottery || {};
-      (lot.buy_now || []).forEach(r => push(r, "BUY", "Lottery"));
+      (lot.buy_now || []).filter(r => (Number(r.win_pct ?? r.hist_win_pct) >= 80) && (Number(r.win_samples ?? r.hist_samples) >= 3)).forEach(r => push(r, "BUY", "Lottery"));
       (lot.sell_now || []).forEach(r => push(r, "SELL", "Lottery"));
       const ch = DATA.challenge || {};
       (ch.entry || []).forEach(r => push({...r, action: "ENTRY"}, "BUY", "Challenge"));
       (ch.exit || []).forEach(r => push({...r, action: "EXIT"}, "SELL", "Challenge"));
       (ch.just_exited || []).forEach(r => push({...r, action: "EXIT"}, "SELL", "Challenge"));
+      ((DATA.zeroloss || {}).do_not_miss || []).forEach(pushWatch);
       return out;
     }
 
@@ -3167,7 +3227,7 @@ PAGE = r"""
         const o = ctx.createOscillator();
         const g = ctx.createGain();
         o.type = "sine";
-        o.frequency.value = kind === "sell" ? 440 : 660;
+        o.frequency.value = kind === "sell" ? 440 : (kind === "watch" ? 520 : 660);
         g.gain.value = 0.04;
         o.connect(g); g.connect(ctx.destination);
         o.start();
