@@ -224,7 +224,10 @@ PAGE = r"""
     .zl-tape { font-size: .8rem; }
     .zl-tape tbody tr:hover { background: rgba(62,207,142,.06); }
     .badge.dnm { background: rgba(62,207,142,.22); color: var(--long); letter-spacing: .06em; }
-    .tabs button[data-tab="zeroloss"].active { color: var(--long); }
+    .tabs button[data-tab="zeroloss"].active,
+    .tabs button[data-tab="nowboard"].active { color: var(--long); }
+    .now-desk { font-family: "Instrument Serif", Georgia, serif; font-size: 1.05rem; font-weight: 400; margin: 1rem 0 .5rem; }
+    .now-desk .status { margin-left: .4rem; }
   </style>
 </head>
 <body>
@@ -251,6 +254,7 @@ PAGE = r"""
 
     <nav class="tabs" id="tabs">
       <button class="active" data-tab="zeroloss">ZeroLoss</button>
+      <button data-tab="nowboard">BUY / SELL NOW</button>
       <button data-tab="overview">Overview</button>
       <button data-tab="odte">0DTE</button>
       <button data-tab="odte1k">0DTE $1K</button>
@@ -300,6 +304,20 @@ PAGE = r"""
         <div id="zlTickets" class="empty">—</div>
       </div>
       <p class="lede" id="zlDisclaimer" style="font-size:.72rem"></p>
+    </section>
+
+    <section class="tabpane" id="tab-nowboard">
+      <h2>BUY NOW / SELL NOW — all desks</h2>
+      <p class="lede">Every live BUY NOW and SELL NOW in one place, tagged with the desk it came from (0DTE, 1 Week, Swing 1–3M / ~1 month, Explosive, ML6, Challenge). Radar HOT and Do-not-miss WATCH are not listed here.</p>
+      <div class="metric-row" id="nowBoardMetrics"></div>
+      <h2>BUY NOW</h2>
+      <div id="nowBoardBuy" class="empty">—</div>
+      <h2>SELL NOW</h2>
+      <div id="nowBoardSell" class="empty">—</div>
+      <div class="panel">
+        <h2>All rows</h2>
+        <div id="nowBoardTable" class="empty">—</div>
+      </div>
     </section>
 
     <section class="tabpane" id="tab-overview">
@@ -833,6 +851,152 @@ PAGE = r"""
       </div>
       <p class="pc-why"><strong>ENTER:</strong> ${t.planIn}</p>
       <p class="pc-why"><strong>EXIT:</strong> ${t.planOut}</p>`;
+    }
+
+    const NOW_DESK_ORDER = ["0DTE", "1 Week", "Swing 1–3M", "Explosive", "ML6", "Challenge", "0DTE $1K", "Options"];
+
+    function horizonDesk(row, fallback) {
+      const b = String(row.dte_bucket || row.horizon || row.hold_style || row.style || "").toLowerCase();
+      const dte = row.dte == null ? null : Number(row.dte);
+      if (b.includes("0dte") || b === "0d") return "0DTE";
+      if (b.includes("week") || b === "1w" || b === "1wk") return "1 Week";
+      if (b.includes("month") || b.includes("leap") || b.includes("swing") || b === "1m") return "Swing 1–3M";
+      if (dte != null && !Number.isNaN(dte)) {
+        if (dte <= 1) return "0DTE";
+        if (dte <= 10) return "1 Week";
+        return "Swing 1–3M";
+      }
+      return fallback || "Options";
+    }
+
+    function collectNowBoard() {
+      const buys = [];
+      const sells = [];
+      const seen = new Set();
+      const add = (row, side, desk) => {
+        if (!row || !row.symbol) return;
+        const key = [
+          side,
+          desk,
+          String(row.symbol).toUpperCase(),
+          row.contract || "",
+          row.expiry || "",
+          row.strike ?? "",
+          row.right || "",
+        ].join("|");
+        if (seen.has(key)) return;
+        seen.add(key);
+        const item = Object.assign({}, row, { _desk: desk, _side: side });
+        (side === "BUY" ? buys : sells).push(item);
+      };
+      const acts = DATA.actions || {};
+      (acts.buy_now || []).forEach(r => add(r, "BUY", horizonDesk(r, "Options")));
+      (acts.sell_now || []).forEach(r => add(r, "SELL", horizonDesk(r, "Options")));
+      const lot = DATA.lottery || {};
+      (lot.buy_now || []).forEach(r => add(r, "BUY", "Explosive"));
+      (lot.sell_now || []).forEach(r => add(r, "SELL", "Explosive"));
+      const ml = (DATA.ml6 && DATA.ml6.actions) || {};
+      (ml.buy_now || []).forEach(r => add(r, "BUY", "ML6"));
+      (ml.sell_now || []).forEach(r => add(r, "SELL", "ML6"));
+      const ch = DATA.challenge || {};
+      (ch.entry || []).forEach(r => add(Object.assign({}, r, { action: r.action || "BUY_NOW" }), "BUY", "Challenge"));
+      (ch.exit || []).forEach(r => add(Object.assign({}, r, { action: r.action || "SELL_NOW" }), "SELL", "Challenge"));
+      const k1 = DATA.odte_1k || {};
+      (k1.put_now || []).forEach(r => add(Object.assign({}, r, { action: "BUY_NOW", right: r.right || "P" }), "BUY", "0DTE $1K"));
+      (k1.exit_now || k1.exit || []).forEach(r => add(r, "SELL", "0DTE $1K"));
+      return { buys, sells };
+    }
+
+    function nowBoardCard(r) {
+      const buy = r._side === "BUY";
+      const right = String(r.right || "C").toUpperCase() === "P" ? "PUT" : "CALL";
+      const win = Number(r.win_pct ?? r.hist_win_pct);
+      const n = Number(r.win_samples ?? r.hist_samples);
+      const gated = buy && win >= 80 && (Number.isNaN(n) || n >= 3);
+      const cls = buy ? (gated ? "enter-now" : "long") : "short";
+      const label = buy ? (gated ? "ENTER NOW" : "BUY NOW") : "SELL NOW";
+      const strike = r.strike == null ? "—" : `${fmt(r.strike, Number(r.strike) % 1 ? 2 : 0)}${right === "PUT" ? "p" : "c"}`;
+      const px = buy ? (r.ask ?? r.entry_ask) : (r.bid ?? r.mark ?? r.ask ?? r.exit_bid);
+      const when = r.signaled_at_cst || fmtCST(r.signaled_at || r.recommended_at);
+      const w = winLookup(r.symbol, r.dte_bucket || r.horizon || "0dte");
+      const sr = w.hit1 == null ? "—" : `${fmt(w.hit1,0)}% ≥1%` + (w.hit2 == null ? "" : ` / ${fmt(w.hit2,0)}% ≥2%`);
+      return `<article class="action-card ${cls}">
+        <div class="ac-top">
+          <div class="ac-sym">${r.symbol} <span class="tag">${r._desk}</span>${r.hold_style ? ` <span class="tag">${r.hold_style}</span>` : ""} <span class="tag">${right}</span></div>
+          <div class="ac-dir ${buy && gated ? "" : (buy ? "long" : "short")}">${label}</div>
+        </div>
+        <div class="ac-conf">${r._desk} · ${when && when !== "—" ? when : "time —"}</div>
+        <div class="ac-meta">
+          <div>Strike / expiry<strong>${strike} · ${r.expiry || "—"}${r.dte != null ? ` (${r.dte}DTE)` : ""}</strong></div>
+          <div>${buy ? "Ask" : "Bid"}<strong>${px == null ? "—" : "$" + fmt(px, 2)}</strong></div>
+          <div>Hist win<strong>${Number.isNaN(win) ? "—" : fmt(win, 0) + "%"}</strong></div>
+          <div>Strike rate ≥1%<strong>${sr}</strong></div>
+          ${levelsMeta(r)}
+        </div>
+        <p class="why" style="margin:.45rem 0 0">${r.detail || r.headline || r.exit_plan || r.recommend_reason || ""}</p>
+        ${ticketHtml(r.symbol, r)}
+      </article>`;
+    }
+
+    function renderNowGroups(el, rows, emptyMsg) {
+      if (!el) return;
+      if (!rows.length) {
+        el.innerHTML = `<div class="empty">${emptyMsg}</div>`;
+        return;
+      }
+      const g = {};
+      rows.forEach(r => {
+        const d = r._desk || "Options";
+        (g[d] = g[d] || []).push(r);
+      });
+      const order = NOW_DESK_ORDER.filter(d => g[d]).concat(Object.keys(g).filter(d => !NOW_DESK_ORDER.includes(d)));
+      el.innerHTML = order.map(desk => `
+        <div class="now-desk">${desk} <span class="status">${g[desk].length}</span></div>
+        <div class="cards">${g[desk].map(nowBoardCard).join("")}</div>
+      `).join("");
+    }
+
+    function renderNowBoard() {
+      const { buys, sells } = collectNowBoard();
+      const m = (k, v, cls = "") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
+      const metrics = document.getElementById("nowBoardMetrics");
+      const byDesk = {};
+      [...buys, ...sells].forEach(r => { byDesk[r._desk] = (byDesk[r._desk] || 0) + 1; });
+      if (metrics) {
+        metrics.innerHTML = [
+          m("BUY NOW", buys.length, buys.length ? "up" : ""),
+          m("SELL NOW", sells.length, sells.length ? "down" : ""),
+          ...NOW_DESK_ORDER.filter(d => byDesk[d]).map(d => m(d, byDesk[d])),
+        ].join("");
+      }
+      renderNowGroups(document.getElementById("nowBoardBuy"), buys, "No BUY NOW across desks this snapshot. Hist-gated ENTER NOW still shows on the banner when one clears.");
+      renderNowGroups(document.getElementById("nowBoardSell"), sells, "No SELL NOW across desks this snapshot.");
+      const table = document.getElementById("nowBoardTable");
+      if (table) {
+        const all = [...buys, ...sells];
+        if (!all.length) table.innerHTML = `<div class="empty">Empty board — run a scan / wait for the next Actions publish.</div>`;
+        else table.innerHTML = `<table class="zl-tape"><thead><tr>
+          <th>Side</th><th>Desk</th><th>Symbol</th><th>Asked (CST)</th><th>Contract</th><th>Px</th><th>Hist win</th><th>Strike rate</th><th>Why</th>
+        </tr></thead><tbody>${all.map(r => {
+          const buy = r._side === "BUY";
+          const right = String(r.right || "C").toUpperCase() === "P" ? "p" : "c";
+          const px = buy ? (r.ask ?? r.entry_ask) : (r.bid ?? r.mark ?? r.ask);
+          const w = winLookup(r.symbol, r.dte_bucket || r.horizon || "0dte");
+          const sr = w.hit1 == null ? "—" : `${fmt(w.hit1,0)}%`;
+          const win = r.win_pct ?? r.hist_win_pct;
+          return `<tr>
+            <td><span class="badge ${buy ? "buy" : "sell"}">${buy ? "BUY NOW" : "SELL NOW"}</span></td>
+            <td><span class="tag">${r._desk}</span></td>
+            <td><strong>${r.symbol}</strong></td>
+            <td class="mono">${r.signaled_at_cst || fmtCST(r.signaled_at || r.recommended_at)}</td>
+            <td class="mono">${r.strike == null ? "—" : fmt(r.strike, 2) + right} ${r.expiry || ""}</td>
+            <td class="mono">${px == null ? "—" : "$" + fmt(px, 2)}</td>
+            <td class="mono">${win == null ? "—" : fmt(win, 0) + "%"}</td>
+            <td class="mono">${sr}</td>
+            <td class="why">${r.detail || r.headline || r.exit_plan || ""}</td>
+          </tr>`;
+        }).join("")}</tbody></table>`;
+      }
     }
 
     document.querySelectorAll("#tabs button").forEach(btn => {
@@ -2917,6 +3081,7 @@ PAGE = r"""
       renderMustTradeBanner();
       maybeFireTradeAlerts();
       renderZeroLoss(DATA.zeroloss || {});
+      renderNowBoard();
       const ac = DATA.action_cards || {};
       const hz = DATA.horizons || {};
       renderCards("overviewCards", [
