@@ -375,10 +375,14 @@ def pages_ci_option_symbols(
             if not sym:
                 continue
             row = ((win_table or {}).get("symbols") or {}).get(sym) or {}
-            stats = row.get(hz) or {}
-            win = stats.get("win_pct")
-            n = int(stats.get("trades") or 0)
-            gated = win is not None and float(win) >= min_hist_win_pct and n >= min_hist_win_samples
+            gated = False
+            for bucket in (hz, "0dte", "weekly", "swing", "monthly"):
+                stats = row.get(bucket) or {}
+                win = stats.get("win_pct")
+                n = int(stats.get("trades") or 0)
+                if win is not None and float(win) >= min_hist_win_pct and n >= min_hist_win_samples:
+                    gated = True
+                    break
             ranked.append((0 if gated else 1, -score, sym))
     ranked.sort()
     out: list[str] = []

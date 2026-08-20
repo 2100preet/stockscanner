@@ -161,7 +161,7 @@ def test_pages_ci_option_symbols_prefers_hist_gated():
             self.quality = quality
             self.ensemble_score = ensemble_score
 
-    wr = {"symbols": {"SLV": {"0dte": {"win_pct": 90.0, "trades": 8}}}}
+    wr = {"symbols": {"SLV": {"swing": {"win_pct": 90.0, "trades": 8}}}}
     out = pages_ci_option_symbols(
         {
             "0dte": [T("FOO", ensemble_score=99), T("SLV", ensemble_score=71)],
@@ -172,3 +172,40 @@ def test_pages_ci_option_symbols_prefers_hist_gated():
         win_table=wr,
     )
     assert out == {"SLV"}
+
+
+def test_offline_hist_gated_contract_is_buy_now():
+    """Replay the live Pages MSTR WAIT ticket: score 65, hist 80%.
+
+    buy_score 72 (live desk) keeps it WAIT. Pages/offline buy_score 62 promotes it.
+    """
+    from datetime import datetime, timezone
+
+    from odte_scanner.signals.actions import apply_hist_win_gate, decide_entry
+
+    now = datetime(2026, 8, 20, 16, 0, tzinfo=timezone.utc)
+    cand = {
+        "symbol": "MSTR",
+        "score": 65.45,
+        "right": "C",
+        "dte": 1,
+        "dte_bucket": "0dte",
+        "contract": "MSTR260821C00112000",
+        "strike": 112.0,
+        "ask": 3.05,
+        "bid": 2.94,
+        "expiry": "2026-08-21",
+    }
+    blocked = decide_entry(
+        cand, quote=None, buy_score=72, wait_score=62, require_live_confirm=False, now=now
+    )
+    assert blocked.action == "WAIT"
+
+    promoted = decide_entry(
+        cand, quote=None, buy_score=62, wait_score=62, require_live_confirm=False, now=now
+    )
+    assert promoted.action == "BUY_NOW"
+    promoted.win_pct = 80.0
+    promoted.win_samples = 5
+    gated = apply_hist_win_gate(promoted, min_hist_win_pct=80, min_hist_win_samples=5)
+    assert gated.action == "BUY_NOW"

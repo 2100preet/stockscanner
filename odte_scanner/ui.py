@@ -993,7 +993,14 @@ PAGE = r"""
     }
 
     function renderNowBoard() {
-      const { buys, sells, waits, setups } = collectNowBoard();
+      let buys = [], sells = [], waits = [], setups = [];
+      try {
+        ({ buys, sells, waits, setups } = collectNowBoard());
+      } catch (err) {
+        const note = document.getElementById("nowBoardNote");
+        if (note) note.textContent = "BUY/SELL board failed to render: " + (err && err.message ? err.message : err);
+        return;
+      }
       const m = (k, v, cls = "") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
       const metrics = document.getElementById("nowBoardMetrics");
       const byDesk = {};
@@ -1010,7 +1017,9 @@ PAGE = r"""
       const note = document.getElementById("nowBoardNote");
       if (note) {
         if (!buys.length && !sells.length) {
-          note.textContent = "No option BUY NOW / SELL NOW on this snapshot. Pages only pulls a few quality chains (not the full universe). SETUP below is hist-eligible tape, not a buy ticket.";
+          note.textContent = waits.length
+            ? `No BUY NOW this snapshot (need hist ≥80% and score in the buy band). ${waits.length} WAIT ticket(s) with contracts are listed below.`
+            : "No option BUY NOW / SELL NOW on this snapshot. Pages only pulls a few quality chains. SETUP below is hist-eligible tape, not a buy ticket.";
         } else {
           note.textContent = "";
         }
@@ -3823,13 +3832,18 @@ def create_app(config_path: str | None = None) -> Flask:
         else:
             free_dealer = scan.get("free_dealer") or {"ok": False, "error": "offline"}
 
+        # Pages snapshot has no 5m tape. buy_score 72 left hist-gated MSTR (score 65) in WAIT.
+        pages_buy_score = float(
+            actions_cfg.get("wait_score", 62) if offline else actions_cfg.get("buy_score", 70)
+        )
+
         actions = build_action_board(
             candidates=refreshed,
             scores=scan.get("scores") or [],
             quotes=quotes,
             ledger=ledger if isinstance(ledger, dict) else None,
             journal_opens=journal_opens,
-            buy_score=float(actions_cfg.get("buy_score", 70)),
+            buy_score=pages_buy_score,
             wait_score=float(actions_cfg.get("wait_score", 62)),
             sell_score=float(actions_cfg.get("sell_score", 48)),
             stop_loss_pct=float(risk.get("stop_loss_pct", 50)),
@@ -3872,7 +3886,7 @@ def create_app(config_path: str | None = None) -> Flask:
                     quotes=quotes,
                     ledger=ledger if isinstance(ledger, dict) else None,
                     journal_opens=journal_opens,
-                    buy_score=float(actions_cfg.get("buy_score", 70)),
+                    buy_score=pages_buy_score,
                     wait_score=float(actions_cfg.get("wait_score", 62)),
                     sell_score=float(actions_cfg.get("sell_score", 48)),
                     stop_loss_pct=float(risk.get("stop_loss_pct", 50)),
