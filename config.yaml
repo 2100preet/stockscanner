@@ -111,6 +111,14 @@ tickers:
   - LLY
   - NVO
   - MRK
+  - PFE
+  # Critical minerals / rare earth — same miss class as MRNA (never scanned)
+  - MP
+  - USAR
+  - UUUU
+  - CCJ
+  - ALB
+  - TMC
   # CRM / AMAT already listed above under Friday weeklies
 
 # Yahoo Finance symbol overrides (indexes need ^ prefix for quotes/chains)

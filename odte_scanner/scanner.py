@@ -30,6 +30,15 @@ from odte_scanner.trading.paper import PaperTrader
 logger = logging.getLogger(__name__)
 
 
+def _write_latest(report: dict[str, Any]) -> Path:
+    out_dir = Path("outputs")
+    out_dir.mkdir(exist_ok=True)
+    payload = json.dumps(report, indent=2, default=str)
+    path = out_dir / "latest_scan.json"
+    path.write_text(payload)
+    return path
+
+
 def _weights_by_horizon(cfg: dict[str, Any]) -> dict[str, dict[str, float]]:
     algo = cfg.get("algos") or {}
     by_hz = algo.get("weights_by_horizon") or {}
@@ -78,6 +87,35 @@ def run_scan(
     prefer_cal = bool(scan_cfg.get("prefer_mon_wed_calendar", True))
 
     histories = fetch_many(tickers, period=period, aliases=aliases)
+
+    # Score the miss-prevention sleeve BEFORE option chains. Pages jobs time out
+    # on Yahoo chains; MP/USAR/PFE still have to land on disk.
+    zeroloss_board: dict[str, Any] | None = None
+    try:
+        from odte_scanner.data.universe import catalyst_universe
+        from odte_scanner.zeroloss.board import build_zeroloss_board
+
+        extra = [s for s in catalyst_universe() if s not in histories]
+        if extra:
+            histories.update(fetch_many(extra, period="6mo", aliases=aliases))
+        fetch_news = os.environ.get("GITHUB_ACTIONS") != "true"
+        zeroloss_board = build_zeroloss_board(histories, fetch_news=fetch_news, max_news=12)
+        _write_latest(
+            {
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "session_weekday": WEEKDAY_NAMES[weekday],
+                "universe_mode": uni_mode,
+                "universe_size": len(histories),
+                "partial": True,
+                "zeroloss": zeroloss_board,
+                "scores": [],
+                "horizons": {},
+                "action_cards": {},
+            }
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ZeroLoss catalyst board failed: %s", exc)
+
     spy_sym = regime.get("spy", "SPY")
     spy = fetch_history(
         spy_sym,
@@ -120,6 +158,11 @@ def run_scan(
             if ts.ensemble_score <= put_max_score and len(put_syms) < 20:
                 put_syms.add(ts.symbol)
                 option_syms.add(ts.symbol)
+
+    # GitHub Actions: skip option-chain fan-out so Pages publishes the stock tape.
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        option_syms = set()
+        put_syms = set()
 
     candidates: list[CallCandidate] = []
     put_candidates: list[CallCandidate] = []
@@ -249,19 +292,6 @@ def run_scan(
     except Exception as exc:  # noqa: BLE001
         logger.warning("Red Flag analysis failed: %s", exc)
 
-    zeroloss_board: dict[str, Any] | None = None
-    try:
-        from odte_scanner.data.universe import catalyst_universe
-        from odte_scanner.zeroloss.board import build_zeroloss_board
-
-        extra = [s for s in catalyst_universe() if s not in histories]
-        if extra:
-            histories.update(fetch_many(extra, period="6mo", aliases=aliases))
-        fetch_news = os.environ.get("GITHUB_ACTIONS") != "true"
-        zeroloss_board = build_zeroloss_board(histories, fetch_news=fetch_news, max_news=12)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("ZeroLoss catalyst board failed: %s", exc)
-
     report = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "session_weekday": WEEKDAY_NAMES[weekday],
@@ -333,8 +363,9 @@ def run_scan(
     out_dir.mkdir(exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     path = out_dir / f"scan_{stamp}.json"
-    path.write_text(json.dumps(report, indent=2))
-    (out_dir / "latest_scan.json").write_text(json.dumps(report, indent=2))
+    blob = json.dumps(report, indent=2, default=str)
+    path.write_text(blob)
+    _write_latest(report)
     if ml6_board:
         (out_dir / "latest_ml6.json").write_text(json.dumps(ml6_board, indent=2))
     logger.info(

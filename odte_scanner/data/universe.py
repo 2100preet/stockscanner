@@ -51,6 +51,30 @@ MID_SMALL_UNIVERSE: list[str] = [
     "ALAB", "CRDO", "VRT", "APLD", "CIFR", "WULF", "CEG", "GEV",
 ]
 
+# Rare earth / uranium / lithium / critical minerals — MP was absent the same
+# way MRNA was: never on the focus scan. USAR is an earnings darling but was
+# not on the 0DTE focus list Pages publishes.
+CRITICAL_MINERALS_UNIVERSE: list[str] = [
+    "MP",     # MP Materials
+    "USAR",   # USA Rare Earth
+    "UUUU",   # Energy Fuels
+    "UEC",    # Uranium Energy
+    "CCJ",    # Cameco
+    "DNN",    # Denison
+    "NXE",    # NexGen
+    "LEU",    # Centrus
+    "TMC",    # TMC the metals company
+    "CRML",   # Critical Metals
+    "ALB",    # Albemarle
+    "SQM",    # Sociedad Química
+    "LAC",    # Lithium Americas
+    "FCX",    # Freeport
+    "AA",     # Alcoa
+    "X",      # US Steel
+    "NEM",    # Newmont
+    "GOLD",   # Barrick
+]
+
 # Event / biotech sleeve — MRNA was missing from every scan list on 2026-08-19
 # when it gapped +84% / closed +177% on a Phase 3 melanoma readout.
 BIOTECH_CATALYST_UNIVERSE: list[str] = [
@@ -147,6 +171,7 @@ LIQUID_UNIVERSE: list[str] = [
     *EARNINGS_DARLINGS_UNIVERSE,
     # Biotech / event names the 0DTE focus list previously dropped
     *BIOTECH_CATALYST_UNIVERSE,
+    *CRITICAL_MINERALS_UNIVERSE,
 ]
 
 # ML6 earnings-catalyst neocloud sleeve (also listed in LIQUID_UNIVERSE)
@@ -207,7 +232,9 @@ FOCUS_DEFAULT: list[str] = [
     "SNDK", "WDC", "STX", "LRCX", "KLAC", "MRVL", "ANET", "ALAB", "CRDO", "APP",
     "VRT", "CEG", "GEV", "APLD", "CIFR", "WULF",
     # Event tape — never drop MRNA-class names from focus again
-    "MRNA", "BNTX", "XBI", "LLY", "NVO", "MRK",
+    "MRNA", "BNTX", "XBI", "LLY", "NVO", "MRK", "PFE",
+    # Critical minerals / rare earth / uranium — MP/USAR were the same miss class
+    "MP", "USAR", "UUUU", "CCJ", "ALB", "TMC",
 ]
 
 
@@ -250,6 +277,7 @@ def catalyst_universe() -> list[str]:
     """Always-on sleeve for ZeroLoss Do-Not-Miss (gaps, news, unusual volume)."""
     return _dedupe(
         list(BIOTECH_CATALYST_UNIVERSE)
+        + list(CRITICAL_MINERALS_UNIVERSE)
         + list(EARNINGS_DARLINGS_UNIVERSE)
         + [
             "SPY",
@@ -270,6 +298,8 @@ def catalyst_universe() -> list[str]:
             "COIN",
             "MSTR",
             "PLTR",
+            "OKLO",
+            "SMR",
         ]
     )
 

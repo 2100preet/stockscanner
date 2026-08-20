@@ -69,7 +69,7 @@ jobs:
         timeout-minutes: 8
         run: |
           mkdir -p outputs
-          python -m odte_scanner scan --universe focus --no-paper
+          python -m odte_scanner scan --universe catalyst --no-paper
         env:
           PYTHONUNBUFFERED: "1"
 

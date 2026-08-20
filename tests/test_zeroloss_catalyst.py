@@ -63,6 +63,12 @@ def test_catalyst_universe_includes_mrna():
 
     assert "MRNA" in FOCUS_DEFAULT
     assert "MRNA" in LIQUID_UNIVERSE
+    assert "MP" in uni
+    assert "USAR" in uni
+    assert "PFE" in uni
+    assert "MP" in FOCUS_DEFAULT
+    assert "USAR" in FOCUS_DEFAULT
+    assert "PFE" in FOCUS_DEFAULT
 
 
 def test_resolve_catalyst_mode_includes_mrna():
