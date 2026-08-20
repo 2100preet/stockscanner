@@ -308,12 +308,18 @@ PAGE = r"""
 
     <section class="tabpane" id="tab-nowboard">
       <h2>BUY NOW / SELL NOW — all desks</h2>
-      <p class="lede">Every live BUY NOW and SELL NOW in one place, tagged with the desk it came from (0DTE, 1 Week, Swing 1–3M / ~1 month, Explosive, ML6, Challenge). Radar HOT and Do-not-miss WATCH are not listed here.</p>
+      <p class="lede">Live option BUY NOW / SELL NOW, tagged by desk (0DTE, 1 Week, Swing 1–3M, Explosive, ML6, Challenge). A ticker needs a chain <em>and</em> hist win ≥80% (n≥5) to show as BUY NOW. Quality names that clear hist but have no contract yet are listed as SETUP — not a buy. Radar HOT and Do-not-miss WATCH stay off this list.</p>
       <div class="metric-row" id="nowBoardMetrics"></div>
+      <p class="lede" id="nowBoardNote" style="margin-top:0;font-size:.76rem"></p>
       <h2>BUY NOW</h2>
       <div id="nowBoardBuy" class="empty">—</div>
       <h2>SELL NOW</h2>
       <div id="nowBoardSell" class="empty">—</div>
+      <h2>WAIT — chain on board, hist gate blocked</h2>
+      <div id="nowBoardWait" class="empty">—</div>
+      <h2>SETUP — hist-eligible quality, no option ticket yet</h2>
+      <p class="lede" style="margin-top:0;font-size:.76rem">These underlyings cleared quality + hist win. They are <strong>not</strong> BUY NOW until a call/put contract is on the snapshot.</p>
+      <div id="nowBoardSetup" class="empty">—</div>
       <div class="panel">
         <h2>All rows</h2>
         <div id="nowBoardTable" class="empty">—</div>
@@ -872,6 +878,8 @@ PAGE = r"""
     function collectNowBoard() {
       const buys = [];
       const sells = [];
+      const waits = [];
+      const setups = [];
       const seen = new Set();
       const add = (row, side, desk) => {
         if (!row || !row.symbol) return;
@@ -887,34 +895,62 @@ PAGE = r"""
         if (seen.has(key)) return;
         seen.add(key);
         const item = Object.assign({}, row, { _desk: desk, _side: side });
-        (side === "BUY" ? buys : sells).push(item);
+        if (side === "BUY") buys.push(item);
+        else if (side === "SELL") sells.push(item);
+        else if (side === "WAIT") waits.push(item);
+        else setups.push(item);
       };
       const acts = DATA.actions || {};
       (acts.buy_now || []).forEach(r => add(r, "BUY", horizonDesk(r, "Options")));
       (acts.sell_now || []).forEach(r => add(r, "SELL", horizonDesk(r, "Options")));
+      (acts.wait || []).slice(0, 16).forEach(r => add(r, "WAIT", horizonDesk(r, "Options")));
       const lot = DATA.lottery || {};
       (lot.buy_now || []).forEach(r => add(r, "BUY", "Explosive"));
       (lot.sell_now || []).forEach(r => add(r, "SELL", "Explosive"));
+      (lot.wait || []).slice(0, 8).forEach(r => add(r, "WAIT", "Explosive"));
       const ml = (DATA.ml6 && DATA.ml6.actions) || {};
       (ml.buy_now || []).forEach(r => add(r, "BUY", "ML6"));
       (ml.sell_now || []).forEach(r => add(r, "SELL", "ML6"));
+      (ml.wait || []).forEach(r => add(r, "WAIT", "ML6"));
       const ch = DATA.challenge || {};
       (ch.entry || []).forEach(r => add(Object.assign({}, r, { action: r.action || "BUY_NOW" }), "BUY", "Challenge"));
       (ch.exit || []).forEach(r => add(Object.assign({}, r, { action: r.action || "SELL_NOW" }), "SELL", "Challenge"));
+      (ch.hold || []).forEach(r => add(Object.assign({}, r, { action: r.action || "WAIT" }), "WAIT", "Challenge"));
       const k1 = DATA.odte_1k || {};
       (k1.put_now || []).forEach(r => add(Object.assign({}, r, { action: "BUY_NOW", right: r.right || "P" }), "BUY", "0DTE $1K"));
       (k1.exit_now || k1.exit || []).forEach(r => add(r, "SELL", "0DTE $1K"));
-      return { buys, sells };
+      const ac = DATA.action_cards || {};
+      const histOk = (sym, hz) => {
+        const w = winLookup(sym, hz);
+        return w.pct != null && w.pct >= 80 && (w.n || 0) >= 5;
+      };
+      [
+        ["0dte_quality", "0dte", "0DTE"],
+        ["weekly_quality", "weekly", "1 Week"],
+        ["swing_quality", "swing", "Swing 1–3M"],
+      ].forEach(([key, hz, desk]) => {
+        (ac[key] || []).forEach(t => {
+          if (!t || !t.quality || !histOk(t.symbol, t.horizon || hz)) return;
+          add(Object.assign({}, t, {
+            action: "SETUP",
+            dte_bucket: t.horizon || hz,
+            detail: t.detail || "Quality underlying with hist win ≥80% — no option contract on this snapshot, so not BUY NOW.",
+          }), "SETUP", desk);
+        });
+      });
+      return { buys, sells, waits, setups };
     }
 
     function nowBoardCard(r) {
       const buy = r._side === "BUY";
+      const wait = r._side === "WAIT";
+      const setup = r._side === "SETUP";
       const right = String(r.right || "C").toUpperCase() === "P" ? "PUT" : "CALL";
       const win = Number(r.win_pct ?? r.hist_win_pct);
       const n = Number(r.win_samples ?? r.hist_samples);
       const gated = buy && win >= 80 && (Number.isNaN(n) || n >= 3);
-      const cls = buy ? (gated ? "enter-now" : "long") : "short";
-      const label = buy ? (gated ? "ENTER NOW" : "BUY NOW") : "SELL NOW";
+      const cls = buy ? (gated ? "enter-now" : "long") : (wait || setup ? "wait" : "short");
+      const label = buy ? (gated ? "ENTER NOW" : "BUY NOW") : (setup ? "SETUP · not BUY" : (wait ? "WAIT" : "SELL NOW"));
       const strike = r.strike == null ? "—" : `${fmt(r.strike, Number(r.strike) % 1 ? 2 : 0)}${right === "PUT" ? "p" : "c"}`;
       const px = buy ? (r.ask ?? r.entry_ask) : (r.bid ?? r.mark ?? r.ask ?? r.exit_bid);
       const when = r.signaled_at_cst || fmtCST(r.signaled_at || r.recommended_at);
@@ -923,7 +959,7 @@ PAGE = r"""
       return `<article class="action-card ${cls}">
         <div class="ac-top">
           <div class="ac-sym">${r.symbol} <span class="tag">${r._desk}</span>${r.hold_style ? ` <span class="tag">${r.hold_style}</span>` : ""} <span class="tag">${right}</span></div>
-          <div class="ac-dir ${buy && gated ? "" : (buy ? "long" : "short")}">${label}</div>
+          <div class="ac-dir ${buy && gated ? "" : (buy ? "long" : (wait || setup ? "wait" : "short"))}">${label}</div>
         </div>
         <div class="ac-conf">${r._desk} · ${when && when !== "—" ? when : "time —"}</div>
         <div class="ac-meta">
@@ -957,35 +993,49 @@ PAGE = r"""
     }
 
     function renderNowBoard() {
-      const { buys, sells } = collectNowBoard();
+      const { buys, sells, waits, setups } = collectNowBoard();
       const m = (k, v, cls = "") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
       const metrics = document.getElementById("nowBoardMetrics");
       const byDesk = {};
-      [...buys, ...sells].forEach(r => { byDesk[r._desk] = (byDesk[r._desk] || 0) + 1; });
+      [...buys, ...sells, ...waits, ...setups].forEach(r => { byDesk[r._desk] = (byDesk[r._desk] || 0) + 1; });
       if (metrics) {
         metrics.innerHTML = [
           m("BUY NOW", buys.length, buys.length ? "up" : ""),
           m("SELL NOW", sells.length, sells.length ? "down" : ""),
+          m("WAIT", waits.length),
+          m("SETUP", setups.length),
           ...NOW_DESK_ORDER.filter(d => byDesk[d]).map(d => m(d, byDesk[d])),
         ].join("");
       }
-      renderNowGroups(document.getElementById("nowBoardBuy"), buys, "No BUY NOW across desks this snapshot. Hist-gated ENTER NOW still shows on the banner when one clears.");
+      const note = document.getElementById("nowBoardNote");
+      if (note) {
+        if (!buys.length && !sells.length) {
+          note.textContent = "No option BUY NOW / SELL NOW on this snapshot. Pages only pulls a few quality chains (not the full universe). SETUP below is hist-eligible tape, not a buy ticket.";
+        } else {
+          note.textContent = "";
+        }
+      }
+      renderNowGroups(document.getElementById("nowBoardBuy"), buys, "No BUY NOW — need an option contract plus hist win ≥80% (n≥5).");
       renderNowGroups(document.getElementById("nowBoardSell"), sells, "No SELL NOW across desks this snapshot.");
+      renderNowGroups(document.getElementById("nowBoardWait"), waits, "No WAIT tickets. These appear when a chain exists but hist win / tape has not cleared BUY NOW.");
+      renderNowGroups(document.getElementById("nowBoardSetup"), setups, "No hist-eligible quality underlyings in this snapshot.");
       const table = document.getElementById("nowBoardTable");
       if (table) {
-        const all = [...buys, ...sells];
-        if (!all.length) table.innerHTML = `<div class="empty">Empty board — run a scan / wait for the next Actions publish.</div>`;
+        const all = [...buys, ...sells, ...waits, ...setups];
+        if (!all.length) table.innerHTML = `<div class="empty">Empty board — wait for the next Actions publish, or run a live Flask scan with option chains.</div>`;
         else table.innerHTML = `<table class="zl-tape"><thead><tr>
           <th>Side</th><th>Desk</th><th>Symbol</th><th>Asked (CST)</th><th>Contract</th><th>Px</th><th>Hist win</th><th>Strike rate</th><th>Why</th>
         </tr></thead><tbody>${all.map(r => {
           const buy = r._side === "BUY";
+          const side = r._side === "BUY" ? "BUY NOW" : (r._side === "SELL" ? "SELL NOW" : r._side);
+          const badge = buy ? "buy" : (r._side === "SELL" ? "sell" : "wait");
           const right = String(r.right || "C").toUpperCase() === "P" ? "p" : "c";
           const px = buy ? (r.ask ?? r.entry_ask) : (r.bid ?? r.mark ?? r.ask);
           const w = winLookup(r.symbol, r.dte_bucket || r.horizon || "0dte");
           const sr = w.hit1 == null ? "—" : `${fmt(w.hit1,0)}%`;
-          const win = r.win_pct ?? r.hist_win_pct;
+          const win = r.win_pct ?? r.hist_win_pct ?? w.pct;
           return `<tr>
-            <td><span class="badge ${buy ? "buy" : "sell"}">${buy ? "BUY NOW" : "SELL NOW"}</span></td>
+            <td><span class="badge ${badge}">${side}</span></td>
             <td><span class="tag">${r._desk}</span></td>
             <td><strong>${r.symbol}</strong></td>
             <td class="mono">${r.signaled_at_cst || fmtCST(r.signaled_at || r.recommended_at)}</td>

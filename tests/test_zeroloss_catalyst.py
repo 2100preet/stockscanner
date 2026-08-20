@@ -143,9 +143,32 @@ def test_ui_must_trade_is_not_radar():
     assert 'data-tab="nowboard"' in page
     assert "id=\"tab-nowboard\"" in page
     assert "collectNowBoard" in page
+    assert "nowBoardSetup" in page
     assert "...topRadar.map" not in page
     from odte_scanner.data.universe import FOCUS_DEFAULT
 
     assert "MP" in FOCUS_DEFAULT
     assert "PFE" in FOCUS_DEFAULT
     assert "NKE" in FOCUS_DEFAULT
+
+
+def test_pages_ci_option_symbols_prefers_hist_gated():
+    from odte_scanner.data.universe import pages_ci_option_symbols
+
+    class T:
+        def __init__(self, symbol, quality=True, ensemble_score=80.0):
+            self.symbol = symbol
+            self.quality = quality
+            self.ensemble_score = ensemble_score
+
+    wr = {"symbols": {"SLV": {"0dte": {"win_pct": 90.0, "trades": 8}}}}
+    out = pages_ci_option_symbols(
+        {
+            "0dte": [T("FOO", ensemble_score=99), T("SLV", ensemble_score=71)],
+            "weekly": [],
+        },
+        min_score=62,
+        cap=1,
+        win_table=wr,
+    )
+    assert out == {"SLV"}

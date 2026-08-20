@@ -349,6 +349,50 @@ def market_cap_tier(symbol: str) -> str:
     return "unknown"
 
 
+def pages_ci_option_symbols(
+    by_horizon: dict[str, list[Any]],
+    *,
+    min_score: float,
+    cap: int = 8,
+    min_hist_win_pct: float = 80.0,
+    min_hist_win_samples: int = 5,
+    win_table: dict[str, Any] | None = None,
+) -> set[str]:
+    """Small chain set for GitHub Pages so BUY NOW can fire without a full Yahoo fan-out."""
+    ranked: list[tuple[int, float, str]] = []
+    for hz in ("0dte", "weekly"):
+        for ts in by_horizon.get(hz) or []:
+            quality = bool(getattr(ts, "quality", False) if not isinstance(ts, dict) else ts.get("quality"))
+            score = float(
+                getattr(ts, "ensemble_score", 0)
+                if not isinstance(ts, dict)
+                else (ts.get("ensemble_score") or 0)
+            )
+            if not quality and score < min_score:
+                continue
+            raw = getattr(ts, "symbol", "") if not isinstance(ts, dict) else (ts.get("symbol") or "")
+            sym = str(raw).upper()
+            if not sym:
+                continue
+            row = ((win_table or {}).get("symbols") or {}).get(sym) or {}
+            stats = row.get(hz) or {}
+            win = stats.get("win_pct")
+            n = int(stats.get("trades") or 0)
+            gated = win is not None and float(win) >= min_hist_win_pct and n >= min_hist_win_samples
+            ranked.append((0 if gated else 1, -score, sym))
+    ranked.sort()
+    out: list[str] = []
+    seen: set[str] = set()
+    for _gate, _score, sym in ranked:
+        if sym in seen:
+            continue
+        seen.add(sym)
+        out.append(sym)
+        if len(out) >= cap:
+            break
+    return set(out)
+
+
 def resolve_scan_universe(cfg: dict[str, Any], *, mode: str | None = None) -> list[str]:
     """
     mode:

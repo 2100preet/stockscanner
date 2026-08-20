@@ -23,7 +23,7 @@ from odte_scanner.calendars import (
 )
 from odte_scanner.config import load_config
 from odte_scanner.data.fetcher import fetch_history, fetch_many
-from odte_scanner.data.universe import resolve_scan_universe
+from odte_scanner.data.universe import pages_ci_option_symbols, resolve_scan_universe
 from odte_scanner.options.selector import CallCandidate, select_calls, select_puts
 from odte_scanner.trading.paper import PaperTrader
 
@@ -159,14 +159,30 @@ def run_scan(
                 put_syms.add(ts.symbol)
                 option_syms.add(ts.symbol)
 
-    # GitHub Actions: skip option-chain fan-out so Pages publishes the stock tape.
+    # GitHub Actions: a few quality chains only — full fan-out hung Pages.
     if os.environ.get("GITHUB_ACTIONS") == "true":
-        option_syms = set()
+        win_table = None
+        try:
+            from odte_scanner.backtest.win_rates import load_win_rate_table
+
+            win_table = load_win_rate_table()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Pages CI win table unavailable: %s", exc)
+        option_syms = pages_ci_option_symbols(
+            by_horizon,
+            min_score=min_score,
+            cap=int(opt_cfg.get("pages_option_symbols", 8)),
+            min_hist_win_pct=float((cfg.get("actions") or {}).get("min_hist_win_pct", 80)),
+            min_hist_win_samples=int((cfg.get("actions") or {}).get("min_hist_win_samples", 5)),
+            win_table=win_table if isinstance(win_table, dict) else None,
+        )
         put_syms = set()
+        logger.info("Pages CI option chains (%d): %s", len(option_syms), ",".join(sorted(option_syms)) or "none")
 
     candidates: list[CallCandidate] = []
     put_candidates: list[CallCandidate] = []
     odte_scores = {t.symbol: t for t in by_horizon.get("0dte", [])}
+    weekly_scores = {t.symbol: t for t in by_horizon.get("weekly", [])}
     include_puts = bool(opt_cfg.get("include_puts", True))
     opt_kwargs = dict(
         max_dte=int(opt_cfg.get("max_dte", 7)),
@@ -179,7 +195,7 @@ def run_scan(
         per_bucket=int(opt_cfg.get("per_bucket", 1)),
     )
     for sym in sorted(option_syms):
-        ts = odte_scores.get(sym)
+        ts = odte_scores.get(sym) or weekly_scores.get(sym)
         if ts is None:
             continue
         ysym = resolve_yahoo_symbol(ts.symbol, cfg)
