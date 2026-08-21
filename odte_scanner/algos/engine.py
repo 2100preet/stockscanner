@@ -24,6 +24,7 @@ HORIZON_ALGOS: dict[str, list[str]] = {
         "relative_strength",
         "vix_regime",
         "ema_stack",
+        "grind_continuation",
     ],
     "weekly": [
         "ema_stack",
@@ -35,6 +36,7 @@ HORIZON_ALGOS: dict[str, list[str]] = {
         "volume_thrust",
         "vix_regime",
         "pullback_entry",
+        "grind_continuation",
     ],
     "swing": [
         "stage_analysis",
@@ -70,6 +72,7 @@ DEFAULT_WEIGHTS: dict[str, dict[str, float]] = {
         "relative_strength": 1.2,
         "vix_regime": 1.2,
         "ema_stack": 0.8,
+        "grind_continuation": 1.2,
     },
     "weekly": {
         "ema_stack": 1.4,
@@ -81,6 +84,7 @@ DEFAULT_WEIGHTS: dict[str, dict[str, float]] = {
         "volume_thrust": 1.0,
         "vix_regime": 0.9,
         "pullback_entry": 1.3,
+        "grind_continuation": 1.5,
     },
     "swing": {
         "stage_analysis": 1.6,
@@ -179,6 +183,7 @@ def _build_signals(
         "volume_thrust": lambda: S.volume_thrust(df),
         "vix_regime": lambda: S.vix_regime(vix_df if vix_df is not None else pd.DataFrame()),
         "pullback_entry": lambda: S.pullback_entry(df),
+        "grind_continuation": lambda: S.grind_continuation(df),
         "stage_analysis": lambda: S.stage_analysis(df),
         "trend_structure": lambda: S.trend_structure(df),
         "mean_reversion_bottom": lambda: S.mean_reversion_bottom(df),
@@ -235,6 +240,22 @@ def score_ticker(
             reasons.append(f"{sig.name}={sig.score:.0f}")
 
     ensemble = weighted / total_w if total_w else 0.0
+    # COST-class grinders: breakout/gap algos stay cold on a slow bid day.
+    # When grind_continuation fires hard, floor the ensemble into the option-pick
+    # / weekly soft-buy band so focus names are not silently dropped.
+    grind = next((s for s in sigs if s.name == "grind_continuation"), None)
+    if (
+        grind is not None
+        and grind.bullish
+        and float(grind.score) >= 68.0
+        and horizon in {"0dte", "weekly"}
+    ):
+        # 65 clears weekly_buy_score soft floor; 63 alone still stalled on WAIT
+        ensemble = max(ensemble, 65.0)
+        if "grind_continuation" not in "".join(reasons):
+            reasons.append(f"grind_continuation={grind.score:.0f}")
+            confirms = max(confirms, 1)
+
     gate = QUALITY_GATES.get(horizon, QUALITY_GATES["0dte"])
     need_confirms = int(min_confirms if min_confirms is not None else gate["min_confirms"])
     need_score = float(quality_min_score if quality_min_score is not None else gate["min_score"])

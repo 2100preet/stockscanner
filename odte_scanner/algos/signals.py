@@ -478,3 +478,55 @@ def mean_reversion_bottom(df: pd.DataFrame) -> AlgoSignal:
         bullish=score >= 68,
         details={"rsi": round(cur, 2), "rising": rising},
     )
+
+
+def grind_continuation(df: pd.DataFrame) -> AlgoSignal:
+    """Steady mega/liquid bid — catches COST-class grinders breakout algos miss.
+
+    Prefers close above MA20 with a modest green day (not a chase gap) and room
+    under the 20-session high. Full MA20>MA50 stack is a bonus, not required —
+    megas repairing a base still grind without a textbook stack.
+    """
+    if len(df) < 55:
+        return AlgoSignal("grind_continuation", 40.0, False, {"reason": "insufficient_data"})
+
+    close = df["Close"]
+    high = df["High"]
+    c = float(close.iloc[-1])
+    prev = float(close.iloc[-2])
+    ma20 = float(close.rolling(20).mean().iloc[-1])
+    ma50 = float(close.rolling(50).mean().iloc[-1])
+    day_ret = _safe_pct(c, prev)
+    high_20 = float(high.iloc[-20:].max())
+    dist_high = _safe_pct(c, high_20)
+    stacked = c > ma20 > ma50
+    above_ma20 = c > ma20
+    rising_ma = ma20 >= float(close.rolling(20).mean().iloc[-5]) * 0.998
+
+    score = 38.0
+    if day_ret >= 6.0:
+        score = 28.0  # parabolic — leave to chase radar / pullback reclaim
+    elif stacked and rising_ma and 0.25 <= day_ret <= 3.0 and dist_high >= -5.0:
+        score = 90.0
+    elif above_ma20 and rising_ma and 0.25 <= day_ret <= 3.5 and dist_high >= -6.0:
+        score = 84.0
+    elif above_ma20 and 0.15 <= day_ret <= 4.0 and dist_high >= -8.0:
+        score = 76.0
+    elif above_ma20 and day_ret >= 0 and dist_high >= -10.0:
+        score = 66.0
+    elif c > ma20 * 0.995 and 0.4 <= day_ret <= 2.5:
+        score = 70.0  # soft reclaim / grind attempt just under MA20
+    elif c < ma50 and day_ret < 0:
+        score = 30.0
+
+    return AlgoSignal(
+        name="grind_continuation",
+        score=score,
+        bullish=score >= 65,
+        details={
+            "day_ret_pct": round(day_ret, 3),
+            "dist_20d_high_pct": round(dist_high, 3),
+            "stacked": stacked,
+            "above_ma20": above_ma20,
+        },
+    )

@@ -283,9 +283,10 @@ scan:
 # BUY NOW / SELL NOW thresholds (UI action board)
 actions:
   buy_score: 72          # align with 0DTE quality gate
+  weekly_buy_score: 65   # Friday weeklies / grinders (COST-class) soft floor
   wait_score: 62         # watchlist / WAIT band
   sell_score: 48         # open call exits when score cools below this
-  max_chase_pct: 2.5     # if already up this much in-session, prefer WAIT
+  max_chase_pct: 2.5     # if already up this much in-session, prefer WAIT (weekly +1.5; pullback reclaim OK)
   # Only promote BUY NOW when walk-forward hist win clears the bar
   require_hist_win: true
   min_hist_win_pct: 80   # target ≥80% measured win rate on promoted trades
@@ -464,11 +465,13 @@ algos:
       momentum_breakout: 1.5
       volume_thrust: 1.4
       vix_regime: 1.2
+      grind_continuation: 1.2
     weekly:
       ema_stack: 1.4
       macd_momentum: 1.3
       relative_strength: 1.4
       pullback_entry: 1.3
+      grind_continuation: 1.5
     swing:
       stage_analysis: 1.6
       trend_structure: 1.5
