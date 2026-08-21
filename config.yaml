@@ -104,6 +104,9 @@ tickers:
   - APLD  # Applied Digital — AI datacenter buildout
   - CIFR  # Cipher Mining — liquid bitcoin miner
   - WULF  # TeraWulf — liquid bitcoin / power narrative
+  - IBIT  # iShares Bitcoin Trust — BTC pullback / 80k watch longs
+  # Event / biotech — sticky watch + prior Phase 3 miss class
+  - MRNA  # Moderna — day-3 continuation / catalyst tape
   # CRM / AMAT already listed above under Friday weeklies
 
 # Yahoo Finance symbol overrides (indexes need ^ prefix for quotes/chains)
@@ -204,6 +207,8 @@ expiry_calendars:
     - APLD
     - CIFR
     - WULF
+    - IBIT
+    - MRNA
     - HYG
     - EEM
 

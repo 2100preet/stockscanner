@@ -89,7 +89,7 @@ EARNINGS_DARLINGS_UNIVERSE: list[str] = [
 LIQUID_UNIVERSE: list[str] = [
     # Index / mega ETFs
     "SPY", "QQQ", "IWM", "DIA", "XLK", "XLF", "XLE", "XBI", "SMH", "SOXX",
-    "GLD", "SLV", "TLT", "HYG", "EEM", "USO", "UNG",
+    "GLD", "SLV", "TLT", "HYG", "EEM", "USO", "UNG", "IBIT",
     # Mega / large
     "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "GOOG", "META", "TSLA", "AVGO", "BRK-B",
     "JPM", "V", "MA", "UNH", "XOM", "JNJ", "WMT", "PG", "HD", "COST",
@@ -103,10 +103,12 @@ LIQUID_UNIVERSE: list[str] = [
     "SNOW", "CRWD", "NET", "DDOG", "MDB", "ZS", "OKTA", "ROKU", "SNAP", "PINS",
     "RBLX", "U", "SOFI", "AFRM", "UPST", "RIVN", "LCID", "NIO", "MARA", "RIOT",
     "SMCI", "DELL", "HPE", "TSM", "ASML", "BABA", "PDD", "JD", "SE", "MELI",
+    "MRNA",  # Moderna — event / biotech catalyst (was missing on Phase 3 day)
     # Recent mega IPOs / high-attention names (missed when only on curated lists)
     "SPCX",
     # AI power / cooling / connectivity (focus-elevated)
     "VRT", "CEG", "GEV", "ALAB", "CRDO", "APLD", "CIFR", "WULF",
+    "IBIT",  # iShares Bitcoin Trust — liquid BTC ETF options
     # Energy / cyclicals / others
     "COP", "SLB", "OXY", "HAL", "F", "GM", "NKE", "LULU", "DE", "HON",
     "UNP", "RTX", "LMT", "NOC", "SPGI", "CME", "ICE", "SCHW", "C", "USB",
@@ -134,7 +136,7 @@ ML6_UNIVERSE: list[str] = [
 
 _ETF = {
     "SPY", "QQQ", "IWM", "DIA", "XLK", "XLF", "XLE", "XBI", "SMH", "SOXX",
-    "GLD", "SLV", "TLT", "HYG", "EEM", "USO", "UNG",
+    "GLD", "SLV", "TLT", "HYG", "EEM", "USO", "UNG", "IBIT",
 }
 
 # Explicit small-cap sleeve (rest of MID_SMALL_UNIVERSE treated as mid)
@@ -177,6 +179,8 @@ FOCUS_DEFAULT: list[str] = [
     # Curated high-potential (memory / AI infra / power / liquid mid) — not full S&P 500
     "SNDK", "WDC", "STX", "LRCX", "KLAC", "MRVL", "ANET", "ALAB", "CRDO", "APP",
     "VRT", "CEG", "GEV", "APLD", "CIFR", "WULF",
+    # Sticky-note watch — BTC ETF + biotech event tape
+    "IBIT", "MRNA",
 ]
 
 
