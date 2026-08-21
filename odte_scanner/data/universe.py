@@ -23,6 +23,7 @@ DRAM_MEMORY_UNIVERSE: list[str] = [
     "TER",
     "ON",
     "MRVL",
+    "MRVU",  # Direxion Daily MRVL Bull 2X
     "NXPI",
     "AVGO",
     "AMD",
@@ -33,6 +34,8 @@ DRAM_MEMORY_UNIVERSE: list[str] = [
     "TXN",
     "SMH",
     "SOXX",
+    "SOXL",  # Direxion Daily Semiconductor Bull 3X
+    "SOXS",  # Direxion Daily Semiconductor Bear 3X
 ]
 
 # Liquid mid / small-cap optionables (challenge + screener breadth)
@@ -106,6 +109,9 @@ LIQUID_UNIVERSE: list[str] = [
     "MRNA",  # Moderna — event / biotech catalyst (was missing on Phase 3 day)
     # Recent mega IPOs / high-attention names (missed when only on curated lists)
     "SPCX",
+    "SPCU",  # Defiance Daily Target 2X Long SPCX
+    # Leveraged single-name / thematic ETFs
+    "TSLL",  # Direxion Daily TSLA Bull 2X
     # AI power / cooling / connectivity (focus-elevated)
     "VRT", "CEG", "GEV", "ALAB", "CRDO", "APLD", "CIFR", "WULF",
     "IBIT",  # iShares Bitcoin Trust — liquid BTC ETF options
@@ -137,6 +143,8 @@ ML6_UNIVERSE: list[str] = [
 _ETF = {
     "SPY", "QQQ", "IWM", "DIA", "XLK", "XLF", "XLE", "XBI", "SMH", "SOXX",
     "GLD", "SLV", "TLT", "HYG", "EEM", "USO", "UNG", "IBIT",
+    # Leveraged / single-stock ETF sticky sleeve
+    "TSLL", "SOXL", "SOXS", "DRAM", "MRVU", "SPCU",
 }
 
 # Explicit small-cap sleeve (rest of MID_SMALL_UNIVERSE treated as mid)
@@ -181,6 +189,8 @@ FOCUS_DEFAULT: list[str] = [
     "VRT", "CEG", "GEV", "APLD", "CIFR", "WULF",
     # Sticky-note watch — BTC ETF + biotech event tape
     "IBIT", "MRNA",
+    # Leveraged / single-stock ETF sticky sleeve (TSLA / semi / memory / MRVL / SPCX)
+    "TSLL", "SOXL", "SOXS", "DRAM", "MRVU", "SPCU",
 ]
 
 

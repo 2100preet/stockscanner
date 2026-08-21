@@ -107,6 +107,13 @@ tickers:
   - IBIT  # iShares Bitcoin Trust — BTC pullback / 80k watch longs
   # Event / biotech — sticky watch + prior Phase 3 miss class
   - MRNA  # Moderna — day-3 continuation / catalyst tape
+  # Leveraged / single-stock ETF sleeve (sticky watch — keep on focus)
+  - TSLL  # Direxion Daily TSLA Bull 2X
+  - SOXL  # Direxion Daily Semiconductor Bull 3X
+  - SOXS  # Direxion Daily Semiconductor Bear 3X
+  - DRAM  # Roundhill Memory ETF
+  - MRVU  # Direxion Daily MRVL Bull 2X
+  - SPCU  # Defiance Daily Target 2X Long SPCX
   # CRM / AMAT already listed above under Friday weeklies
 
 # Yahoo Finance symbol overrides (indexes need ^ prefix for quotes/chains)
@@ -209,6 +216,12 @@ expiry_calendars:
     - WULF
     - IBIT
     - MRNA
+    - TSLL
+    - SOXL
+    - SOXS
+    - DRAM
+    - MRVU
+    - SPCU
     - HYG
     - EEM
 

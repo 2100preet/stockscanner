@@ -109,13 +109,49 @@ def test_watch_when_inside_range():
 
 def test_resolve_includes_user_names_and_now():
     cfg = {
-        "tickers": ["SPY", "QQQ", "IWM", "TSLA", "NVDA", "NBIS", "AAPL", "SLV", "SPCX", "NOW", "PLTR"],
+        "tickers": [
+            "SPY",
+            "QQQ",
+            "IWM",
+            "TSLA",
+            "TSLL",
+            "NVDA",
+            "NBIS",
+            "AAPL",
+            "SLV",
+            "SPCX",
+            "SPCU",
+            "NOW",
+            "PLTR",
+            "SOXL",
+            "DRAM",
+            "MRVU",
+            "SOXS",
+        ],
         "actions": {"odte_1k_symbols": "focus"},
     }
     syms = resolve_odte_1k_symbols("focus", config=cfg)
-    for need in ("SPY", "IWM", "TSLA", "NVDA", "NBIS", "AAPL", "SLV", "SPCX", "NOW"):
+    for need in (
+        "SPY",
+        "IWM",
+        "TSLA",
+        "TSLL",
+        "NVDA",
+        "NBIS",
+        "AAPL",
+        "SLV",
+        "SPCX",
+        "SPCU",
+        "NOW",
+        "SOXL",
+        "DRAM",
+        "MRVU",
+        "SOXS",
+    ):
         assert need in syms
     assert syms.index("SPY") < syms.index("PLTR")
+    assert syms.index("TSLA") < syms.index("TSLL") or syms.index("TSLL") < syms.index("PLTR")
+    assert syms.index("TSLL") < syms.index("PLTR")
 
 
 def test_put_now_action_is_emitted():
