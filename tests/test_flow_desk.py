@@ -29,6 +29,17 @@ def test_curated_high_potential_on_focus():
     assert 60 <= len(FOCUS_DEFAULT) <= 120
 
 
+def test_sticky_note_watch_on_focus():
+    """SPCX/INTC already focus; IBIT + MRNA from sticky watch must stay scanned."""
+    for sym in ("SPCX", "INTC", "IBIT", "MRNA"):
+        assert sym in FOCUS_DEFAULT, f"{sym} missing from FOCUS_DEFAULT"
+        assert sym in liquid_universe(), f"{sym} missing from liquid_universe"
+    from odte_scanner.data.universe import market_cap_tier
+
+    assert market_cap_tier("IBIT") == "etf"
+    assert market_cap_tier("MRNA") == "mega_large"
+
+
 def test_flow_score_flags_and_tiers():
     golden = score_flow_print(
         {"right": "C", "strike": 100, "volume": 25000, "open_interest": 10000, "mid": 1.5, "premium_notional": 300000},

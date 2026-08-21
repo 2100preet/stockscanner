@@ -104,6 +104,7 @@ tickers:
   - APLD  # Applied Digital — AI datacenter buildout
   - CIFR  # Cipher Mining — liquid bitcoin miner
   - WULF  # TeraWulf — liquid bitcoin / power narrative
+  - IBIT  # iShares Bitcoin Trust — BTC pullback / 80k watch longs
   # Event / biotech — MRNA was absent on 2026-08-19 (+177% Phase 3 day)
   - MRNA
   - BNTX
@@ -220,6 +221,8 @@ expiry_calendars:
     - APLD
     - CIFR
     - WULF
+    - IBIT
+    - MRNA
     - HYG
     - EEM
 
