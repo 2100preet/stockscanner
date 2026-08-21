@@ -366,6 +366,14 @@ actions:
   power_hour_max_bar_fetch: 16
   power_hour_max_quote_fetch: 48
   power_hour_fetch_bars: true
+  # RSI desk — Wilder RSI(14) oversold BUY / overbought SELL tab
+  rsi_desk_enabled: true
+  rsi_desk_symbols: focus
+  rsi_desk_max_bar_fetch: 60
+  rsi_desk_fetch_bars: true
+  rsi_period: 14
+  rsi_oversold: 30
+  rsi_overbought: 70
   # Hold / time-stop (industry desk practice)
   odte_flatten_et: "15:45"       # hard flatten 0DTE by 15:45 ET
   weekly_max_hold_days: 7        # max calendar days for weekly tickets

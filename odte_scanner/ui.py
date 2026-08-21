@@ -259,6 +259,7 @@ PAGE = r"""
       <button data-tab="odte">0DTE</button>
       <button data-tab="odte1k">0DTE $1K</button>
       <button data-tab="powerhour">Power Hour</button>
+      <button data-tab="rsi">RSI</button>
       <button data-tab="explosive">Explosive</button>
       <button data-tab="weekly">1 Week</button>
       <button data-tab="swing">Swing 1–3M</button>
@@ -460,6 +461,37 @@ PAGE = r"""
         <div id="powerHourRules" class="empty">—</div>
       </div>
       <p class="lede" id="powerHourDisclaimer" style="font-size:.72rem"></p>
+    </section>
+
+    <section class="tabpane" id="tab-rsi">
+      <h2>RSI Desk — Oversold BUY · Overbought SELL</h2>
+      <p class="lede">
+        Classic Wilder <strong>RSI(14)</strong> on daily bars for every focus name.
+        <strong>RSI ≤ 30</strong> = oversold → <strong>BUY</strong> bias;
+        <strong>RSI ≥ 70</strong> = overbought → <strong>SELL</strong> bias;
+        mid-range = <strong>WATCH</strong>.
+        Stronger when RSI is turning up off oversold or rolling over from overbought.
+        RSI alone is a bias — confirm with price / Power Hour VWAP.
+      </p>
+      <div class="metric-row" id="rsiMetrics"></div>
+      <div class="cards" id="rsiPrimary"></div>
+      <div class="panel">
+        <h2>BUY bias — oversold (RSI ≤ 30)</h2>
+        <div id="rsiBuy" class="empty">—</div>
+      </div>
+      <div class="panel">
+        <h2>SELL bias — overbought (RSI ≥ 70)</h2>
+        <div id="rsiSell" class="empty">—</div>
+      </div>
+      <div class="panel">
+        <h2>All focus — RSI by symbol</h2>
+        <div id="rsiAll" class="empty">—</div>
+      </div>
+      <div class="panel">
+        <h2>Rules</h2>
+        <div id="rsiRules" class="empty">—</div>
+      </div>
+      <p class="lede" id="rsiDisclaimer" style="font-size:.72rem"></p>
     </section>
 
     <section class="tabpane" id="tab-explosive">
@@ -2322,6 +2354,85 @@ PAGE = r"""
       if (disc) disc.textContent = b.disclaimer || "";
     }
 
+    function renderRsiDesk(board) {
+      const metrics = document.getElementById("rsiMetrics");
+      const primaryEl = document.getElementById("rsiPrimary");
+      const buyEl = document.getElementById("rsiBuy");
+      const sellEl = document.getElementById("rsiSell");
+      const allEl = document.getElementById("rsiAll");
+      const rulesEl = document.getElementById("rsiRules");
+      const disc = document.getElementById("rsiDisclaimer");
+      const b = board || {};
+      if (!Object.keys(b).length) {
+        if (allEl) allEl.innerHTML = `<div class="empty">RSI board loading…</div>`;
+        return;
+      }
+      const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
+      const c = b.counts || {};
+      if (metrics) metrics.innerHTML = [
+        m("Oversold BUY", c.buy??0, (c.buy||0)>0?"up":""),
+        m("Overbought SELL", c.sell??0, (c.sell||0)>0?"down":""),
+        m("WATCH", c.watch??0),
+        m("With RSI", c.with_rsi??0),
+        m("Names", c.names??0),
+        m("Thresholds", `≤${b.oversold??30} / ≥${b.overbought??70}`),
+      ].join("");
+
+      const sideBadge = (a) => {
+        const cls = a==="BUY"?"buy":(a==="SELL"?"sell":"wait");
+        return `<span class="badge ${cls}">${a||"WATCH"}</span>`;
+      };
+      const zoneTag = (z) => {
+        if (!z || z==="neutral" || z==="unknown") return "";
+        const label = String(z).replace(/_/g," ");
+        return ` <span class="tag">${label}</span>`;
+      };
+      const rowTable = (rows, emptyMsg) => {
+        if (!rows || !rows.length) return `<div class="empty">${emptyMsg}</div>`;
+        return `<table><thead><tr>
+          <th>Bias</th><th>Symbol</th><th>RSI(14)</th><th>Δ RSI</th><th>Last</th><th>Chg%</th><th>Zone</th><th>Detail</th>
+        </tr></thead><tbody>${rows.map(r=>{
+          const rsi = r.rsi;
+          const prev = r.prev_rsi;
+          const dRsi = (rsi!=null && prev!=null) ? (rsi-prev) : null;
+          const rsiCls = rsi==null?"":(rsi<=(b.oversold||30)?"up":(rsi>=(b.overbought||70)?"down":""));
+          return `<tr>
+          <td>${sideBadge(r.action)}</td>
+          <td><strong>${r.symbol}</strong>${zoneTag(r.zone)}</td>
+          <td class="mono ${rsiCls}">${rsi==null?"—":fmt(rsi,1)}</td>
+          <td class="mono ${pctClass(dRsi)}">${dRsi==null?"—":((dRsi>=0?"+":"")+fmt(dRsi,1))}${r.rising===true?" ↑":(r.rising===false?" ↓":"")}</td>
+          <td class="mono">${r.last==null?"—":"$"+fmt(r.last,2)}</td>
+          <td class="mono ${pctClass(r.change_pct)}">${r.change_pct==null?"—":fmt(r.change_pct,2)+"%"}</td>
+          <td>${String(r.zone||"—").replace(/_/g," ")}</td>
+          <td class="why">${r.detail||""}</td>
+        </tr>`;}).join("")}</tbody></table>`;
+      };
+
+      const p0 = b.primary;
+      if (primaryEl) {
+        if (!p0) primaryEl.innerHTML = `<div class="empty">No RSI signal yet — waiting on daily bars.</div>`;
+        else {
+          const kind = p0.action==="BUY"?"long":(p0.action==="SELL"?"short":"wait");
+          primaryEl.innerHTML = `<article class="action-card ${kind}">
+            <div class="ac-top">
+              <div class="ac-sym">${p0.symbol} ${sideBadge(p0.action)}${zoneTag(p0.zone)}</div>
+              <div class="ac-dir ${kind}">RSI ${p0.rsi==null?"—":fmt(p0.rsi,1)} · ${p0.action||"WATCH"}</div>
+            </div>
+            <div class="ac-conf">Strength ${fmt(p0.strength,0)} · last ${p0.last==null?"—":"$"+fmt(p0.last,2)}</div>
+            <p class="why" style="margin:.55rem 0 0"><strong>Trigger:</strong> ${p0.trigger||""}</p>
+            <p class="why" style="margin:.35rem 0 0"><strong>Risk:</strong> ${p0.risk_line||""}</p>
+            <p class="why" style="margin:.35rem 0 0">${p0.detail||""}</p>
+          </article>`;
+        }
+      }
+
+      if (buyEl) buyEl.innerHTML = rowTable(b.buy||[], "No oversold (RSI ≤ 30) names right now.");
+      if (sellEl) sellEl.innerHTML = rowTable(b.sell||[], "No overbought (RSI ≥ 70) names right now.");
+      if (allEl) allEl.innerHTML = rowTable(b.all||[], "No RSI rows.");
+      if (rulesEl) rulesEl.innerHTML = `<ul class="lede" style="font-size:.78rem">${(b.playbook||[]).map(r=>`<li>${r}</li>`).join("")}</ul>`;
+      if (disc) disc.textContent = b.disclaimer || "";
+    }
+
     function renderDarkpoolMini(echo) {
       const el = document.getElementById("darkpoolMini");
       if (!el) return;
@@ -3186,6 +3297,7 @@ PAGE = r"""
       renderChallenge(DATA.challenge || {});
       renderOdte1k(DATA.odte_1k || {});
       renderPowerHour(DATA.power_hour || {});
+      renderRsiDesk(DATA.rsi_desk || {});
       renderScreener(hz, DATA.market || {});
       renderInsights(DATA.insights);
       renderRecLogAll(DATA.rec_log || {});
@@ -4446,6 +4558,33 @@ def create_app(config_path: str | None = None) -> Flask:
             logger.warning("power hour board unavailable: %s", exc)
             power_hour = {"error": str(exc), "long": [], "short": [], "disclaimer": "Power Hour board unavailable."}
 
+        rsi_desk: dict = {}
+        try:
+            if bool(actions_cfg.get("rsi_desk_enabled", True)):
+                from odte_scanner.signals.rsi_desk import (
+                    build_rsi_board,
+                    resolve_rsi_symbols,
+                )
+
+                rsi_syms = resolve_rsi_symbols(
+                    actions_cfg.get("rsi_desk_symbols"),
+                    config=cfg,
+                )
+                # Daily RSI is cheap — allow fetch on Pages/offline export so the tab is populated
+                rsi_fetch = bool(actions_cfg.get("rsi_desk_fetch_bars", True))
+                rsi_desk = build_rsi_board(
+                    quotes=quotes,
+                    symbols=rsi_syms,
+                    config=cfg,
+                    fetch_bars=rsi_fetch,
+                    max_bar_fetch=int(actions_cfg.get("rsi_desk_max_bar_fetch", 60)),
+                    aliases=aliases,
+                    cache_only=bool(offline and not rsi_fetch),
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("rsi desk unavailable: %s", exc)
+            rsi_desk = {"error": str(exc), "buy": [], "sell": [], "all": [], "disclaimer": "RSI desk unavailable."}
+
         market = {}
         try:
             from odte_scanner.market import build_market_board
@@ -4788,6 +4927,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 "challenge": challenge,
                 "odte_1k": odte_1k,
                 "power_hour": power_hour,
+                "rsi_desk": rsi_desk,
                 "zeroloss": zeroloss,
                 "market": market,
                 "walls_by_symbol": walls_by_symbol,
