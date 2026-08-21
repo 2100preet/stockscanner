@@ -24,8 +24,11 @@ def test_dram_memory_universe_present():
     assert "MU" in dram
     assert "WDC" in dram
     assert "AMAT" in dram
-    # DRAM sleeve ticker itself is mid-tier; mega peers keep mega_large
-    assert market_cap_tier("DRAM") == "mid"
+    assert "SOXL" in dram
+    assert "MRVU" in dram
+    # Roundhill Memory ETF + leveraged semi/MRVL products tier as etf
+    assert market_cap_tier("DRAM") == "etf"
+    assert market_cap_tier("SOXL") == "etf"
     assert market_cap_tier("MU") == "mega_large"
 
 

@@ -38,11 +38,13 @@ _ORB_PRIORITY = (
     "SPX",
     "XSP",
     "TSLA",
+    "TSLL",
     "NVDA",
     "AAPL",
     "NBIS",
     "SLV",
     "SPCX",
+    "SPCU",
     "NOW",
     "AMZN",
     "META",
@@ -51,6 +53,10 @@ _ORB_PRIORITY = (
     "CRWV",
     "PLTR",
     "SMCI",
+    "SOXL",
+    "SOXS",
+    "DRAM",
+    "MRVU",
 )
 
 
@@ -709,7 +715,8 @@ def build_odte_1k_board(
         "book": book,
         "playbook": [
             "Green Friday: session green — prefer puts on ORB weakness (not chase calls).",
-            "ORB15 = first 15m RTH High/Low (09:30–09:45 ET). Full focus sleeve (SPY/QQQ/IWM/TSLA/NVDA/NBIS/AAPL/SLV/SPCX/NOW/…). ",
+            "ORB15 = first 15m RTH High/Low (09:30–09:45 ET). Full focus sleeve "
+            "(SPY/QQQ/IWM/TSLA/TSLL/NVDA/NBIS/AAPL/SLV/SPCX/SPCU/SOXL/DRAM/…).",
             "PUT NOW on break + hold of ORB Low, or retest of ORB Low from below.",
             "Size ~85% of sleeve (~$850 on $1k). Max 2 trades / day.",
             "Flatten by 15:45 ET. Invalidation = reclaim above ORB Low.",
