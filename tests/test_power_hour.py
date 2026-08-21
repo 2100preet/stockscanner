@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from odte_scanner.signals.power_hour import (
+    FRIDAY_CLOSE_TICKERS,
     build_power_hour_board,
     decide_power_hour,
     resolve_power_hour_symbols,
@@ -27,6 +28,48 @@ def test_resolve_includes_specials_and_focus():
     syms = resolve_power_hour_symbols("focus", config=cfg)
     for s in ("NU", "NVDA", "CAPR", "ETON", "HTFL", "TSLA", "GOOGL", "NXPI", "SPY", "AAPL"):
         assert s in syms
+    for s in ("SOFI", "SPCX", "COST", "ASTS"):
+        assert s in syms
+    assert "SOFI" in FRIDAY_CLOSE_TICKERS
+
+
+def test_friday_close_sofi_long_in_window():
+    # Friday 2026-08-21
+    now = datetime(2026, 8, 21, 15, 35, tzinfo=ET)
+    sig = decide_power_hour(
+        "SOFI",
+        quote={"last": 12.5, "day_high": 12.8, "day_low": 11.9, "mom_15m_pct": 0.25, "vwap": 12.0},
+        phase="power_hour",
+        now=now,
+    )
+    assert sig.action == "LONG"
+    assert sig.playbook == "friday_close"
+    assert sig.special is True
+
+
+def test_friday_close_watch_before_1530():
+    now = datetime(2026, 8, 21, 15, 10, tzinfo=ET)
+    sig = decide_power_hour(
+        "SPCX",
+        quote={"last": 50.0, "day_high": 51.0, "day_low": 48.0, "mom_15m_pct": 0.3, "vwap": 49.0},
+        phase="power_hour",
+        now=now,
+    )
+    assert sig.action == "WATCH"
+    assert sig.playbook == "friday_close"
+    assert any("15:30" in r for r in sig.reasons)
+
+
+def test_friday_close_inactive_on_weekday():
+    # Thursday — generic sleeve, not friday_close playbook
+    now = datetime(2026, 8, 20, 15, 35, tzinfo=ET)
+    sig = decide_power_hour(
+        "SOFI",
+        quote={"last": 12.5, "day_high": 12.8, "day_low": 11.9, "mom_15m_pct": 0.25, "vwap": 12.0},
+        phase="power_hour",
+        now=now,
+    )
+    assert sig.playbook == "generic"
 
 
 def test_nxpi_requires_qqq():

@@ -13,6 +13,10 @@ Named playbooks (user rules):
   NXPI — Semi: QQQ ≥ VWAP + 15m HL / VWAP reclaim (no spike chase);
          stop below HL / reclaim candle
 
+Friday close sleeve (hist last-30m / last-hour bullish closers + SOFI):
+  Friday only · entry 15:30–15:45 ET · LONG above VWAP + constructive 15m;
+  WATCH before 15:30; no new entries after 15:45 flatten.
+
 Generic sleeve (TSLA + full focus list): LONG above VWAP with bullish 15m
 structure; SHORT below VWAP with bearish 15m structure; else WAIT.
 
@@ -40,6 +44,40 @@ PREP_START = time(14, 30)
 
 # Explicit playbook cards always shown first
 SPECIAL_TICKERS = ("NU", "NVDA", "CAPR", "ETON", "HTFL", "TSLA", "GOOGL", "NXPI")
+
+# Friday last-30m / last-hour hist closers + sticky SOFI (Power Hour trade sleeve)
+# Ranked from 2026 Friday RTH studies (15m last-30m + 60m last-hour). Named specials
+# (e.g. GOOGL) keep their own playbooks; these names use friday_close on Fridays.
+FRIDAY_CLOSE_TICKERS = (
+    "SOFI",
+    "SPCX",
+    "AVGO",
+    "COST",
+    "ASTS",
+    "UBER",
+    "ORCL",
+    "NOW",
+    "MSTR",
+    "AAPL",
+    "CRM",
+    "QCOM",
+    "IBIT",
+    "MRNA",
+    "UNG",
+    "AMD",
+)
+FRIDAY_CLOSE_SET = frozenset(FRIDAY_CLOSE_TICKERS)
+FRIDAY_CLOSE_ENTRY_START = time(15, 30)
+FRIDAY_CLOSE_ENTRY_END = time(15, 45)
+
+FRIDAY_CLOSE_RULE: dict[str, str] = {
+    "bias": "LONG",
+    "trigger": (
+        "Friday only: after 15:30 ET, long above VWAP with constructive 15m "
+        "(hist last-30m / last-hour bullish closers + SOFI)"
+    ),
+    "risk": "Stop below VWAP / last 15m low; no new entries after 15:45 ET; never average down",
+}
 
 SPECIAL_RULES: dict[str, dict[str, str]] = {
     "NU": {
@@ -82,6 +120,8 @@ SPECIAL_RULES: dict[str, dict[str, str]] = {
         "trigger": "Semi long only if QQQ ≥ VWAP and NXPI holds a 15m higher low / VWAP reclaim (no spike)",
         "risk": "Stop below the higher-low / reclaim candle; never average down",
     },
+    # Shared Friday close sleeve — shown on board; per-symbol playbook = friday_close
+    "friday_close": dict(FRIDAY_CLOSE_RULE),
 }
 
 # Mega-cap / high-beta names that should not long against QQQ weakness
@@ -329,8 +369,17 @@ def decide_power_hour(
     sym = str(symbol).upper()
     q = quote or {}
     phase = phase or session_phase(now)
+    now_et = now.astimezone(ET) if now and now.tzinfo else (now.replace(tzinfo=ET) if now else datetime.now(ET))
+    tnow = now_et.time()
+    is_friday = now_et.weekday() == 4
+    friday_sleeve = is_friday and sym in FRIDAY_CLOSE_SET and sym not in SPECIAL_RULES
+
     special = SPECIAL_RULES.get(sym)
-    playbook = sym if special else "generic"
+    if friday_sleeve:
+        special = FRIDAY_CLOSE_RULE
+        playbook = "friday_close"
+    else:
+        playbook = sym if special else "generic"
     rule_trigger = (special or {}).get("trigger") or (
         "LONG if above VWAP + bullish 15m structure; SHORT if below VWAP + bearish 15m structure"
     )
@@ -508,6 +557,58 @@ def decide_power_hour(
             if not near_hod:
                 reasons.append("Not near HOD yet")
 
+    elif friday_sleeve:
+        # Friday hist last-30m closers + SOFI: entry only 15:30–15:45 ET
+        constructive = (
+            bool(st.get("higher_low"))
+            or bool(st.get("bullish_reclaim"))
+            or bool(st.get("break_above_base"))
+            or (mom15 is not None and mom15 >= 0.08)
+        )
+        in_entry = phase == "power_hour" and FRIDAY_CLOSE_ENTRY_START <= tnow < FRIDAY_CLOSE_ENTRY_END
+        reasons.append("Friday close sleeve (hist last-30m / last-hour)")
+        if phase in {"prep", "power_hour"} and tnow < FRIDAY_CLOSE_ENTRY_START:
+            action = "WATCH"
+            strength = 48.0
+            detail = f"{sym}: Friday close — wait for 15:30 ET last-30m window"
+            reasons.append("Before 15:30 ET — no friday_close entry yet")
+            if above:
+                reasons.append("Above VWAP — armed for 15:30 trigger")
+            elif below:
+                reasons.append("Below VWAP — need reclaim before 15:30")
+        elif in_entry and above and constructive and not st.get("spike_risk"):
+            action = "LONG"
+            strength = 76.0
+            stop = min(x for x in [vwap, candle_low, st.get("base_low")] if x is not None) if (
+                vwap is not None or candle_low is not None or st.get("base_low") is not None
+            ) else None
+            detail = f"{sym}: Friday close LONG — ≥VWAP + constructive 15m (15:30–15:45)"
+            reasons += ["≥ VWAP", "Constructive 15m", "Entry window 15:30–15:45 ET"]
+        elif in_entry:
+            action = "WATCH"
+            strength = 42.0
+            detail = f"{sym}: Friday close — need VWAP hold + constructive 15m (no spike)"
+            if not above:
+                reasons.append("Below VWAP — no friday_close long")
+            if not constructive:
+                reasons.append("15m not constructive yet")
+            if st.get("spike_risk"):
+                reasons.append("Spike — skip chase")
+        else:
+            # Non-PH or after window handled by shared 15:45 flatten
+            bull = above and constructive
+            if bull and phase in {"prep", "power_hour", "regular"} and tnow < FRIDAY_CLOSE_ENTRY_START:
+                action = "WATCH"
+                strength = 48.0
+                detail = f"{sym}: Friday close sleeve — wait 15:30 ET"
+            elif bull and phase in {"regular"}:
+                action = "WATCH"
+                strength = 45.0
+                detail = f"{sym}: Friday close sleeve is power-hour only"
+            else:
+                action = "WATCH" if phase in {"prep", "power_hour"} else "WAIT"
+                detail = f"{sym}: Friday close — no clear ≥VWAP 15m edge"
+
     else:
         # Generic focus sleeve (incl. TSLA path when structure clear)
         bull = above and (
@@ -565,9 +666,6 @@ def decide_power_hour(
         strength = min(strength, 38.0)
         detail = f"{sym}: blocked — QQQ below VWAP (breadth filter)"
         reasons.append("Mega long needs QQQ ≥ VWAP")
-
-    now_et = now.astimezone(ET) if now and now.tzinfo else (now.replace(tzinfo=ET) if now else datetime.now(ET))
-    tnow = now_et.time()
 
     # 4) Early power-hour chaos (15:00–15:15): demote fresh generic entries
     if (
@@ -668,7 +766,7 @@ def resolve_power_hour_symbols(
 
     seen: set[str] = set()
     out: list[str] = []
-    for sym in list(SPECIAL_TICKERS) + [str(s).upper() for s in raw]:
+    for sym in list(SPECIAL_TICKERS) + list(FRIDAY_CLOSE_TICKERS) + [str(s).upper() for s in raw]:
         key = str(sym).replace(".", "-").upper()
         if not key or key in seen:
             continue
@@ -694,8 +792,13 @@ def build_power_hour_board(
     symbols = resolve_power_hour_symbols(symbols, config=config)
     phase = session_phase(now)
 
-    # Fetch intraday bars for specials + weakest/strongest tape (capped)
+    # Fetch intraday bars for specials + Friday close sleeve + weakest/strongest tape (capped)
     fetch_list = [s for s in SPECIAL_TICKERS if s in symbols or s == "QQQ"]
+    now_et = now.astimezone(ET) if now and now.tzinfo else (now.replace(tzinfo=ET) if now else datetime.now(ET))
+    if now_et.weekday() == 4:
+        for s in FRIDAY_CLOSE_TICKERS:
+            if s in symbols and s not in fetch_list:
+                fetch_list.append(s)
     if "QQQ" not in fetch_list:
         fetch_list.insert(0, "QQQ")
     ranked = sorted(
@@ -756,6 +859,7 @@ def build_power_hour_board(
         ),
         "symbols": symbols,
         "special_rules": SPECIAL_RULES,
+        "friday_close_tickers": list(FRIDAY_CLOSE_TICKERS),
         "primary": primary.to_dict() if primary else None,
         "long": [s.to_dict() for s in longs],
         "short": [s.to_dict() for s in shorts],
@@ -772,7 +876,7 @@ def build_power_hour_board(
         "playbook": [
             "Window: prep 14:30 ET · power hour 15:00–16:00 ET · no new entries after 15:45 ET.",
             "Shared: skip VWAP chop (|vs VWAP|<0.08%); spike veto; never average down; half-size first 15m of PH on generics.",
-            "Mega longs (NVDA/GOOGL/TSLA/AAPL/…): require QQQ ≥ VWAP.",
+            "Mega longs (NVDA/GOOGL/TSLA/AAPL/AVGO/…): require QQQ ≥ VWAP.",
             "NU: 15m close above VWAP → break that candle high · exit close back below VWAP.",
             "NVDA: QQQ also above VWAP + NVDA higher low · stop below HL candle.",
             "GOOGL: QQQ ≥ VWAP + higher low / VWAP reclaim · no spike chase.",
@@ -780,6 +884,7 @@ def build_power_hour_board(
             "CAPR: tight 15m base break with volume · stop below base low · no average down.",
             "ETON: pullback holds VWAP → 15m bullish reclaim · stop below VWAP/pullback low.",
             "HTFL: consolidation near HOD breakout — not a spike chase.",
+            "Friday close (SOFI/SPCX/AVGO/COST/ASTS/UBER/ORCL/…): Fri only · LONG 15:30–15:45 if ≥VWAP + constructive 15m · WATCH before 15:30.",
             "TSLA + focus sleeve: LONG above VWAP with bullish 15m; SHORT below VWAP with bearish 15m.",
         ],
         "disclaimer": (

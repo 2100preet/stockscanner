@@ -433,7 +433,8 @@ PAGE = r"""
       <h2>Power Hour — LONG / SHORT · 15m VWAP</h2>
       <p class="lede">
         Prep <strong>14:30</strong> · Power hour <strong>15:00–16:00 ET</strong>.
-        Named playbooks: <strong>NU · NVDA · CAPR · ETON · HTFL · GOOGL · NXPI</strong> (+ <strong>TSLA</strong> and the full focus sleeve).
+        Named playbooks: <strong>NU · NVDA · CAPR · ETON · HTFL · GOOGL · NXPI</strong> (+ <strong>TSLA</strong>).
+        <strong>Friday close</strong> sleeve: <strong>SOFI · SPCX · AVGO · COST · ASTS · UBER · ORCL</strong> (+ hist closers) — longs only Fri <strong>15:30–15:45 ET</strong> above VWAP.
         Each row shows whether to go <strong>LONG or SHORT</strong>, the 15-minute trigger, and the risk line / stop.
       </p>
       <div class="metric-row" id="powerHourMetrics"></div>

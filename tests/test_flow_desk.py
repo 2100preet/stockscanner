@@ -31,15 +31,16 @@ def test_curated_high_potential_on_focus():
 
 def test_sticky_note_watch_on_focus():
     """Sticky watch + core names that must stay on every focus scan."""
-    # Sticky note: SPCX/INTC already present; IBIT/MRNA elevated in this PR.
+    # Sticky note: SPCX/INTC already present; IBIT/MRNA/SOFI elevated.
     # HOOD / AVGO / COST were already on focus — keep locked.
-    for sym in ("SPCX", "INTC", "IBIT", "MRNA", "HOOD", "AVGO", "COST"):
+    for sym in ("SPCX", "INTC", "IBIT", "MRNA", "SOFI", "HOOD", "AVGO", "COST"):
         assert sym in FOCUS_DEFAULT, f"{sym} missing from FOCUS_DEFAULT"
         assert sym in liquid_universe(), f"{sym} missing from liquid_universe"
     from odte_scanner.data.universe import market_cap_tier
 
     assert market_cap_tier("IBIT") == "etf"
     assert market_cap_tier("MRNA") == "mega_large"
+    assert market_cap_tier("SOFI") == "mid"
     assert market_cap_tier("HOOD") == "mid"
     assert market_cap_tier("AVGO") == "mega_large"
     assert market_cap_tier("COST") == "mega_large"

@@ -105,6 +105,7 @@ tickers:
   - CIFR  # Cipher Mining — liquid bitcoin miner
   - WULF  # TeraWulf — liquid bitcoin / power narrative
   - IBIT  # iShares Bitcoin Trust — BTC pullback / 80k watch longs
+  - SOFI  # SoFi — sticky-note watch; fintech weeklies; Friday power-close sleeve
   # Event / biotech — MRNA was absent on 2026-08-19 (+177% Phase 3 day)
   - MRNA
   - BNTX
@@ -222,6 +223,7 @@ expiry_calendars:
     - CIFR
     - WULF
     - IBIT
+    - SOFI
     - MRNA
     - HYG
     - EEM
@@ -358,7 +360,7 @@ actions:
   odte_1k_fetch_contracts: true
   odte_1k_auto_enter: false
   odte_1k_auto_exit: true
-  # Power Hour — 15m VWAP LONG/SHORT (NU/NVDA/CAPR/ETON/HTFL + focus sleeve)
+  # Power Hour — 15m VWAP LONG/SHORT (NU/NVDA/CAPR/ETON/HTFL + Friday close sleeve + focus)
   power_hour_enabled: true
   power_hour_symbols: focus
   power_hour_max_bar_fetch: 16

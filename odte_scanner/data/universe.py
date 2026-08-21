@@ -233,8 +233,8 @@ FOCUS_DEFAULT: list[str] = [
     # Curated high-potential (memory / AI infra / power / liquid mid) — not full S&P 500
     "SNDK", "WDC", "STX", "LRCX", "KLAC", "MRVL", "ANET", "ALAB", "CRDO", "APP",
     "VRT", "CEG", "GEV", "APLD", "CIFR", "WULF",
-    # Sticky-note + event tape — never drop MRNA-class / IBIT from focus
-    "IBIT", "MRNA", "BNTX", "XBI", "LLY", "NVO", "MRK", "PFE", "NKE",
+    # Sticky-note + event tape — never drop MRNA-class / IBIT / SOFI from focus
+    "IBIT", "SOFI", "MRNA", "BNTX", "XBI", "LLY", "NVO", "MRK", "PFE", "NKE",
     # Critical minerals / rare earth / uranium — MP/USAR were the same miss class
     "MP", "USAR", "UUUU", "CCJ", "ALB", "TMC",
 ]
