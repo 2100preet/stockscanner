@@ -258,7 +258,8 @@ PAGE = r"""
         <strong>How 0DTE score is calculated:</strong> weighted average (0–100) of algos —
         gap &amp; go / breakout (1.5), volume thrust (1.4), relative strength + VIX (1.2), squeeze (1.1),
         MACD (1.0), RSI (0.9), EMA stack (0.8). A <em>confirm</em> = bullish algo with score ≥65.
-        <strong>Quality</strong> (needed for gated BUY NOW) = ensemble ≥72 <em>and</em> ≥3 confirms.
+        <strong>Quality</strong> (needed for gated BUY NOW) = ensemble ≥72 <em>and</em> ≥3 confirms on 0DTE;
+        weeklies use a soft floor (65) so COST-class grinders can clear. Live desk no longer marks scan asks as stale.
         Soft scores ~55–71 can still appear on the chase / convex lane as <em>BUY — bit risky</em>.
       </p>
       <div class="panel" id="redFlagOdtePanel"><div id="redFlagOdte" class="empty">—</div></div>
@@ -3164,9 +3165,17 @@ def create_app(config_path: str | None = None) -> Flask:
         refreshed: list[dict] = []
 
         def _refresh(item: dict) -> dict:
-            # Use scan-time option fields; live chain refresh is too slow for UI paint
+            # Use scan-time option fields; live chain refresh is too slow for UI paint.
+            # Do NOT mark real scan asks as stale — that + require_live_confirm wiped every
+            # live BUY NOW ("Option quote stale — not buying blind").
             out = dict(item)
-            out["quote_stale"] = True
+            ask = item.get("ask")
+            has_mark = ask is not None and float(ask or 0) > 0
+            contract = item.get("contract")
+            synthetic = bool(item.get("synthetic")) or (
+                isinstance(contract, str) and contract.endswith("_SYN")
+            )
+            out["quote_stale"] = synthetic or not has_mark
             sym = str(item.get("symbol"))
             q = quotes.get(sym)
             if q:
@@ -3277,14 +3286,26 @@ def create_app(config_path: str | None = None) -> Flask:
         else:
             free_dealer = scan.get("free_dealer") or {"ok": False, "error": "offline"}
 
+        # Pages snapshot has no 5m tape. buy_score 72 left hist-gated names in WAIT.
+        pages_buy_score = float(
+            actions_cfg.get("wait_score", 62) if offline else actions_cfg.get("buy_score", 70)
+        )
+        weekly_buy_score = float(
+            actions_cfg.get(
+                "weekly_buy_score",
+                actions_cfg.get("wait_score", 62) if offline else 65,
+            )
+        )
+
         actions = build_action_board(
             candidates=refreshed,
             scores=scan.get("scores") or [],
             quotes=quotes,
             ledger=ledger if isinstance(ledger, dict) else None,
             journal_opens=journal_opens,
-            buy_score=float(actions_cfg.get("buy_score", 70)),
+            buy_score=pages_buy_score,
             wait_score=float(actions_cfg.get("wait_score", 62)),
+            weekly_buy_score=weekly_buy_score,
             sell_score=float(actions_cfg.get("sell_score", 48)),
             stop_loss_pct=float(risk.get("stop_loss_pct", 50)),
             take_profit_pct=float(risk.get("take_profit_pct", 80)),
@@ -3326,8 +3347,9 @@ def create_app(config_path: str | None = None) -> Flask:
                     quotes=quotes,
                     ledger=ledger if isinstance(ledger, dict) else None,
                     journal_opens=journal_opens,
-                    buy_score=float(actions_cfg.get("buy_score", 70)),
+                    buy_score=pages_buy_score,
                     wait_score=float(actions_cfg.get("wait_score", 62)),
+                    weekly_buy_score=weekly_buy_score,
                     sell_score=float(actions_cfg.get("sell_score", 48)),
                     stop_loss_pct=float(risk.get("stop_loss_pct", 50)),
                     take_profit_pct=float(risk.get("take_profit_pct", 80)),

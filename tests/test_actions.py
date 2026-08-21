@@ -11,6 +11,130 @@ from zoneinfo import ZoneInfo
 _MORNING = datetime(2026, 8, 11, 11, 0, tzinfo=ZoneInfo("America/New_York"))
 
 
+def test_scan_ask_not_stale_blocks_buy():
+    """Regression: UI was forcing quote_stale=True → empty live BUY NOW."""
+    sig = decide_entry(
+        {
+            "symbol": "COST",
+            "score": 68,
+            "strike": 950,
+            "expiry": "2026-08-28",
+            "ask": 8.5,
+            "bid": 8.2,
+            "contract": "COST260828C00950000",
+            "dte": 7,
+            "dte_bucket": "weekly",
+            "quote_stale": False,
+        },
+        quote={
+            "last": 949,
+            "session_change_pct": 1.55,
+            "mom_5m_pct": 0.11,
+            "mom_15m_pct": 0.27,
+        },
+        buy_score=72,
+        weekly_buy_score=65,
+        require_live_confirm=True,
+        now=_MORNING,
+    )
+    assert sig.action == "BUY_NOW"
+
+
+def test_stale_without_ask_still_waits():
+    sig = decide_entry(
+        {
+            "symbol": "COST",
+            "score": 80,
+            "strike": 950,
+            "expiry": "2026-08-28",
+            "ask": None,
+            "contract": "COST260828C00950000",
+            "dte_bucket": "weekly",
+            "quote_stale": True,
+        },
+        quote={"last": 949, "session_change_pct": 1.0, "mom_5m_pct": 0.2},
+        buy_score=72,
+        require_live_confirm=True,
+        now=_MORNING,
+    )
+    assert sig.action == "WAIT"
+    assert "stale" in sig.detail.lower() or "blind" in sig.detail.lower()
+
+
+def test_hood_chase_waits_until_pullback_reclaim():
+    """HOOD +11% with weak 5m must WAIT; weekly reclaim with 5m bounce can BUY."""
+    cand = {
+        "symbol": "HOOD",
+        "score": 75,
+        "strike": 105,
+        "expiry": "2026-08-28",
+        "ask": 4.0,
+        "bid": 3.8,
+        "contract": "HOOD260828C00105000",
+        "dte": 7,
+        "dte_bucket": "weekly",
+    }
+    blocked = decide_entry(
+        cand,
+        quote={
+            "last": 106,
+            "session_change_pct": 11.3,
+            "mom_5m_pct": -0.13,
+            "mom_15m_pct": -0.18,
+        },
+        buy_score=72,
+        weekly_buy_score=65,
+        max_chase_pct=2.5,
+        now=_MORNING,
+    )
+    assert blocked.action == "WAIT"
+    assert "chase" in blocked.detail.lower() or "pullback" in blocked.detail.lower()
+
+    reclaim = decide_entry(
+        cand,
+        quote={
+            "last": 104,
+            "session_change_pct": 9.5,
+            "mom_5m_pct": 0.12,
+            "mom_15m_pct": 0.05,
+        },
+        buy_score=72,
+        weekly_buy_score=65,
+        max_chase_pct=2.5,
+        now=_MORNING,
+    )
+    assert reclaim.action == "BUY_NOW"
+    assert "pullback reclaim" in reclaim.detail.lower()
+
+
+def test_grind_continuation_lifts_cost_class():
+    from odte_scanner.algos.signals import grind_continuation
+    import pandas as pd
+    import numpy as np
+
+    idx = pd.date_range("2026-01-01", periods=80, freq="B")
+    # Slow grind above rising MAs
+    close = pd.Series(np.linspace(900, 948, len(idx)), index=idx)
+    close.iloc[-1] = 949.0
+    close.iloc[-2] = 934.0
+    high = close * 1.005
+    low = close * 0.995
+    df = pd.DataFrame({"Open": close.shift(1).fillna(close), "High": high, "Low": low, "Close": close, "Volume": 1e6})
+    sig = grind_continuation(df)
+    assert sig.bullish
+    assert sig.score >= 65
+
+    # Parabolic rip must not look like a grind
+    close2 = close.copy()
+    close2.iloc[-2] = 90.0
+    close2.iloc[-1] = 106.0
+    high2 = close2 * 1.01
+    df2 = pd.DataFrame({"Open": close2.shift(1).fillna(close2), "High": high2, "Low": close2 * 0.99, "Close": close2, "Volume": 1e6})
+    rip = grind_continuation(df2)
+    assert rip.score < 50
+    assert not rip.bullish
+
+
 def test_buy_now_requires_short_term_bounce():
     sig = decide_entry(
         {

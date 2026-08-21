@@ -89,6 +89,7 @@ def decide_entry(
     quote: dict[str, Any] | None,
     buy_score: float = 70.0,
     wait_score: float = 62.0,
+    weekly_buy_score: float | None = None,
     max_chase_pct: float = 2.5,
     open_symbols: set[str] | None = None,
     require_live_confirm: bool = True,
@@ -105,7 +106,7 @@ def decide_entry(
       - live option quote preferred (no synthetic)
       - tape confirm aligned with side (calls need bounce; puts need dump)
       - 0DTE: moneyness / no new entries after 15:00 ET; EXIT plan always attached
-      - not chasing an already-extended move
+      - not chasing an already-extended move (weekly may reclaim after pullback)
     """
     symbol = str(candidate.get("symbol", ""))
     score = float(candidate.get("score") or 0)
@@ -125,6 +126,12 @@ def decide_entry(
     bucket = _bucket_label(candidate)
     dte = candidate.get("dte")
     dte_bucket = candidate.get("dte_bucket") or ("weekly" if bucket == "1W" else "0dte")
+    # Weekly desk: slightly softer score floor so COST-class grinders can promote
+    # when tape is constructive (0DTE keeps the strict buy_score).
+    eff_buy_score = float(buy_score)
+    if bucket == "1W":
+        soft = float(weekly_buy_score if weekly_buy_score is not None else min(buy_score, 65.0))
+        eff_buy_score = min(float(buy_score), soft)
     contract = candidate.get("contract")
     strike = candidate.get("strike")
     ask = candidate.get("ask")
@@ -209,6 +216,7 @@ def decide_entry(
         return _wait("Past 15:00 ET — no new 0DTE entries (flatten / manage only).")
 
     # --- Hard tape gates (side-aware) ---
+    pullback_reclaim = False
     if not is_put:
         if mom5 is not None and mom5 <= -0.15:
             return _wait(f"5m tape weak ({mom5:+.2f}%) — no BUY NOW call on falling knife.")
@@ -243,8 +251,23 @@ def decide_entry(
             )
 
         chase_limit = max_chase_pct if bucket == "0DTE" else max_chase_pct + 1.5
-        if live is not None and live >= chase_limit and score < buy_score + 5:
-            return _wait(f"Already up {live:+.2f}% this session — chase risk on calls.")
+        extended = live is not None and live >= chase_limit
+        # HOOD-class rippers: weekly may BUY on pullback reclaim (5m bounce), not mid-parabolic.
+        # Extreme extension always waits — high ensemble must not bypass chase.
+        pullback_reclaim = (
+            bucket == "1W"
+            and extended
+            and mom5 is not None
+            and mom5 >= 0.08
+            and (mom15 is None or mom15 >= -0.10)
+        )
+        if extended and not pullback_reclaim:
+            extreme = live is not None and live >= chase_limit * 1.6
+            if extreme or score < eff_buy_score + 5:
+                return _wait(
+                    f"Already up {live:+.2f}% this session — chase risk on calls"
+                    + ("; wait weekly pullback reclaim (5m bounce)" if bucket == "1W" else ".")
+                )
 
         if require_live_confirm and bucket == "0DTE":
             if mom5 is None and mom15 is None and live is None:
@@ -258,6 +281,8 @@ def decide_entry(
 
         tape_ok = live is None or live > -0.35
         mom_boost = 5 if mom5 and mom5 > 0.1 else 0
+        if pullback_reclaim:
+            mom_boost = max(mom_boost, 8)
     else:
         # Puts: need weakness, not a bounce
         if mom5 is not None and mom5 >= 0.15:
@@ -293,7 +318,7 @@ def decide_entry(
             )
 
         chase_limit = max_chase_pct if bucket == "0DTE" else max_chase_pct + 1.5
-        if live is not None and live <= -chase_limit and score < buy_score + 5:
+        if live is not None and live <= -chase_limit and score < eff_buy_score + 5:
             return _wait(f"Already down {live:+.2f}% this session — chase risk on puts.")
 
         if require_live_confirm and bucket == "0DTE":
@@ -317,7 +342,7 @@ def decide_entry(
         # Bearish sleeve: invert weak bullish score into put strength
         eff_score = max(score, 100.0 - float(score))
 
-    if eff_score >= buy_score and tape_ok:
+    if eff_score >= eff_buy_score and tape_ok:
         strength = min(100.0, eff_score + mom_boost)
         ask_f = float(ask or 0)
         exp = candidate.get("expiry")
@@ -328,6 +353,8 @@ def decide_entry(
             confirm_bits.append(f"spot {last:.2f}")
         if opt_pct is not None:
             confirm_bits.append(f"opt {opt_pct:+.0f}%")
+        if not is_put and pullback_reclaim:
+            confirm_bits.append("pullback reclaim")
         detail = (
             f"[{bucket}] Score {eff_score:.0f} · {exp} {float(strike):g} {side_lbl} @ ask ${ask_f:.2f}"
             + (f" (DTE {dte})" if dte is not None else "")
@@ -661,6 +688,7 @@ def build_action_board(
     ledger: dict[str, Any] | None,
     buy_score: float = 70.0,
     wait_score: float = 62.0,
+    weekly_buy_score: float | None = None,
     sell_score: float = 48.0,
     stop_loss_pct: float = 50.0,
     take_profit_pct: float = 80.0,
@@ -718,6 +746,7 @@ def build_action_board(
             quote=quotes.get(str(c.get("symbol"))),
             buy_score=buy_score,
             wait_score=wait_score,
+            weekly_buy_score=weekly_buy_score,
             max_chase_pct=max_chase_pct,
             open_symbols=open_symbols,
             require_live_confirm=require_live_confirm,
