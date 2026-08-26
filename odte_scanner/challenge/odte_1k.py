@@ -22,6 +22,7 @@ from odte_scanner.challenge.orb15 import (
     classify_vs_orb,
     compute_orb15,
     fetch_orb15_bars,
+    synthesize_1m_from_5m,
 )
 from odte_scanner.time_cst import signal_timestamps, to_cst_label
 
@@ -116,6 +117,37 @@ def orb_from_quote_proxy(symbol: str, quote: dict[str, Any] | None) -> Orb15Leve
     )
 
 
+def _side_for(action: str) -> str:
+    """Canonical desk side: IN (buy) / OUT (sell) / HOLD / WATCH."""
+    a = str(action or "").upper()
+    if a in {"PUT_NOW", "CALL_NOW", "BUY_NOW", "ENTRY", "BUY_PUT", "BUY_CALL"}:
+        return "IN"
+    if a in {"EXIT", "SELL_NOW", "SELL", "SELL_PUT", "SELL_CALL"}:
+        return "OUT"
+    if a == "HOLD":
+        return "HOLD"
+    return "WATCH"
+
+
+def _desk_action_for(action: str, right: str = "P") -> str:
+    """Human/alert action: BUY_PUT / SELL_PUT (maps cleanly to toast BUY/SELL)."""
+    side = _side_for(action)
+    r = "PUT" if str(right or "P").upper() == "P" else "CALL"
+    if side == "IN":
+        return f"BUY_{r}"
+    if side == "OUT":
+        return f"SELL_{r}"
+    if side == "HOLD":
+        return f"HOLD_{r}"
+    return f"WATCH_{r}"
+
+
+def _zone_put_premium(spot: float) -> float:
+    """Synthetic ATM 0DTE put ask so paper IN works when chain is dark."""
+    # ~0.25% of spot, floored for cheap names / capped for SPX-class
+    return round(min(8.0, max(0.35, float(spot) * 0.0025)), 2)
+
+
 @dataclass
 class Odte1kSignal:
     action: str  # PUT_NOW | CALL_NOW | HOLD | EXIT | WAIT | WATCH
@@ -145,11 +177,28 @@ class Odte1kSignal:
     signaled_at: str | None = None
     signaled_at_cst: str | None = None
     reasons: list[str] = field(default_factory=list)
+    side: str = "WATCH"  # IN | OUT | HOLD | WATCH
+    desk_action: str = "WATCH_PUT"  # BUY_PUT | SELL_PUT | …
+    alert_action: str = "WATCH"  # BUY_NOW | SELL_NOW | HOLD | WATCH
+    mark_source: str | None = None
+    orb_status: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         d["reasons"] = list(self.reasons or [])
         d["playbook"] = list(self.playbook or [])
+        # Always stamp IN/OUT labels so UI + alerts never depend on PUT_NOW alone
+        d["side"] = _side_for(self.action)
+        d["desk_action"] = _desk_action_for(self.action, self.right)
+        side = d["side"]
+        if side == "IN":
+            d["alert_action"] = "BUY_NOW"
+        elif side == "OUT":
+            d["alert_action"] = "SELL_NOW"
+        elif side == "HOLD":
+            d["alert_action"] = "HOLD"
+        else:
+            d["alert_action"] = "WATCH"
         if self.action in {"PUT_NOW", "CALL_NOW", "EXIT"} and not d.get("signaled_at"):
             d.update(signal_timestamps())
         return d
@@ -193,12 +242,13 @@ def _suggest_put_zone(spot: float) -> dict[str, Any]:
     """ATM-ish put zone when live chain unavailable (Pages / offline)."""
     strike = round(spot)  # SPY often $1 strikes
     today = datetime.now(ET).date()
+    ask = _zone_put_premium(spot)
     return {
         "strike": float(strike),
         "expiry": today.isoformat(),
         "dte": 0,
-        "ask": None,
-        "bid": None,
+        "ask": ask,
+        "bid": round(ask * 0.85, 2),
         "contract": None,
         "mark_source": "zone",
     }
@@ -267,8 +317,9 @@ def decide_odte_1k_entry(
     retest_band_usd: float = 0.40,
     flatten_et: str = "15:45",
     now: datetime | None = None,
+    allow_proxy_entry: bool = False,
 ) -> Odte1kSignal:
-    """Core PUT NOW / WAIT / HOLD / EXIT decision for the 0DTE 1K sleeve."""
+    """Core PUT NOW (IN) / WAIT / HOLD / EXIT (OUT) decision for the 0DTE 1K sleeve."""
     now_et = now.astimezone(ET) if now and now.tzinfo else (now.replace(tzinfo=ET) if now else datetime.now(ET))
     try:
         hh, mm = [int(x) for x in str(flatten_et).split(":")[:2]]
@@ -286,6 +337,24 @@ def decide_odte_1k_entry(
     conflict, conflict_note = _call_safe_zone(red_flag, actions)
     playbook = ["0dte_1k", "orb15", "green_friday_puts" if green else "session_fade"]
 
+    def _stamp(sig: Odte1kSignal) -> Odte1kSignal:
+        sig.side = _side_for(sig.action)
+        sig.desk_action = _desk_action_for(sig.action, sig.right)
+        if sig.side == "IN":
+            sig.alert_action = "BUY_NOW"
+            if "BUY PUT" not in (sig.headline or "").upper() and sig.action == "PUT_NOW":
+                sig.headline = f"IN · BUY PUT {sig.symbol}"
+        elif sig.side == "OUT":
+            sig.alert_action = "SELL_NOW"
+            if "SELL PUT" not in (sig.headline or "").upper():
+                sig.headline = f"OUT · SELL PUT {sig.symbol}"
+        elif sig.side == "HOLD":
+            sig.alert_action = "HOLD"
+        else:
+            sig.alert_action = "WATCH"
+        sig.orb_status = orb.status
+        return sig
+
     # Open trade management first
     if open_trade and str(open_trade.get("status") or "open") == "open":
         entry = float(open_trade.get("entry_ask") or 0)
@@ -298,26 +367,26 @@ def decide_odte_1k_entry(
         strength = 55.0
         if unreal is not None and unreal >= 80:
             action = "EXIT"
-            detail = f"EXIT — bank +{unreal:.0f}% premium"
+            detail = f"OUT · bank +{unreal:.0f}% premium"
             strength = 90.0
         elif unreal is not None and unreal <= -45:
             action = "EXIT"
-            detail = f"EXIT — stop {unreal:.0f}%"
+            detail = f"OUT · stop {unreal:.0f}%"
             strength = 85.0
         elif now_et.time() >= flat_t:
             action = "EXIT"
-            detail = f"EXIT — 0DTE flatten by {flatten_et} ET"
+            detail = f"OUT · 0DTE flatten by {flatten_et} ET"
             strength = 88.0
         elif vs.get("above_orb_high") or (orb.low is not None and last_f is not None and last_f > float(orb.low) + 0.35):
             action = "EXIT"
-            detail = "EXIT — reclaim above ORB Low / range fail"
+            detail = "OUT · reclaim above ORB Low / range fail"
             strength = 80.0
         sig = Odte1kSignal(
             action=action,
             symbol=symbol,
             right="P",
             strength=strength,
-            headline=f"{action} {symbol} PUT",
+            headline=f"{'OUT · SELL PUT' if action == 'EXIT' else 'HOLD PUT'} {symbol}",
             detail=detail,
             playbook=playbook + ["manage_open"],
             orb_high=orb.high,
@@ -337,97 +406,156 @@ def decide_odte_1k_entry(
             position_size_usd=float(open_trade.get("cost") or position_size_usd),
             contracts=int(open_trade.get("contracts") or 1),
             reasons=[detail] + ([conflict_note] if conflict_note else []),
+            mark_source=str(open_trade.get("mark_source") or "open"),
         )
         if action == "EXIT":
             ts = signal_timestamps()
             sig.signaled_at = ts["signaled_at"]
             sig.signaled_at_cst = ts["signaled_at_cst"]
-        return sig
+        return _stamp(sig)
 
     # Pre / forming ORB
     if orb.status == "forming":
-        return Odte1kSignal(
-            action="WAIT",
-            symbol=symbol,
-            right="P",
-            strength=35.0,
-            headline=f"WAIT ORB15 {symbol}",
-            detail=orb.note or "ORB15 still forming (09:30–09:45 ET)",
-            playbook=playbook,
-            orb_high=orb.high,
-            orb_low=orb.low,
-            spot=last_f,
-            green_friday=green,
-            call_safe_zone_conflict=conflict,
-            reasons=[orb.note or "forming", "Puts preferred after ORB Low prints"],
+        return _stamp(
+            Odte1kSignal(
+                action="WAIT",
+                symbol=symbol,
+                right="P",
+                strength=35.0,
+                headline=f"WAIT ORB15 {symbol}",
+                detail=orb.note or "ORB15 still forming (09:30–09:45 ET)",
+                playbook=playbook,
+                orb_high=orb.high,
+                orb_low=orb.low,
+                spot=last_f,
+                green_friday=green,
+                call_safe_zone_conflict=conflict,
+                reasons=[orb.note or "forming", "Puts preferred after ORB Low prints"],
+            )
+        )
+
+    # Day H/L proxy is NOT a real ORB15 — never fire IN on it unless explicitly allowed
+    if orb.status == "proxy" and not allow_proxy_entry:
+        return _stamp(
+            Odte1kSignal(
+                action="WATCH",
+                symbol=symbol,
+                right="P",
+                strength=30.0,
+                headline=f"WATCH {symbol} — need real ORB15",
+                detail=(
+                    orb.note
+                    or "Day H/L is a proxy only — waiting for 1m/5m ORB15 bars before IN"
+                ),
+                playbook=playbook,
+                orb_high=orb.high,
+                orb_low=orb.low,
+                spot=last_f,
+                green_friday=green,
+                call_safe_zone_conflict=conflict,
+                reasons=[
+                    "proxy ORB blocked for entries",
+                    "Fetch 1m bars (or 5m fallback) for true 09:30–09:45 ORB",
+                ],
+            )
         )
 
     if orb.status not in {"ready", "proxy"} or orb.low is None:
-        return Odte1kSignal(
-            action="WAIT",
-            symbol=symbol,
-            right="P",
-            strength=20.0,
-            headline=f"WAIT ORB15 {symbol}",
-            detail=orb.note or "ORB15 levels unavailable",
-            playbook=playbook,
-            orb_high=orb.high,
-            orb_low=orb.low,
-            spot=last_f,
-            green_friday=green,
-            call_safe_zone_conflict=conflict,
-            reasons=[orb.note or "no ORB"],
+        return _stamp(
+            Odte1kSignal(
+                action="WAIT",
+                symbol=symbol,
+                right="P",
+                strength=20.0,
+                headline=f"WAIT ORB15 {symbol}",
+                detail=orb.note or "ORB15 levels unavailable",
+                playbook=playbook,
+                orb_high=orb.high,
+                orb_low=orb.low,
+                spot=last_f,
+                green_friday=green,
+                call_safe_zone_conflict=conflict,
+                reasons=[orb.note or "no ORB"],
+            )
         )
 
     if trades_today >= max_trades_per_day:
-        return Odte1kSignal(
-            action="WAIT",
-            symbol=symbol,
-            right="P",
-            strength=40.0,
-            headline=f"WAIT {symbol} — day cap",
-            detail=f"Max {max_trades_per_day} trades/day hit ({trades_today})",
-            playbook=playbook,
-            orb_high=orb.high,
-            orb_low=orb.low,
-            spot=last_f,
-            green_friday=green,
-            call_safe_zone_conflict=conflict,
-            reasons=[f"day trade cap {trades_today}/{max_trades_per_day}"],
+        return _stamp(
+            Odte1kSignal(
+                action="WAIT",
+                symbol=symbol,
+                right="P",
+                strength=40.0,
+                headline=f"WAIT {symbol} — day cap",
+                detail=f"Max {max_trades_per_day} trades/day hit ({trades_today})",
+                playbook=playbook,
+                orb_high=orb.high,
+                orb_low=orb.low,
+                spot=last_f,
+                green_friday=green,
+                call_safe_zone_conflict=conflict,
+                reasons=[f"day trade cap {trades_today}/{max_trades_per_day}"],
+            )
         )
 
     if now_et.time() >= flat_t:
-        return Odte1kSignal(
-            action="WAIT",
-            symbol=symbol,
-            right="P",
-            strength=25.0,
-            headline=f"WAIT {symbol} — past flatten",
-            detail=f"No new 0DTE entries after {flatten_et} ET",
-            playbook=playbook,
-            orb_high=orb.high,
-            orb_low=orb.low,
-            spot=last_f,
-            green_friday=green,
-            call_safe_zone_conflict=conflict,
-            reasons=["past flatten clock"],
+        return _stamp(
+            Odte1kSignal(
+                action="WAIT",
+                symbol=symbol,
+                right="P",
+                strength=25.0,
+                headline=f"WAIT {symbol} — past flatten",
+                detail=f"No new 0DTE entries after {flatten_et} ET",
+                playbook=playbook,
+                orb_high=orb.high,
+                orb_low=orb.low,
+                spot=last_f,
+                green_friday=green,
+                call_safe_zone_conflict=conflict,
+                reasons=["past flatten clock"],
+            )
+        )
+
+    # No new IN after 14:00 ET — leave room for the move before flatten
+    if now_et.time() >= time(14, 0):
+        return _stamp(
+            Odte1kSignal(
+                action="WAIT",
+                symbol=symbol,
+                right="P",
+                strength=28.0,
+                headline=f"WAIT {symbol} — entry cutoff",
+                detail="No new 0DTE $1K IN after 14:00 ET (need room before 15:45 flatten)",
+                playbook=playbook,
+                orb_high=orb.high,
+                orb_low=orb.low,
+                spot=last_f,
+                green_friday=green,
+                call_safe_zone_conflict=conflict,
+                reasons=["past 14:00 ET entry cutoff"],
+            )
         )
 
     broke = bool(vs.get("broke_orb_low"))
     holds = bool(vs.get("holds_below_low"))
     retest = bool(vs.get("retest_orb_low"))
     mom5 = q.get("mom_5m_pct")
+    mom15 = q.get("mom_15m_pct")
+    # Confirmed weakness: 5m tape not ripping up; prefer negative 5m or flat
     tape_ok = mom5 is None or float(mom5) <= 0.08
+    # Extra confirmation when 15m also soft (or unknown)
+    tape_confirmed = tape_ok and (mom15 is None or float(mom15) <= 0.15)
 
     put_trigger = False
     trigger_why: list[str] = []
-    if broke and holds and tape_ok:
+    if broke and holds and tape_confirmed:
         put_trigger = True
         trigger_why.append(f"Break + hold ORB Low ${orb.low:.2f}")
-    elif retest and (broke or holds) and tape_ok:
+    elif retest and (broke or holds) and tape_confirmed:
         put_trigger = True
         trigger_why.append(f"Retest ORB Low ${orb.low:.2f} from below")
-    elif holds and green and tape_ok and last_f is not None and last_f <= float(orb.low) + buffer_usd:
+    elif holds and green and tape_confirmed and last_f is not None and last_f <= float(orb.low) + buffer_usd:
         # Soft: green Friday + sitting on ORB Low
         put_trigger = True
         trigger_why.append(f"Green Friday · hold ORB Low ${orb.low:.2f}")
@@ -436,17 +564,71 @@ def decide_odte_1k_entry(
         trigger_why.insert(0, "Green Friday ✅")
 
     if not put_trigger:
-        return Odte1kSignal(
-            action="WATCH",
+        why_block = []
+        if not tape_ok:
+            why_block.append(f"5m tape hot ({mom5}%) — no IN")
+        elif not tape_confirmed:
+            why_block.append(f"15m tape not soft ({mom15}%) — wait confirm")
+        return _stamp(
+            Odte1kSignal(
+                action="WATCH",
+                symbol=symbol,
+                right="P",
+                strength=45.0,
+                headline=f"WATCH {symbol} ORB Low",
+                detail=(
+                    f"ORB Low ${orb.low:.2f} / High ${orb.high:.2f} · spot "
+                    f"{'—' if last_f is None else f'${last_f:.2f}'} — wait break+hold or retest"
+                ),
+                playbook=playbook,
+                orb_high=orb.high,
+                orb_low=orb.low,
+                spot=last_f,
+                green_friday=green,
+                broke_orb_low=broke,
+                holds_below_low=holds,
+                retest_orb_low=retest,
+                call_safe_zone_conflict=conflict,
+                reasons=trigger_why
+                + why_block
+                + [
+                    f"Need break+hold below ${orb.low:.2f} or retest from below",
+                    conflict_note or "No call conflict noted",
+                ],
+            )
+        )
+
+    # PUT NOW (IN) — attach contract when possible; zone ask always priced for paper
+    contract = None
+    if fetch_contract and last_f:
+        contract = _pick_0dte_put(symbol, last_f, yahoo_symbol=yahoo_symbol)
+    if contract is None and last_f:
+        contract = _suggest_put_zone(last_f)
+
+    ask = float(contract["ask"]) if contract and contract.get("ask") is not None else None
+    bid = float(contract["bid"]) if contract and contract.get("bid") is not None else None
+    if ask is None and last_f:
+        ask = _zone_put_premium(last_f)
+        bid = round(ask * 0.85, 2)
+    n_ct = _contracts_for_size(ask, position_size_usd, cash) if ask else None
+    detail_bits = list(trigger_why)
+    if conflict:
+        detail_bits.append(f"⚠️ Call safe-zone conflict: {conflict_note}")
+    if orb.low is not None:
+        detail_bits.append(f"Invalidation: reclaim > ORB Low ${orb.low:.2f} + $0.35")
+    detail_bits.append(f"Size ~${position_size_usd:.0f} · max {max_trades_per_day} trades/day")
+    detail_bits.append("IN = BUY PUT · OUT = SELL PUT on reclaim / target / flatten")
+
+    ts = signal_timestamps()
+    return _stamp(
+        Odte1kSignal(
+            action="PUT_NOW",
             symbol=symbol,
             right="P",
-            strength=45.0,
-            headline=f"WATCH {symbol} ORB Low",
-            detail=(
-                f"ORB Low ${orb.low:.2f} / High ${orb.high:.2f} · spot "
-                f"{'—' if last_f is None else f'${last_f:.2f}'} — wait break+hold or retest"
-            ),
-            playbook=playbook,
+            strength=82.0 if broke else 74.0,
+            headline=f"IN · BUY PUT {symbol}",
+            detail=" · ".join(detail_bits),
+            playbook=playbook + (["retest_entry"] if retest and not broke else ["break_hold"]),
             orb_high=orb.high,
             orb_low=orb.low,
             spot=last_f,
@@ -455,57 +637,19 @@ def decide_odte_1k_entry(
             holds_below_low=holds,
             retest_orb_low=retest,
             call_safe_zone_conflict=conflict,
-            reasons=trigger_why
-            + [
-                f"Need break+hold below ${orb.low:.2f} or retest from below",
-                conflict_note or "No call conflict noted",
-            ],
+            strike=(contract or {}).get("strike"),
+            expiry=(contract or {}).get("expiry"),
+            ask=ask,
+            bid=bid,
+            contract=(contract or {}).get("contract"),
+            dte=int((contract or {}).get("dte") or 0),
+            position_size_usd=position_size_usd,
+            contracts=n_ct,
+            signaled_at=ts["signaled_at"],
+            signaled_at_cst=ts["signaled_at_cst"],
+            reasons=detail_bits,
+            mark_source=str((contract or {}).get("mark_source") or "zone"),
         )
-
-    # PUT NOW — attach contract when possible
-    contract = None
-    if fetch_contract and last_f:
-        contract = _pick_0dte_put(symbol, last_f, yahoo_symbol=yahoo_symbol)
-    if contract is None and last_f:
-        contract = _suggest_put_zone(last_f)
-
-    ask = float(contract["ask"]) if contract and contract.get("ask") is not None else None
-    n_ct = _contracts_for_size(ask, position_size_usd, cash) if ask else None
-    detail_bits = list(trigger_why)
-    if conflict:
-        detail_bits.append(f"⚠️ Call safe-zone conflict: {conflict_note}")
-    if orb.low is not None:
-        detail_bits.append(f"Invalidation: reclaim > ORB Low ${orb.low:.2f} + $0.35")
-    detail_bits.append(f"Size ~${position_size_usd:.0f} · max {max_trades_per_day} trades/day")
-
-    ts = signal_timestamps()
-    return Odte1kSignal(
-        action="PUT_NOW",
-        symbol=symbol,
-        right="P",
-        strength=82.0 if broke else 74.0,
-        headline=f"PUT NOW {symbol}",
-        detail=" · ".join(detail_bits),
-        playbook=playbook + (["retest_entry"] if retest and not broke else ["break_hold"]),
-        orb_high=orb.high,
-        orb_low=orb.low,
-        spot=last_f,
-        green_friday=green,
-        broke_orb_low=broke,
-        holds_below_low=holds,
-        retest_orb_low=retest,
-        call_safe_zone_conflict=conflict,
-        strike=(contract or {}).get("strike"),
-        expiry=(contract or {}).get("expiry"),
-        ask=ask,
-        bid=float(contract["bid"]) if contract and contract.get("bid") is not None else None,
-        contract=(contract or {}).get("contract"),
-        dte=int((contract or {}).get("dte") or 0),
-        position_size_usd=position_size_usd,
-        contracts=n_ct,
-        signaled_at=ts["signaled_at"],
-        signaled_at_cst=ts["signaled_at_cst"],
-        reasons=detail_bits,
     )
 
 
@@ -530,6 +674,9 @@ def build_odte_1k_board(
     flatten_et: str = "15:45",
     aliases: dict[str, str] | None = None,
     now: datetime | None = None,
+    backtest: dict[str, Any] | None = None,
+    include_backtest: bool = False,
+    bar_cache: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the 0DTE $1K Challenge board (full focus sleeve; capped live ORB fetches)."""
     quotes = quotes or {}
@@ -591,10 +738,22 @@ def build_odte_1k_board(
     levels: dict[str, Any] = {}
     signals: list[Odte1kSignal] = []
     contract_fetches = 0
+    bars_for_bt: dict[str, Any] = dict(bar_cache or {})
     for sym in symbols:
         orb = (orb_map or {}).get(sym)
         if orb is None and sym in fetch_set:
             bars = fetch_orb15_bars(sym, yahoo_symbol=aliases.get(sym))
+            # If Yahoo returned 5m-looking sparse bars, expand so ORB window has coverage
+            if bars is not None and not bars.empty:
+                bars_for_bt[sym] = bars
+                # Heuristic: median bar gap >= 4m → treat as 5m and synthesize
+                try:
+                    gaps = bars.index.to_series().diff().dt.total_seconds().dropna()
+                    med = float(gaps.median()) if len(gaps) else 60.0
+                    if med >= 240:
+                        bars = synthesize_1m_from_5m(bars) or bars
+                except Exception:  # noqa: BLE001
+                    pass
             orb = compute_orb15(bars, symbol=sym, now=now)
         if orb is None:
             orb = orb_from_quote_proxy(sym, quotes.get(sym))
@@ -619,7 +778,19 @@ def build_odte_1k_board(
                 note=orb.get("note"),
             )
         levels[sym] = orb.to_dict()
-        # First pass without contracts — attach live asks only for top PUT_NOW after rank
+        # Mark open puts with live bid proxy from quote mom when no option mark
+        open_t = open_by_sym.get(sym)
+        if open_t and open_t.get("mark") is None and open_t.get("entry_ask"):
+            # Soft mark: decay/boost from 5m tape using same elasticity idea
+            try:
+                mom = (quotes.get(sym) or {}).get("mom_5m_pct")
+                entry_ask = float(open_t["entry_ask"])
+                if mom is not None:
+                    # underlying up → put mark down
+                    mark = entry_ask * (1.0 + (-float(mom) / 100.0) * 12.0)
+                    open_t = {**open_t, "mark": round(max(0.01, mark), 2), "bid": round(max(0.01, mark), 2)}
+            except Exception:  # noqa: BLE001
+                pass
         sig = decide_odte_1k_entry(
             orb=orb,
             quote=quotes.get(sym),
@@ -630,11 +801,12 @@ def build_odte_1k_board(
             cash=cash,
             trades_today=trades_today,
             max_trades_per_day=max_trades_per_day,
-            open_trade=open_by_sym.get(sym),
+            open_trade=open_t,
             fetch_contract=False,
             yahoo_symbol=aliases.get(sym),
             flatten_et=flatten_et,
             now=now,
+            allow_proxy_entry=False,
         )
         signals.append(sig)
 
@@ -645,7 +817,7 @@ def build_odte_1k_board(
                 continue
             if contract_fetches >= int(max_contract_fetch):
                 break
-            if sig.ask is not None and sig.contract:
+            if sig.contract and sig.mark_source == "ask":
                 continue
             last = sig.spot or (quotes.get(sig.symbol) or {}).get("last")
             if not last:
@@ -657,9 +829,10 @@ def build_odte_1k_board(
             sig.strike = contract.get("strike")
             sig.expiry = contract.get("expiry")
             sig.dte = int(contract.get("dte") or 0)
-            sig.ask = float(contract["ask"]) if contract.get("ask") is not None else None
-            sig.bid = float(contract["bid"]) if contract.get("bid") is not None else None
+            sig.ask = float(contract["ask"]) if contract.get("ask") is not None else sig.ask
+            sig.bid = float(contract["bid"]) if contract.get("bid") is not None else sig.bid
             sig.contract = contract.get("contract")
+            sig.mark_source = str(contract.get("mark_source") or "ask")
             if sig.ask:
                 sig.contracts = _contracts_for_size(sig.ask, size, cash) or None
 
@@ -671,6 +844,30 @@ def build_odte_1k_board(
 
     green = any(s.green_friday for s in signals)
     conflict = any(s.call_safe_zone_conflict for s in signals)
+
+    # Canonical IN / OUT buckets (mirrors swing challenge entry/exit for alerts + rec log)
+    entry_rows = [s.to_dict() for s in puts]
+    exit_rows = [s.to_dict() for s in exits]
+    for row in entry_rows:
+        row["action"] = "PUT_NOW"
+        row["side"] = "IN"
+        row["desk_action"] = "BUY_PUT"
+        row["alert_action"] = "BUY_NOW"
+    for row in exit_rows:
+        row["action"] = "EXIT"
+        row["side"] = "OUT"
+        row["desk_action"] = "SELL_PUT"
+        row["alert_action"] = "SELL_NOW"
+
+    bt_payload = backtest
+    if include_backtest and bt_payload is None and bars_for_bt:
+        try:
+            from odte_scanner.challenge.odte_1k_backtest import backtest_odte_1k_universe
+
+            bt_payload = backtest_odte_1k_universe(bars_for_bt, symbols=list(bars_for_bt.keys())[:8])
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("odte_1k backtest skip: %s", exc)
+            bt_payload = {"error": str(exc), "trades": 0}
 
     return {
         "desk": "odte_1k",
@@ -691,34 +888,43 @@ def build_odte_1k_board(
         "orb_fetched": sorted(fetch_set),
         "orb": levels,
         "primary": primary.to_dict() if primary else None,
-        "put_now": [s.to_dict() for s in puts],
-        "exit_now": [s.to_dict() for s in exits],
+        "put_now": entry_rows,
+        "exit_now": exit_rows,
+        # Aliases so alerts / rec_log can use the same shape as $1k→$1M challenge
+        "entry": entry_rows,
+        "exit": exit_rows,
+        "in": entry_rows,
+        "out": exit_rows,
         "hold": [s.to_dict() for s in holds],
         "watch": [s.to_dict() for s in watches],
         "all": [s.to_dict() for s in signals],
         "counts": {
             "put_now": len(puts),
             "exit_now": len(exits),
+            "in": len(puts),
+            "out": len(exits),
             "hold": len(holds),
             "watch": len(watches),
             "trades_today": trades_today,
             "names": len(symbols),
             "orb_ready": sum(1 for v in levels.values() if v.get("status") in {"ready", "proxy"}),
+            "orb_real": sum(1 for v in levels.values() if v.get("status") == "ready"),
             "orb_fetched": len(fetch_set),
         },
         "book": book,
+        "backtest": bt_payload,
         "playbook": [
+            "IN = BUY PUT · OUT = SELL PUT (alerts + rec log use these sides).",
             "Green Friday: session green — prefer puts on ORB weakness (not chase calls).",
-            "ORB15 = first 15m RTH High/Low (09:30–09:45 ET). Full focus sleeve (SPY/QQQ/IWM/TSLA/NVDA/NBIS/AAPL/SLV/SPCX/NOW/…). ",
-            "PUT NOW on break + hold of ORB Low, or retest of ORB Low from below.",
+            "ORB15 = first 15m RTH High/Low (09:30–09:45 ET). Real 1m/5m bars required for IN — day H/L proxy is WATCH only.",
+            "PUT NOW on confirmed break + hold of ORB Low (soft 5m/15m tape), or retest of ORB Low from below.",
             "Size ~85% of sleeve (~$850 on $1k). Max 2 trades / day.",
-            "Flatten by 15:45 ET. Invalidation = reclaim above ORB Low.",
+            "OUT on +80% premium, −45% stop, reclaim above ORB Low, or flatten by 15:45 ET.",
             "If call safe-zone / Red Flag SUPPORTIVE still shows SPY calls — treat as conflict, not confirmation.",
         ],
         "disclaimer": (
-            "Educational / research only. Models ORB15 from delayed Yahoo 1m bars "
-            "(capped live fetch; others use day H/L proxy). "
-            "Not affiliated with any Discord. Options can expire worthless. "
-            "PUT NOW is the actionable entry — Paper ENTER on a live host."
+            "Educational / research only. Models ORB15 from delayed Yahoo 1m (5m fallback). "
+            "Day H/L proxy never arms IN. Backtest P&L is an ATM 0DTE put *proxy*, not live fills. "
+            "Not affiliated with any Discord. Options can expire worthless."
         ),
     }

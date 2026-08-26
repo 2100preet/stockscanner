@@ -342,7 +342,9 @@ actions:
   odte_1k_ledger_path: outputs/odte_1k_ledger.json
   odte_1k_fetch_bars: true
   odte_1k_fetch_contracts: true
-  odte_1k_auto_enter: false
+  odte_1k_include_backtest: true
+  # Auto IN on confirmed PUT_NOW (zone ask ok); auto OUT on EXIT
+  odte_1k_auto_enter: true
   odte_1k_auto_exit: true
   # Power Hour — 15m VWAP LONG/SHORT (NU/NVDA/CAPR/ETON/HTFL + focus sleeve)
   power_hour_enabled: true

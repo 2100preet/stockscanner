@@ -119,7 +119,8 @@ def compute_orb15(
     if now_et < end:
         base.status = "forming"
         base.note = f"ORB15 forming ({n} bars) — levels provisional until 09:45 ET"
-    elif high is not None and low is not None and n >= 5:
+    elif high is not None and low is not None and n >= 3:
+        # 1m ≈ 15 bars; 5m ≈ 3 bars — both valid ORB15 windows
         base.status = "ready"
         base.note = f"ORB15 ready · High {base.high} · Low {base.low} ({n} bars)"
     else:
@@ -135,7 +136,7 @@ def fetch_orb15_bars(
     yahoo_symbol: str | None = None,
     period: str = "1d",
 ) -> pd.DataFrame | None:
-    """Fetch 1-minute bars for ORB15 (best-effort; may be empty offline)."""
+    """Fetch 1-minute bars for ORB15; fall back to 5m (first 3 bars ≈ 15m)."""
     try:
         import yfinance as yf
 
@@ -144,9 +145,43 @@ def fetch_orb15_bars(
         if df is None or df.empty:
             # Try 5d for holidays / early session gaps
             df = t.history(period="5d", interval="1m", prepost=False, auto_adjust=False)
-        return df if df is not None and not df.empty else None
+        if df is not None and not df.empty:
+            return df
+        # 5-minute bars: ORB15 ≈ first three RTH bars (09:30, 09:35, 09:40)
+        df5 = t.history(period="5d", interval="5m", prepost=False, auto_adjust=False)
+        return df5 if df5 is not None and not df5.empty else None
     except Exception:  # noqa: BLE001
         return None
+
+
+def synthesize_1m_from_5m(bars_5m: pd.DataFrame | None) -> pd.DataFrame | None:
+    """Expand 5m bars into pseudo-1m rows so compute_orb15 still sees 09:30–09:45."""
+    if bars_5m is None or bars_5m.empty:
+        return None
+    df = bars_5m.copy()
+    rows: list[dict] = []
+    idx: list = []
+    for ts, row in df.iterrows():
+        try:
+            base = pd.Timestamp(ts)
+        except Exception:  # noqa: BLE001
+            continue
+        for m in range(5):
+            t2 = base + pd.Timedelta(minutes=m)
+            idx.append(t2)
+            rows.append(
+                {
+                    "Open": float(row["Open"]) if "Open" in df.columns else float(row["Close"]),
+                    "High": float(row["High"]) if "High" in df.columns else float(row["Close"]),
+                    "Low": float(row["Low"]) if "Low" in df.columns else float(row["Close"]),
+                    "Close": float(row["Close"]),
+                    "Volume": float(row["Volume"]) / 5.0 if "Volume" in df.columns else 0.0,
+                }
+            )
+    if not rows:
+        return None
+    out = pd.DataFrame(rows, index=pd.DatetimeIndex(idx))
+    return out
 
 
 def classify_vs_orb(
