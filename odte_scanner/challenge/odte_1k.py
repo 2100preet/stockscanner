@@ -62,9 +62,9 @@ def resolve_odte_1k_symbols(
 ) -> list[str]:
     """Resolve 0DTE $1K watchlist.
 
-    - list → that list
+    - list → that list (priority names sorted first when present)
     - \"focus\" / \"all\" / None → config tickers (full focus sleeve)
-    Always de-dupes and keeps priority names first when present.
+    Always de-dupes.
     """
     cfg = config or {}
     raw = symbols
@@ -79,14 +79,15 @@ def resolve_odte_1k_symbols(
     if not raw:
         raw = list(cfg.get("tickers") or _ORB_PRIORITY)
 
+    requested = [str(s).replace(".", "-").upper() for s in raw if s]
+    # Keep priority order for names that were requested — do NOT expand beyond the list
     seen: set[str] = set()
     out: list[str] = []
-    for sym in list(_ORB_PRIORITY) + [str(s).upper() for s in raw]:
-        key = str(sym).replace(".", "-").upper()
-        if not key or key in seen:
+    for sym in list(_ORB_PRIORITY) + requested:
+        if sym not in requested or sym in seen:
             continue
-        seen.add(key)
-        out.append(key)
+        seen.add(sym)
+        out.append(sym)
     return out
 
 
