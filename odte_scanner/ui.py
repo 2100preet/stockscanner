@@ -283,13 +283,14 @@ PAGE = r"""
     </section>
 
     <section class="tabpane" id="tab-odte1k">
-      <h2>0DTE $1K Challenge — Green Friday · ORB15 puts</h2>
+      <h2>0DTE $1K Challenge — IN / OUT · Green Friday ORB15 puts</h2>
       <p class="lede">
         Separate from the swing <strong>$1k→$1M</strong> path. Paper sleeve starts at <strong>$1,000</strong>,
         sizes ~<strong>$850</strong> (~85%), max <strong>2 trades/day</strong>.
         Full focus sleeve: <strong>SPY · QQQ · IWM · TSLA · NVDA · NBIS · AAPL · SLV · SPCX · NOW</strong> + the rest of the focus list.
-        Playbook: Green Friday + <strong>break/hold ORB15 Low</strong> (or retest) → <strong>PUT NOW</strong>
-        (actionable entry — Paper ENTER on a live host). Surfaces conflict when call “safe zone” still likes index calls.
+        Playbook: Green Friday + <strong>break/hold ORB15 Low</strong> (or retest) →
+        <strong>IN · BUY PUT</strong> · manage → <strong>OUT · SELL PUT</strong>
+        (reclaim / +80% / −45% / 15:45 flatten). Enable alerts for browser BUY/SELL toasts.
       </p>
       <div class="metric-row" id="odte1kMetrics"></div>
       <div class="cards" id="odte1kPrimary"></div>
@@ -298,12 +299,22 @@ PAGE = r"""
         <div id="odte1kOrb" class="empty">—</div>
       </div>
       <div class="panel">
-        <h2>PUT NOW / EXIT / WATCH</h2>
+        <h2>IN · BUY PUT / OUT · SELL PUT / WATCH</h2>
         <div id="odte1kActions" class="empty">—</div>
       </div>
       <div class="panel">
         <h2>Sleeve book — cash · equity · 2× progress</h2>
         <div id="odte1kBook" class="empty">—</div>
+      </div>
+      <div class="panel">
+        <h2>Backtest — ORB15 put proxy (win rate)</h2>
+        <div class="metric-row" id="odte1kBtMetrics"></div>
+        <div id="odte1kBacktest" class="empty">—</div>
+      </div>
+      <div class="panel">
+        <h2>Recommendation log — IN / OUT / P&amp;L</h2>
+        <div class="metric-row" id="odte1kRecLogMetrics"></div>
+        <div id="odte1kRecLog" class="empty">—</div>
       </div>
       <div class="panel">
         <h2>Playbook rules</h2>
@@ -1263,6 +1274,7 @@ PAGE = r"""
       // Section panels (each desk tab has its own metrics + cards)
       renderRecLog("lotteryRecLog", by.lottery || rec.lottery, "No lottery recommendations logged yet.", "lotteryRecLogMetrics");
       renderRecLog("challengeRecLog", by.challenge || rec.challenge, "No challenge recommendations logged yet.", "challengeRecLogMetrics");
+      renderRecLog("odte1kRecLog", by.odte_1k || rec.odte_1k, "No 0DTE $1K IN/OUT recommendations logged yet.", "odte1kRecLogMetrics");
       renderRecLog("odteRecLog", by.odte || rec.odte, "No 0DTE recommendations logged yet.", "odteRecLogMetrics");
       renderRecLog("weeklyRecLog", by.weekly || rec.weekly, "No weekly recommendations logged yet.", "weeklyRecLogMetrics");
       renderRecLog("swingRecLog", by.swing || rec.swing, "No swing recommendations logged yet.", "swingRecLogMetrics");
@@ -1703,6 +1715,8 @@ PAGE = r"""
       const bookEl = document.getElementById("odte1kBook");
       const rulesEl = document.getElementById("odte1kRules");
       const disc = document.getElementById("odte1kDisclaimer");
+      const btEl = document.getElementById("odte1kBacktest");
+      const btMetrics = document.getElementById("odte1kBtMetrics");
       const b = board || {};
       if (!Object.keys(b).length) {
         if (actEl) actEl.innerHTML = `<div class="empty">0DTE $1K board loading…</div>`;
@@ -1713,32 +1727,43 @@ PAGE = r"""
       const c = b.counts || {};
       const equity = book.equity!=null ? book.equity : b.equity;
       const cash = book.cash!=null ? book.cash : b.cash;
+      const inN = c.in??c.put_now??0;
+      const outN = c.out??c.exit_now??0;
       if (metrics) metrics.innerHTML = [
         m("Sleeve cash", cash!=null?`$${Number(cash).toLocaleString(undefined,{maximumFractionDigits:0})}`:"—"),
         m("Sleeve equity", equity!=null?`$${Number(equity).toLocaleString(undefined,{maximumFractionDigits:0})}`:"—", (b.doubled||book.doubled)?"up":""),
         m("→ 2× ($2k)", `${fmt(b.progress_2x_pct??book.progress_2x_pct,1)}%`, (b.doubled||book.doubled)?"up":""),
         m("Size / trade", b.position_size_usd!=null?`$${fmt(b.position_size_usd,0)}`:"—"),
         m("Trades today", `${b.trades_today??c.trades_today??0} / ${b.max_trades_per_day??2}`),
-        m("PUT NOW", c.put_now??0, (c.put_now||0)>0?"up":""),
+        m("IN · BUY PUT", inN, inN>0?"up":""),
+        m("OUT · SELL PUT", outN, outN>0?"down":""),
         m("Names", c.names??(b.symbols||[]).length??0),
-        m("ORB ready", c.orb_ready??0),
+        m("ORB real", c.orb_real??0),
         m("Green Friday", b.green_friday?"YES":"no", b.green_friday?"up":""),
         m("Call conflict", b.call_safe_zone_conflict?"YES":"no", b.call_safe_zone_conflict?"down":""),
       ].join("");
+
+      const sideLabel = (r) => {
+        const side = r.side || (r.action==="PUT_NOW"||r.action==="CALL_NOW"?"IN":(r.action==="EXIT"?"OUT":(r.action==="HOLD"?"HOLD":"WATCH")));
+        const desk = r.desk_action || (side==="IN"?"BUY_PUT":(side==="OUT"?"SELL_PUT":side));
+        return { side, desk: String(desk).replaceAll("_"," ") };
+      };
 
       const p0 = b.primary;
       if (primaryEl) {
         if (!p0) primaryEl.innerHTML = `<div class="empty">No ORB15 signal yet.</div>`;
         else {
+          const sl = sideLabel(p0);
           const act = p0.action||"WAIT";
-          const kind = act==="EXIT"?"short":(act==="PUT_NOW"||act==="HOLD"?"long":"wait");
+          const kind = sl.side==="OUT"?"short":(sl.side==="IN"||sl.side==="HOLD"?"long":"wait");
           primaryEl.innerHTML = `<article class="action-card ${kind}">
             <div class="ac-top">
               <div class="ac-sym">${p0.symbol} <span class="tag">PUT</span>
                 ${p0.green_friday?`<span class="badge buy">GREEN FRIDAY</span>`:""}
                 ${p0.call_safe_zone_conflict?`<span class="badge sell">CALL CONFLICT</span>`:""}
+                ${p0.orb_status?`<span class="tag">${p0.orb_status}</span>`:""}
               </div>
-              <div class="ac-dir ${kind}">${String(act).replaceAll("_"," ")}</div>
+              <div class="ac-dir ${kind}">${sl.side} · ${sl.desk}</div>
             </div>
             <div class="ac-conf">Strength ${fmt(p0.strength,0)} · ORB Low ${p0.orb_low==null?"—":"$"+fmt(p0.orb_low,2)} · High ${p0.orb_high==null?"—":"$"+fmt(p0.orb_high,2)}
               ${p0.signaled_at_cst?` · asked ${p0.signaled_at_cst}`:""}</div>
@@ -1750,8 +1775,9 @@ PAGE = r"""
               <div>Break / hold<strong>${p0.broke_orb_low?"YES":"—"} / ${p0.holds_below_low?"YES":"—"}</strong></div>
               <div>Retest<strong>${p0.retest_orb_low?"YES":"—"}</strong></div>
             </div>
-            <p class="why" style="margin:.55rem 0 0">${p0.detail||""}</p>
-            ${(act==="PUT_NOW" && p0.ask!=null)?`<div class="playbook" style="margin-top:.45rem"><button type="button" class="tag" id="odte1kEnter">Paper ENTER put</button></div>`:""}
+            <p class="why" style="margin:.55rem 0 0">${p0.detail||p0.headline||""}</p>
+            ${(sl.side==="IN" && p0.ask!=null)?`<div class="playbook" style="margin-top:.45rem"><button type="button" class="tag" id="odte1kEnter">Paper IN · BUY PUT</button></div>`:""}
+            ${(sl.side==="OUT")?`<div class="playbook" style="margin-top:.45rem"><span class="badge sell">OUT armed — auto SELL PUT / paper EXIT</span></div>`:""}
           </article>`;
           const ent = document.getElementById("odte1kEnter");
           if (ent) ent.addEventListener("click", async ()=>{
@@ -1762,7 +1788,7 @@ PAGE = r"""
               const j = await r.json();
               if (!r.ok) throw new Error(j.error||"enter failed");
               await loadAll();
-            } catch(e){ ent.textContent = "ENTER failed"; alert(e.message||e); }
+            } catch(e){ ent.textContent = "IN failed"; alert(e.message||e); }
           });
         }
       }
@@ -1777,31 +1803,32 @@ PAGE = r"""
           const cls=st==="ready"?"buy":(st==="proxy"?"wait":(st==="forming"?"wait":"skip"));
           return `<tr>
           <td><strong>${r.symbol}</strong></td>
-          <td><span class="badge ${cls}">${st}</span></td>
+          <td><span class="badge ${cls}">${st}</span>${st==="proxy"?` <span class="tag">no IN</span>`:""}</td>
           <td class="mono up"><strong>${r.high==null?"—":"$"+fmt(r.high,2)}</strong></td>
           <td class="mono down"><strong>${r.low==null?"—":"$"+fmt(r.low,2)}</strong></td>
           <td class="mono">${r.bars??"—"}</td>
           <td class="why">${r.note||""}</td>
         </tr>`;
-        }).join("")}</tbody></table>${rows.length>40?`<p class="lede" style="font-size:.72rem">Showing 40 / ${rows.length} names — full list in PUT NOW / WATCH table.</p>`:""}`;
+        }).join("")}</tbody></table>${rows.length>40?`<p class="lede" style="font-size:.72rem">Showing 40 / ${rows.length} names.</p>`:""}`;
       }
 
       if (actEl) {
-        const rows = [...(b.exit_now||[]), ...(b.put_now||[]), ...(b.hold||[]), ...(b.watch||[])];
+        const rows = [...(b.exit_now||b.out||[]), ...(b.put_now||b.in||[]), ...(b.hold||[]), ...(b.watch||[])];
         actEl.innerHTML = !rows.length ? `<div class="empty">No signals.</div>` : `<table><thead><tr>
-          <th>Action</th><th>Symbol</th><th>Asked (CST)</th><th>ORB L/H</th><th>Spot</th><th>Strike</th><th>Ask</th><th>Why</th>
+          <th>Side</th><th>Action</th><th>Symbol</th><th>Asked (CST)</th><th>ORB L/H</th><th>Spot</th><th>Strike</th><th>Ask</th><th>Why</th>
         </tr></thead><tbody>${rows.map(r=>{
-          const a=(r.action||"WAIT");
-          const cls=a==="EXIT"||a==="PUT_NOW"?(a==="EXIT"?"sell":"buy"):(a==="HOLD"?"hold":"wait");
+          const sl = sideLabel(r);
+          const cls=sl.side==="OUT"?"sell":(sl.side==="IN"?"buy":(sl.side==="HOLD"?"hold":"wait"));
           return `<tr>
-            <td><span class="badge ${cls}">${String(a).replaceAll("_"," ")}</span>${r.call_safe_zone_conflict?` <span class="badge sell">CALL CONFLICT</span>`:""}</td>
+            <td><span class="badge ${cls}">${sl.side}</span></td>
+            <td><span class="badge ${cls}">${sl.desk}</span>${r.call_safe_zone_conflict?` <span class="badge sell">CALL CONFLICT</span>`:""}</td>
             <td><strong>${r.symbol}</strong>${r.green_friday?` <span class="tag">GF</span>`:""}</td>
             <td class="mono">${r.signaled_at_cst||fmtCST(r.signaled_at)||"—"}</td>
             <td class="mono">${r.orb_low==null?"—":"$"+fmt(r.orb_low,2)} / ${r.orb_high==null?"—":"$"+fmt(r.orb_high,2)}</td>
             <td class="mono">${r.spot==null?"—":"$"+fmt(r.spot,2)}</td>
             <td class="mono">${r.strike==null?"—":fmt(r.strike,2)+"p"}</td>
             <td class="mono">${fmt(r.ask,2)}</td>
-            <td class="why">${r.detail||""}</td>
+            <td class="why">${r.detail||r.headline||""}</td>
           </tr>`;
         }).join("")}</tbody></table>`;
       }
@@ -1818,7 +1845,7 @@ PAGE = r"""
             <div>Today<strong>${book.trades_today??b.trades_today??0} / ${b.max_trades_per_day||2}</strong></div>
           </div>
           ${open.length?open.map(t=>`<article class="action-card long" style="margin-bottom:.55rem">
-            <div class="ac-top"><div class="ac-sym">${t.symbol} PUT</div><div class="ac-dir long">OPEN</div></div>
+            <div class="ac-top"><div class="ac-sym">${t.symbol} PUT</div><div class="ac-dir long">IN · OPEN</div></div>
             <div class="ac-meta">
               <div>Entered (CST)<strong>${fmtCST(t.entered_at)}</strong></div>
               <div>Entry → mark<strong>$${fmt(t.entry_ask,2)} → $${fmt(t.mark,2)}</strong></div>
@@ -1826,10 +1853,10 @@ PAGE = r"""
               <div>ORB Low<strong>${t.orb_low==null?"—":"$"+fmt(t.orb_low,2)}</strong></div>
               <div>Cost<strong>$${fmt(t.cost,0)}</strong></div>
             </div>
-            <div class="playbook" style="margin-top:.4rem"><button type="button" class="tag" data-odte1k-exit="${t.id}">Paper EXIT</button></div>
-          </article>`).join(""):`<div class="empty">No open 0DTE $1K flip — Paper ENTER on PUT NOW.</div>`}
-          ${closed.length?`<div class="status" style="margin-top:.6rem">CLOSED</div><div class="cards">${closed.map(t=>`<article class="action-card ${((t.profit_pct||0)>=0)?"long":"short"}">
-            <div class="ac-top"><div class="ac-sym">${t.symbol}</div><div class="ac-dir">EXIT</div></div>
+            <div class="playbook" style="margin-top:.4rem"><button type="button" class="tag" data-odte1k-exit="${t.id}">Paper OUT · SELL PUT</button></div>
+          </article>`).join(""):`<div class="empty">No open 0DTE $1K flip — wait for IN · BUY PUT, then Paper ENTER.</div>`}
+          ${closed.length?`<div class="status" style="margin-top:.6rem">OUT · CLOSED</div><div class="cards">${closed.map(t=>`<article class="action-card ${((t.profit_pct||0)>=0)?"long":"short"}">
+            <div class="ac-top"><div class="ac-sym">${t.symbol}</div><div class="ac-dir">OUT</div></div>
             <div class="ac-meta">
               <div>P&amp;L<strong class="${pctClass(t.profit_pct)}">${t.profit_pct==null?"—":fmt(t.profit_pct,1)+"%"} · $${fmt(t.pnl_usd,2)}</strong></div>
               <div>In → out<strong>$${fmt(t.entry_ask,2)} → $${fmt(t.exit_bid,2)}</strong></div>
@@ -1844,15 +1871,61 @@ PAGE = r"""
               const j = await r.json();
               if (!r.ok) throw new Error(j.error||"exit failed");
               await loadAll();
-            } catch(e){ btn.textContent = "EXIT failed"; alert(e.message||e); }
+            } catch(e){ btn.textContent = "OUT failed"; alert(e.message||e); }
           });
         });
+      }
+
+      const bt = b.backtest || {};
+      if (btMetrics) {
+        if (!bt || (!bt.trades && !bt.win_pct && !bt.error)) {
+          btMetrics.innerHTML = m("Backtest", "pending / offline");
+        } else {
+          btMetrics.innerHTML = [
+            m("Trades", bt.trades??0),
+            m("Win %", bt.win_pct!=null?`${fmt(bt.win_pct,1)}%`:"—", (bt.win_pct||0)>=55?"up":""),
+            m("Avg put %", bt.avg_put_ret_pct!=null?`${fmt(bt.avg_put_ret_pct,1)}%`:"—"),
+            m("Hit +40%", bt.hit_plus_40!=null?`${fmt(bt.hit_plus_40,0)}%`:"—"),
+            m("Hit +80%", bt.hit_plus_80!=null?`${fmt(bt.hit_plus_80,0)}%`:"—"),
+            m("Names", (bt.symbols||[]).length||Object.keys(bt.by_symbol||{}).length||0),
+          ].join("");
+        }
+      }
+      if (btEl) {
+        if (bt.error) btEl.innerHTML = `<div class="empty">${bt.error}</div>`;
+        else if (!(bt.sample_trades||[]).length && !(bt.by_symbol)) {
+          btEl.innerHTML = `<div class="empty">${bt.disclaimer||"Backtest runs when ORB bars are fetched on a live host."}</div>`;
+        } else {
+          const by = bt.by_symbol || {};
+          const symRows = Object.keys(by).map(s => ({symbol:s, ...by[s]}));
+          btEl.innerHTML = `
+            <p class="lede" style="font-size:.72rem;margin:0 0 .45rem">${bt.disclaimer||""}</p>
+            ${symRows.length?`<table><thead><tr><th>Symbol</th><th>Trades</th><th>Win%</th><th>Avg put%</th><th>Sessions</th></tr></thead>
+            <tbody>${symRows.slice(0,12).map(r=>`<tr>
+              <td><strong>${r.symbol}</strong></td>
+              <td class="mono">${r.trades??0}</td>
+              <td class="mono ${(r.win_pct||0)>=55?"up":""}">${r.win_pct==null?"—":fmt(r.win_pct,1)+"%"}</td>
+              <td class="mono">${r.avg_put_ret_pct==null?"—":fmt(r.avg_put_ret_pct,1)+"%"}</td>
+              <td class="mono">${r.sessions??"—"}</td>
+            </tr>`).join("")}</tbody></table>`:""}
+            ${(bt.sample_trades||[]).length?`<div class="status" style="margin-top:.55rem">Recent proxy trades</div>
+            <table><thead><tr><th>Date</th><th>Sym</th><th>Exit</th><th>Under%</th><th>Put%</th></tr></thead>
+            <tbody>${(bt.sample_trades||[]).slice(-8).reverse().map(t=>`<tr>
+              <td class="mono">${(t.session_date||"").slice(0,10)}</td>
+              <td><strong>${t.symbol}</strong></td>
+              <td class="why">${t.exit_reason||"—"}</td>
+              <td class="mono">${fmt(t.underlying_ret_pct,2)}%</td>
+              <td class="mono ${pctClass(t.put_ret_pct)}">${fmt(t.put_ret_pct,1)}%</td>
+            </tr>`).join("")}</tbody></table>`:""}`;
+        }
       }
 
       if (rulesEl) {
         rulesEl.innerHTML = `<ul class="lede" style="font-size:.78rem">${(b.playbook||[]).map(r=>`<li>${r}</li>`).join("")}</ul>`;
       }
       if (disc) disc.textContent = b.disclaimer || "";
+      const rec = (DATA.rec_log && DATA.rec_log.by_section && DATA.rec_log.by_section.odte_1k) || (DATA.rec_log && DATA.rec_log.odte_1k);
+      renderRecLog("odte1kRecLog", rec, "No 0DTE $1K IN/OUT recommendations logged yet.", "odte1kRecLogMetrics");
     }
 
     function renderPowerHour(board) {
@@ -2872,9 +2945,9 @@ PAGE = r"""
       const out = [];
       const push = (row, side, desk) => {
         if (!row || !row.symbol) return;
-        const act = String(row.action || side || "").toUpperCase();
-        const isBuy = /BUY|ENTRY/.test(act) || side === "BUY";
-        const isSell = /SELL|EXIT/.test(act) || side === "SELL";
+        const act = String(row.alert_action || row.desk_action || row.action || side || "").toUpperCase();
+        const isBuy = /BUY|ENTRY|PUT_NOW|CALL_NOW|IN\b/.test(act) || side === "BUY" || row.side === "IN";
+        const isSell = /SELL|EXIT|OUT\b/.test(act) || side === "SELL" || row.side === "OUT";
         if (!isBuy && !isSell) return;
         const right = String(row.right || "C").toUpperCase() === "P" ? "PUT" : "CALL";
         const key = [
@@ -2893,6 +2966,7 @@ PAGE = r"""
           title: `${isBuy ? "BUY" : "SELL"} ${row.symbol} ${right}`,
           body: [
             desk,
+            isBuy ? "IN" : "OUT",
             row.expiry || null,
             row.strike != null ? `${Number(row.strike)}${right === "PUT" ? "p" : "c"}` : null,
             px != null ? `@ $${Number(px).toFixed(2)}` : null,
@@ -2913,6 +2987,10 @@ PAGE = r"""
       (ch.entry || []).forEach(r => push({...r, action: "ENTRY"}, "BUY", "Challenge"));
       (ch.exit || []).forEach(r => push({...r, action: "EXIT"}, "SELL", "Challenge"));
       (ch.just_exited || []).forEach(r => push({...r, action: "EXIT"}, "SELL", "Challenge"));
+      // 0DTE $1K — IN · BUY PUT / OUT · SELL PUT (was missing → toast-only other desks)
+      const o1k = DATA.odte_1k || {};
+      (o1k.put_now || o1k.entry || o1k.in || []).forEach(r => push({...r, action: r.alert_action || "BUY_NOW", side: "IN"}, "BUY", "0DTE $1K"));
+      (o1k.exit_now || o1k.exit || o1k.out || []).forEach(r => push({...r, action: r.alert_action || "SELL_NOW", side: "OUT"}, "SELL", "0DTE $1K"));
       return out;
     }
 
@@ -3823,7 +3901,7 @@ def create_app(config_path: str | None = None) -> Flask:
                     actions=actions if isinstance(actions, dict) else None,
                     symbols=o1k_syms,
                     config=cfg,
-                    open_trades=[t.to_dict() for t in o1k_tracker.book.trades],
+                    open_trades=[t.to_dict() for t in o1k_tracker.open_trades()],
                     book=o1k_tracker.book.to_dict(),
                     starting_cash=float(actions_cfg.get("odte_1k_start_usd", 1000)),
                     position_size_usd=float(actions_cfg.get("odte_1k_position_size_usd", 850)),
@@ -3835,8 +3913,17 @@ def create_app(config_path: str | None = None) -> Flask:
                     fetch_contracts=bool(actions_cfg.get("odte_1k_fetch_contracts", True)) and not offline,
                     flatten_et=str(actions_cfg.get("odte_flatten_et", "15:45")),
                     aliases=aliases,
+                    include_backtest=bool(actions_cfg.get("odte_1k_include_backtest", True)) and not offline,
                 )
-                # Auto EXIT open puts when board says EXIT
+                # Auto IN on PUT_NOW when armed (zone ask is enough for paper)
+                if bool(actions_cfg.get("odte_1k_auto_enter", True)):
+                    for sig in odte_1k.get("put_now") or []:
+                        if not sig.get("ask"):
+                            continue
+                        if any(t.symbol == str(sig.get("symbol") or "").upper() for t in o1k_tracker.open_trades()):
+                            continue
+                        o1k_tracker.enter(sig)
+                # Auto OUT when board says EXIT
                 if bool(actions_cfg.get("odte_1k_auto_exit", True)):
                     for sig in odte_1k.get("exit_now") or []:
                         sym = str(sig.get("symbol") or "")
@@ -3844,7 +3931,47 @@ def create_app(config_path: str | None = None) -> Flask:
                             if t.symbol != sym:
                                 continue
                             mark = float(sig.get("bid") or sig.get("ask") or t.mark or t.entry_ask or 0)
-                            o1k_tracker.exit_trade(t.id, exit_bid=mark, reason=str(sig.get("detail") or "AUTO EXIT"))
+                            o1k_tracker.exit_trade(t.id, exit_bid=mark, reason=str(sig.get("detail") or "AUTO OUT · SELL PUT"))
+                # Refresh book + re-decide open names after auto fills
+                if bool(actions_cfg.get("odte_1k_auto_enter", True)) or bool(actions_cfg.get("odte_1k_auto_exit", True)):
+                    odte_1k["book"] = o1k_tracker.book.to_dict()
+                    odte_1k["cash"] = odte_1k["book"].get("cash")
+                    odte_1k["equity"] = odte_1k["book"].get("equity")
+                    odte_1k["doubled"] = odte_1k["book"].get("doubled")
+                    odte_1k["progress_2x_pct"] = odte_1k["book"].get("progress_2x_pct")
+                    odte_1k["trades_today"] = odte_1k["book"].get("trades_today")
+                    # Rebuild signals with updated open trades so OUT/HOLD cards match ledger
+                    saved_orb = odte_1k.get("orb") or {}
+                    saved_bt = odte_1k.get("backtest")
+                    odte_1k = build_odte_1k_board(
+                        quotes=quotes,
+                        red_flag=red_flag_snapshot if isinstance(red_flag_snapshot, dict) else None,
+                        actions=actions if isinstance(actions, dict) else None,
+                        symbols=o1k_syms,
+                        config=cfg,
+                        orb_map=saved_orb,
+                        open_trades=[t.to_dict() for t in o1k_tracker.open_trades()],
+                        book=o1k_tracker.book.to_dict(),
+                        starting_cash=float(actions_cfg.get("odte_1k_start_usd", 1000)),
+                        position_size_usd=float(actions_cfg.get("odte_1k_position_size_usd", 850)),
+                        position_pct=float(actions_cfg.get("odte_1k_position_pct", 0.85)),
+                        max_trades_per_day=int(actions_cfg.get("odte_1k_max_trades_per_day", 2)),
+                        max_orb_fetch=int(actions_cfg.get("odte_1k_max_orb_fetch", 20)),
+                        max_contract_fetch=0,
+                        fetch_bars=False,
+                        fetch_contracts=False,
+                        flatten_et=str(actions_cfg.get("odte_flatten_et", "15:45")),
+                        aliases=aliases,
+                        include_backtest=False,
+                        backtest=saved_bt,
+                    )
+                    odte_1k["book"] = o1k_tracker.book.to_dict()
+                    odte_1k["cash"] = odte_1k["book"].get("cash")
+                    odte_1k["equity"] = odte_1k["book"].get("equity")
+                    odte_1k["doubled"] = odte_1k["book"].get("doubled")
+                    odte_1k["progress_2x_pct"] = odte_1k["book"].get("progress_2x_pct")
+                    odte_1k["trades_today"] = odte_1k["book"].get("trades_today")
+                else:
                     odte_1k["book"] = o1k_tracker.book.to_dict()
                     odte_1k["cash"] = odte_1k["book"].get("cash")
                     odte_1k["equity"] = odte_1k["book"].get("equity")
@@ -4025,10 +4152,12 @@ def create_app(config_path: str | None = None) -> Flask:
                 action_cards=scan.get("action_cards") or {},
                 radar=radar,
                 journal=journal,
+                odte_1k=odte_1k,
             )
             by_section = {
                 "lottery": rlog.board(section="lottery", limit=30),
                 "challenge": rlog.board(section="challenge", limit=30),
+                "odte_1k": rlog.board(section="odte_1k", limit=30),
                 "odte": rlog.board(section="odte", limit=30),
                 "weekly": rlog.board(section="weekly", limit=30),
                 "swing": rlog.board(section="swing", limit=30),
@@ -4039,6 +4168,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 "by_section": by_section,
                 "lottery": by_section["lottery"],
                 "challenge": by_section["challenge"],
+                "odte_1k": by_section["odte_1k"],
                 "odte": by_section["odte"],
                 "weekly": by_section["weekly"],
                 "swing": by_section["swing"],

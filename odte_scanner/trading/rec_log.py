@@ -30,6 +30,10 @@ _OPEN_ACTIONS = {
     "ENTRY",
     "BUY",
     "LONG",
+    "PUT_NOW",
+    "CALL_NOW",
+    "BUY_PUT",
+    "BUY_CALL",
 }
 # Actions that close / take profit on a recommendation
 _CLOSE_ACTIONS = {
@@ -37,6 +41,8 @@ _CLOSE_ACTIONS = {
     "EXIT",
     "SELL",
     "CLOSE",
+    "SELL_PUT",
+    "SELL_CALL",
 }
 
 # Soft opens (radar / quality / WAIT) — track on board, never auto P&L-close at entry
@@ -552,7 +558,7 @@ class RecommendationLog:
                 continue
             trade_like = {
                 "dte_bucket": r.horizon
-                or ("0dte" if r.section in {"odte", "lottery", "radar"} else "weekly"),
+                or ("0dte" if r.section in {"odte", "odte_1k", "lottery", "radar"} else "weekly"),
                 "dte": r.dte,
                 "entered_at": r.recommended_at,
             }
@@ -1036,6 +1042,109 @@ class RecommendationLog:
             n += 1
         return n
 
+    def sync_odte_1k(self, board: dict[str, Any] | None) -> int:
+        """Persist 0DTE $1K IN (BUY PUT) / OUT (SELL PUT) recommendations."""
+        if not isinstance(board, dict):
+            return 0
+        n = 0
+        live: set[str] = set()
+        section = "odte_1k"
+
+        def _rows(*keys: str) -> list[dict[str, Any]]:
+            out: list[dict[str, Any]] = []
+            for k in keys:
+                for row in board.get(k) or []:
+                    if isinstance(row, dict) and row not in out:
+                        out.append(row)
+            return out
+
+        # OUT first so same-tick flip closes before new IN
+        for row in _rows("exit_now", "exit", "out"):
+            sym = str(row.get("symbol") or "")
+            if not sym:
+                continue
+            right = _right_of(row, default="P")
+            live.add(self._key(section, sym, right))
+            bid = _f(row.get("bid") or row.get("exit_bid") or row.get("mark") or row.get("ask"))
+            reason = " · ".join(str(x) for x in (row.get("reasons") or [])[:3] if x) or str(
+                row.get("detail") or row.get("headline") or "OUT · SELL PUT"
+            )
+            self.note_exit(
+                section=section,
+                symbol=sym,
+                action="EXIT",
+                right=right,
+                price=bid,
+                spot=_f(row.get("spot")),
+                reason=reason,
+            )
+            n += 1
+
+        for row in _rows("put_now", "entry", "in"):
+            sym = str(row.get("symbol") or "")
+            if not sym:
+                continue
+            right = _right_of(row, default="P")
+            live.add(self._key(section, sym, right))
+            ask = _f(row.get("ask") or row.get("entry_ask") or row.get("mark"))
+            reason = " · ".join(str(x) for x in (row.get("reasons") or [])[:3] if x) or str(
+                row.get("detail") or row.get("headline") or "IN · BUY PUT"
+            )
+            self.note_entry(
+                section=section,
+                symbol=sym,
+                action="PUT_NOW",
+                right=right,
+                price=ask,
+                spot=_f(row.get("spot")),
+                contract=str(row.get("contract") or "") or None,
+                expiry=str(row.get("expiry") or "") or None,
+                strike=_f(row.get("strike")),
+                dte=int(row["dte"]) if row.get("dte") is not None else 0,
+                horizon="0dte",
+                reason=reason,
+                headline=str(row.get("headline") or f"IN · BUY PUT {sym}"),
+                source="odte_1k",
+            )
+            n += 1
+
+        # Soft WATCH so the 1K desk isn't empty in history (HOLD stays as WAIT soft)
+        # Cap soft rows — full focus sleeve would flood the log
+        soft_rows = _rows("hold", "watch")[:10]
+        for row in soft_rows:
+            sym = str(row.get("symbol") or "")
+            if not sym:
+                continue
+            right = _right_of(row, default="P")
+            key = self._key(section, sym, right)
+            if key in live:
+                continue
+            live.add(key)
+            act = str(row.get("action") or "WATCH").upper()
+            soft = "HOLD" if act == "HOLD" else "WATCH"
+            # HOLD isn't a soft-open in the logger — map to WAIT for history only
+            log_act = "WAIT" if soft == "HOLD" else "WATCH"
+            self.note_entry(
+                section=section,
+                symbol=sym,
+                action=log_act,
+                right=right,
+                price=_f(row.get("ask") or row.get("mark")),
+                spot=_f(row.get("spot")),
+                contract=str(row.get("contract") or "") or None,
+                expiry=str(row.get("expiry") or "") or None,
+                strike=_f(row.get("strike")),
+                dte=int(row["dte"]) if row.get("dte") is not None else 0,
+                horizon="0dte",
+                reason=str(row.get("detail") or row.get("headline") or soft),
+                headline=str(row.get("headline") or f"{soft} {sym} PUT"),
+                source="odte_1k",
+            )
+            n += 1
+
+        self.mark_off_board(section, live, soft=True)
+        return n
+
     def sync_all(
         self,
         *,
@@ -1045,11 +1154,13 @@ class RecommendationLog:
         action_cards: dict[str, Any] | None = None,
         radar: dict[str, Any] | None = None,
         journal: Any | None = None,
+        odte_1k: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         # Journal first so BUY NOW fills seed opens before board SELL NOW / just_exited
         n_j = self.sync_from_journal(journal)
         n_lot = self.sync_lottery(lottery)
         n_ch = self.sync_challenge(challenge)
+        n_1k = self.sync_odte_1k(odte_1k)
         n_act = self.sync_actions(actions)
         n_cards = self.sync_action_cards(action_cards)
         n_radar = self.sync_radar(radar)
@@ -1057,6 +1168,7 @@ class RecommendationLog:
         return {
             "lottery": n_lot,
             "challenge": n_ch,
+            "odte_1k": n_1k,
             "actions": n_act,
             "action_cards": n_cards,
             "radar": n_radar,

@@ -81,11 +81,173 @@ def test_put_now_on_break_hold_green_friday():
         now=now,
     )
     assert sig.action == "PUT_NOW"
+    assert sig.side == "IN"
+    assert sig.desk_action == "BUY_PUT"
+    assert sig.alert_action == "BUY_NOW"
+    assert sig.ask is not None and sig.ask > 0
     assert sig.green_friday is True
     assert sig.broke_orb_low is True
     assert sig.call_safe_zone_conflict is True
     assert sig.signaled_at_cst
     assert "Green Friday" in sig.detail or any("Green Friday" in r for r in sig.reasons)
+    d = sig.to_dict()
+    assert d["side"] == "IN"
+    assert d["desk_action"] == "BUY_PUT"
+
+
+def test_proxy_orb_never_fires_in():
+    """Day H/L proxy must not arm IN — was the main reason desk stayed empty."""
+    orb = Orb15Levels(
+        symbol="SPY",
+        session_date="2026-08-14",
+        high=780.0,
+        low=770.0,
+        status="proxy",
+        note="Day H/L proxy",
+    )
+    now = datetime(2026, 8, 14, 10, 20, tzinfo=ET)
+    sig = decide_odte_1k_entry(
+        orb=orb,
+        quote={"last": 769.0, "session_change_pct": 0.4, "mom_5m_pct": -0.2},
+        fetch_contract=False,
+        now=now,
+    )
+    assert sig.action == "WATCH"
+    assert sig.side == "WATCH"
+
+
+def test_exit_is_out_sell_put():
+    orb = Orb15Levels(
+        symbol="SPY",
+        session_date="2026-08-14",
+        high=778.2,
+        low=777.66,
+        status="ready",
+        bars=15,
+    )
+    now = datetime(2026, 8, 14, 15, 50, tzinfo=ET)
+    sig = decide_odte_1k_entry(
+        orb=orb,
+        quote={"last": 776.0, "session_change_pct": 0.2, "mom_5m_pct": -0.1},
+        open_trade={
+            "status": "open",
+            "entry_ask": 1.5,
+            "mark": 1.6,
+            "strike": 776,
+            "contracts": 2,
+            "cost": 300,
+        },
+        now=now,
+    )
+    assert sig.action == "EXIT"
+    assert sig.side == "OUT"
+    assert sig.desk_action == "SELL_PUT"
+    assert sig.alert_action == "SELL_NOW"
+
+
+def test_board_emits_in_out_aliases():
+    orb = Orb15Levels(
+        symbol="SPY",
+        session_date="2026-08-14",
+        high=778.2,
+        low=777.66,
+        status="ready",
+        bars=15,
+    )
+    now = datetime(2026, 8, 14, 10, 20, tzinfo=ET)
+    board = build_odte_1k_board(
+        quotes={"SPY": {"last": 776.5, "session_change_pct": 0.5, "mom_5m_pct": -0.2}},
+        symbols=["SPY"],
+        orb_map={"SPY": orb},
+        fetch_bars=False,
+        fetch_contracts=False,
+        now=now,
+    )
+    assert board["counts"]["in"] >= 1
+    assert board["entry"]
+    assert board["in"][0]["side"] == "IN"
+    assert board["in"][0]["desk_action"] == "BUY_PUT"
+    assert board["in"][0]["ask"] is not None
+
+
+def test_backtest_orb15_puts_fires_and_exits():
+    from odte_scanner.challenge.odte_1k_backtest import backtest_orb15_puts
+
+    day = "2026-08-14"
+    bars = _orb_bars(day)
+    # Extend with reclaim then flatten path
+    start = pd.Timestamp(f"{day} 10:10:00", tz=ET)
+    extra = []
+    idx = []
+    for i in range(40):
+        ts = start + pd.Timedelta(minutes=i)
+        idx.append(ts)
+        # stay below ORB then reclaim late
+        close = 776.2 if i < 20 else 778.5
+        extra.append({"Open": close, "High": close + 0.1, "Low": close - 0.1, "Close": close, "Volume": 500})
+    more = pd.DataFrame(extra, index=pd.DatetimeIndex(idx))
+    bars = pd.concat([bars, more])
+    # Force green ORB open < ORB close for green filter
+    bars.loc[bars.index[0], "Open"] = 777.50
+    result = backtest_orb15_puts(bars, symbol="SPY", hold_bars=2, require_green=True)
+    assert result.sessions >= 1
+    assert result.trades >= 1
+    assert result.trade_rows[0].exit_reason in {"reclaim_orb_low", "target", "stop", "flatten", "session_end"}
+    assert result.win_pct >= 0
+
+
+def test_rec_log_sync_odte_1k_in_out(tmp_path):
+    from odte_scanner.trading.rec_log import RecommendationLog
+
+    log = RecommendationLog(tmp_path / "rec.json")
+    n = log.sync_odte_1k(
+        {
+            "put_now": [
+                {
+                    "symbol": "SPY",
+                    "right": "P",
+                    "action": "PUT_NOW",
+                    "ask": 1.4,
+                    "strike": 776,
+                    "expiry": "2026-08-14",
+                    "spot": 776.5,
+                    "headline": "IN · BUY PUT SPY",
+                    "detail": "break+hold",
+                }
+            ],
+            "exit_now": [],
+            "hold": [],
+            "watch": [],
+        }
+    )
+    assert n >= 1
+    board = log.board(section="odte_1k")
+    assert board["open"] >= 1
+    assert board["open_recs"][0]["symbol"] == "SPY"
+    # OUT closes with P&L
+    log.sync_odte_1k(
+        {
+            "put_now": [],
+            "exit_now": [
+                {
+                    "symbol": "SPY",
+                    "right": "P",
+                    "action": "EXIT",
+                    "bid": 2.2,
+                    "spot": 774.0,
+                    "detail": "OUT · bank",
+                }
+            ],
+            "hold": [],
+            "watch": [],
+        }
+    )
+    board2 = log.board(section="odte_1k")
+    assert board2["closed"] >= 1
+    closed = board2["closed_recs"][0]
+    assert closed["profit_pct"] is not None
+    assert closed["profit_pct"] > 0
+
 
 
 def test_watch_when_inside_range():
@@ -138,6 +300,8 @@ def test_put_now_action_is_emitted():
     )
     assert sig.action == "PUT_NOW"
     assert sig.symbol == "NOW"
+    assert sig.side == "IN"
+    assert "BUY PUT" in sig.headline
 
 
 def test_board_builds_with_injected_orb():
@@ -159,8 +323,10 @@ def test_board_builds_with_injected_orb():
         now=now,
     )
     assert board["counts"]["put_now"] >= 1
+    assert board["counts"]["in"] >= 1
     assert board["orb"]["SPY"]["low"] == 777.66
     assert board["green_friday"] is True
+    assert board["put_now"][0]["ask"] is not None
 
 
 def test_tracker_two_trade_day_cap(tmp_path):
