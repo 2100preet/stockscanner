@@ -9,11 +9,8 @@ on:
     branches:
       - main
       - cursor/ddog-focus-universe-4571
-    paths:
-      - "odte_scanner/**"
-      - "config.yaml"
-      - "requirements.txt"
-      - ".github/workflows/signal-desk-pages.yml"
+      - cursor/stockscanner-pages-zeroloss-desk-8ac0
+    # No paths filter: ensure bot/merge pushes always rebuild the live desk.
 
 permissions:
   contents: read
