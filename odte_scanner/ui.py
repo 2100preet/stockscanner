@@ -29,7 +29,7 @@ PAGE = r"""
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Signal Desk — Multi-Horizon</title>
+  <title>ZeroLoss Desk — 0DTE $1K IN/OUT</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
@@ -177,8 +177,8 @@ PAGE = r"""
 </head>
 <body>
   <div class="wrap">
-    <h1 class="brand">Signal <em>Desk</em></h1>
-    <p class="lede">Signa-style action cards + Intellectia-style horizons: <strong>0DTE</strong>, <strong>1 week</strong>, <strong>1–3 month swing</strong>, and <strong>ML6</strong> earnings-catalyst neocloud / AI infra — separate algos and win rates. Screener covers ~100 liquid names.</p>
+    <h1 class="brand">ZeroLoss <em>Desk</em></h1>
+    <p class="lede">Live mirror of the ZeroLoss desk (stockscanner Pages). <strong>0DTE $1K</strong> shows <strong>IN · BUY PUT</strong> / <strong>OUT · SELL PUT</strong> with recommendation-log P&amp;L and ORB15 backtest. Also: 0DTE, Power Hour, Explosive, weeklies, swing, ML6.</p>
     <div class="toolbar">
       <button class="primary" id="btnScan">Scan focus</button>
       <button id="btnScanWide">Scan liquid universe</button>
