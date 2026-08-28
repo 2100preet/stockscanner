@@ -53,6 +53,10 @@ def _static_html(page: str) -> str:
         "    setInterval(loadAll, 60000);",
         "    setInterval(loadAll, window.SIGNAL_DESK_STATIC ? 180000 : 60000);",
     )
+    html = html.replace(
+        'href="/manifest.webmanifest"',
+        'href="./manifest.webmanifest"',
+    )
     # Badge after lede via small DOM hook at start of paint/load
     html = html.replace(
         "    async function loadAll() {\n"
@@ -93,7 +97,7 @@ def export_pages(
     config_path: str | None = None,
 ) -> Path:
     """Build site/index.html + site/data/snapshot.json from disk scan (offline)."""
-    from odte_scanner.ui import PAGE, create_app
+    from odte_scanner.ui import MANIFEST, PAGE, create_app
 
     out = Path(out_dir)
     if not out.is_absolute():
@@ -132,6 +136,7 @@ def export_pages(
             (ledgers_dir / name).write_text(src.read_text())
 
     (out / "index.html").write_text(_static_html(PAGE))
+    (out / "manifest.webmanifest").write_text(MANIFEST)
     (out / ".nojekyll").write_text("")
     insights = payload.get("insights") or {}
     acts = payload.get("actions") or {}
