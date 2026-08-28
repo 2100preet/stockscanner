@@ -426,3 +426,62 @@ def test_board_requires_80_hist_win_for_buy():
     assert "QQQ" not in buy_syms
     assert board["hist_win_gate"]["target_met"] is True
     assert board["hist_win_gate"]["pooled_win_pct"] >= 80
+
+
+def test_put_blocked_on_rally_without_tape():
+    """Regression: AMZN put promoted on Pages without tape / into green session."""
+    put = {
+        "symbol": "AMZN",
+        "score": 72,
+        "put_score": 72,
+        "strike": 230,
+        "expiry": "2026-08-28",
+        "ask": 3.15,
+        "bid": 3.0,
+        "contract": "AMZN260828P00230000",
+        "dte": 0,
+        "dte_bucket": "0dte",
+        "right": "P",
+        "moneyness_pct": 0.1,
+    }
+    rally = decide_entry(
+        put,
+        quote={
+            "last": 232,
+            "session_change_pct": 1.8,
+            "mom_5m_pct": 0.35,
+            "mom_15m_pct": 0.42,
+        },
+        buy_score=70,
+        require_live_confirm=False,
+        now=_MORNING,
+    )
+    assert rally.action == "WAIT"
+
+    blind = decide_entry(
+        put,
+        quote={},
+        buy_score=70,
+        require_live_confirm=False,
+        now=_MORNING,
+    )
+    assert blind.action == "WAIT"
+    assert "tape" in blind.detail.lower() or "blind" in blind.detail.lower()
+
+
+def test_put_hist_gate_blocks_bullish_underlying():
+    sig = ActionSignal(
+        action="BUY_NOW",
+        strength=80,
+        headline="BUY NOW AMZN PUT · 0DTE",
+        detail="score ok",
+        symbol="AMZN",
+        right="P",
+        win_pct=72.7,
+        win_samples=11,
+        hit_1pct=65.0,
+        dte_bucket="0dte",
+    )
+    out = apply_hist_win_gate(sig, min_hist_win_pct=80, min_hist_win_samples=5)
+    assert out.action == "WAIT"
+    assert "put edge" in out.detail or "rips" in out.detail

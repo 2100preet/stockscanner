@@ -215,6 +215,9 @@ def decide_entry(
     if bucket == "0DTE" and past_no_new_0dte_entries(now):
         return _wait("Past 15:00 ET — no new 0DTE entries (flatten / manage only).")
 
+    # Puts always need live tape — never promote on score alone (Pages offline included).
+    tape_required = require_live_confirm or is_put
+
     # --- Hard tape gates (side-aware) ---
     pullback_reclaim = False
     if not is_put:
@@ -269,7 +272,7 @@ def decide_entry(
                     + ("; wait weekly pullback reclaim (5m bounce)" if bucket == "1W" else ".")
                 )
 
-        if require_live_confirm and bucket == "0DTE":
+        if tape_required and bucket == "0DTE":
             if mom5 is None and mom15 is None and live is None:
                 return _wait("No live tape confirm — not buying 0DTE call blind off daily score alone.")
             if mom5 is not None and mom5 < 0.05 and (mom15 is None or mom15 < 0.05):
@@ -284,17 +287,23 @@ def decide_entry(
         if pullback_reclaim:
             mom_boost = max(mom_boost, 8)
     else:
-        # Puts: need weakness, not a bounce
+        # Puts: need weakness, not a bounce — block buying into rips (AMZN-class).
+        if live is None:
+            return _wait("No session tape — not buying puts blind (need red/weak tape).")
+
         if mom5 is not None and mom5 >= 0.15:
             return _wait(f"5m tape bouncing ({mom5:+.2f}%) — no BUY NOW put into a reclaim.")
 
         if mom15 is not None and mom15 >= 0.25:
             return _wait(f"15m momentum up ({mom15:+.2f}%) — wait for rollover for puts.")
 
-        if live is not None and live >= 0.6 and bucket == "0DTE":
+        if live >= 0.35 and bucket == "0DTE":
+            return _wait(f"Session green for 0DTE put ({live:+.2f}%) — need dump, not rip.")
+
+        if live >= 0.6 and bucket == "0DTE":
             return _wait(f"Session firm for 0DTE put ({live:+.2f}%).")
 
-        if live is not None and live >= 1.5:
+        if live >= 1.5:
             return _wait(f"Session strong ({live:+.2f}%). Let dump develop for puts.")
 
         if opt_pct is not None and opt_pct <= -25:
@@ -321,9 +330,9 @@ def decide_entry(
         if live is not None and live <= -chase_limit and score < eff_buy_score + 5:
             return _wait(f"Already down {live:+.2f}% this session — chase risk on puts.")
 
-        if require_live_confirm and bucket == "0DTE":
-            if mom5 is None and mom15 is None and live is None:
-                return _wait("No live tape confirm — not buying 0DTE put blind off daily score alone.")
+        if tape_required and bucket == "0DTE":
+            if mom5 is None and mom15 is None:
+                return _wait("No 5m/15m tape — not buying 0DTE put blind off daily score alone.")
             if mom5 is not None and mom5 > -0.05 and (mom15 is None or mom15 > -0.05):
                 return _wait(
                     f"Need short-term dump for 0DTE put BUY (5m {mom5:+.2f}%"
@@ -331,7 +340,10 @@ def decide_entry(
                     + ")."
                 )
 
-        tape_ok = live is None or live < 0.35
+        if bucket == "0DTE":
+            tape_ok = live < -0.05 and (mom5 is None or mom5 <= 0.0) and (mom15 is None or mom15 <= 0.10)
+        else:
+            tape_ok = live < 0.20 and (mom5 is None or mom5 <= 0.10)
         mom_boost = 5 if mom5 and mom5 < -0.1 else 0
 
     # Puts use inverse score: weak ensemble OR explicit put_score
@@ -641,14 +653,12 @@ def apply_hist_win_gate(
 ) -> ActionSignal:
     """Demote BUY NOW → WAIT unless walk-forward hist win clears the bar.
 
-    This is how the desk targets ≥80% measured win rate on promoted trades:
-    only symbols/horizons that already cleared that bar in backtest are buyable.
-    Put tickets skip this gate (table is call/underlying-rip oriented).
+    Calls: underlying green win% ≥ target.
+    Puts: inverse — need bearish edge (100 − call win%) ≥ target and low ≥1% rip rate.
     """
     if not require_hist_win or sig.action != "BUY_NOW":
         return sig
-    if str(sig.right or "C").upper() == "P":
-        return sig
+    is_put = str(sig.right or "C").upper() == "P"
     n = int(sig.win_samples or 0)
     win = sig.win_pct
     if win is None:
@@ -668,6 +678,27 @@ def apply_hist_win_gate(
             f"(need ≥{min_hist_win_pct:.0f}% win)"
         )
         sig.strength = min(sig.strength, 48.0)
+        return sig
+    if is_put:
+        bear_edge = 100.0 - float(win)
+        if bear_edge < float(min_hist_win_pct):
+            sig.action = "WAIT"
+            sig.headline = sig.headline.replace("BUY NOW", "WAIT", 1)
+            sig.detail = (
+                f"{sig.detail} · blocked: underlying green {win:.0f}% after signal "
+                f"(put edge {bear_edge:.0f}% < {min_hist_win_pct:.0f}% bear target)"
+            )
+            sig.strength = min(sig.strength, 50.0)
+            return sig
+        if sig.hit_1pct is not None and float(sig.hit_1pct) >= float(min_hist_win_pct):
+            sig.action = "WAIT"
+            sig.headline = sig.headline.replace("BUY NOW", "WAIT", 1)
+            sig.detail = (
+                f"{sig.detail} · blocked: underlying rips ≥1% {sig.hit_1pct:.0f}% "
+                f"(≥{min_hist_win_pct:.0f}% — poor put setup)"
+            )
+            sig.strength = min(sig.strength, 50.0)
+            return sig
         return sig
     if float(win) < float(min_hist_win_pct):
         sig.action = "WAIT"
