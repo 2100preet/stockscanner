@@ -159,9 +159,18 @@ class SignalJournal:
         max_risk_usd: float = 250,
         max_open: int = 5,
         max_per_day: int = 5,
+        require_flow_gate: bool = False,
     ) -> JournalTrade | None:
         if signal.get("action") != "BUY_NOW":
             return None
+        if require_flow_gate:
+            detail = str(signal.get("detail") or "")
+            if "blocked:" in detail and "flow" in detail.lower():
+                logger.info("Journal flow gate — skip enter %s", signal.get("symbol"))
+                return None
+            if "flow OK" not in detail:
+                logger.info("Journal flow gate — no flow confirm on %s", signal.get("symbol"))
+                return None
         symbol = str(signal.get("symbol") or "")
         ask = float(signal.get("ask") or 0)
         contract = str(signal.get("contract") or "")
@@ -564,6 +573,7 @@ class SignalJournal:
         max_risk_usd: float = 250,
         auto_enter: bool = True,
         auto_exit: bool = True,
+        require_flow_gate: bool = False,
         lottery: dict[str, Any] | None = None,
         ml6: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -592,7 +602,11 @@ class SignalJournal:
                 # Never paper-fill raw chain candidates missing a desk headline/detail
                 if not (sig.get("headline") or sig.get("detail") or sig.get("exit_plan")):
                     continue
-                t = self.enter_from_signal(sig, max_risk_usd=max_risk_usd)
+                t = self.enter_from_signal(
+                    sig,
+                    max_risk_usd=max_risk_usd,
+                    require_flow_gate=require_flow_gate,
+                )
                 if t:
                     entered.append(t.to_dict())
         # Always persist so Pages export has a journal file even at 0 fills

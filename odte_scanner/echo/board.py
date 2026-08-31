@@ -8,7 +8,7 @@ from typing import Any
 
 from odte_scanner.echo.chain_ladder import fetch_option_ladder
 from odte_scanner.echo.darkpool import build_darkpool_board
-from odte_scanner.echo.flow import build_option_flow
+from odte_scanner.echo.flow import build_option_flow, build_flow_leaders
 from odte_scanner.echo.gex import build_dealer_edge
 
 logger = logging.getLogger(__name__)
@@ -346,6 +346,7 @@ def build_echo_board(
         ladder_source = "candidates_fallback"
 
     flow = build_option_flow(ladders)
+    flow_leaders = build_flow_leaders(flow.get("prints") or [], top_n=20)
     dealer = build_dealer_edge(ladders)
     algo = _build_algo_edge(scores)
     pulse = _build_pulse(quotes, scores)
@@ -391,6 +392,7 @@ def build_echo_board(
         "ladder_count": len(ladders),
         "ladder_source": ladder_source,
         "option_flow": flow,
+        "flow_leaders": flow_leaders,
         "dealer_edge": dealer,
         "dark_pool": dark_pool,
         "algo_edge": algo,

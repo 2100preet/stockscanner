@@ -190,7 +190,7 @@ PAGE = r"""
 <body>
   <div class="wrap">
     <h1 class="brand">ZeroLoss <em>Desk</em></h1>
-    <p class="lede">Live mirror of the ZeroLoss desk (stockscanner Pages). <strong>0DTE $1K</strong> shows <strong>IN · BUY PUT</strong> / <strong>OUT · SELL PUT</strong> with recommendation-log P&amp;L and ORB15 backtest. Also: 0DTE, Power Hour, Explosive, weeklies, swing, ML6.</p>
+    <p class="lede">Live mirror at <a href="https://2100preet.github.io/flow-desk/" target="_blank" rel="noopener">2100preet.github.io/flow-desk</a>. <strong>0DTE $1K</strong> shows <strong>IN · BUY PUT</strong> / <strong>OUT · SELL PUT</strong> with recommendation-log P&amp;L and ORB15 backtest. Tier-1 flow gate blocks misaligned puts/calls. Also: 0DTE, Power Hour, Explosive, weeklies, swing, ML6.</p>
     <div class="toolbar">
       <button class="primary" id="btnScan">Scan focus</button>
       <button id="btnScanWide">Scan liquid universe</button>
@@ -570,13 +570,18 @@ PAGE = r"""
     </section>
 
     <section class="tabpane" id="tab-echo">
-      <h2>Flow Desk — unusual options + GEX + dark pool</h2>
+      <h2>ZeroLoss Flow — unusual options + GEX + dark pool</h2>
       <p class="lede">
-        Bullflow-inspired layout: filterable unusual options flow, dealer GEX walls, and dark-pool ATS context.
+        Tier-1 flow proxy: vol/OI delta vs prior refresh, ranked leaders, and BUY gates (calls need bullish flow / puts bearish).
         Built from Yahoo chain snapshots + <a href="https://www.finra.org/filing-reporting/otc-transparency" target="_blank" rel="noopener" style="color:var(--accent)">FINRA OTC Transparency</a>
-        — <strong>not</strong> OPRA time &amp; sales and <strong>not affiliated</strong> with Bullflow / Trade Echo.
+        — not OPRA time &amp; sales. Inspired by flow desks like Bullflow; not affiliated.
       </p>
       <div class="metric-row" id="echoMetrics"></div>
+      <div class="panel">
+        <h2>Flow leaders — top tickers (proxy)</h2>
+        <p class="lede" style="margin:0;font-size:.76rem">Ranked by net flow score + premium. Journal auto-enter requires symbol here with matching sentiment when flow gate is on.</p>
+        <div id="flowLeaders" class="empty">—</div>
+      </div>
       <div class="panel">
         <h2>Cortex briefing</h2>
         <p class="lede" id="echoCortex" style="margin:0">—</p>
@@ -2375,11 +2380,34 @@ PAGE = r"""
       if (metrics) metrics.innerHTML = [
         m("Symbols", (echo.symbols||[]).length),
         m("Golden flow", fc.golden||0, "up"),
+        m("Flow leaders", (echo.flow_leaders||[]).length),
         m("DP surges", dpc.surges||0, (dpc.surges||0)>0?"up":""),
         m("Flow bull/bear", `${fc.bullish||0}/${fc.bearish||0}`),
         m("GEX regime", prim.regime ? String(prim.regime).replaceAll("_"," ") : "—"),
         m("ATS week", (echo.dark_pool && echo.dark_pool.week_start) || "—"),
       ].join("");
+
+      const leadersEl = document.getElementById("flowLeaders");
+      const leaders = echo.flow_leaders || (DATA.actions && DATA.actions.flow_leaders) || [];
+      if (leadersEl) {
+        if (!leaders.length) {
+          leadersEl.innerHTML = `<div class="empty">No flow leaders yet — ladder cache warms after live refresh.</div>`;
+        } else {
+          leadersEl.innerHTML = `<table><thead><tr>
+            <th>#</th><th>Sym</th><th>Sentiment</th><th>Net score</th><th>Tier</th><th>Call $</th><th>Put $</th><th>ΔVol</th><th>Vol&gt;OI</th>
+          </tr></thead><tbody>${leaders.slice(0,12).map(r=>`<tr>
+            <td class="mono">${r.rank??"—"}</td>
+            <td><strong>${r.symbol}</strong></td>
+            <td><span class="badge ${r.sentiment==="bullish"?"buy":(r.sentiment==="bearish"?"sell":"wait")}">${r.sentiment||"—"}</span></td>
+            <td class="mono ${(r.net_flow_score||0)>=0?"up":"down"}">${fmt(r.net_flow_score,0)}</td>
+            <td><span class="badge ${r.top_tier||"aggressive"}">${(r.top_tier||"").toUpperCase()}</span></td>
+            <td class="mono">$${fmt((r.call_premium||0)/1000,1)}k</td>
+            <td class="mono">$${fmt((r.put_premium||0)/1000,1)}k</td>
+            <td class="mono">${r.delta_volume??"—"}</td>
+            <td>${r.vol_gt_oi?"✓":"—"}</td>
+          </tr>`).join("")}</tbody></table>`;
+        }
+      }
 
       const cx = echo.cortex || {};
       if (cortexEl) {
@@ -3695,6 +3723,22 @@ def create_app(config_path: str | None = None) -> Flask:
             )
         )
 
+        from odte_scanner.echo.flow_snapshot import flow_leaders_from_cache
+
+        flow_top_n = int(actions_cfg.get("flow_leaders_top_n", 12))
+        flow_leaders = flow_leaders_from_cache(top_n=max(flow_top_n, 20))
+        flow_board_kw = dict(
+            flow_leaders=flow_leaders,
+            require_flow_confirm=bool(actions_cfg.get("require_flow_confirm", False)),
+            flow_leaders_top_n=flow_top_n,
+            flow_min_net_score=float(actions_cfg.get("flow_min_net_score", 8.0)),
+            flow_min_tier=str(actions_cfg.get("flow_min_tier", "aggressive")),
+            flow_require_vol_gt_oi=bool(actions_cfg.get("flow_require_vol_gt_oi", False)),
+        )
+        flow_gate_journal = bool(jcfg.get("require_flow_gate", False)) and bool(
+            actions_cfg.get("require_flow_confirm", False)
+        )
+
         actions = build_action_board(
             candidates=refreshed,
             scores=scan.get("scores") or [],
@@ -3717,6 +3761,7 @@ def create_app(config_path: str | None = None) -> Flask:
             # Pages offline has no live tape — still allow gated BUY so journal/exits can run
             require_live_confirm=not offline,
             red_flag=red_flag_snapshot,
+            **flow_board_kw,
         )
 
         if journal is not None:
@@ -3727,6 +3772,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 max_risk_usd=float(jcfg.get("max_risk_per_trade_usd", 250)),
                 auto_enter=bool(jcfg.get("auto_enter", True)),
                 auto_exit=bool(jcfg.get("auto_exit", True)),
+                require_flow_gate=flow_gate_journal,
             )
             # If we just opened fills, rebuild SELL NOW (TP/SL/clock) against new opens
             if journal_sync and journal_sync.get("entered"):
@@ -3760,6 +3806,7 @@ def create_app(config_path: str | None = None) -> Flask:
                     odte_flatten_et=str(actions_cfg.get("odte_flatten_et") or "15:45"),
                     require_live_confirm=not offline,
                     red_flag=red_flag_snapshot,
+                    **flow_board_kw,
                 )
                 more = journal.sync_from_actions(
                     actions,
@@ -3973,8 +4020,33 @@ def create_app(config_path: str | None = None) -> Flask:
                 lottery=lottery,
                 max_symbols=int(actions_cfg.get("echo_max_symbols", 8)),
                 max_dte=int((cfg.get("options") or {}).get("max_dte", 5)),
-                fetch_ladders=False,  # Yahoo ladders block snapshot for minutes
+                fetch_ladders=bool(actions_cfg.get("echo_fetch_ladders", True)) and not offline,
             )
+            if echo.get("flow_leaders"):
+                flow_board_kw["flow_leaders"] = echo["flow_leaders"]
+                actions = build_action_board(
+                    candidates=refreshed,
+                    scores=scan.get("scores") or [],
+                    quotes=quotes,
+                    ledger=ledger if isinstance(ledger, dict) else None,
+                    journal_opens=journal_opens,
+                    buy_score=pages_buy_score,
+                    wait_score=float(actions_cfg.get("wait_score", 62)),
+                    weekly_buy_score=weekly_buy_score,
+                    sell_score=float(actions_cfg.get("sell_score", 48)),
+                    stop_loss_pct=float(risk.get("stop_loss_pct", 50)),
+                    take_profit_pct=float(risk.get("take_profit_pct", 80)),
+                    max_chase_pct=float(actions_cfg.get("max_chase_pct", 2.5)),
+                    win_rate_table=win_table,
+                    min_hist_win_pct=float(actions_cfg.get("min_hist_win_pct", 80)),
+                    min_hist_win_samples=int(actions_cfg.get("min_hist_win_samples", 5)),
+                    require_hist_win=bool(actions_cfg.get("require_hist_win", True)),
+                    weekly_max_hold_days=int(actions_cfg.get("weekly_max_hold_days", 7)),
+                    odte_flatten_et=str(actions_cfg.get("odte_flatten_et") or "15:45"),
+                    require_live_confirm=not offline,
+                    red_flag=red_flag_snapshot,
+                    **flow_board_kw,
+                )
         except Exception as exc:  # noqa: BLE001
             logger.warning("echo board unavailable: %s", exc)
             echo = {

@@ -119,6 +119,11 @@ def fetch_option_ladder(
                 cached["spot"] = float(spot)
             return cached
 
+    prev_ladder = None
+    try:
+        prev_ladder = load_cached_ladder(symbol, ttl_sec=86400 * 30)
+    except Exception:  # noqa: BLE001
+        prev_ladder = None
     fetch_sym = yahoo_symbol or symbol
     try:
         t = yf.Ticker(fetch_sym)
@@ -151,6 +156,9 @@ def fetch_option_ladder(
             "calls": calls,
             "puts": puts,
         }
+        from odte_scanner.echo.flow_deltas import attach_deltas_to_ladder
+
+        ladder = attach_deltas_to_ladder(ladder, prev=prev_ladder)
         save_cached_ladder(symbol, ladder)
         return ladder
     except Exception as exc:  # noqa: BLE001

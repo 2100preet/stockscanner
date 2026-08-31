@@ -11,6 +11,7 @@ on:
       - main
       - cursor/ddog-focus-universe-4571
       - cursor/stockscanner-pages-zeroloss-desk-8ac0
+      - cursor/zeroloss-flow-desk-8ac0
     # No paths filter: ensure bot/merge pushes always rebuild the live desk.
 
 permissions:
@@ -56,6 +57,7 @@ jobs:
             outputs/webull_orders.json
             outputs/ui_snapshot_cache.json
             outputs/win_rates.json
+            outputs/echo_ladders
           key: desk-ledgers-${{ github.run_id }}
           restore-keys: |
             desk-ledgers-
@@ -101,6 +103,13 @@ jobs:
         uses: actions/upload-pages-artifact@v3
         with:
           path: site
+
+      - name: Upload site export (zeroloss mirror)
+        uses: actions/upload-artifact@v4
+        with:
+          name: site-export
+          path: site
+          retention-days: 3
 
   deploy:
     needs: build

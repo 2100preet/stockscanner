@@ -95,6 +95,9 @@ def build_option_flow(
                         "expiry": expiry,
                         "dte": dte,
                         "spot": spot,
+                        "delta_volume": int(row.get("delta_volume") or 0),
+                        "delta_oi": int(row.get("delta_oi") or 0),
+                        "premium_delta": float(row.get("premium_delta") or 0),
                     }
                 )
                 prints.append(scored)
@@ -121,7 +124,78 @@ def build_option_flow(
             "bearish": bear,
         },
         "note": (
-            "Yahoo chain snapshot proxy — not real-time OPRA institutional tape. "
-            "Tiers use premium notional + volume/OI unusualness (Trade Echo–style labels)."
+            "ZeroLoss Flow proxy — Yahoo chain snapshot + vol/OI delta vs prior refresh. "
+            "Not OPRA time & sales. Tiers: premium notional + unusualness + session delta."
         ),
     }
+
+
+def build_flow_leaders(
+    prints: list[dict[str, Any]],
+    *,
+    top_n: int = 20,
+) -> list[dict[str, Any]]:
+    """Aggregate flow prints by symbol → ranked leaders (Bullflow top-tickers proxy)."""
+    by_sym: dict[str, dict[str, Any]] = {}
+    tier_rank = {"golden": 3, "unusual": 2, "aggressive": 1}
+    for p in prints or []:
+        sym = str(p.get("symbol") or "").upper()
+        if not sym:
+            continue
+        agg = by_sym.setdefault(
+            sym,
+            {
+                "symbol": sym,
+                "net_flow_score": 0.0,
+                "call_premium": 0.0,
+                "put_premium": 0.0,
+                "bullish_prints": 0,
+                "bearish_prints": 0,
+                "vol_gt_oi": False,
+                "delta_volume": 0,
+                "premium_delta": 0.0,
+                "top_tier": "aggressive",
+                "prints": 0,
+            },
+        )
+        fs = float(p.get("flow_score") or 0)
+        prem = float(p.get("premium_notional") or 0)
+        agg["net_flow_score"] += fs
+        agg["prints"] += 1
+        if str(p.get("right") or "C").upper() == "P":
+            agg["put_premium"] += prem
+        else:
+            agg["call_premium"] += prem
+        if fs > 0:
+            agg["bullish_prints"] += 1
+        elif fs < 0:
+            agg["bearish_prints"] += 1
+        if p.get("vol_gt_oi"):
+            agg["vol_gt_oi"] = True
+        agg["delta_volume"] += int(p.get("delta_volume") or 0)
+        agg["premium_delta"] += float(p.get("premium_delta") or 0)
+        t = str(p.get("tier") or "aggressive")
+        if tier_rank.get(t, 0) > tier_rank.get(str(agg["top_tier"]), 0):
+            agg["top_tier"] = t
+
+    leaders = list(by_sym.values())
+    for row in leaders:
+        net = float(row["net_flow_score"])
+        if net > 5:
+            row["sentiment"] = "bullish"
+        elif net < -5:
+            row["sentiment"] = "bearish"
+        else:
+            row["sentiment"] = "neutral"
+        row["net_flow_score"] = round(net, 1)
+        row["call_premium"] = round(float(row["call_premium"]), 2)
+        row["put_premium"] = round(float(row["put_premium"]), 2)
+        row["premium_delta"] = round(float(row["premium_delta"]), 2)
+
+    leaders.sort(
+        key=lambda r: (abs(float(r["net_flow_score"])), float(r["call_premium"]) + float(r["put_premium"])),
+        reverse=True,
+    )
+    for i, row in enumerate(leaders[:top_n], start=1):
+        row["rank"] = i
+    return leaders[:top_n]

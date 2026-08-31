@@ -115,6 +115,14 @@ def export_pages(
     scan_src = ROOT / "outputs" / "latest_scan.json"
     (data_dir / "latest_scan.json").write_text(scan_src.read_text() if scan_src.exists() else "{}")
 
+    # Echo ladder cache for offline flow leaders on Pages
+    ladders_src = ROOT / "outputs" / "echo_ladders"
+    if ladders_src.exists():
+        ladders_dst = data_dir / "echo_ladders"
+        ladders_dst.mkdir(parents=True, exist_ok=True)
+        for path in ladders_src.glob("*.json"):
+            (ladders_dst / path.name).write_text(path.read_text())
+
     # Copy paper ledgers into static site (gitignored outputs/ otherwise vanish on Pages)
     ledgers_dir = data_dir / "ledgers"
     ledgers_dir.mkdir(parents=True, exist_ok=True)
@@ -144,7 +152,7 @@ def export_pages(
         "buy_now_puts": (acts.get("counts") or {}).get("buy_now_puts"),
         "just_exited": len(acts.get("just_exited") or []),
         "closed_journal": len(insights.get("closed_trades") or []),
-        "url_hint": "https://2100preet.github.io/stockscanner/",
+        "url_hint": "https://2100preet.github.io/flow-desk/",
     }
     (out / "meta.json").write_text(json.dumps(meta, indent=2))
     return out

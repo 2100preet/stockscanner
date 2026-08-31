@@ -735,6 +735,12 @@ def build_action_board(
     require_live_confirm: bool = True,
     red_flag: dict[str, Any] | None = None,
     signal_times_path: str | None = "outputs/signal_times.json",
+    flow_leaders: list[dict[str, Any]] | None = None,
+    require_flow_confirm: bool = False,
+    flow_leaders_top_n: int = 12,
+    flow_min_net_score: float = 8.0,
+    flow_min_tier: str = "aggressive",
+    flow_require_vol_gt_oi: bool = False,
 ) -> dict[str, Any]:
     score_by_symbol = {
         str(s.get("symbol")): float(s.get("ensemble_score") or 0) for s in scores or []
@@ -793,6 +799,17 @@ def build_action_board(
             min_hist_win_pct=min_hist_win_pct,
             min_hist_win_samples=min_hist_win_samples,
             require_hist_win=require_hist_win,
+        )
+        from odte_scanner.signals.flow_gate import apply_flow_gate
+
+        sig = apply_flow_gate(
+            sig,
+            flow_leaders=flow_leaders,
+            require_flow_confirm=require_flow_confirm,
+            flow_leaders_top_n=flow_leaders_top_n,
+            flow_min_net_score=flow_min_net_score,
+            flow_min_tier=flow_min_tier,
+            require_vol_gt_oi=flow_require_vol_gt_oi,
         )
         if sig.action == "BUY_NOW":
             sig, store = _apply_persisted_action(sig, store)
@@ -878,6 +895,15 @@ def build_action_board(
             "min_hist_win_samples": min_hist_win_samples,
             **gate_summary,
         },
+        "flow_gate": {
+            "require": require_flow_confirm,
+            "leaders_top_n": flow_leaders_top_n,
+            "min_net_score": flow_min_net_score,
+            "min_tier": flow_min_tier,
+            "require_vol_gt_oi": flow_require_vol_gt_oi,
+            "leaders_count": len(flow_leaders or []),
+        },
+        "flow_leaders": list(flow_leaders or [])[:flow_leaders_top_n],
         "counts": {
             "buy_now": len(buys),
             "buy_now_0dte": len(buy_0dte),
