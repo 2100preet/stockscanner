@@ -152,7 +152,7 @@ def export_pages(
         "buy_now_puts": (acts.get("counts") or {}).get("buy_now_puts"),
         "just_exited": len(acts.get("just_exited") or []),
         "closed_journal": len(insights.get("closed_trades") or []),
-        "url_hint": "https://2100preet.github.io/zeroloss/",
+        "url_hint": "https://2100preet.github.io/flow-desk/",
     }
     (out / "meta.json").write_text(json.dumps(meta, indent=2))
     return out

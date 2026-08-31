@@ -190,7 +190,7 @@ PAGE = r"""
 <body>
   <div class="wrap">
     <h1 class="brand">ZeroLoss <em>Desk</em></h1>
-    <p class="lede">Live mirror of the <a href="https://2100preet.github.io/zeroloss/" target="_blank" rel="noopener">ZeroLoss desk</a>. <strong>0DTE $1K</strong> shows <strong>IN · BUY PUT</strong> / <strong>OUT · SELL PUT</strong> with recommendation-log P&amp;L and ORB15 backtest. Tier-1 flow gate blocks misaligned puts/calls. Also: 0DTE, Power Hour, Explosive, weeklies, swing, ML6.</p>
+    <p class="lede">Live mirror at <a href="https://2100preet.github.io/flow-desk/" target="_blank" rel="noopener">2100preet.github.io/flow-desk</a>. <strong>0DTE $1K</strong> shows <strong>IN · BUY PUT</strong> / <strong>OUT · SELL PUT</strong> with recommendation-log P&amp;L and ORB15 backtest. Tier-1 flow gate blocks misaligned puts/calls. Also: 0DTE, Power Hour, Explosive, weeklies, swing, ML6.</p>
     <div class="toolbar">
       <button class="primary" id="btnScan">Scan focus</button>
       <button id="btnScanWide">Scan liquid universe</button>
