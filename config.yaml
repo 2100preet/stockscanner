@@ -368,6 +368,13 @@ actions:
   market_board_earnings_max_fetch: 60
   # Flow Desk (Bullflow-inspired) — Yahoo chain ladders for top symbols
   echo_max_symbols: 8
+  echo_fetch_ladders: true
+  # ZeroLoss Flow Tier-1 — proxy flow leaders gate journal BUY NOW
+  require_flow_confirm: true
+  flow_leaders_top_n: 12
+  flow_min_net_score: 8.0
+  flow_min_tier: aggressive   # aggressive | unusual | golden
+  flow_require_vol_gt_oi: false
   # Manual Paper ENTER/EXIT in UI (sleeve updates on button click)
   challenge_auto_enter: false
   # Auto EXIT when time-stop / TP / SL / tape fires (was false → ENTERs never closed on Pages)
@@ -447,6 +454,7 @@ journal:
   starting_cash: 5000
   auto_enter: true
   auto_exit: true
+  require_flow_gate: true
   max_risk_per_trade_usd: 250
   max_open_trades: 5
   max_entries_per_day: 5
