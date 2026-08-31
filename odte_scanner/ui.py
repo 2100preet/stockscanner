@@ -678,9 +678,11 @@ PAGE = r"""
       <div class="panel">
         <h2>Recommendation logger — all sections</h2>
         <p class="lede" style="margin-top:0;font-size:.76rem">
-          Cross-desk history: lottery · challenge · 0DTE · weekly · swing.
-          P&amp;L (1ct) = <strong>SELL NOW bid − BUY NOW / ENTRY ask</strong> × 100 — priced only when both pulses had marks.
-          Clock flatten without a live mark is a <em>lapse</em> (not a win/loss). Same panels live under each desk tab.
+          Cross-desk <strong>signal history</strong> (lottery · challenge · 0DTE · weekly · swing) —
+          not the same as the <strong>paper journal</strong> above.
+          <strong>Paper journal realized P&amp;L</strong> is your actual auto-fill portfolio; the signal log
+          tracks every BUY/SELL pulse hypothetically (1 contract) and can look much worse if stale exit bids were logged.
+          Clock flatten without a live mark is a <em>lapse</em> (not a win/loss).
         </p>
         <div class="metric-row" id="recLogMetrics"></div>
         <div id="recLogAll" class="empty">—</div>
@@ -1472,14 +1474,23 @@ PAGE = r"""
       const metrics = document.getElementById(metricsId);
       if (!metrics || !board) return;
       const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
-      metrics.innerHTML = [
+      const paper = board.paper_pnl_usd ?? board.journal_pnl_usd;
+      const signal = board.board_signal_pnl_usd;
+      const rows = [
+        m("Paper journal P&L", paper==null?"—":`$${fmt(paper,2)}`, pctClass(paper)),
+        m("Signal-log P&L", board.closed_pnl_usd==null?"—":`$${fmt(board.closed_pnl_usd,2)}`, pctClass(board.closed_pnl_usd)),
+      ];
+      if (signal != null && paper != null && Math.abs(Number(signal) - Number(paper)) > 1) {
+        rows.push(m("Board-only signal", `$${fmt(signal,2)}`, pctClass(signal)));
+      }
+      rows.push(
         m("Open", board.open??0),
         m("Closed", board.closed??0),
         m("Wins", board.wins??0, "up"),
         m("Losses", board.losses??0, "down"),
         m("Scratch/lapse", (board.scratches||0)+(board.lapsed||0)),
-        m("Closed P&L", board.closed_pnl_usd==null?"—":`$${fmt(board.closed_pnl_usd,2)}`, pctClass(board.closed_pnl_usd)),
-      ].join("");
+      );
+      metrics.innerHTML = rows.join("");
     }
 
     function renderRecLog(elId, board, emptyMsg, metricsId) {
@@ -1560,7 +1571,13 @@ PAGE = r"""
         if (allEl) allEl.innerHTML = `<div class="empty">Recommendation log empty.</div>`;
         return;
       }
-      fillRecLogMetrics("recLogMetrics", rec);
+      const ins = (DATA.insights && DATA.insights.performance) || {};
+      const merged = {
+        ...rec,
+        paper_pnl_usd: rec.paper_pnl_usd ?? rec.journal_pnl_usd ?? ins.realized_pnl_usd,
+        journal_pnl_usd: rec.journal_pnl_usd ?? ins.realized_pnl_usd,
+      };
+      fillRecLogMetrics("recLogMetrics", merged);
       const by = rec.by_section || {};
       // Prefer combined all list
       renderRecLog("recLogAll", {
@@ -4477,6 +4494,11 @@ def create_app(config_path: str | None = None) -> Flask:
                 "swing": by_section["swing"],
                 "radar": by_section["radar"],
             }
+            if insights and isinstance(insights, dict):
+                perf = (insights.get("performance") or {})
+                if perf.get("realized_pnl_usd") is not None:
+                    rec_log_payload["paper_pnl_usd"] = perf["realized_pnl_usd"]
+                    rec_log_payload["journal_pnl_usd"] = perf["realized_pnl_usd"]
         except Exception as exc:  # noqa: BLE001
             logger.warning("recommendation log unavailable: %s", exc)
             rec_log_payload = {"error": str(exc), "open_recs": [], "closed_recs": [], "by_section": {}}

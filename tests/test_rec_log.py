@@ -411,3 +411,78 @@ def test_radar_soft_no_clock_loss(tmp_path: Path):
     assert board["lapsed"] == 0
     assert board["open"] == 1
     assert board["open_recs"][0]["on_board"] is False
+
+
+def test_stale_board_clock_exit_becomes_lapse_not_huge_loss(tmp_path: Path):
+    """Weekly ALAB-style bug: clock flatten with stale $1.50 bid must not count as -$1000."""
+    log = RecommendationLog(tmp_path / "rec.json")
+    log.note_entry(
+        section="weekly",
+        symbol="ALAB",
+        action="BUY_NOW",
+        right="P",
+        price=11.35,
+        contract="ALAB260828P00270000",
+        expiry="2026-08-28",
+        strike=270,
+        source="board",
+    )
+    out = log.note_exit(
+        section="weekly",
+        symbol="ALAB",
+        action="SELL_NOW",
+        right="P",
+        price=1.5,
+        reason="time-stop — flatten lottery by 15:45 ET (no gamma into the close)",
+    )
+    assert out is not None
+    assert out.status == "lapsed"
+    assert out.pnl_usd is None
+    board = log.board(section="weekly")
+    assert board["closed_pnl_usd"] == 0
+    assert board["losses"] == 0
+
+
+def test_entry_price_locked_after_first_buy_now(tmp_path: Path):
+    log = RecommendationLog(tmp_path / "rec.json")
+    log.note_entry(section="odte", symbol="SPY", action="BUY_NOW", price=2.0, source="board")
+    log.note_entry(section="odte", symbol="SPY", action="BUY_NOW", price=2.8, source="board")
+    open_rec = log._open_for("odte", "SPY", "C")
+    assert open_rec is not None
+    assert open_rec.entry_price == 2.0
+
+
+def test_scrub_stale_board_exits_on_load(tmp_path: Path):
+    path = tmp_path / "rec.json"
+    raw = {
+        "updated_at": "2026-08-31T00:00:00+00:00",
+        "recommendations": [
+            {
+                "id": "rec-bad1",
+                "section": "weekly",
+                "symbol": "ALAB",
+                "right": "P",
+                "open_action": "BUY_NOW",
+                "recommended_at": "2026-08-24T14:17:18+00:00",
+                "last_recommended_at": "2026-08-24T20:51:52+00:00",
+                "entry_price": 13.3,
+                "status": "closed",
+                "on_board": True,
+                "close_action": "SELL_NOW",
+                "closed_at": "2026-08-24T20:51:52+00:00",
+                "exit_price": 1.5,
+                "exit_reason": "time-stop — flatten lottery by 15:45 ET",
+                "profit_pct": -88.72,
+                "pnl_usd": -1180.0,
+                "source": "board",
+                "events": [],
+            }
+        ],
+    }
+    path.write_text(json.dumps(raw))
+    log = RecommendationLog(path)
+    rec = log.book.recommendations[0]
+    assert rec.status == "lapsed"
+    assert rec.pnl_usd is None
+    assert log.board()["closed_pnl_usd"] == 0
+

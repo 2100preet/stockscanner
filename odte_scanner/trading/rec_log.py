@@ -13,13 +13,33 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from odte_scanner.trading.journal import _parse_live_exit_from_reason
+
 logger = logging.getLogger(__name__)
+
+_LIVE_ENTRY_RE = re.compile(
+    r"vs entry\s*\$?\s*([0-9]*\.?[0-9]+)",
+    re.IGNORECASE,
+)
+
+
+def _parse_live_entry_from_reason(reason: str | None) -> float | None:
+    if not reason:
+        return None
+    m = _LIVE_ENTRY_RE.search(reason)
+    if not m:
+        return None
+    try:
+        return float(m.group(1))
+    except ValueError:
+        return None
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PATH = ROOT / "outputs" / "recommendation_log.json"
@@ -118,6 +138,12 @@ def _metrics(recs: list[Recommendation]) -> dict[str, Any]:
     # Closed with no priced P&L (missing entry or exit) — not a win/loss
     unpriced = sum(1 for r in closed if r.profit_pct is None)
     pnl = sum(r.pnl_usd or 0 for r in closed if r.pnl_usd is not None)
+    journal_pnl = sum(
+        r.pnl_usd or 0 for r in closed if r.pnl_usd is not None and r.source == "journal"
+    )
+    board_pnl = sum(
+        r.pnl_usd or 0 for r in closed if r.pnl_usd is not None and r.source != "journal"
+    )
     return {
         "open": open_n,
         "closed": len(closed),
@@ -127,7 +153,48 @@ def _metrics(recs: list[Recommendation]) -> dict[str, Any]:
         "scratches": scratches,
         "unpriced": unpriced,
         "closed_pnl_usd": round(pnl, 2),
+        "journal_pnl_usd": round(journal_pnl, 2),
+        "board_signal_pnl_usd": round(board_pnl, 2),
+        "paper_pnl_usd": round(journal_pnl, 2),
     }
+
+
+def _resolve_exit_price(
+    price: float | None,
+    *,
+    entry: float | None,
+    reason: str | None,
+    source: str,
+) -> float | None:
+    """Price board/journal exits — parse live ask from reason; lapse stale clock exits."""
+    parsed = _parse_live_exit_from_reason(reason)
+    px = price
+    if px is None or float(px or 0) <= 0:
+        px = parsed
+    elif (
+        parsed is not None
+        and entry is not None
+        and float(entry) > 0
+        and abs(float(px) - float(entry)) < 1e-9
+        and abs(float(parsed) - float(entry)) > 1e-9
+    ):
+        px = parsed
+    if px is None or float(px) <= 0:
+        return None
+    if entry is not None and float(entry) > 0:
+        loss_pct = (float(px) - float(entry)) / float(entry) * 100.0
+        reason_l = (reason or "").lower()
+        has_live = "live ask" in reason_l or ("unreal " in reason_l and "@" in reason_l)
+        clockish = any(x in reason_l for x in ("time-stop", "15:45", "flatten lottery", "max hold"))
+        # Board-only clock flatten with a stale/wrong bid (common $1.50 echo) — do not count as loss
+        if (
+            source == "board"
+            and loss_pct <= -30.0
+            and clockish
+            and not has_live
+        ):
+            return None
+    return float(px)
 
 
 @dataclass
@@ -216,6 +283,8 @@ class RecommendationLog:
             recs = [Recommendation.from_dict(r) for r in (raw.get("recommendations") or [])]
             self.book = RecBook(updated_at=str(raw.get("updated_at") or ""), recommendations=recs)
             scrubbed = self._scrub_bogus_zero_closes()
+            scrubbed = self._scrub_stale_board_exits() or scrubbed
+            scrubbed = self._scrub_entry_drift_from_reason() or scrubbed
             scrubbed = self._scrub_fake_quality_opens() or scrubbed
             if scrubbed:
                 self.save()
@@ -277,6 +346,48 @@ class RecommendationLog:
                 changed = True
         return changed
 
+    def _scrub_stale_board_exits(self) -> bool:
+        """Reclass board clock-exits with stale bids (e.g. weekly ALAB @ $1.50) as lapses."""
+        changed = False
+        for r in self.book.recommendations:
+            if r.status != "closed" or r.source == "journal":
+                continue
+            if r.entry_price is None or r.exit_price is None:
+                continue
+            entry = float(r.entry_price)
+            exit_px = float(r.exit_price)
+            if entry <= 0:
+                continue
+            loss_pct = (exit_px - entry) / entry * 100.0
+            reason = (r.exit_reason or "").lower()
+            has_live = "live ask" in reason or ("unreal " in reason and "@" in reason)
+            clockish = any(x in reason for x in ("time-stop", "15:45", "flatten lottery", "max hold"))
+            if loss_pct <= -30.0 and clockish and not has_live:
+                r.status = "lapsed"
+                r.close_action = "LAPSE"
+                r.profit_pct = None
+                r.pnl_usd = None
+                r.exit_price = None
+                r.exit_reason = (r.exit_reason or "") + " · reclassed lapse (stale board exit bid)"
+                changed = True
+        return changed
+
+    def _scrub_entry_drift_from_reason(self) -> bool:
+        """Fix closed rows where entry_price drifted but exit reason cites the real entry."""
+        changed = False
+        for r in self.book.recommendations:
+            if r.status != "closed" or r.exit_price is None:
+                continue
+            reason_entry = _parse_live_entry_from_reason(r.exit_reason)
+            if reason_entry is None or reason_entry <= 0:
+                continue
+            if r.entry_price is None or abs(float(r.entry_price) - float(reason_entry)) / float(reason_entry) <= 0.25:
+                continue
+            r.entry_price = reason_entry
+            self._apply_pnl(r, float(r.exit_price))
+            changed = True
+        return changed
+
     def save(self) -> None:
         self.book.updated_at = _now()
         self.path.write_text(json.dumps(self.book.to_dict(), indent=2))
@@ -319,9 +430,20 @@ class RecommendationLog:
 
     def _apply_pnl(self, rec: Recommendation, exit_price: float | None) -> None:
         """P&L from recommended entry ask → recommended exit bid (1 contract)."""
-        if rec.entry_price and exit_price is not None and rec.entry_price > 0:
-            rec.profit_pct = round(((exit_price - rec.entry_price) / rec.entry_price) * 100.0, 2)
-            rec.pnl_usd = round((exit_price - rec.entry_price) * 100.0, 2)
+        entry = rec.entry_price
+        reason_entry = _parse_live_entry_from_reason(rec.exit_reason)
+        if (
+            reason_entry is not None
+            and reason_entry > 0
+            and entry is not None
+            and float(entry) > 0
+            and abs(float(entry) - float(reason_entry)) / float(reason_entry) > 0.25
+        ):
+            entry = reason_entry
+            rec.entry_price = reason_entry
+        if entry and exit_price is not None and float(entry) > 0:
+            rec.profit_pct = round(((exit_price - float(entry)) / float(entry)) * 100.0, 2)
+            rec.pnl_usd = round((exit_price - float(entry)) * 100.0, 2)
         else:
             rec.profit_pct = None
             rec.pnl_usd = None
@@ -356,11 +478,17 @@ class RecommendationLog:
         if existing:
             existing.last_recommended_at = now
             existing.on_board = True
+            was_soft = existing.open_action in _SOFT_OPEN_ACTIONS
             # Upgrade WAIT → BUY_NOW / ENTRY: lock entry ask at the BUY pulse for P&L
             if act in _OPEN_ACTIONS:
                 existing.open_action = act
                 existing.source = source or existing.source
-                if price and price > 0:
+                # Lock entry once set — do not drift higher on every board refresh
+                if price and price > 0 and (
+                    existing.entry_price is None
+                    or float(existing.entry_price or 0) <= 0
+                    or was_soft
+                ):
                     existing.entry_price = price
             elif price and (existing.entry_price is None or existing.entry_price <= 0):
                 existing.entry_price = price
@@ -497,8 +625,14 @@ class RecommendationLog:
         if rec.status == "closed":
             return rec
 
+        entry = float(rec.entry_price) if rec.entry_price is not None else None
+        if entry_price is not None and entry is None:
+            entry = float(entry_price)
+        src = str(rec.source or "board")
+        px = _resolve_exit_price(price, entry=entry, reason=reason, source=src)
+
         # No usable exit mark → lapse (do NOT close at entry)
-        if price is None or float(price) <= 0:
+        if px is None or float(px) <= 0:
             return self.note_lapse(
                 section=rec.section,
                 symbol=sym,
@@ -514,13 +648,13 @@ class RecommendationLog:
         rec.on_board = True
         rec.close_action = act
         rec.closed_at = now
-        rec.exit_price = price
+        rec.exit_price = px
         rec.exit_spot = spot
         rec.exit_reason = (reason or "")[:320]
         rec.last_recommended_at = now
         if rec.entry_price is None and entry_price is not None:
             rec.entry_price = entry_price
-        self._apply_pnl(rec, price)
+        self._apply_pnl(rec, px)
         # Clock-style exit that somehow still has exit==entry → scratch, not a "priced" trade win/loss
         # (kept as closed with 0% so history shows the EXIT pulse; metrics treat 0 as scratch)
         try:
@@ -1186,6 +1320,9 @@ class RecommendationLog:
             "losses": d["losses"],
             "scratches": d.get("scratches", 0),
             "closed_pnl_usd": d["closed_pnl_usd"],
+            "journal_pnl_usd": d.get("journal_pnl_usd", 0),
+            "board_signal_pnl_usd": d.get("board_signal_pnl_usd", 0),
+            "paper_pnl_usd": d.get("paper_pnl_usd", d.get("journal_pnl_usd", 0)),
             "updated_at": d["updated_at"],
         }
 
@@ -1210,7 +1347,10 @@ class RecommendationLog:
             "closed_recs": closed_rows,
             "all": [r.to_dict() for r in recs[:limit]],
             "pnl_note": (
-                "P&L (1ct) = (SELL NOW bid − BUY NOW/ENTRY ask) × 100. "
+                "Paper journal P&L (actual auto-fills) is shown separately on the Journal tab. "
+                "Signal-log P&L below counts hypothetical 1-contract tracks from every BUY/SELL pulse "
+                "across desks — not your live portfolio. "
+                "P&L (1ct) = (SELL NOW bid − BUY NOW/ENTRY ask) × 100 when both prices are real. "
                 "Clock flatten without a live mark is a lapse — not a win/loss."
             ),
         }
