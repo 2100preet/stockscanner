@@ -47,6 +47,7 @@ MID_SMALL_UNIVERSE: list[str] = [
     "SOUN", "BBAI", "AI", "PLUG", "FCEL", "SPCE", "OPEN", "CVNA", "W", "CHWY",
     "PTON", "BYND", "SPWR", "LAZR", "VLDR", "NKLA", "GOEV", "FFIE",
     "IREN",  # Iris Energy — high-beta AI / bitcoin infra optionable
+    "SOFI", "OSCR", "NVTS", "MP",  # sticky watch — fintech / biotech / power semi / rare earth
     # AI connectivity / infra / miners elevated to focus
     "ALAB", "CRDO", "VRT", "APLD", "CIFR", "WULF", "CEG", "GEV",
 ]
@@ -71,6 +72,8 @@ EARNINGS_DARLINGS_UNIVERSE: list[str] = [
     "VG",    # Venture Global
     "BTDR",
     "USAR",
+    "MP",    # MP Materials — rare earth
+    "NVTS",  # Navitas Semiconductor
     "TMC",
     # Consumer / growth / fintech prints in the spotlight
     "FIGR",  # Figure
@@ -179,8 +182,8 @@ FOCUS_DEFAULT: list[str] = [
     # Curated high-potential (memory / AI infra / power / liquid mid) — not full S&P 500
     "SNDK", "WDC", "STX", "LRCX", "KLAC", "MRVL", "ANET", "ALAB", "CRDO", "APP",
     "VRT", "CEG", "GEV", "APLD", "CIFR", "WULF",
-    # Sticky-note watch — BTC ETF + biotech event tape
-    "IBIT", "MRNA",
+    # Sticky-note watch — BTC ETF + biotech event tape + user focus names
+    "IBIT", "MRNA", "SOFI", "OSCR", "NVTS", "USAR", "MP",
 ]
 
 

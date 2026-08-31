@@ -107,6 +107,12 @@ tickers:
   - IBIT  # iShares Bitcoin Trust — BTC pullback / 80k watch longs
   # Event / biotech — sticky watch + prior Phase 3 miss class
   - MRNA  # Moderna — day-3 continuation / catalyst tape
+  # Sticky watch — user focus (fintech / biotech / rare earth / power semi)
+  - SOFI  # SoFi — fintech / high-beta options
+  - OSCR  # Oscar Health — biotech / growth options
+  - NVTS  # Navitas — power semi / GaN
+  - USAR  # USA Rare Earth — rare earth / catalyst
+  - MP    # MP Materials — rare earth / magnetics
   # CRM / AMAT already listed above under Friday weeklies
 
 # Yahoo Finance symbol overrides (indexes need ^ prefix for quotes/chains)
@@ -209,6 +215,11 @@ expiry_calendars:
     - WULF
     - IBIT
     - MRNA
+    - SOFI
+    - OSCR
+    - NVTS
+    - USAR
+    - MP
     - HYG
     - EEM
 
