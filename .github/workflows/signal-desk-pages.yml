@@ -3,8 +3,9 @@ name: Signal Desk Pages
 on:
   workflow_dispatch:
   schedule:
-    # Weekdays, roughly US market hours (UTC)
+    # Weekdays: every 30m during US market hours (UTC). Weekends: one refresh so Mon isn't stale.
     - cron: "15,45 13-20 * * 1-5"
+    - cron: "0 14 * * 6,0"
   push:
     branches:
       - main
