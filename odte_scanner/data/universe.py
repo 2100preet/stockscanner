@@ -48,6 +48,7 @@ MID_SMALL_UNIVERSE: list[str] = [
     "PTON", "BYND", "SPWR", "LAZR", "VLDR", "NKLA", "GOEV", "FFIE",
     "IREN",  # Iris Energy — high-beta AI / bitcoin infra optionable
     "SOFI", "OSCR", "NVTS", "MP",  # sticky watch — fintech / biotech / power semi / rare earth
+    "NTAP", "AMBA", "YEXT", "ASAN", "CIEN", "PVH", "DOCU", "FIVE",  # ER IV week names not already liquid
     # AI connectivity / infra / miners elevated to focus
     "ALAB", "CRDO", "VRT", "APLD", "CIFR", "WULF", "CEG", "GEV",
 ]
@@ -86,6 +87,9 @@ EARNINGS_DARLINGS_UNIVERSE: list[str] = [
     "SMCI",  # Super Micro — high-attention AI server / earnings print
     # Liquid EW names that belong on earnings + flow desks (not mega megas like CSCO/AMAT)
     "SE", "HIMS", "RKLB", "ASTS", "PLUG", "LUNR",
+    # Earnings IV week (Sep 1 2026)
+    "MDB", "SNOW", "NTAP", "AMBA", "YEXT", "ASAN", "GTLB", "AI", "ZS", "PATH",
+    "CIEN", "PVH", "HPE", "DOCU", "FIVE", "NIO", "PANW", "LULU", "MDT", "AVGO", "DELL",
 ]
 
 # S&P 100-ish + liquid optionables / ETFs commonly on Signa/Intellectia screens
@@ -184,6 +188,9 @@ FOCUS_DEFAULT: list[str] = [
     "VRT", "CEG", "GEV", "APLD", "CIFR", "WULF",
     # Sticky-note watch — BTC ETF + biotech event tape + user focus names
     "IBIT", "MRNA", "SOFI", "OSCR", "NVTS", "USAR", "MP",
+    # Earnings this week — IV expected-move sleeve
+    "MDB", "SNOW", "NTAP", "AMBA", "YEXT", "ASAN", "GTLB", "AI", "ZS", "PATH",
+    "CIEN", "PVH", "HPE", "DOCU", "FIVE", "NIO", "PANW", "LULU", "MDT",
 ]
 
 

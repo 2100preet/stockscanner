@@ -66,6 +66,28 @@ CURATED_EARNINGS: dict[str, dict[str, str]] = {
     # High-attention liquid names traders expect on the desk
     "CRCL": {"last_earnings": "2026-08-05", "session": "bmo", "name": "Circle"},
     "CRM": {"next_earnings": "2026-08-26", "session": "amc", "name": "Salesforce"},
+    # Week of Sep 1 2026 — user IV expected-move list (pre-earnings caution)
+    "MDB": {"next_earnings": "2026-09-03", "session": "amc", "name": "MongoDB", "iv_move_pct": 20.6},
+    "AVGO": {"next_earnings": "2026-09-04", "session": "amc", "name": "Broadcom", "iv_move_pct": 8.1},
+    "SNOW": {"next_earnings": "2026-09-03", "session": "amc", "name": "Snowflake", "iv_move_pct": 12.3},
+    "NTAP": {"next_earnings": "2026-09-04", "session": "amc", "name": "NetApp", "iv_move_pct": 12.2},
+    "AMBA": {"next_earnings": "2026-09-04", "session": "amc", "name": "Ambarella", "iv_move_pct": 11.8},
+    "YEXT": {"next_earnings": "2026-09-03", "session": "amc", "name": "Yext", "iv_move_pct": 19.9},
+    "ASAN": {"next_earnings": "2026-09-03", "session": "amc", "name": "Asana", "iv_move_pct": 19.2},
+    "GTLB": {"next_earnings": "2026-09-03", "session": "amc", "name": "GitLab", "iv_move_pct": 16.0},
+    "AI": {"next_earnings": "2026-09-04", "session": "amc", "name": "C3.ai", "iv_move_pct": 13.9},
+    "ZS": {"next_earnings": "2026-09-03", "session": "amc", "name": "Zscaler", "iv_move_pct": 13.7},
+    "PATH": {"next_earnings": "2026-09-04", "session": "amc", "name": "UiPath", "iv_move_pct": 13.5},
+    "CIEN": {"next_earnings": "2026-09-04", "session": "amc", "name": "Ciena", "iv_move_pct": 12.7},
+    "PVH": {"next_earnings": "2026-09-03", "session": "bmo", "name": "PVH", "iv_move_pct": 12.6},
+    "HPE": {"next_earnings": "2026-09-03", "session": "amc", "name": "Hewlett Packard Enterprise", "iv_move_pct": 11.6},
+    "DELL": {"next_earnings": "2026-09-04", "session": "amc", "name": "Dell Technologies", "iv_move_pct": 11.6},
+    "DOCU": {"next_earnings": "2026-09-04", "session": "amc", "name": "DocuSign", "iv_move_pct": 11.1},
+    "FIVE": {"next_earnings": "2026-09-03", "session": "amc", "name": "Five Below", "iv_move_pct": 10.6},
+    "NIO": {"next_earnings": "2026-09-04", "session": "bmo", "name": "NIO", "iv_move_pct": 9.7},
+    "PANW": {"next_earnings": "2026-09-03", "session": "amc", "name": "Palo Alto Networks", "iv_move_pct": 9.6},
+    "LULU": {"next_earnings": "2026-09-04", "session": "amc", "name": "Lululemon", "iv_move_pct": 9.5},
+    "MDT": {"next_earnings": "2026-09-03", "session": "bmo", "name": "Medtronic", "iv_move_pct": 5.1},
 }
 
 
@@ -88,6 +110,7 @@ def curated_earnings_row(symbol: str) -> dict[str, Any] | None:
         "earnings_session": hit.get("session"),
         "company_name": hit.get("name"),
         "darling": True,
+        "iv_move_pct": float(hit["iv_move_pct"]) if hit.get("iv_move_pct") is not None else None,
     }
 
 
@@ -121,6 +144,8 @@ def merge_curated_earnings(symbol: str, row: dict[str, Any] | None) -> dict[str,
             out["earnings_session"] = curated.get("earnings_session")
         if curated.get("company_name") and not out.get("company_name"):
             out["company_name"] = curated.get("company_name")
+    if curated.get("iv_move_pct") is not None and out.get("iv_move_pct") is None:
+        out["iv_move_pct"] = curated.get("iv_move_pct")
     return out
 
 
@@ -362,6 +387,8 @@ def earnings_map_for(
             out[key]["darling"] = True
             out[key]["earnings_session"] = row.get("earnings_session")
             out[key]["company_name"] = row.get("company_name")
+        if row and row.get("iv_move_pct") is not None:
+            out[key]["iv_move_pct"] = row.get("iv_move_pct")
     return out
 
 
@@ -410,6 +437,7 @@ def scan_earnings_calendar(
                 "darling": bool(c.get("darling")),
                 "earnings_session": c.get("earnings_session"),
                 "company_name": c.get("company_name"),
+                "iv_move_pct": c.get("iv_move_pct"),
             }
         )
     rows.sort(

@@ -223,3 +223,23 @@ def test_scan_earnings_calendar_sort_order(tmp_path, monkeypatch):
     assert rows[1]["symbol"] == "CCC"
     assert rows[2]["symbol"] == "AAA"
     assert rows[3]["symbol"] == "DDD"
+
+
+def test_iv_move_earnings_week_curated():
+    from odte_scanner.challenge.earnings import CURATED_EARNINGS, scan_earnings_calendar
+    from odte_scanner.data.universe import FOCUS_DEFAULT
+
+    must = {
+        "MDB": 20.6, "AVGO": 8.1, "SNOW": 12.3, "NTAP": 12.2, "AMBA": 11.8,
+        "YEXT": 19.9, "ASAN": 19.2, "GTLB": 16.0, "AI": 13.9, "ZS": 13.7,
+        "PATH": 13.5, "CIEN": 12.7, "PVH": 12.6, "HPE": 11.6, "DELL": 11.6,
+        "DOCU": 11.1, "FIVE": 10.6, "NIO": 9.7, "PANW": 9.6, "LULU": 9.5, "MDT": 5.1,
+    }
+    for sym, iv in must.items():
+        assert sym in CURATED_EARNINGS, sym
+        assert float(CURATED_EARNINGS[sym]["iv_move_pct"]) == iv
+        assert sym in FOCUS_DEFAULT, f"{sym} missing from focus"
+    rows = scan_earnings_calendar(list(must), fetch=False, max_fetch=0)
+    by = {r["symbol"]: r for r in rows}
+    assert by["MDB"]["iv_move_pct"] == 20.6
+    assert by["AVGO"]["bucket"] in {"this_week", "today", "next_week"}

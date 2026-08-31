@@ -1712,17 +1712,19 @@ PAGE = r"""
           return;
         }
         el.innerHTML = `<table><thead><tr>
-          <th>When</th><th>Symbol</th><th>Days</th><th>Date</th><th>Bias</th><th>Note</th>
-        </tr></thead><tbody>${rows.slice(0,24).map(r=>{
+          <th>When</th><th>Symbol</th><th>IV move</th><th>Days</th><th>Date</th><th>Bias</th><th>Note</th>
+        </tr></thead><tbody>${rows.slice(0,40).map(r=>{
           const bias = r.strategy_bias||"—";
           const cls = bias==="prefer_post"?"buy":(bias==="caution_pre"||bias==="avoid_short_premium"?"sell":"wait");
           const days = (r.bucket==="post"||r.window==="post_earnings")
             ? (r.days_since_earnings!=null?r.days_since_earnings+"d since":"—")
             : (r.days_to_earnings!=null?r.days_to_earnings+"d to":(r.days_since_earnings!=null?r.days_since_earnings+"d since":"—"));
           const name = r.company_name ? `<div class="why">${r.company_name}</div>` : "";
+          const iv = r.iv_move_pct!=null ? `±${fmt(r.iv_move_pct,1)}%` : "—";
           return `<tr>
             <td>${earnBadge(r)}</td>
             <td><strong>${r.symbol}</strong>${name}</td>
+            <td class="mono">${iv}</td>
             <td class="mono">${days}</td>
             <td class="mono">${r.next_earnings||r.last_earnings||"—"}</td>
             <td><span class="badge ${cls}">${bias}</span>${r.prefer_leap?` <span class="tag">LEAP</span>`:""}</td>

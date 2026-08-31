@@ -113,7 +113,28 @@ tickers:
   - NVTS  # Navitas — power semi / GaN
   - USAR  # USA Rare Earth — rare earth / catalyst
   - MP    # MP Materials — rare earth / magnetics
+  # Earnings this week — IV expected-move sleeve (Sep 1 week)
+  - MDB   # MongoDB — IV ±20.6%
+  - SNOW  # Snowflake — IV ±12.3%
+  - NTAP  # NetApp — IV ±12.2%
+  - AMBA  # Ambarella — IV ±11.8%
+  - YEXT  # Yext — IV ±19.9%
+  - ASAN  # Asana — IV ±19.2%
+  - GTLB  # GitLab — IV ±16.0%
+  - AI    # C3.ai — IV ±13.9%
+  - ZS    # Zscaler — IV ±13.7%
+  - PATH  # UiPath — IV ±13.5%
+  - CIEN  # Ciena — IV ±12.7%
+  - PVH   # PVH — IV ±12.6%
+  - HPE   # HPE — IV ±11.6%
+  - DOCU  # DocuSign — IV ±11.1%
+  - FIVE  # Five Below — IV ±10.6%
+  - NIO   # NIO — IV ±9.7%
+  - PANW  # Palo Alto — IV ±9.6%
+  - LULU  # Lululemon — IV ±9.5%
+  - MDT   # Medtronic — IV ±5.1%
   # CRM / AMAT already listed above under Friday weeklies
+  # AVGO / DELL already on focus above
 
 # Yahoo Finance symbol overrides (indexes need ^ prefix for quotes/chains)
 symbol_aliases:
@@ -220,6 +241,25 @@ expiry_calendars:
     - NVTS
     - USAR
     - MP
+    - MDB
+    - SNOW
+    - NTAP
+    - AMBA
+    - YEXT
+    - ASAN
+    - GTLB
+    - AI
+    - ZS
+    - PATH
+    - CIEN
+    - PVH
+    - HPE
+    - DOCU
+    - FIVE
+    - NIO
+    - PANW
+    - LULU
+    - MDT
     - HYG
     - EEM
 
