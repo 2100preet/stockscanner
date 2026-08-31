@@ -171,3 +171,67 @@ def test_exit_prefers_mark_over_entry_ask_on_signal(tmp_path):
     assert closed[0].exited_at
     assert j.book.balance_log[-1]["profit_pct"] == -40.0
     assert j.book.balance_log[-1]["action"] == "EXIT"
+
+
+def test_exit_parses_live_ask_from_reason_when_signal_pinned_to_entry(tmp_path):
+    """Lottery premium_decay cited live ask but signal bid/mark stayed at entry."""
+    j = SignalJournal(tmp_path / "j5.json", starting_cash=5000)
+    j.enter_from_signal(
+        {
+            "action": "BUY_NOW",
+            "symbol": "MU",
+            "contract": "MU260811P00100000",
+            "expiry": "2026-08-11",
+            "strike": 100,
+            "ask": 0.81,
+            "score": 70,
+            "dte_bucket": "0dte",
+            "detail": "buy put",
+            "right": "P",
+        }
+    )
+    # Mark never refreshed (still entry). Signal bid echoes entry.
+    closed = j.exit_from_signal(
+        {
+            "action": "SELL_NOW",
+            "symbol": "MU",
+            "bid": 0.81,
+            "ask": 0.81,
+            "detail": "live ask $0.26 vs entry $0.81 (−40%+)",
+        }
+    )
+    assert len(closed) == 1
+    assert closed[0].exit_bid == 0.26
+    assert closed[0].profit_pct == round((0.26 - 0.81) / 0.81 * 100, 2)
+    assert closed[0].pnl_usd == round((0.26 - 0.81) * 100, 2)
+    assert closed[0].pnl_usd != 0
+
+
+def test_reprice_flat_exits_from_live_ask_reason(tmp_path):
+    j = SignalJournal(tmp_path / "j6.json", starting_cash=5000)
+    j.enter_from_signal(
+        {
+            "action": "BUY_NOW",
+            "symbol": "ASTS",
+            "contract": "ASTS260811P00020000",
+            "expiry": "2026-08-11",
+            "strike": 20,
+            "ask": 0.50,
+            "score": 70,
+            "dte_bucket": "0dte",
+            "detail": "buy",
+            "right": "P",
+        }
+    )
+    # Force-book the old buggy flat exit
+    t = j.book.trades[0]
+    j.exit_trade(t.id, exit_bid=0.50, reason="live ask $0.15 vs entry $0.50 (−40%+)")
+    assert j.book.trades[0].pnl_usd == 0.0
+    n = j.reprice_flat_exits_from_reasons()
+    assert n == 1
+    fixed = j.book.trades[0]
+    assert fixed.exit_bid == 0.15
+    assert fixed.pnl_usd == round((0.15 - 0.50) * 100, 2)
+    assert fixed.profit_pct == -70.0
+    assert j.book.cash == round(5000 - 50 + 15, 2)
+    assert "repriced from live ask" in (fixed.exit_reason or "")

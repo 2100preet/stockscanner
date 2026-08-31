@@ -369,15 +369,29 @@ def decide_lottery_exit(
         return None
     symbol = str(trade.get("symbol") or "")
     entry = float(trade.get("entry_ask") or trade.get("ask") or 0)
+    t_bid = float(ticket.get("bid") or 0) if ticket else 0.0
+    t_ask = float(ticket.get("ask") or 0) if ticket else 0.0
+    # Exit mark: prefer live sellable bid / passed mark, never a stale entry echo.
     bid = None
     if mark is not None and mark > 0:
         bid = float(mark)
-    elif ticket and ticket.get("bid"):
-        bid = float(ticket["bid"])
-    elif trade.get("mark"):
+    elif t_bid > 0:
+        bid = t_bid
+    elif trade.get("mark") and float(trade["mark"]) > 0:
         bid = float(trade["mark"])
-    elif trade.get("bid"):
+    elif trade.get("bid") and float(trade["bid"]) > 0:
         bid = float(trade["bid"])
+    elif t_ask > 0:
+        bid = t_ask
+
+    # If mark is still pinned to entry but the live ticket has collapsed, use ticket.
+    if entry > 0 and t_ask > 0:
+        stale_at_entry = bid is None or abs(float(bid) - entry) < 1e-9
+        ask_melted = (t_ask - entry) / entry <= -0.2
+        if stale_at_entry and ask_melted:
+            bid = t_ask if t_bid <= 0 else min(t_bid, t_ask)
+        elif t_bid > 0 and (bid is None or abs(float(bid) - entry) < 1e-9):
+            bid = t_bid
 
     live = _live_pct(quote)
     mom5 = float(quote["mom_5m_pct"]) if quote and quote.get("mom_5m_pct") is not None else None
@@ -441,12 +455,18 @@ def decide_lottery_exit(
         strength = max(strength, 88.0)
 
     # Option mark collapsing vs entry even if underlying flat
-    if ticket and entry > 0:
-        t_ask = float(ticket.get("ask") or 0)
-        if t_ask > 0 and (t_ask - entry) / entry <= -0.4:
-            reasons.append(f"live ask ${t_ask:.2f} vs entry ${entry:.2f} (−40%+)")
-            playbook.append("premium_decay")
-            strength = max(strength, 86.0)
+    if entry > 0 and t_ask > 0 and (t_ask - entry) / entry <= -0.4:
+        reasons.append(f"live ask ${t_ask:.2f} vs entry ${entry:.2f} (−40%+)")
+        playbook.append("premium_decay")
+        strength = max(strength, 86.0)
+        # Ensure SELL NOW carries the live print (not entry-priced mark)
+        if bid is None or abs(float(bid) - entry) < 1e-9 or float(bid) > t_ask:
+            live_exit = t_bid if t_bid > 0 else t_ask
+            bid = live_exit
+            unreal = ((bid - entry) / entry * 100.0) if entry else unreal
+            base["bid"] = bid
+            base["ask"] = bid
+            base["option_unrealized_pct"] = unreal
 
     if reasons:
         return LotteryAction(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,6 +15,35 @@ logger = logging.getLogger(__name__)
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+_LIVE_ASK_RE = re.compile(
+    r"live ask\s*\$?\s*([0-9]*\.?[0-9]+)\s*vs\s*entry\s*\$?\s*([0-9]*\.?[0-9]+)",
+    re.IGNORECASE,
+)
+_UNREAL_AT_RE = re.compile(
+    r"unreal\s*([+-]?[0-9]*\.?[0-9]+)%\s*@\s*\$?\s*([0-9]*\.?[0-9]+)",
+    re.IGNORECASE,
+)
+
+
+def _parse_live_exit_from_reason(reason: str | None) -> float | None:
+    """Pull a live exit print out of SELL reason text when signal bid was stale."""
+    if not reason:
+        return None
+    m = _LIVE_ASK_RE.search(reason)
+    if m:
+        try:
+            return float(m.group(1))
+        except ValueError:
+            pass
+    m2 = _UNREAL_AT_RE.search(reason)
+    if m2:
+        try:
+            return float(m2.group(2))
+        except ValueError:
+            pass
+    return None
 
 
 @dataclass
@@ -297,16 +327,20 @@ class SignalJournal:
         closed = []
         for t in list(self.open_by_symbol(symbol)):
             exit_px = px
+            reason = signal.get("detail") or signal.get("headline") or "SELL_NOW"
+            parsed_live = _parse_live_exit_from_reason(reason)
             # If signal still has no usable price, fall back to trade mark
             if exit_px is None or float(exit_px or 0) <= 0:
                 exit_px = t.mark
-            reason = signal.get("detail") or signal.get("headline") or "SELL_NOW"
             priced_at_entry = False
             if exit_px is None or float(exit_px or 0) <= 0:
-                # Still exit so losers aren't held forever when Yahoo option quote is blank
-                exit_px = t.entry_ask
-                priced_at_entry = True
-                reason = f"{reason} · exit priced at entry (no live bid/mark)"
+                if parsed_live is not None and parsed_live >= 0:
+                    exit_px = parsed_live
+                else:
+                    # Still exit so losers aren't held forever when Yahoo option quote is blank
+                    exit_px = t.entry_ask
+                    priced_at_entry = True
+                    reason = f"{reason} · exit priced at entry (no live bid/mark)"
             # Prefer live mark over a stale signal still pinned to entry ask
             if (
                 not priced_at_entry
@@ -316,6 +350,16 @@ class SignalJournal:
                 and abs(float(t.mark) - float(t.entry_ask)) > 1e-9
             ):
                 exit_px = t.mark
+            # Reason text cited a live ask (e.g. lottery premium_decay) but signal/mark
+            # were still entry-priced → book the live print so P&L is real.
+            if (
+                not priced_at_entry
+                and parsed_live is not None
+                and parsed_live >= 0
+                and abs(float(exit_px) - float(t.entry_ask)) < 1e-9
+                and abs(float(parsed_live) - float(t.entry_ask)) > 1e-9
+            ):
+                exit_px = parsed_live
             out = self.exit_trade(
                 t.id,
                 exit_bid=float(exit_px),
@@ -325,6 +369,112 @@ class SignalJournal:
             if out:
                 closed.append(out)
         return closed
+
+    def reprice_flat_exits_from_reasons(self) -> int:
+        """Fix closed trades booked at entry ($0 P&L) when the exit reason had a live ask.
+
+        Cash is rebuilt from starting_cash + chronological entry/exit events so
+        open-position capital still matches. Returns number of trades corrected.
+        """
+        fixed = 0
+        for t in self.book.trades:
+            if t.status != "closed":
+                continue
+            if t.exit_bid is None or t.entry_ask is None:
+                continue
+            if abs(float(t.exit_bid) - float(t.entry_ask)) >= 1e-9:
+                continue
+            if t.pnl_usd is not None and abs(float(t.pnl_usd)) >= 1e-9:
+                continue
+            live_px = _parse_live_exit_from_reason(t.exit_reason)
+            if live_px is None or abs(float(live_px) - float(t.entry_ask)) < 1e-9:
+                continue
+            bid = max(0.0, float(live_px))
+            proceeds = bid * 100 * t.contracts
+            t.exit_bid = bid
+            t.proceeds = proceeds
+            t.pnl_usd = round(proceeds - t.cost, 2)
+            t.profit_pct = (
+                round(((bid - t.entry_ask) / t.entry_ask) * 100, 2) if t.entry_ask else None
+            )
+            t.mark = bid
+            if t.exit_reason and "repriced from live ask" not in t.exit_reason:
+                t.exit_reason = f"{t.exit_reason} · repriced from live ask ${bid:.2f}"
+            fixed += 1
+        if not fixed:
+            return 0
+        # Rebuild cash + balance_log cash_after / pnl from chronological events
+        cash = float(self.starting_cash)
+        new_log: list[dict[str, Any]] = []
+        events: list[tuple[str, JournalTrade, str]] = []
+        for t in self.book.trades:
+            events.append((t.entered_at or "", t, "ENTRY"))
+            if t.status == "closed" and t.exited_at:
+                events.append((t.exited_at, t, "EXIT"))
+        events.sort(key=lambda x: x[0])
+        for _, t, kind in events:
+            if kind == "ENTRY":
+                cash_before = round(cash, 2)
+                cash -= float(t.cost or 0)
+                cash_after = round(cash, 2)
+                t.cash_before = cash_before
+                t.cash_after = cash_after
+                t.equity_after = round(cash_after + float(t.cost or 0), 2)
+                t.balance_note = (
+                    f"Balance after ENTRY: cash ${cash_after:,.2f} · sleeve equity "
+                    f"${t.equity_after:,.2f} (was ${cash_before:,.2f})"
+                )
+                new_log.append(
+                    {
+                        "at": t.entered_at,
+                        "action": "ENTRY",
+                        "symbol": t.symbol,
+                        "dte_bucket": t.dte_bucket,
+                        "trade_id": t.id,
+                        "cash_before": cash_before,
+                        "cash_after": cash_after,
+                        "equity_after": t.equity_after,
+                        "debit_usd": t.cost,
+                        "pnl_usd": None,
+                    }
+                )
+            else:
+                cash_before = round(cash, 2)
+                proceeds = float(t.proceeds if t.proceeds is not None else (t.exit_bid or 0) * 100 * t.contracts)
+                cash += proceeds
+                cash_after = round(cash, 2)
+                t.cash_before = cash_before
+                t.cash_after = cash_after
+                t.equity_after = cash_after
+                t.balance_note = (
+                    f"Balance after EXIT: cash/equity ${cash_after:,.2f} "
+                    f"(was cash ${cash_before:,.2f} + open mark) · P&L ${t.pnl_usd:,.2f} "
+                    f"({t.profit_pct:+.1f}%)"
+                    if t.profit_pct is not None
+                    else f"Balance after EXIT: cash/equity ${cash_after:,.2f} · P&L ${t.pnl_usd:,.2f}"
+                )
+                new_log.append(
+                    {
+                        "at": t.exited_at,
+                        "action": "EXIT",
+                        "symbol": t.symbol,
+                        "dte_bucket": t.dte_bucket,
+                        "trade_id": t.id,
+                        "cash_before": cash_before,
+                        "cash_after": cash_after,
+                        "equity_after": cash_after,
+                        "debit_usd": None,
+                        "pnl_usd": t.pnl_usd,
+                        "profit_pct": t.profit_pct,
+                        "proceeds": proceeds,
+                    }
+                )
+        # Subtract still-open costs already in cash path (entries deducted, exits not yet)
+        self.book.cash = round(cash, 2)
+        self.book.balance_log = new_log[-40:]
+        self.save()
+        logger.info("JOURNAL repriced %d flat exits from live-ask reasons", fixed)
+        return fixed
 
     def mark_open(self, marks: dict[str, float]) -> None:
         """marks: contract -> mid/bid price for open MTM."""

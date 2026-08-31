@@ -3587,6 +3587,9 @@ def create_app(config_path: str | None = None) -> Flask:
             # Always create an empty journal file so Pages export can copy it
             if not jpath.exists():
                 journal.save()
+            else:
+                # One-shot: closed trades that cited live ask but booked exit=entry ($0 P&L)
+                journal.reprice_flat_exits_from_reasons()
             # Mark open journal calls FIRST so TP/SL / SELL NOW see live premium
             open_syms_for_quotes: list[str] = []
             if not offline:

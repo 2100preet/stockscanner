@@ -149,6 +149,31 @@ def test_sell_now_on_tape_fail():
     assert "tape_fail" in sig.playbook
 
 
+def test_sell_now_prices_live_ask_when_mark_stuck_at_entry():
+    """premium_decay must put live ask on bid/ask — not leave entry-priced marks."""
+    sig = decide_lottery_exit(
+        {
+            "status": "open",
+            "symbol": "MU",
+            "contract": "MU_LOTTO",
+            "entry_ask": 0.81,
+            "mark": 0.81,  # never refreshed
+            "dte_bucket": "0dte",
+            "id": "t3",
+        },
+        quote=_quote(mom_5m_pct=0.0, mom_15m_pct=0.05, session_change_pct=0.1),
+        ticket={"bid": 0.20, "ask": 0.26},
+        mark=0.81,
+        now=SESSION_NOW,
+    )
+    assert sig is not None
+    assert sig.action == "SELL_NOW"
+    assert "premium_decay" in sig.playbook
+    assert sig.bid == 0.20  # live bid preferred over melted ask
+    assert sig.ask == 0.20
+    assert abs(float(sig.option_unrealized_pct) - ((0.20 - 0.81) / 0.81 * 100)) < 0.1
+
+
 def test_board_primary_prefers_sell_over_buy():
     board = build_lottery_board(
         [_ticket()],
