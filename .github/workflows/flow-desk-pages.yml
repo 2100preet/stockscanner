@@ -1,8 +1,8 @@
 name: Flow Desk Pages
 
-# Brand-new GitHub Pages site: https://2100preet.github.io/flow-desk/
-# Requires repo secret FLOW_DESK_DEPLOY_TOKEN (your GitHub PAT with repo + workflow scope).
-# The workflow creates 2100preet/flow-desk if missing, then publishes gh-pages.
+# Optional mirror to 2100preet/zeroloss (https://2100preet.github.io/zeroloss/).
+# Requires secret ZEROLOSS_DEPLOY_TOKEN (PAT with contents:write on zeroloss).
+# Primary live site is stockscanner Pages — no extra secret needed.
 
 on:
   workflow_run:
@@ -14,8 +14,8 @@ permissions:
   contents: read
 
 env:
-  TARGET_REPO: flow-desk
-  PAGES_URL: https://2100preet.github.io/flow-desk/
+  TARGET_REPO: zeroloss
+  PAGES_URL: https://2100preet.github.io/zeroloss/
 
 jobs:
   publish:
@@ -29,11 +29,10 @@ jobs:
 
       - name: Require deploy token
         env:
-          TOKEN: ${{ secrets.FLOW_DESK_DEPLOY_TOKEN }}
+          TOKEN: ${{ secrets.ZEROLOSS_DEPLOY_TOKEN }}
         run: |
           if [ -z "$TOKEN" ]; then
-            echo "::warning::FLOW_DESK_DEPLOY_TOKEN not set — cannot publish ${PAGES_URL}"
-            echo "Add a PAT (repo scope) as secret FLOW_DESK_DEPLOY_TOKEN on 2100preet/stockscanner."
+            echo "::notice::ZEROLOSS_DEPLOY_TOKEN not set — live site stays at https://2100preet.github.io/stockscanner/"
             echo "skip=true" >> "$GITHUB_ENV"
             exit 0
           fi
@@ -58,57 +57,23 @@ jobs:
           python -m odte_scanner scan --universe focus --no-paper || true
           python -m odte_scanner export-pages --out site
 
-      - name: Ensure target repo exists
+      - name: Publish site to zeroloss gh-pages
         if: env.skip != 'true'
         env:
-          TOKEN: ${{ secrets.FLOW_DESK_DEPLOY_TOKEN }}
-          TARGET_REPO: ${{ env.TARGET_REPO }}
-        run: |
-          code=$(curl -s -o /dev/null -w "%{http_code}" \
-            -H "Authorization: Bearer ${TOKEN}" \
-            "https://api.github.com/repos/2100preet/${TARGET_REPO}")
-          if [ "$code" = "200" ]; then
-            echo "Repo 2100preet/${TARGET_REPO} already exists"
-            exit 0
-          fi
-          echo "Creating repo 2100preet/${TARGET_REPO}…"
-          curl -sS -X POST \
-            -H "Authorization: Bearer ${TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            https://api.github.com/user/repos \
-            -d "{\"name\":\"${TARGET_REPO}\",\"description\":\"ZeroLoss Flow Desk — Tier-1 options flow gate\",\"private\":false,\"auto_init\":false}"
-
-      - name: Publish site to flow-desk gh-pages
-        if: env.skip != 'true'
-        env:
-          TOKEN: ${{ secrets.FLOW_DESK_DEPLOY_TOKEN }}
+          TOKEN: ${{ secrets.ZEROLOSS_DEPLOY_TOKEN }}
           TARGET_REPO: ${{ env.TARGET_REPO }}
           PAGES_URL: ${{ env.PAGES_URL }}
         run: |
           test -f site/index.html
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/2100preet/${TARGET_REPO}.git" target-repo || \
-            (mkdir target-repo && cd target-repo && git init && git remote add origin "https://x-access-token:${TOKEN}@github.com/2100preet/${TARGET_REPO}.git")
+          git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/2100preet/${TARGET_REPO}.git" target-repo
           cd target-repo
           git checkout -B gh-pages
           find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
           cp -r ../site/* .
           touch .nojekyll
           git add -A
-          git diff --staged --quiet && echo "No site changes" || git commit -m "Publish Flow Desk from stockscanner ${GITHUB_RUN_ID}"
+          git diff --staged --quiet && echo "No site changes" || git commit -m "Mirror Flow Desk from stockscanner ${GITHUB_RUN_ID}"
           git push -u origin gh-pages --force
           echo "Published → ${PAGES_URL}"
-
-      - name: Enable GitHub Pages on flow-desk
-        if: env.skip != 'true'
-        env:
-          TOKEN: ${{ secrets.FLOW_DESK_DEPLOY_TOKEN }}
-          TARGET_REPO: ${{ env.TARGET_REPO }}
-        run: |
-          curl -sS -X POST \
-            -H "Authorization: Bearer ${TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/2100preet/${TARGET_REPO}/pages" \
-            -d '{"build_type":"legacy","source":{"branch":"gh-pages","path":"/"}}' \
-            || echo "Pages may already be enabled"
