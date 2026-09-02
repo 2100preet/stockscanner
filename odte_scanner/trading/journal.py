@@ -212,6 +212,8 @@ class SignalJournal:
             contracts=contracts,
             cost=cost,
             mark=ask,
+            unrealized_pnl_usd=0.0,
+            unrealized_pct=0.0,
             cash_before=cash_before,
         )
         self.book.cash -= cost
@@ -528,7 +530,14 @@ class SignalJournal:
             sum(t.profit_pct or 0 for t in closed) / len(closed) if closed else None
         )
         realized = sum(t.pnl_usd or 0 for t in closed)
-        unrealized = sum(t.unrealized_pnl_usd or 0 for t in open_t)
+        unrealized = 0.0
+        for t in open_t:
+            if t.unrealized_pnl_usd is None and t.entry_ask and (t.mark or t.entry_ask):
+                mark = float(t.mark or t.entry_ask)
+                t.mark = mark
+                t.unrealized_pnl_usd = round((mark - t.entry_ask) * 100 * t.contracts, 2)
+                t.unrealized_pct = round(((mark - t.entry_ask) / t.entry_ask) * 100, 2)
+            unrealized += float(t.unrealized_pnl_usd or 0)
 
         # Equity curve from closed trades chronologically
         equity = self.starting_cash
