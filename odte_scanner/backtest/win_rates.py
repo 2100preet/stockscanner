@@ -279,6 +279,19 @@ def lookup_win_stats(
         return {"win_pct": None, "trades": 0, "hit_1pct": None, "hit_2pct": None}
     bucket = normalize_horizon_bucket(dte_bucket)
     row = (table.get("symbols") or {}).get(str(symbol or "").upper()) or {}
+
+    def _pack(stats: dict[str, Any], hz: str) -> dict[str, Any]:
+        return {
+            "win_pct": stats.get("win_pct"),
+            "trades": stats.get("trades") or 0,
+            "wins": stats.get("wins"),
+            "hit_1pct": stats.get("hit_1pct"),
+            "hit_2pct": stats.get("hit_2pct"),
+            "avg_ret_pct": stats.get("avg_ret_pct"),
+            "forward_days": stats.get("forward_days") or HORIZON_FORWARD.get(hz),
+            "horizon": hz,
+        }
+
     stats = row.get(bucket) or {}
     # Fall back: monthly → swing (older caches) · swing → monthly if present
     if not stats and bucket == "monthly":
@@ -286,16 +299,28 @@ def lookup_win_stats(
         bucket = "swing" if stats else bucket
     if not stats and bucket == "swing":
         stats = row.get("monthly") or {}
-    return {
-        "win_pct": stats.get("win_pct"),
-        "trades": stats.get("trades") or 0,
-        "wins": stats.get("wins"),
-        "hit_1pct": stats.get("hit_1pct"),
-        "hit_2pct": stats.get("hit_2pct"),
-        "avg_ret_pct": stats.get("avg_ret_pct"),
-        "forward_days": stats.get("forward_days") or HORIZON_FORWARD.get(bucket),
-        "horizon": bucket,
-    }
+    primary = _pack(stats, bucket)
+
+    # Cascade longer horizons when the ticket bucket is thin / below bar so
+    # META-class names with strong weekly/swing hist still clear BUY NOW.
+    cascade = []
+    if bucket == "0dte":
+        cascade = ["weekly", "swing", "monthly"]
+    elif bucket == "weekly":
+        cascade = ["swing", "monthly"]
+    for hz in cascade:
+        alt = row.get(hz) or {}
+        win = alt.get("win_pct")
+        n = int(alt.get("trades") or 0)
+        if win is None or n < 5:
+            continue
+        cur_win = primary.get("win_pct")
+        cur_n = int(primary.get("trades") or 0)
+        # Prefer cascade when primary missing, short sample, or clearly weaker
+        if cur_win is None or cur_n < 5 or float(win) >= max(float(cur_win or 0), 80.0):
+            if float(win) >= 80.0 and (cur_win is None or float(win) >= float(cur_win)):
+                return _pack(alt, hz)
+    return primary
 
 
 def load_win_rate_table(cache_path: str | Path | None = None) -> dict[str, Any] | None:

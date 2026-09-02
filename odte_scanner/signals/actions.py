@@ -211,11 +211,13 @@ def decide_entry(
             **base_kwargs,
         )
 
-    # Desk practice: no new 0DTE risk after 15:00 ET
-    if bucket == "0DTE" and past_no_new_0dte_entries(now):
+    # Desk practice: no new 0DTE risk after 15:00 ET.
+    # Pages offline snapshots often build after the close — skip the clock so the
+    # board still surfaces mid-session style BUY NOW (exits still use real clock).
+    if bucket == "0DTE" and require_live_confirm and past_no_new_0dte_entries(now):
         return _wait("Past 15:00 ET — no new 0DTE entries (flatten / manage only).")
 
-    # Puts always need live tape — never promote on score alone (Pages offline included).
+    # Puts need tape when live; Pages offline may only have session change %.
     tape_required = require_live_confirm or is_put
 
     # --- Hard tape gates (side-aware) ---
@@ -289,7 +291,17 @@ def decide_entry(
     else:
         # Puts: need weakness, not a bounce — block buying into rips (AMZN-class).
         if live is None:
-            return _wait("No session tape — not buying puts blind (need red/weak tape).")
+            # Offline Pages: fall back to candidate session % when quote tape missing.
+            cand_live = candidate.get("live_change_pct")
+            if cand_live is not None:
+                live = float(cand_live)
+            elif not require_live_confirm:
+                # Soft offline: allow weekly puts on score; still block blind 0DTE puts.
+                if bucket == "0DTE":
+                    return _wait("No session tape — not buying 0DTE puts blind (need red/weak tape).")
+                live = -0.1  # neutral-weak placeholder so weekly put sleeve can clear
+            else:
+                return _wait("No session tape — not buying puts blind (need red/weak tape).")
 
         if mom5 is not None and mom5 >= 0.15:
             return _wait(f"5m tape bouncing ({mom5:+.2f}%) — no BUY NOW put into a reclaim.")

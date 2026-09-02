@@ -165,11 +165,9 @@ class SignalJournal:
             return None
         if require_flow_gate:
             detail = str(signal.get("detail") or "")
+            # Hard veto only — soft "flow n/a" / "flow soft" still allow paper enter
             if "blocked:" in detail and "flow" in detail.lower():
                 logger.info("Journal flow gate — skip enter %s", signal.get("symbol"))
-                return None
-            if "flow OK" not in detail:
-                logger.info("Journal flow gate — no flow confirm on %s", signal.get("symbol"))
                 return None
         symbol = str(signal.get("symbol") or "")
         ask = float(signal.get("ask") or 0)
@@ -492,11 +490,15 @@ class SignalJournal:
             if t.status != "open":
                 continue
             px = marks.get(t.contract) or marks.get(t.symbol)
+            if px is None and t.mark is not None:
+                px = t.mark
+            if px is None and t.entry_ask:
+                px = t.entry_ask
             if px is None:
                 continue
             t.mark = float(px)
-            t.unrealized_pnl_usd = round((t.mark - t.entry_ask) * 100 * t.contracts, 2)
-            t.unrealized_pct = round(((t.mark - t.entry_ask) / t.entry_ask) * 100, 2) if t.entry_ask else None
+            t.unrealized_pnl_usd = round((t.mark - t.entry_ask) * 100 * t.contracts, 2) if t.entry_ask else 0.0
+            t.unrealized_pct = round(((t.mark - t.entry_ask) / t.entry_ask) * 100, 2) if t.entry_ask else 0.0
             # Keep equity_after current while open (cash + mark)
             t.equity_after = round(
                 self.book.cash + sum(
