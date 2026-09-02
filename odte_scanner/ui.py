@@ -2775,6 +2775,7 @@ PAGE = r"""
         m("Journal win rate", p.win_rate_pct==null?"—":`${fmt(p.win_rate_pct,1)}%`),
         m("Avg profit%", p.avg_profit_pct==null?"—":`${fmt(p.avg_profit_pct,1)}%`, pctClass(p.avg_profit_pct)),
         m("Realized P&L", p.realized_pnl_usd==null?"—":`$${fmt(p.realized_pnl_usd,2)}`, pctClass(p.realized_pnl_usd)),
+        m("Open P&L", p.unrealized_pnl_usd==null?"—":`$${fmt(p.unrealized_pnl_usd,2)}`, pctClass(p.unrealized_pnl_usd)),
         m("Cash", p.cash==null?"—":`$${fmt(p.cash,0)}`),
         m("Equity", p.equity==null?"—":`$${fmt(p.equity,0)}`, pctClass(p.return_pct)),
         m("Account", p.return_pct==null?"—":`${fmt(p.return_pct,2)}%`, pctClass(p.return_pct)),
@@ -3446,6 +3447,41 @@ def _snapshot_offline() -> bool:
         return False
 
 
+def _prioritize_action_board_rows(
+    deduped: list[dict],
+    win_table: dict | None,
+    *,
+    limit: int = 24,
+) -> list[dict]:
+    """Prefer hist-eligible CALL contracts so BUY NOW can clear the ≥80% gate."""
+    from odte_scanner.backtest.win_rates import lookup_win_stats
+
+    def _elig_call(c: dict) -> bool:
+        if str(c.get("right") or "C").upper() == "P":
+            return False
+        st = lookup_win_stats(win_table, str(c.get("symbol") or ""), c.get("dte_bucket") or "0dte")
+        return float(st.get("win_pct") or 0) >= 80.0 and int(st.get("trades") or 0) >= 5
+
+    elig = [c for c in deduped if _elig_call(c)]
+    elig.sort(key=lambda c: float(c.get("score") or 0), reverse=True)
+    rest = [c for c in deduped if c not in elig]
+    rest.sort(key=lambda c: float(c.get("score") or 0), reverse=True)
+    out: list[dict] = []
+    seen: set[str] = set()
+    for c in elig + rest:
+        key = str(
+            c.get("contract")
+            or f"{c.get('symbol')}-{c.get('right')}-{c.get('expiry')}-{c.get('strike')}"
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(c)
+        if len(out) >= limit:
+            break
+    return out
+
+
 def create_app(config_path: str | None = None) -> Flask:
     cfg_path = str(config_path or ROOT / "config.yaml")
     cfg = load_config(cfg_path)
@@ -3494,16 +3530,6 @@ def create_app(config_path: str | None = None) -> Flask:
             seen.add(key)
             deduped.append(item)
 
-        board_rows = deduped[:20]
-        syms = sorted({str(c.get("symbol")) for c in board_rows if c.get("symbol")})
-        # Also include action-card symbols for win rates
-        for bucket in (scan.get("action_cards") or {}).values():
-            for t in bucket or []:
-                if t.get("symbol"):
-                    syms.append(str(t["symbol"]))
-        syms = sorted(set(syms))
-        aliases = {s: resolve_yahoo_symbol(s, cfg) for s in syms}
-
         win_table = scan.get("win_rates") or load_win_rate_table()
         # Merge full cache so challenge can see mid/small hist beyond this scan slice
         try:
@@ -3523,6 +3549,16 @@ def create_app(config_path: str | None = None) -> Flask:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("win rates unavailable: %s", exc)
                 win_table = {}
+
+        board_rows = _prioritize_action_board_rows(deduped, win_table, limit=24)
+        syms = sorted({str(c.get("symbol")) for c in board_rows if c.get("symbol")})
+        # Also include action-card symbols for win rates
+        for bucket in (scan.get("action_cards") or {}).values():
+            for t in bucket or []:
+                if t.get("symbol"):
+                    syms.append(str(t["symbol"]))
+        syms = sorted(set(syms))
+        aliases = {s: resolve_yahoo_symbol(s, cfg) for s in syms}
 
         # Challenge needs hist rates across mid/small + darlings — not just focus scan names
         try:
@@ -3669,6 +3705,26 @@ def create_app(config_path: str | None = None) -> Flask:
                             quotes[sym] = lq.to_dict()
                     except Exception:  # noqa: BLE001
                         pass
+            else:
+                # Pages offline: mark from matching board asks so open P&L is not blank
+                by_contract = {
+                    str(c.get("contract") or ""): c for c in refreshed if c.get("contract")
+                }
+                for t in journal.book.trades:
+                    if t.status != "open":
+                        continue
+                    c = by_contract.get(t.contract) or {}
+                    px = None
+                    for key in ("bid", "ask", "mid", "mark"):
+                        if c.get(key) is not None and float(c.get(key) or 0) > 0:
+                            px = float(c[key])
+                            break
+                    if px is None and t.mark and float(t.mark) > 0:
+                        px = float(t.mark)
+                    if px is None and t.entry_ask and float(t.entry_ask) > 0:
+                        px = float(t.entry_ask)
+                    if px is not None:
+                        marks[t.contract] = px
             if marks:
                 journal.mark_open(marks)
             # Enrich open rows with bid=mark for decide_exit premium P&L

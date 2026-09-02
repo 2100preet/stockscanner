@@ -164,7 +164,7 @@ def test_apply_flow_gate_blocks_put_into_bullish_rip():
     )
     assert sig.action == "WAIT"
     assert "blocked" in sig.detail.lower()
-    assert "bearish" in sig.detail.lower()
+    assert "bullish" in sig.detail.lower()
 
 
 def test_apply_flow_gate_allows_aligned_put():
@@ -227,9 +227,19 @@ def test_build_action_board_flow_gate_demotes_misaligned_put():
     assert len(board["flow_leaders"]) >= 1
 
 
-def test_journal_skips_enter_without_flow_ok(tmp_path):
+def test_apply_flow_gate_missing_leader_soft_pass():
+    sig = apply_flow_gate(
+        _buy_now_call("ZZZZ"),
+        flow_leaders=[{"symbol": "NVDA", "rank": 1, "sentiment": "bullish", "net_flow_score": 20, "top_tier": "golden"}],
+        require_flow_confirm=True,
+    )
+    assert sig.action == "BUY_NOW"
+    assert "flow n/a" in sig.detail.lower()
+
+
+def test_journal_skips_enter_on_hard_flow_block(tmp_path):
     j = SignalJournal(tmp_path / "j.json", starting_cash=5000)
-    sig = {
+    blocked = {
         "action": "BUY_NOW",
         "symbol": "AMZN",
         "contract": "AMZN260905P00175000",
@@ -238,16 +248,18 @@ def test_journal_skips_enter_without_flow_ok(tmp_path):
         "ask": 0.81,
         "score": 72,
         "dte_bucket": "0dte",
-        "detail": "buy AMZN put — no flow confirm",
+        "detail": "buy AMZN put · blocked: put vs bullish flow (got bullish, net +25)",
         "right": "P",
         "headline": "BUY NOW · AMZN put",
         "exit_plan": "TP +80%",
     }
-    assert j.enter_from_signal(sig, require_flow_gate=True) is None
+    assert j.enter_from_signal(blocked, require_flow_gate=True) is None
 
-    sig_ok = dict(sig)
-    sig_ok["detail"] = sig_ok["detail"] + " · flow OK: #1 bearish net -25 tier unusual"
-    t = j.enter_from_signal(sig_ok, require_flow_gate=True)
+    soft = dict(blocked)
+    soft["detail"] = "buy AMZN call · flow n/a: AMZN not in top-12 leaders (tape/hist still gate)"
+    soft["right"] = "C"
+    soft["contract"] = "AMZN260905C00175000"
+    t = j.enter_from_signal(soft, require_flow_gate=True)
     assert t is not None
     assert t.symbol == "AMZN"
 

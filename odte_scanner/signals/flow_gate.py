@@ -37,64 +37,66 @@ def apply_flow_gate(
     tier_rank = {"aggressive": 0, "unusual": 1, "golden": 2}
     min_rank = tier_rank.get(str(flow_min_tier or "aggressive").lower(), 0)
 
+    # Missing from leaders = soft pass (most names never hit top-N). Only hard-block
+    # when flow IS present and conflicts with call/put side (Bullflow-style veto).
     if row is None:
-        sig.action = "WAIT"
-        sig.headline = sig.headline.replace("BUY NOW", "WAIT", 1)
         sig.detail = (
-            f"{sig.detail} · blocked: {sym} not in top-{flow_leaders_top_n} flow leaders "
-            "(need bullish flow for calls / bearish for puts)"
+            f"{sig.detail} · flow n/a: {sym} not in top-{flow_leaders_top_n} leaders "
+            "(tape/hist still gate)"
         )
-        sig.strength = min(sig.strength, 44.0)
         return sig
 
     rank = int(row.get("rank") or 999)
     if rank > flow_leaders_top_n:
-        sig.action = "WAIT"
-        sig.headline = sig.headline.replace("BUY NOW", "WAIT", 1)
         sig.detail = (
-            f"{sig.detail} · blocked: flow rank #{rank} > top {flow_leaders_top_n}"
+            f"{sig.detail} · flow n/a: rank #{rank} outside top {flow_leaders_top_n}"
         )
-        sig.strength = min(sig.strength, 46.0)
         return sig
 
     sentiment = str(row.get("sentiment") or "neutral")
     net = float(row.get("net_flow_score") or 0)
     top_tier = str(row.get("top_tier") or "aggressive").lower()
     if tier_rank.get(top_tier, 0) < min_rank:
-        sig.action = "WAIT"
-        sig.headline = sig.headline.replace("BUY NOW", "WAIT", 1)
         sig.detail = (
-            f"{sig.detail} · blocked: flow tier {top_tier} < {flow_min_tier} minimum"
+            f"{sig.detail} · flow n/a: tier {top_tier} < {flow_min_tier} (not a veto)"
         )
-        sig.strength = min(sig.strength, 47.0)
         return sig
 
     if is_put:
-        if sentiment != "bearish" or net > -flow_min_net_score:
+        if sentiment == "bullish" and net >= flow_min_net_score:
             sig.action = "WAIT"
             sig.headline = sig.headline.replace("BUY NOW", "WAIT", 1)
             sig.detail = (
-                f"{sig.detail} · blocked: put needs bearish flow "
+                f"{sig.detail} · blocked: put vs bullish flow "
                 f"(got {sentiment}, net {net:+.0f})"
             )
             sig.strength = min(sig.strength, 48.0)
             return sig
+        if sentiment != "bearish" or net > -flow_min_net_score:
+            sig.detail = (
+                f"{sig.detail} · flow soft: put preferred bearish "
+                f"(got {sentiment}, net {net:+.0f})"
+            )
+            return sig
     else:
-        if sentiment != "bullish" or net < flow_min_net_score:
+        if sentiment == "bearish" and net <= -flow_min_net_score:
             sig.action = "WAIT"
             sig.headline = sig.headline.replace("BUY NOW", "WAIT", 1)
             sig.detail = (
-                f"{sig.detail} · blocked: call needs bullish flow "
+                f"{sig.detail} · blocked: call vs bearish flow "
                 f"(got {sentiment}, net {net:+.0f})"
             )
             sig.strength = min(sig.strength, 48.0)
+            return sig
+        if sentiment != "bullish" or net < flow_min_net_score:
+            sig.detail = (
+                f"{sig.detail} · flow soft: call preferred bullish "
+                f"(got {sentiment}, net {net:+.0f})"
+            )
             return sig
 
     if require_vol_gt_oi and not row.get("vol_gt_oi"):
-        sig.action = "WAIT"
-        sig.headline = sig.headline.replace("BUY NOW", "WAIT", 1)
-        sig.detail = f"{sig.detail} · blocked: no vol>OI flow confirm on {sym}"
-        sig.strength = min(sig.strength, 49.0)
+        sig.detail = f"{sig.detail} · flow soft: no vol>OI on {sym}"
         return sig
 
     sig.detail = (
