@@ -182,7 +182,7 @@ FOCUS_DEFAULT: list[str] = [
     # Most-anticipated / high-attention names (swing / earnings / focus scan)
     "CRWV", "CBRS", "FLY", "FIGR", "GEMI", "NBIS", "BETA", "XE",
     "CRCL", "NOW", "SMCI", "DELL",
-    "SE", "HIMS", "RKLB", "ASTS", "PLUG", "CSCO", "IREN",
+    "SE", "HIMS", "RKLB", "ASTS", "PLUG", "CSCO", "IREN", "MARA",
     # Curated high-potential (memory / AI infra / power / liquid mid) — not full S&P 500
     "SNDK", "WDC", "STX", "LRCX", "KLAC", "MRVL", "ANET", "ALAB", "CRDO", "APP",
     "VRT", "CEG", "GEV", "APLD", "CIFR", "WULF",
