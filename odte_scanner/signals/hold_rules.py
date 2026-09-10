@@ -119,6 +119,32 @@ def past_no_new_0dte_entries(now: datetime | None = None) -> bool:
     return et_session_hour(n) >= ODTE_NO_NEW_ENTRIES_ET_HOUR
 
 
+def parse_expiry_date(expiry: str | None):
+    """Parse YYYY-MM-DD (or ISO) expiry to a date, else None."""
+    if not expiry:
+        return None
+    try:
+        raw = str(expiry).strip()[:10]
+        return datetime.strptime(raw, "%Y-%m-%d").date()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def contract_expired(expiry: str | None, now: datetime | None = None) -> bool:
+    """True when option expiry calendar date is before today in US/Eastern."""
+    exp = parse_expiry_date(expiry)
+    if exp is None:
+        return False
+    return exp < _et_now(now).date()
+
+
+def expiry_is_today(expiry: str | None, now: datetime | None = None) -> bool:
+    exp = parse_expiry_date(expiry)
+    if exp is None:
+        return False
+    return exp == _et_now(now).date()
+
+
 def days_held(entered_at: str | None, now: datetime | None = None) -> float | None:
     if not entered_at:
         return None

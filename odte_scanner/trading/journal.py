@@ -174,6 +174,11 @@ class SignalJournal:
         contract = str(signal.get("contract") or "")
         if not symbol or ask <= 0 or not contract or contract.endswith("_SYN"):
             return None
+        from odte_scanner.signals.hold_rules import contract_expired
+
+        if contract_expired(signal.get("expiry")):
+            logger.info("Journal skip expired contract %s %s", symbol, signal.get("expiry"))
+            return None
         if symbol in self.open_symbols():
             return None  # one open call per symbol
 

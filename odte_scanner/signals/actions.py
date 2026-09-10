@@ -5,7 +5,9 @@ from datetime import datetime
 from typing import Any
 
 from odte_scanner.signals.hold_rules import (
+    contract_expired,
     exit_plan_text,
+    expiry_is_today,
     past_no_new_0dte_entries,
     time_stop_reason,
 )
@@ -211,10 +213,15 @@ def decide_entry(
             **base_kwargs,
         )
 
-    # Desk practice: no new 0DTE risk after 15:00 ET.
-    # Pages offline snapshots often build after the close — skip the clock so the
-    # board still surfaces mid-session style BUY NOW (exits still use real clock).
-    if bucket == "0DTE" and require_live_confirm and past_no_new_0dte_entries(now):
+    # Never BUY an expired contract (stale Pages snapshot / next-day rebuild).
+    exp = candidate.get("expiry")
+    if contract_expired(exp, now):
+        return _wait(f"Contract expired ({exp}) — remove from BUY NOW.")
+
+    # Same-day / 0DTE: no new entries after 15:00 ET — always, including Pages offline.
+    # (Offline used to skip this clock and left MU 9/9 BUY NOW after the close.)
+    same_day = bucket == "0DTE" or expiry_is_today(exp, now)
+    if same_day and past_no_new_0dte_entries(now):
         return _wait("Past 15:00 ET — no new 0DTE entries (flatten / manage only).")
 
     # Puts need tape when live; Pages offline may only have session change %.
