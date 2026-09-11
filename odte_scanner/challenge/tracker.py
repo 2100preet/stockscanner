@@ -18,11 +18,17 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PATH = ROOT / "outputs" / "challenge_ledger.json"
 
 # Hold windows (calendar days) by horizon / style
+# sprint = challenge desk default: aim for ~50–100% premium in ~1–3 days
 HOLD_PERIODS: dict[str, dict[str, int]] = {
+    "sprint": {"min_days": 1, "max_days": 3, "ideal_days": 2},
     "weekly": {"min_days": 5, "max_days": 14, "ideal_days": 8},
     "swing": {"min_days": 20, "max_days": 60, "ideal_days": 35},
     "leap": {"min_days": 30, "max_days": 90, "ideal_days": 55},
 }
+
+# Open flips with longer hold / DTE than this are retired when sprint desk is on
+SPRINT_RETIRE_MAX_HOLD_DAYS = 7
+SPRINT_RETIRE_MAX_DTE = 14
 
 
 def _now() -> str:
@@ -31,10 +37,17 @@ def _now() -> str:
 
 def hold_period_for(horizon: str | None, dte: int | None = None) -> dict[str, Any]:
     hz = (horizon or "swing").lower()
-    if dte is not None and int(dte) >= 180:
+    if hz in {"sprint", "fast", "1-3d", "1_3d"}:
+        key = "sprint"
+    elif dte is not None and int(dte) >= 180:
         key = "leap"
+    elif dte is not None and int(dte) <= 10:
+        # Short-dated tickets use sprint holds even if hist horizon was weekly/swing
+        key = "sprint"
     elif hz == "weekly":
         key = "weekly"
+    elif hz == "leap":
+        key = "leap"
     else:
         key = "swing"
     cfg = HOLD_PERIODS[key]
@@ -212,7 +225,17 @@ class ChallengeTracker:
         if len(self.open_trades()) >= max_open:
             return None
 
-        hp = hold_period_for(ticket.get("horizon"), ticket.get("dte"))
+        style = ticket.get("hold_style") or ticket.get("pace_style") or ticket.get("horizon")
+        hp = hold_period_for(style, ticket.get("dte"))
+        # Ticket board may already pin sprint hold days — prefer those
+        if ticket.get("hold_min_days") is not None:
+            hp = {
+                **hp,
+                "min_days": int(ticket["hold_min_days"]),
+                "max_days": int(ticket.get("hold_max_days") or hp["max_days"]),
+                "ideal_days": int(ticket.get("hold_ideal_days") or hp["ideal_days"]),
+                "label": ticket.get("hold_period_label") or hp["label"],
+            }
         contracts = int(ticket.get("contracts_for_bankroll") or 1)
         cost = ask * 100 * contracts
         if cost > self.book.cash:
@@ -221,7 +244,9 @@ class ChallengeTracker:
             if cost <= 0 or cost > self.book.cash:
                 return None
 
-        mult = float(ticket.get("target_premium_mult") or 1.78)
+        mult = float(ticket.get("target_premium_mult") or 1.75)
+        # Clamp to ~50–100% premium target for the challenge desk
+        mult = max(1.5, min(2.0, mult))
         target_pct = round((mult - 1.0) * 100.0, 1)
         target_ask = ticket.get("target_ask")
         if target_ask is None:
@@ -243,7 +268,7 @@ class ChallengeTracker:
             contract=contract,
             expiry=ticket.get("expiry"),
             strike=ticket.get("strike"),
-            horizon=ticket.get("horizon"),
+            horizon=str(ticket.get("horizon") or hp.get("style") or "sprint"),
             dte_at_entry=ticket.get("dte"),
             entered_at=_now(),
             entry_ask=ask,
@@ -317,6 +342,7 @@ class ChallengeTracker:
         *,
         mark: float | None,
         quote: dict[str, Any] | None = None,
+        sprint_desk: bool = True,
     ) -> dict[str, Any]:
         """Return ENTRY/HOLD/EXIT recommendation for an open challenge trade."""
         days = self._days_held(trade)
@@ -336,6 +362,17 @@ class ChallengeTracker:
 
         reasons: list[str] = []
         action = "HOLD"
+
+        # Retire long-dated / multi-week opens so the sleeve can flip 1–3d tickets
+        dte_entry = int(trade.dte_at_entry) if trade.dte_at_entry is not None else None
+        if sprint_desk and (
+            int(trade.hold_max_days or 0) > SPRINT_RETIRE_MAX_HOLD_DAYS
+            or (dte_entry is not None and dte_entry > SPRINT_RETIRE_MAX_DTE)
+        ):
+            action = "EXIT"
+            reasons.append(
+                "sprint desk — retire long-dated hold for 1–3d / 50–100% flips"
+            )
 
         if unreal is not None and unreal >= target_pct:
             action = "EXIT"
@@ -464,6 +501,7 @@ class ChallengeTracker:
         auto_enter: bool = True,
         auto_exit: bool = True,
         max_open: int = 1,
+        sprint_desk: bool = True,
     ) -> dict[str, Any]:
         quotes = quotes or {}
         entered: list[str] = []
@@ -503,7 +541,9 @@ class ChallengeTracker:
                     if not t.hold_approx_label and tk.get("hold_approx_label"):
                         t.hold_approx_label = str(tk.get("hold_approx_label"))
                     break
-            ev = self.evaluate_open(t, mark=mark, quote=quotes.get(t.symbol))
+            ev = self.evaluate_open(
+                t, mark=mark, quote=quotes.get(t.symbol), sprint_desk=sprint_desk
+            )
             holds.append(ev)
             if auto_exit and ev["action"] == "EXIT":
                 out = self.exit_trade(t.id, exit_bid=float(ev["mark"]), reason=ev["detail"])
