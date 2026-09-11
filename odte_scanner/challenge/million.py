@@ -1,4 +1,7 @@
-"""$1,000 → $1,000,000 challenge path via swing / LEAP calls & puts.
+"""$1,000 → $1,000,000 challenge path via short-dated sprint flips.
+
+Default desk style: hold ~1–3 days and target ~50–100% option premium
+(1.5×–2.0×), using liquid near-dated calls/puts — not multi-month LEAPs.
 
 Selects high hist-win names, recommends strike + expiry, hold period, and
 ENTRY / HOLD / EXIT status for both calls and puts.
@@ -354,21 +357,28 @@ def select_leap_option(
     *,
     right: str = "C",
     yahoo_symbol: str | None = None,
-    min_dte: int = 90,
-    max_dte: int = 450,
-    otm_pct_max: float = 8.0,
+    min_dte: int = 1,
+    max_dte: int = 10,
+    prefer_dte: int | None = None,
+    otm_pct_max: float = 6.0,
     itm_pct_max: float = 2.0,
     max_ask: float = 80.0,
     min_oi: int = 200,
     min_volume: int = 25,
 ) -> dict[str, Any] | None:
-    """Pick a liquid swing/LEAP call or put — slight OTM, mid-dated.
+    """Pick a liquid challenge call or put — slight OTM, short-dated by default.
 
     Prefers Yahoo crumb options API (more reliable than yfinance under rate limits).
     Rejects contracts with no/low day volume unless OI is extremely high.
     """
     right = right.upper()
-    prefer_dte = 180 if max_dte >= 180 else max(min_dte, int((min_dte + max_dte) / 2))
+    if prefer_dte is None:
+        prefer_dte = (
+            180
+            if max_dte >= 180
+            else max(min_dte, int((min_dte + max_dte) / 2))
+        )
+    prefer_dte = int(prefer_dte)
     try:
         from odte_scanner.options.yahoo_session import pick_challenge_contract
 
@@ -427,7 +437,11 @@ def select_leap_option(
             except ValueError:
                 continue
             dte = (d - today).days
-            if 60 <= dte <= 550:
+            # Stay near the requested band — do not jump to LEAPs for sprint picks
+            if max_dte <= 21:
+                if 0 <= dte <= max(max_dte, 14):
+                    targets.append((exp, dte))
+            elif 60 <= dte <= 550:
                 targets.append((exp, dte))
     if not targets:
         return None
@@ -545,15 +559,42 @@ def _approx_listed_expiry(target_dte: int) -> tuple[str, int]:
     return (f"~{target_dte}DTE", target_dte)
 
 
+def _approx_weekly_expiry(target_dte: int = 5) -> tuple[str, int]:
+    """Nearest Friday expiry around target DTE — sprint / short-dated zone."""
+    today = datetime.now().date()
+    best = None
+    best_abs = 10**9
+    # Scan the next ~8 Fridays
+    from datetime import timedelta
+
+    for i in range(0, 60):
+        d = today + timedelta(days=i)
+        if d.weekday() != 4:  # Friday
+            continue
+        dte = (d - today).days
+        if dte < 1:
+            continue
+        if abs(dte - target_dte) < best_abs:
+            best_abs = abs(dte - target_dte)
+            best = (d.isoformat(), dte)
+    if best:
+        return best
+    return (f"~{target_dte}DTE", target_dte)
+
+
 def _suggested_zone(spot: float, horizon: str, right: str) -> dict[str, Any]:
     step = 1.0 if spot < 50 else (2.5 if spot < 200 else 5.0)
+    short = horizon in {"weekly", "sprint", "fast"}
     if right == "C":
-        raw = spot * (1.03 if horizon == "weekly" else 1.05)
+        raw = spot * (1.02 if short else 1.05)
     else:
-        raw = spot * (0.97 if horizon == "weekly" else 0.95)
+        raw = spot * (0.98 if short else 0.95)
     strike_zone = round(round(raw / step) * step, 2)
-    dte_zone = 120 if horizon == "weekly" else 180
-    expiry, dte = _approx_listed_expiry(dte_zone)
+    if short:
+        expiry, dte = _approx_weekly_expiry(5)
+    else:
+        dte_zone = 180
+        expiry, dte = _approx_listed_expiry(dte_zone)
     return {
         "contract": None,
         "right": right,
@@ -688,6 +729,12 @@ def build_challenge_board(
     pace_milestone_usd: float = 500_000.0,
     prefer_weekly_pace: bool = True,
     current_equity: float | None = None,
+    sprint_desk: bool = True,
+    min_dte: int = 1,
+    max_dte: int = 10,
+    prefer_dte: int = 5,
+    target_premium_min: float = 1.5,
+    target_premium_max: float = 2.0,
 ) -> dict[str, Any]:
     quotes = quotes or {}
     aliases = aliases or {}
@@ -723,7 +770,7 @@ def build_challenge_board(
         milestone_usd=pace_milestone_usd,
         target_usd=target_usd,
         months=pace_months,
-        ideal_hold_days=8 if prefer_weekly_pace else 35,
+        ideal_hold_days=2 if sprint_desk else (8 if prefer_weekly_pace else 35),
         current_equity=equity_now,
     )
     pace_mult = float((pace.get("milestone") or {}).get("mult_per_flip") or need_mult_base)
@@ -792,11 +839,12 @@ def build_challenge_board(
 
         right = _side_from_tape(score=sc, quote=q)
         horizon = str(row.get("horizon") or "swing")
-        # Pre-earnings / earnings day → force longer-dated LEAP style
-        prefer_leap = bool(earn.get("prefer_leap"))
+        # Sprint desk: never force LEAPs — wait through earnings prints instead
+        prefer_leap = bool(earn.get("prefer_leap")) and not sprint_desk
         if prefer_leap and horizon == "weekly":
             horizon = "swing"
-        hp = hold_period_for(horizon, 200 if prefer_leap else None)
+        hold_horizon = "sprint" if sprint_desk else horizon
+        hp = hold_period_for(hold_horizon, 200 if prefer_leap else None)
 
         open_t = open_map.get((sym, right))
         # Also match opposite-side open → manage that first
@@ -810,16 +858,25 @@ def build_challenge_board(
         contract = None
         if fetch_contracts and spot and spot > 0 and chain_fetches < max_chain_fetches and not open_t:
             try:
-                min_dte = 150 if prefer_leap else (60 if horizon == "weekly" else 90)
-                max_dte = 450 if prefer_leap or horizon != "weekly" else 240
+                if sprint_desk:
+                    pick_min_dte = int(min_dte)
+                    pick_max_dte = int(max_dte)
+                    pick_prefer_dte = int(prefer_dte)
+                    otm_cap = 5.0
+                else:
+                    pick_min_dte = 150 if prefer_leap else (60 if horizon == "weekly" else 90)
+                    pick_max_dte = 450 if prefer_leap or horizon != "weekly" else 240
+                    pick_prefer_dte = 180 if prefer_leap else (90 if horizon == "weekly" else 120)
+                    otm_cap = 8.0 if prefer_leap or horizon != "weekly" else 6.0
                 contract = select_leap_option(
                     sym,
                     spot,
                     right=right,
                     yahoo_symbol=aliases.get(sym),
-                    min_dte=min_dte,
-                    max_dte=max_dte,
-                    otm_pct_max=8.0 if prefer_leap or horizon != "weekly" else 6.0,
+                    min_dte=pick_min_dte,
+                    max_dte=pick_max_dte,
+                    prefer_dte=pick_prefer_dte,
+                    otm_pct_max=otm_cap,
                     min_oi=200,
                     min_volume=25,
                 )
@@ -848,7 +905,7 @@ def build_challenge_board(
                 contract = None
 
         if contract is None and spot and spot > 0:
-            zone_hz = "swing" if prefer_leap else horizon
+            zone_hz = "sprint" if sprint_desk else ("swing" if prefer_leap else horizon)
             contract = _suggested_zone(spot, zone_hz, right)
             if prefer_leap and int(contract.get("dte") or 0) < 150:
                 expiry, dte = _approx_listed_expiry(180)
@@ -871,20 +928,21 @@ def build_challenge_board(
                     "volume": None,
                 }
 
-        # Refresh hold period with DTE
-        hp = hold_period_for(horizon, (contract or {}).get("dte"))
+        # Refresh hold period with DTE (short-dated → sprint)
+        hp = hold_period_for(hold_horizon, (contract or {}).get("dte"))
         hold_approx = f"≈{hp['ideal_days']}d ({hp['min_days']}–{hp['max_days']}d)"
-        # Weekly-paced tickets use the stricter of classic path vs 4mo→$500k mult
-        style = str(hp.get("style") or horizon)
+        # Sprint / weekly-paced tickets use the stricter of classic path vs 4mo→$500k mult
+        style = str(hp.get("style") or hold_horizon)
         ticket_need_mult = need_mult_base
         fits_4mo = False
-        if prefer_weekly_pace and style == "weekly":
+        if sprint_desk or (prefer_weekly_pace and style in {"weekly", "sprint"}):
             ticket_need_mult = max(need_mult_base, pace_mult)
             hit2 = float(row.get("hit_2pct") or row.get("hit_1pct") or 0)
             fits_4mo = bool(pace.get("feasible")) and hit2 >= 40.0
         elif prefer_weekly_pace and style == "swing" and int(hp.get("ideal_days") or 35) <= 25:
             ticket_need_mult = max(need_mult_base, pace_mult)
-        need_mult = ticket_need_mult
+        # Clamp to ~50–100% premium for the challenge desk feel
+        need_mult = max(float(target_premium_min), min(float(target_premium_max), float(ticket_need_mult)))
 
         ask = float(contract["ask"]) if contract and contract.get("ask") else None
         bid = float(contract["bid"]) if contract and contract.get("bid") else None
@@ -1208,7 +1266,7 @@ def build_challenge_board(
         key=lambda t: (
             rank_action.get(t.action, 9),
             0 if t.fits_4mo_500k else 1,
-            0 if t.pace_style == "weekly" else 1,
+            0 if t.pace_style in {"weekly", "sprint"} else 1,
             -earn_boosts.get(t.symbol, 0),
             0 if t.certainty_tier == "perfect" else 1 if t.certainty_tier == "elite" else 2,
             0
@@ -1271,9 +1329,10 @@ def build_challenge_board(
             "cache_spot": sum(1 for t in tickets if t.spot_source == "cache"),
             "live_ask": sum(1 for t in tickets if t.ask is not None),
             "fits_4mo_500k": sum(1 for t in tickets if t.fits_4mo_500k),
-            "weekly_pace": sum(1 for t in tickets if t.pace_style == "weekly"),
+            "weekly_pace": sum(1 for t in tickets if t.pace_style in {"weekly", "sprint"}),
         },
         "hold_periods": {
+            "sprint": hold_period_for("sprint"),
             "weekly": hold_period_for("weekly"),
             "swing": hold_period_for("swing"),
             "leap": hold_period_for("leap", 200),
@@ -1297,16 +1356,17 @@ def build_challenge_board(
             ),
         },
         "rules": [
-            "Swing / LEAP only — calls and puts (side from ensemble + tape).",
+            "Sprint desk: short-dated calls/puts (≈1–10 DTE), hold ~1–3 days — not multi-month LEAPs.",
             "Hist-win filter: prefer 100% (n≥3), else ≥80% (n≥5) on weekly/swing quality signals.",
             "Auto paper ENTER when an ENTRY ticket has a live listed ask + contract; cash/equity update on each ENTER/EXIT.",
             "Without listed asks the sleeve stays WAIT — that is why a dormant auto_enter=false desk sits at $1,000.",
             "Universe: mega/large + mid/small + DRAM/memory optionables.",
             "Earnings watch: today / this week / next week / post-print across challenge + DRAM sleeve.",
-            "Earnings: boost post-print continuation; caution/LEAP-only into the print; WAIT on earnings day.",
+            "Earnings: boost post-print continuation; WAIT into/through the print on the sprint desk (no LEAP force).",
             f"OI walls: soft EXIT ${wall_buffer_usd:.2f} before call wall (long calls) or put wall (long puts).",
-            "Hold periods: weekly 5–14d · swing 20–60d · LEAP 30–90d — EXIT at target, stop, or max hold.",
-            f"Each flip targets ~{primary_path['pct_per_flip']:.0f}% option premium; then EXIT and roll.",
+            "Hold periods: sprint 1–3d · weekly 5–14d · swing 20–60d · LEAP 30–90d — EXIT at target, stop, or max hold.",
+            f"Each flip targets ~50–100% option premium (clamped; path math ~{primary_path['pct_per_flip']:.0f}%); then EXIT and roll.",
+            "Long-dated opens are auto-retired so cash can re-enter 1–3d sprint tickets.",
             "Status updates: ENTRY (new), HOLD (open inside window), EXIT (target/stop/time).",
             "Max 1 open challenge flip at a time. Research / paper only.",
         ],

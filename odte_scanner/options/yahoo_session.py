@@ -273,7 +273,9 @@ def pick_challenge_contract(
     require_bid: bool = True,
     allow_zero_volume_if_oi: int = 5000,
 ) -> dict[str, Any] | None:
-    """Select a liquid swing/LEAP call or put — rejects no-volume shells.
+    """Select a liquid challenge call or put — rejects no-volume shells.
+
+    Defaults historically favored swing/LEAP; callers pass min/max DTE for sprint.
 
     Liquidity rules (challenge):
     - Prefer day volume ≥ min_volume
@@ -297,7 +299,11 @@ def pick_challenge_contract(
     expiries = list_expiries(root)
     targets = [(e, d) for e, d in expiries if min_dte <= d <= max_dte]
     if not targets:
-        targets = [(e, d) for e, d in expiries if 45 <= d <= 550]
+        # Stay near the requested band for sprint picks — do not jump to LEAPs
+        if max_dte <= 21:
+            targets = [(e, d) for e, d in expiries if 0 <= d <= max(max_dte, 14)]
+        else:
+            targets = [(e, d) for e, d in expiries if 45 <= d <= 550]
     if not targets:
         return None
     targets.sort(key=lambda x: abs(x[1] - prefer_dte))

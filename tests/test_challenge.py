@@ -76,6 +76,15 @@ def test_hold_periods_weekly_swing_leap():
     assert "d" in w["label"]
 
 
+def test_hold_periods_sprint_and_short_dte():
+    sp = hold_period_for("sprint")
+    assert sp["style"] == "sprint" and sp["min_days"] == 1 and sp["max_days"] == 3
+    assert sp["ideal_days"] == 2
+    # Short-dated contracts map to sprint even if hist horizon was swing
+    short = hold_period_for("swing", 5)
+    assert short["style"] == "sprint" and short["max_days"] == 3
+
+
 def test_side_from_tape_calls_and_puts():
     assert _side_from_tape(score={"ensemble_score": 78, "bullish": True}, quote={"mom_5m_pct": 0.2}) == "C"
     assert (
@@ -153,8 +162,12 @@ def test_challenge_board_picks_perfect_hist():
     assert "≈" in board["primary"]["hold_approx_label"]
     assert board["primary"]["enter_plan"]
     assert board["primary"]["exit_plan"]
-    assert board["primary"]["target_profit_pct"] > 50
+    assert board["primary"]["target_profit_pct"] >= 50
+    assert board["primary"]["target_profit_pct"] <= 100
     assert board["primary"]["action"] in {"ENTRY", "HOLD", "EXIT", "WAIT"}
+    assert board["primary"]["hold_max_days"] <= 3
+    assert board["primary"]["pace_style"] == "sprint"
+    assert "sprint" in board["hold_periods"]
 
 
 def test_challenge_board_put_side_and_hold_status():
@@ -346,12 +359,20 @@ def test_tracker_enter_hold_exit_call_and_put(tmp_path):
     assert entered is not None
     assert entered.right == "C"
     assert entered.hold_max_days == 90  # LEAP by DTE
-    ev = tr.evaluate_open(entered, mark=4.2, quote={"mom_5m_pct": 0.05})
+    # Legacy long-dated evaluate (sprint_desk off)
+    ev = tr.evaluate_open(
+        entered, mark=4.2, quote={"mom_5m_pct": 0.05}, sprint_desk=False
+    )
     assert ev["action"] == "HOLD"
     assert entered.last_action == "HOLD"
 
-    # Force EXIT via target
-    ev2 = tr.evaluate_open(entered, mark=8.0, quote={})
+    # Sprint desk retires long-dated opens so cash can flip 1–3d tickets
+    retired = tr.evaluate_open(entered, mark=4.2, quote={}, sprint_desk=True)
+    assert retired["action"] == "EXIT"
+    assert "sprint" in retired["detail"].lower()
+
+    # Force EXIT via target (sprint off so target path is tested cleanly)
+    ev2 = tr.evaluate_open(entered, mark=8.0, quote={}, sprint_desk=False)
     assert ev2["action"] == "EXIT"
     out = tr.exit_trade(entered.id, exit_bid=8.0, reason=ev2["detail"])
     assert out is not None and out.status == "closed"
@@ -377,3 +398,29 @@ def test_tracker_enter_hold_exit_call_and_put(tmp_path):
     assert put.right == "P"
     assert put.hold_min_days == 5
     assert put.hold_max_days == 14
+
+    sprint_ticket = {
+        "action": "ENTRY",
+        "symbol": "NVDA",
+        "right": "C",
+        "ask": 2.5,
+        "contract": "NVDA250912C00180000",
+        "expiry": "2025-09-12",
+        "strike": 180,
+        "horizon": "sprint",
+        "hold_style": "sprint",
+        "dte": 3,
+        "spot": 175,
+        "target_premium_mult": 1.9,
+        "contracts_for_bankroll": 1,
+        "thesis": "sprint flip",
+    }
+    # Flat book after prior exits
+    if tr.open_trades():
+        for ot in list(tr.open_trades()):
+            tr.exit_trade(ot.id, exit_bid=float(ot.entry_ask), reason="clear")
+    sprint = tr.enter(sprint_ticket)
+    assert sprint is not None
+    assert sprint.hold_min_days == 1
+    assert sprint.hold_max_days == 3
+    assert 1.5 <= sprint.target_premium_mult <= 2.0

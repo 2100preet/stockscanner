@@ -360,12 +360,19 @@ actions:
   chase_enrich_live: true    # live chain sweep on top ripping names (capped)
   chase_max_live_symbols: 8
   chase_feed_journal: false  # never auto paper-enter risky chase tickets
-  # $1k → $1M challenge (swing / LEAP + weekly pace for 4mo→$500k)
+  # $1k → $1M challenge (sprint: ~1–3d holds, ~50–100% premium targets)
   challenge_start_usd: 1000
   challenge_target_usd: 1000000
   challenge_flips: 12
   challenge_max_tickets: 8
-  # Prefer weekly-style tickets that can compound to ≥$500k in ~4 months
+  # Sprint desk: short-dated flips (not multi-month LEAPs)
+  challenge_sprint_desk: true
+  challenge_min_dte: 1
+  challenge_max_dte: 10
+  challenge_prefer_dte: 5
+  challenge_target_premium_min: 1.5   # +50%
+  challenge_target_premium_max: 2.0   # +100%
+  # Prefer fast tickets that can still compound to ≥$500k in ~4 months
   challenge_pace_months: 4
   challenge_pace_milestone_usd: 500000
   challenge_prefer_weekly_pace: true
@@ -396,7 +403,7 @@ actions:
   # Soft EXIT on underlying = wall ± this buffer (call wall − buffer / put wall + buffer)
   wall_exit_buffer_usd: 0.10
   challenge_fetch_walls: true
-  # 0DTE $1K Challenge — Green Friday ORB15 puts (separate from swing $1M path)
+  # 0DTE $1K Challenge — Green Friday ORB15 puts (separate from sprint $1M path)
   odte_1k_enabled: true
   odte_1k_start_usd: 1000
   odte_1k_position_size_usd: 850

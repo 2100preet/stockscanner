@@ -517,7 +517,7 @@ PAGE = r"""
     <section class="tabpane" id="tab-challenge">
       <h2>$1,000 → $1,000,000 challenge</h2>
       <p class="lede">
-        Path includes a <strong>4-month → $500k</strong> pace (prefer <strong>weekly-style</strong> tickets)
+        Sprint desk: target <strong>~50–100%</strong> premium in about <strong>1–3 days</strong> on short-dated tickets. Path still tracks a <strong>4-month → $500k</strong> pace
         on the way to $1M. Sure-shot hist filter (prefer <strong>100% hist win</strong>, else ≥80% n≥5).
         Status: <strong>ENTRY · HOLD · EXIT</strong>. After each Paper ENTER/EXIT the sleeve
         <strong>cash &amp; equity balance</strong> updates so you know where you are.
@@ -529,7 +529,7 @@ PAGE = r"""
         <h2>Earnings near you — today / this week / next week (+ DRAM sleeve)</h2>
         <p class="lede" style="margin-top:0;font-size:.76rem">
           Scans hist-eligible names plus DRAM/memory (DRAM, MU, WDC, STX, AMAT…) and focus list.
-          Pre-print → LEAP/WAIT; post-print → prefer continuation.
+          Pre-print → WAIT on sprint desk; post-print → prefer continuation.
         </p>
         <div id="challengeEarningsWatch" class="empty">—</div>
       </div>
@@ -1764,7 +1764,7 @@ PAGE = r"""
 
       const t0 = ch.primary;
       if (primaryEl) {
-        if (!t0) primaryEl.innerHTML = `<div class="empty">No sure-shot swing/LEAP cleared the hist filter yet — run a scan.</div>`;
+        if (!t0) primaryEl.innerHTML = `<div class="empty">No sure-shot sprint ticket cleared the hist filter yet — run a scan.</div>`;
         else {
           const tier = t0.certainty_tier||"strong";
           const act = t0.action||"WAIT";
@@ -1941,13 +1941,13 @@ PAGE = r"""
           <p class="lede" style="margin-top:0"><strong>4-month → $500k pace:</strong> ${pace.note||"—"}</p>
           <p class="lede" style="margin-top:.35rem">${path.note||""}</p>
           <div class="playbook" style="margin-bottom:.55rem">
-            ${["weekly","swing","leap"].map(k=>{
+            ${["sprint","weekly","swing","leap"].map(k=>{
               const h=hp[k]||{};
               return `<span class="tag">${k}: ${h.label||"—"}</span>`;
             }).join("")}
-            <span class="tag">Prefer weekly for 4mo/$500k</span>
+            <span class="tag">Prefer sprint 1–3d / 50–100%</span>
           </div>
-          <div class="status" style="margin:.2rem 0 .4rem">4mo compound schedule (weekly ~${pace.ideal_hold_days||8}d holds)</div>
+          <div class="status" style="margin:.2rem 0 .4rem">4mo compound schedule (sprint ~${pace.ideal_hold_days||2}d holds)</div>
           <table><thead><tr><th>Flip</th><th>Months</th><th>Equity</th><th>Milestone</th></tr></thead>
           <tbody>${(sched.slice(0,16)).map(s=>`<tr>
             <td class="mono">${s.flip}</td>
@@ -4174,6 +4174,12 @@ def create_app(config_path: str | None = None) -> Flask:
                 fetch_walls=bool(actions_cfg.get("challenge_fetch_walls", True)) and not offline,
                 wall_buffer_usd=float(actions_cfg.get("wall_exit_buffer_usd", 0.10)),
                 walls_map=echo_walls,
+                sprint_desk=bool(actions_cfg.get("challenge_sprint_desk", True)),
+                min_dte=int(actions_cfg.get("challenge_min_dte", 1)),
+                max_dte=int(actions_cfg.get("challenge_max_dte", 10)),
+                prefer_dte=int(actions_cfg.get("challenge_prefer_dte", 5)),
+                target_premium_min=float(actions_cfg.get("challenge_target_premium_min", 1.5)),
+                target_premium_max=float(actions_cfg.get("challenge_target_premium_max", 2.0)),
             )
             live_contracts = {
                 (str(t.get("symbol")), str(t.get("right") or "C")): t
@@ -4186,6 +4192,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 auto_enter=bool(actions_cfg.get("challenge_auto_enter", True)),
                 auto_exit=bool(actions_cfg.get("challenge_auto_exit", True)),
                 max_open=int(actions_cfg.get("challenge_max_open", 1)),
+                sprint_desk=bool(actions_cfg.get("challenge_sprint_desk", True)),
             )
             challenge["sync"] = sync
             challenge["book"] = sync.get("book") or tracker.book.to_dict()
@@ -4206,6 +4213,12 @@ def create_app(config_path: str | None = None) -> Flask:
                 fetch_walls=False,
                 wall_buffer_usd=float(actions_cfg.get("wall_exit_buffer_usd", 0.10)),
                 walls_map=challenge.get("walls_map") or echo_walls,
+                sprint_desk=bool(actions_cfg.get("challenge_sprint_desk", True)),
+                min_dte=int(actions_cfg.get("challenge_min_dte", 1)),
+                max_dte=int(actions_cfg.get("challenge_max_dte", 10)),
+                prefer_dte=int(actions_cfg.get("challenge_prefer_dte", 5)),
+                target_premium_min=float(actions_cfg.get("challenge_target_premium_min", 1.5)),
+                target_premium_max=float(actions_cfg.get("challenge_target_premium_max", 2.0)),
             )
             for t in challenge.get("tickets") or []:
                 prev = live_contracts.get((str(t.get("symbol")), str(t.get("right") or "C")))
@@ -4856,6 +4869,12 @@ def create_app(config_path: str | None = None) -> Flask:
             max_tickets=int(actions_cfg.get("challenge_max_tickets", 8)),
             fetch_contracts=True,
             fetch_earnings=False,
+            sprint_desk=bool(actions_cfg.get("challenge_sprint_desk", True)),
+            min_dte=int(actions_cfg.get("challenge_min_dte", 1)),
+            max_dte=int(actions_cfg.get("challenge_max_dte", 10)),
+            prefer_dte=int(actions_cfg.get("challenge_prefer_dte", 5)),
+            target_premium_min=float(actions_cfg.get("challenge_target_premium_min", 1.5)),
+            target_premium_max=float(actions_cfg.get("challenge_target_premium_max", 2.0)),
         )
         ticket = next(
             (
