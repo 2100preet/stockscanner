@@ -4153,6 +4153,11 @@ def create_app(config_path: str | None = None) -> Flask:
             except Exception:  # noqa: BLE001
                 echo_walls = {}
 
+            # $1k→$1M sleeve needs listed asks to flip ENTRY; Pages was stuck at $1k
+            # because fetch_contracts was hard-disabled and auto_enter was false.
+            fetch_ch_contracts = bool(actions_cfg.get("challenge_fetch_contracts", True)) and (
+                (not offline) or bool(actions_cfg.get("challenge_fetch_contracts_offline", True))
+            )
             challenge = build_challenge_board(
                 win_table=win_table if isinstance(win_table, dict) else None,
                 scores=scan.get("scores") or [],
@@ -4163,11 +4168,10 @@ def create_app(config_path: str | None = None) -> Flask:
                 target_usd=float(actions_cfg.get("challenge_target_usd", 1_000_000)),
                 flips=int(actions_cfg.get("challenge_flips", 12)),
                 max_tickets=int(actions_cfg.get("challenge_max_tickets", 8)),
-                # Snapshot must stay interactive — use disk cache only (no Yahoo fan-out)
-                fetch_contracts=False,
-                fetch_earnings=False,
+                fetch_contracts=fetch_ch_contracts,
+                fetch_earnings=bool(actions_cfg.get("challenge_fetch_earnings", True)) and not offline,
                 earnings_max_fetch=int(actions_cfg.get("challenge_earnings_max_fetch", 36)),
-                fetch_walls=False,
+                fetch_walls=bool(actions_cfg.get("challenge_fetch_walls", True)) and not offline,
                 wall_buffer_usd=float(actions_cfg.get("wall_exit_buffer_usd", 0.10)),
                 walls_map=echo_walls,
             )
@@ -4256,6 +4260,23 @@ def create_app(config_path: str | None = None) -> Flask:
                     t["strike"] = prev.get("strike") if prev.get("strike") is not None else t.get("strike")
                     if prev.get("target_ask") is not None:
                         t["target_ask"] = prev.get("target_ask")
+                # Second pass rebuilds without chains and demotes ENTRY→WAIT — restore action
+                prev_action = str(prev.get("action") or "")
+                if prev_action in {"ENTRY", "HOLD", "EXIT"} and t.get("action") == "WAIT":
+                    if t.get("ask") is not None or prev.get("ask") is not None:
+                        t["action"] = prev_action
+                        for k in (
+                            "status_detail",
+                            "enter_plan",
+                            "exit_plan",
+                            "recommend_reason",
+                            "thesis",
+                            "target_ask",
+                            "debit_usd",
+                            "contracts_for_bankroll",
+                        ):
+                            if prev.get(k) not in (None, ""):
+                                t[k] = prev.get(k)
             # Refresh counts after merge
             tickets = challenge.get("tickets") or []
             challenge["counts"] = {
@@ -4263,6 +4284,9 @@ def create_app(config_path: str | None = None) -> Flask:
                 "live_ask": sum(1 for t in tickets if t.get("ask") is not None and t.get("mark_source") != "zone"),
                 "live_spot": sum(1 for t in tickets if t.get("spot_source") == "live"),
                 "cache_spot": sum(1 for t in tickets if t.get("spot_source") == "cache"),
+                "entry": sum(1 for t in tickets if t.get("action") == "ENTRY"),
+                "hold": sum(1 for t in tickets if t.get("action") == "HOLD"),
+                "exit": sum(1 for t in tickets if t.get("action") == "EXIT"),
             }
             challenge["entry"] = [t for t in tickets if t.get("action") == "ENTRY"]
             challenge["hold"] = [t for t in tickets if t.get("action") == "HOLD"]

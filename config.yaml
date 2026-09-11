@@ -375,10 +375,12 @@ actions:
   flow_min_net_score: 8.0
   flow_min_tier: aggressive   # aggressive | unusual | golden
   flow_require_vol_gt_oi: false
-  # Manual Paper ENTER/EXIT in UI (sleeve updates on button click)
-  challenge_auto_enter: false
-  # Auto EXIT when time-stop / TP / SL / tape fires (was false → ENTERs never closed on Pages)
+  # Auto Paper ENTER on ENTRY tickets (was false → $1k→$1M sleeve stayed flat at $1,000)
+  challenge_auto_enter: true
+  # Auto EXIT when time-stop / TP / SL / tape fires
   challenge_auto_exit: true
+  # Pages/offline must still pull listed asks or every ticket stays WAIT
+  challenge_fetch_contracts_offline: true
   challenge_max_open: 1
   challenge_ledger_path: outputs/challenge_ledger.json
   challenge_min_option_volume: 25
