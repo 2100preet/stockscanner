@@ -179,6 +179,8 @@ FOCUS_DEFAULT: list[str] = [
     "INTC", "MU", "USO", "UNG", "NFLX", "CRM", "ORCL", "ADBE", "QCOM", "AMAT",
     "ARM", "PLTR", "COIN", "MSTR", "HOOD", "UBER", "JPM", "BAC", "XOM", "COST",
     "TSM", "DIA", "XLK", "XLE", "SOXX", "HYG", "EEM", "SPCX", "DDOG",
+    # Mega healthcare / banks (Johnson & Johnson was liquid-only — missing on focus Pages)
+    "JNJ", "WFC", "UNH", "PFE",
     # Most-anticipated / high-attention names (swing / earnings / focus scan)
     "CRWV", "CBRS", "FLY", "FIGR", "GEMI", "NBIS", "BETA", "XE",
     "CRCL", "NOW", "SMCI", "DELL",

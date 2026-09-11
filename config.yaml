@@ -44,8 +44,12 @@ tickers:
   - MSTR
   - HOOD
   - UBER
-  - JPM
-  - BAC
+  - JPM   # JPMorgan Chase ("Chase")
+  - BAC   # Bank of America ("BoA")
+  - JNJ   # Johnson & Johnson — was liquid-only; elevate onto focus Pages scan
+  - WFC   # Wells Fargo — bank sleeve with JPM/BAC
+  - UNH
+  - PFE
   - XOM
   - COST
   - TSM
@@ -190,6 +194,10 @@ expiry_calendars:
     - UBER
     - JPM
     - BAC
+    - JNJ
+    - WFC
+    - UNH
+    - PFE
     - XOM
     - COST
     - TSM
