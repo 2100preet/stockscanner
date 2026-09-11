@@ -1299,6 +1299,8 @@ def build_challenge_board(
         "rules": [
             "Swing / LEAP only — calls and puts (side from ensemble + tape).",
             "Hist-win filter: prefer 100% (n≥3), else ≥80% (n≥5) on weekly/swing quality signals.",
+            "Auto paper ENTER when an ENTRY ticket has a live listed ask + contract; cash/equity update on each ENTER/EXIT.",
+            "Without listed asks the sleeve stays WAIT — that is why a dormant auto_enter=false desk sits at $1,000.",
             "Universe: mega/large + mid/small + DRAM/memory optionables.",
             "Earnings watch: today / this week / next week / post-print across challenge + DRAM sleeve.",
             "Earnings: boost post-print continuation; caution/LEAP-only into the print; WAIT on earnings day.",
