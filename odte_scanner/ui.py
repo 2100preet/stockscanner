@@ -28,7 +28,12 @@ PAGE = r"""
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="theme-color" content="#0c1210" />
+  <link rel="manifest" href="/manifest.webmanifest" />
   <title>ZeroLoss Desk — 0DTE $1K IN/OUT</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -158,16 +163,26 @@ PAGE = r"""
     .pulse-card .pc-why { margin: .4rem 0 0; color: var(--muted); font-size: .72rem; line-height: 1.35; }
     .pulse-empty { padding: .85rem 1rem 1rem; color: var(--muted); font-size: .8rem; }
     #alertToasts {
-      position: fixed; right: 1rem; bottom: 1rem; z-index: 80;
-      display: flex; flex-direction: column; gap: .45rem; max-width: min(360px, 92vw);
+      position: fixed; right: max(1rem, env(safe-area-inset-right, 0)); bottom: max(1rem, env(safe-area-inset-bottom, 0));
+      z-index: 9999;
+      display: flex; flex-direction: column; gap: .45rem; max-width: min(360px, calc(100vw - 2rem));
       pointer-events: none;
+    }
+    @media (max-width: 640px) {
+      #alertToasts {
+        top: max(0.75rem, env(safe-area-inset-top, 0));
+        bottom: auto; left: max(1rem, env(safe-area-inset-left, 0)); right: max(1rem, env(safe-area-inset-right, 0));
+        max-width: none;
+      }
     }
     .alert-toast {
       pointer-events: auto;
       border: 1px solid var(--line); border-radius: .65rem; padding: .65rem .75rem;
-      background: rgba(8,16,14,.92); box-shadow: 0 8px 28px rgba(0,0,0,.35);
+      background: rgba(8,16,14,.96); box-shadow: 0 8px 28px rgba(0,0,0,.45);
       font-size: .78rem; line-height: 1.35;
+      animation: alertIn .28s ease;
     }
+    @keyframes alertIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }
     .alert-toast.buy { box-shadow: inset 3px 0 0 var(--long), 0 8px 28px rgba(0,0,0,.35); }
     .alert-toast.sell { box-shadow: inset 3px 0 0 var(--short), 0 8px 28px rgba(0,0,0,.35); }
     .alert-toast strong { display: block; font-size: .86rem; margin-bottom: .15rem; }
@@ -3218,17 +3233,21 @@ PAGE = r"""
     // --- Browser BUY/SELL alerts (calls & puts) ---
     const ALERT_KEY = "signalDeskAlertsOn";
     const ALERT_SEEN = "signalDeskAlertSeen";
+    const ALERT_PRIMED = "signalDeskAlertPrimed";
     let alertsEnabled = localStorage.getItem(ALERT_KEY) === "1";
     let alertSeen = new Set();
     try {
-      const raw = sessionStorage.getItem(ALERT_SEEN);
+      const raw = localStorage.getItem(ALERT_SEEN);
       if (raw) JSON.parse(raw).forEach(k => alertSeen.add(k));
     } catch (_) {}
-    let alertPrimed = alertSeen.size > 0;
+    // localStorage survives mobile tab eviction (sessionStorage does not)
+    let alertPrimed = localStorage.getItem(ALERT_PRIMED) === "1" || alertSeen.size > 0;
+    let alertAudioCtx = null;
 
     function saveAlertSeen() {
       try {
-        sessionStorage.setItem(ALERT_SEEN, JSON.stringify([...alertSeen].slice(-200)));
+        localStorage.setItem(ALERT_SEEN, JSON.stringify([...alertSeen].slice(-200)));
+        localStorage.setItem(ALERT_PRIMED, alertPrimed ? "1" : "0");
       } catch (_) {}
     }
 
@@ -3270,6 +3289,8 @@ PAGE = r"""
       alertsEnabled = true;
       localStorage.setItem(ALERT_KEY, "1");
       syncAlertButton();
+      primeAlertAudio();
+      requestAlertWakeLock();
       // Seed current board so only *new* recommendations alert after enable
       collectTradeAlerts().forEach(a => alertSeen.add(a.key));
       alertPrimed = true;
@@ -3277,14 +3298,36 @@ PAGE = r"""
       pushToast({
         kind: "buy",
         title: "Alerts armed",
-        body: "Browser + on-page alerts for BUY/SELL call & put recommendations. Keep this tab open (or allow notifications).",
+        body: "Browser + on-page alerts for BUY/SELL call & put recommendations. On mobile: add to Home Screen + allow notifications for background alerts.",
       });
     }
 
     function disableTradeAlerts() {
       alertsEnabled = false;
       localStorage.setItem(ALERT_KEY, "0");
+      releaseAlertWakeLock();
       syncAlertButton();
+    }
+
+    let alertWakeLock = null;
+    async function requestAlertWakeLock() {
+      try {
+        if (!alertsEnabled || !navigator.wakeLock) return;
+        alertWakeLock = await navigator.wakeLock.request("screen");
+        alertWakeLock.addEventListener("release", () => { alertWakeLock = null; });
+      } catch (_) {}
+    }
+    function releaseAlertWakeLock() {
+      try { alertWakeLock && alertWakeLock.release(); } catch (_) {}
+      alertWakeLock = null;
+    }
+    function primeAlertAudio() {
+      try {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) return;
+        if (!alertAudioCtx) alertAudioCtx = new Ctx();
+        if (alertAudioCtx.state === "suspended") alertAudioCtx.resume();
+      } catch (_) {}
     }
 
     function collectTradeAlerts() {
@@ -3333,6 +3376,9 @@ PAGE = r"""
       (ch.entry || []).forEach(r => push({...r, action: "ENTRY"}, "BUY", "Challenge"));
       (ch.exit || []).forEach(r => push({...r, action: "EXIT"}, "SELL", "Challenge"));
       (ch.just_exited || []).forEach(r => push({...r, action: "EXIT"}, "SELL", "Challenge"));
+      const ml = (DATA.ml6 && DATA.ml6.actions) || {};
+      (ml.buy_now || []).forEach(r => push(r, "BUY", "ML6"));
+      (ml.sell_now || []).forEach(r => push(r, "SELL", "ML6"));
       // 0DTE $1K — IN · BUY PUT / OUT · SELL PUT (was missing → toast-only other desks)
       const o1k = DATA.odte_1k || {};
       (o1k.put_now || o1k.entry || o1k.in || []).forEach(r => push({...r, action: r.alert_action || "BUY_NOW", side: "IN"}, "BUY", "0DTE $1K"));
@@ -3354,15 +3400,23 @@ PAGE = r"""
       try {
         const Ctx = window.AudioContext || window.webkitAudioContext;
         if (!Ctx) return;
-        const ctx = new Ctx();
-        const o = ctx.createOscillator();
-        const g = ctx.createGain();
+        if (!alertAudioCtx || alertAudioCtx.state === "closed") alertAudioCtx = new Ctx();
+        if (alertAudioCtx.state === "suspended") alertAudioCtx.resume();
+        const o = alertAudioCtx.createOscillator();
+        const g = alertAudioCtx.createGain();
         o.type = "sine";
         o.frequency.value = kind === "sell" ? 440 : 660;
-        g.gain.value = 0.04;
-        o.connect(g); g.connect(ctx.destination);
+        g.gain.value = 0.06;
+        o.connect(g); g.connect(alertAudioCtx.destination);
         o.start();
-        setTimeout(() => { o.stop(); ctx.close(); }, 180);
+        setTimeout(() => o.stop(), 180);
+      } catch (_) {}
+    }
+
+    function vibrateAlert(kind) {
+      try {
+        if (!navigator.vibrate) return;
+        navigator.vibrate(kind === "sell" ? [80, 40, 80] : [120, 60, 120]);
       } catch (_) {}
     }
 
@@ -3373,7 +3427,9 @@ PAGE = r"""
           body: alert.body,
           tag: alert.key.slice(0, 100),
           renotify: true,
+          silent: false,
         });
+        n.onclick = () => { window.focus(); n.close(); };
         setTimeout(() => n.close(), 12000);
       } catch (_) {}
     }
@@ -3397,6 +3453,7 @@ PAGE = r"""
         alertSeen.add(a.key);
         pushToast(a);
         beepAlert(a.kind);
+        vibrateAlert(a.kind);
         fireBrowserNotification(a);
       });
       alerts.forEach(a => alertSeen.add(a.key));
@@ -3420,12 +3477,42 @@ PAGE = r"""
       try { await _origLoad(); } finally { _loading = false; }
     };
     loadAll();
+    // Mobile browsers throttle background tabs — refresh immediately when user returns
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") {
+        loadAll();
+        if (alertsEnabled) requestAlertWakeLock();
+      }
+    });
+    window.addEventListener("focus", () => { if (alertsEnabled) loadAll(); });
+    window.addEventListener("pageshow", (ev) => { if (ev.persisted && alertsEnabled) loadAll(); });
+    if (alertsEnabled) requestAlertWakeLock();
     // Snapshot is expensive (Yahoo); refresh once a minute, never overlap
     setInterval(loadAll, 60000);
   </script>
 </body>
 </html>
 """
+
+MANIFEST = json.dumps(
+    {
+        "name": "ZeroLoss Desk",
+        "short_name": "ZeroLoss",
+        "description": "Live BUY/SELL option desk with IN/OUT alerts",
+        "start_url": "./",
+        "display": "standalone",
+        "background_color": "#0c1210",
+        "theme_color": "#0c1210",
+        "icons": [
+            {
+                "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'%3E%3Crect fill='%230c1210' width='192' height='192' rx='32'/%3E%3Ctext x='96' y='118' font-family='sans-serif' font-size='72' font-weight='700' fill='%233ecf8e' text-anchor='middle'%3EZL%3C/text%3E%3C/svg%3E",
+                "sizes": "192x192",
+                "type": "image/svg+xml",
+                "purpose": "any maskable",
+            }
+        ],
+    }
+)
 
 
 def _read_json(path: Path) -> dict | list | None:
@@ -3493,6 +3580,10 @@ def create_app(config_path: str | None = None) -> Flask:
     @app.get("/")
     def index():
         return render_template_string(PAGE)
+
+    @app.get("/manifest.webmanifest")
+    def manifest():
+        return app.response_class(MANIFEST, mimetype="application/manifest+json")
 
     @app.get("/api/snapshot")
     def snapshot():
