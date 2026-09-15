@@ -340,14 +340,19 @@ def pick_challenge_contract(
             vol = int(row.get("volume") or 0)
 
             # Hard liquidity gate — do not recommend empty shells
-            if vol <= 0 and oi < allow_zero_volume_if_oi:
-                continue
-            if vol < min_volume and oi < max(min_oi * 5, allow_zero_volume_if_oi):
-                # Need either real day volume or fortress OI
-                if vol <= 0:
+            if int(allow_zero_volume_if_oi or 0) <= 0:
+                # Sprint / strict mode: require real day volume + OI
+                if vol < min_volume or oi < min_oi:
                     continue
-            if oi < min_oi and vol < min_volume:
-                continue
+            else:
+                if vol <= 0 and oi < allow_zero_volume_if_oi:
+                    continue
+                if vol < min_volume and oi < max(min_oi * 5, allow_zero_volume_if_oi):
+                    # Need either real day volume or fortress OI
+                    if vol <= 0:
+                        continue
+                if oi < min_oi and vol < min_volume:
+                    continue
 
             mark_source = "ask"
             if ask <= 0 and last > 0:
@@ -371,7 +376,7 @@ def pick_challenge_contract(
                 - abs(dte - prefer_dte) * 0.04
                 - spread * 30.0
                 + min(30.0, oi / 150.0)
-                + min(35.0, vol / 20.0)  # volume dominates ranking
+                + min(50.0, vol / 15.0)  # volume dominates ranking
                 + (8.0 if mark_source == "ask" and bid > 0 else 0.0)
                 + (12.0 if vol >= min_volume else -20.0)
             )
@@ -393,7 +398,7 @@ def pick_challenge_contract(
                     "open_interest": oi,
                     "volume": vol,
                     "liquid": bool(vol >= min_volume and oi >= min_oi and bid > 0),
-                    "style": "leap" if dte >= 180 else "swing",
+                    "style": ("leap" if dte >= 180 else ("sprint" if dte <= 10 else "swing")),
                     "live": True,
                     "suggested_zone": False,
                 }

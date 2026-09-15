@@ -493,7 +493,60 @@ class ChallengeTracker:
             return t
         return None
 
+    def refresh_open_marks(
+        self,
+        *,
+        aliases: dict[str, str] | None = None,
+    ) -> dict[str, float]:
+        """Pull live bid/last for each open challenge contract.
+
+        Returns map of trade_id and contract -> mark. Updates trade.mark in place.
+        Priority: live bid → last → ask. Never invents a flat entry reprint.
+        """
+        aliases = aliases or {}
+        marks: dict[str, float] = {}
+        try:
+            from odte_scanner.options.live_chain import fetch_live_option_quote
+        except Exception:  # noqa: BLE001
+            return marks
+
+        for t in self.open_trades():
+            if not t.expiry or t.strike is None:
+                continue
+            opt_right = "put" if str(t.right or "C").upper() == "P" else "call"
+            try:
+                q = fetch_live_option_quote(
+                    t.symbol,
+                    str(t.expiry),
+                    float(t.strike),
+                    yahoo_symbol=aliases.get(t.symbol),
+                    right=opt_right,
+                )
+            except Exception:  # noqa: BLE001
+                q = None
+            if not q:
+                continue
+            px = None
+            if q.bid and float(q.bid) > 0:
+                px = float(q.bid)
+            elif q.last and float(q.last) > 0:
+                px = float(q.last)
+            elif q.ask and float(q.ask) > 0:
+                px = float(q.ask)
+            if px is None or px <= 0:
+                continue
+            marks[t.id] = px
+            if t.contract:
+                marks[t.contract] = px
+            t.mark = px
+            if t.entry_ask and float(t.entry_ask) > 0:
+                t.unrealized_pct = round((px - float(t.entry_ask)) / float(t.entry_ask) * 100.0, 2)
+        if marks:
+            self.save()
+        return marks
+
     def sync_from_tickets(
+
         self,
         tickets: list[dict[str, Any]],
         *,
@@ -502,24 +555,39 @@ class ChallengeTracker:
         auto_exit: bool = True,
         max_open: int = 1,
         sprint_desk: bool = True,
+        live_marks: dict[str, float] | None = None,
     ) -> dict[str, Any]:
         quotes = quotes or {}
+        live_marks = live_marks or {}
         entered: list[str] = []
         exited: list[str] = []
         holds: list[dict[str, Any]] = []
 
         # Evaluate opens first
         for t in list(self.open_trades()):
-            # Prefer mark from matching ticket bid/ask/last
-            mark = t.mark
+            # Prefer live option mark, then ticket bid/last
+            mark = None
+            live_ok = False
+            if t.id in live_marks and float(live_marks[t.id]) > 0:
+                mark = float(live_marks[t.id])
+                live_ok = True
+            elif t.contract and t.contract in live_marks and float(live_marks[t.contract]) > 0:
+                mark = float(live_marks[t.contract])
+                live_ok = True
             for tk in tickets:
                 if tk.get("symbol") == t.symbol and str(tk.get("right") or "C").upper() == t.right:
-                    if tk.get("bid"):
-                        mark = float(tk["bid"])
-                    elif tk.get("option_last"):
-                        mark = float(tk["option_last"])
-                    elif tk.get("ask"):
-                        mark = float(tk["ask"])
+                    if mark is None:
+                        if tk.get("bid") and float(tk["bid"]) > 0:
+                            mark = float(tk["bid"])
+                            if t.entry_ask and abs(mark - float(t.entry_ask)) >= 1e-6:
+                                live_ok = True
+                        elif tk.get("option_last") and float(tk["option_last"]) > 0:
+                            mark = float(tk["option_last"])
+                            live_ok = True
+                        elif tk.get("ask") and float(tk["ask"]) > 0:
+                            cand = float(tk["ask"])
+                            if t.entry_ask is None or abs(cand - float(t.entry_ask)) >= 1e-6:
+                                mark = cand
                     # Backfill precision fields if older ledger row
                     if t.hit_1pct is None and tk.get("hit_1pct") is not None:
                         t.hit_1pct = tk.get("hit_1pct")
@@ -541,12 +609,25 @@ class ChallengeTracker:
                     if not t.hold_approx_label and tk.get("hold_approx_label"):
                         t.hold_approx_label = str(tk.get("hold_approx_label"))
                     break
+            if mark is None:
+                mark = t.mark
             ev = self.evaluate_open(
                 t, mark=mark, quote=quotes.get(t.symbol), sprint_desk=sprint_desk
             )
+            # Tag whether mark came from a live refresh
+            ev["live_mark"] = live_ok
             holds.append(ev)
             if auto_exit and ev["action"] == "EXIT":
-                out = self.exit_trade(t.id, exit_bid=float(ev["mark"]), reason=ev["detail"])
+                exit_bid = float(ev["mark"])
+                reason = str(ev["detail"] or "EXIT")
+                # Never silently book $0 P&L at entry ask without saying so
+                if (
+                    t.entry_ask is not None
+                    and abs(exit_bid - float(t.entry_ask)) < 1e-9
+                    and not live_ok
+                ):
+                    reason = f"{reason} · exit priced at entry (no live bid/mark)"
+                out = self.exit_trade(t.id, exit_bid=exit_bid, reason=reason)
                 if out:
                     exited.append(out.id)
 
