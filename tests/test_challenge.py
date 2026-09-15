@@ -424,3 +424,94 @@ def test_tracker_enter_hold_exit_call_and_put(tmp_path):
     assert sprint.hold_min_days == 1
     assert sprint.hold_max_days == 3
     assert 1.5 <= sprint.target_premium_mult <= 2.0
+
+
+def test_sync_exits_with_live_mark_not_flat_entry(tmp_path):
+    """Max-hold EXIT must book live bid P&L — not silently $0 at entry ask."""
+    path = tmp_path / "challenge_ledger.json"
+    tr = ChallengeTracker(path, starting_cash=1000)
+    ticket = {
+        "action": "ENTRY",
+        "symbol": "TSLA",
+        "right": "C",
+        "ask": 2.0,
+        "contract": "TSLA260918C00250000",
+        "expiry": "2026-09-18",
+        "strike": 250,
+        "horizon": "sprint",
+        "hold_style": "sprint",
+        "dte": 3,
+        "spot": 245,
+        "target_premium_mult": 1.75,
+        "contracts_for_bankroll": 1,
+        "thesis": "sprint",
+        "hold_min_days": 1,
+        "hold_max_days": 3,
+        "hold_ideal_days": 2,
+    }
+    entered = tr.enter(ticket)
+    assert entered is not None
+    # Force past max hold
+    from datetime import datetime, timedelta, timezone
+    entered.entered_at = (datetime.now(timezone.utc) - timedelta(days=4)).isoformat()
+    tr.save()
+
+    # Ticket still carries stale bid=entry (the old bug path)
+    stale = {
+        "symbol": "TSLA",
+        "right": "C",
+        "action": "HOLD",
+        "bid": 2.0,
+        "ask": 2.0,
+        "contract": entered.contract,
+    }
+    sync = tr.sync_from_tickets(
+        [stale],
+        auto_enter=False,
+        auto_exit=True,
+        sprint_desk=True,
+        live_marks={entered.id: 3.4},  # live bid up +70%
+    )
+    assert sync["exited"] == [entered.id]
+    closed = next(x for x in tr.book.trades if x.id == entered.id)
+    assert closed.status == "closed"
+    assert closed.exit_bid == 3.4
+    assert closed.pnl_usd == 140.0  # (3.4-2)*100
+    assert closed.profit_pct == 70.0
+
+
+def test_sync_annotates_flat_exit_without_live_mark(tmp_path):
+    path = tmp_path / "challenge_ledger.json"
+    tr = ChallengeTracker(path, starting_cash=1000)
+    ticket = {
+        "action": "ENTRY",
+        "symbol": "AMD",
+        "right": "P",
+        "ask": 1.5,
+        "contract": "AMD260918P00150000",
+        "expiry": "2026-09-18",
+        "strike": 150,
+        "horizon": "sprint",
+        "hold_style": "sprint",
+        "dte": 2,
+        "spot": 155,
+        "target_premium_mult": 1.75,
+        "hold_min_days": 1,
+        "hold_max_days": 3,
+        "hold_ideal_days": 2,
+    }
+    entered = tr.enter(ticket)
+    from datetime import datetime, timedelta, timezone
+    entered.entered_at = (datetime.now(timezone.utc) - timedelta(days=4)).isoformat()
+    tr.save()
+    sync = tr.sync_from_tickets(
+        [{"symbol": "AMD", "right": "P", "bid": 1.5, "ask": 1.5}],
+        auto_enter=False,
+        auto_exit=True,
+        sprint_desk=True,
+        live_marks={},
+    )
+    assert sync["exited"] == [entered.id]
+    closed = next(x for x in tr.book.trades if x.id == entered.id)
+    assert closed.pnl_usd == 0.0
+    assert "no live bid" in (closed.exit_reason or "").lower()

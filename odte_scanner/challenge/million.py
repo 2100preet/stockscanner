@@ -364,7 +364,8 @@ def select_leap_option(
     itm_pct_max: float = 2.0,
     max_ask: float = 80.0,
     min_oi: int = 200,
-    min_volume: int = 25,
+    min_volume: int = 100,
+    allow_zero_volume_if_oi: int = 0,
 ) -> dict[str, Any] | None:
     """Pick a liquid challenge call or put — slight OTM, short-dated by default.
 
@@ -394,6 +395,7 @@ def select_leap_option(
             prefer_dte=prefer_dte,
             min_volume=min_volume,
             min_oi=min_oi,
+            allow_zero_volume_if_oi=allow_zero_volume_if_oi,
         )
         if picked and picked.get("ask") and float(picked["ask"]) <= max_ask:
             # Final liquidity check
@@ -731,10 +733,13 @@ def build_challenge_board(
     current_equity: float | None = None,
     sprint_desk: bool = True,
     min_dte: int = 1,
-    max_dte: int = 10,
-    prefer_dte: int = 5,
+    max_dte: int = 7,
+    prefer_dte: int = 3,
     target_premium_min: float = 1.5,
     target_premium_max: float = 2.0,
+    min_option_volume: int = 100,
+    min_option_oi: int = 200,
+    allow_zero_volume_if_oi: int = 0,
 ) -> dict[str, Any]:
     quotes = quotes or {}
     aliases = aliases or {}
@@ -877,8 +882,9 @@ def build_challenge_board(
                     max_dte=pick_max_dte,
                     prefer_dte=pick_prefer_dte,
                     otm_pct_max=otm_cap,
-                    min_oi=200,
-                    min_volume=25,
+                    min_oi=int(min_option_oi),
+                    min_volume=int(min_option_volume),
+                    allow_zero_volume_if_oi=int(allow_zero_volume_if_oi),
                 )
                 chain_fetches += 1
                 # Prefer live spot from option quote payload when present
@@ -891,14 +897,22 @@ def build_challenge_board(
                             quote_asof = datetime.now(timezone.utc).isoformat()
                     except Exception:  # noqa: BLE001
                         pass
-                # Drop illiquid picks — never recommend 0-volume shells
+                # Drop illiquid picks — sprint desk requires real day volume
                 if contract:
                     vol_i = int(contract.get("volume") or 0)
                     oi_i = int(contract.get("open_interest") or 0)
-                    if vol_i <= 0 and oi_i < 5000:
+                    bid_i = float(contract.get("bid") or 0)
+                    if sprint_desk:
+                        if vol_i < int(min_option_volume) or oi_i < int(min_option_oi) or bid_i <= 0:
+                            logger.info(
+                                "skip thin sprint %s vol=%s oi=%s bid=%s",
+                                sym, vol_i, oi_i, bid_i,
+                            )
+                            contract = None
+                    elif vol_i <= 0 and oi_i < max(int(allow_zero_volume_if_oi), 5000):
                         logger.info("skip illiquid %s vol=%s oi=%s", sym, vol_i, oi_i)
                         contract = None
-                    elif vol_i < 25 and oi_i < 200:
+                    elif vol_i < int(min_option_volume) and oi_i < int(min_option_oi):
                         contract = None
             except Exception as exc:  # noqa: BLE001
                 logger.debug("challenge contract fetch %s: %s", sym, exc)
@@ -913,7 +927,51 @@ def build_challenge_board(
                 contract["dte"] = dte
             contract["mark_source"] = "zone"
             if open_t:
-                # Prefer live open trade contract fields
+                # Start from ledger, then refresh the *held* contract bid/last when possible
+                live_bid = None
+                live_ask = None
+                live_last = None
+                live_vol = None
+                live_oi = None
+                if (
+                    fetch_contracts
+                    and open_t.get("expiry")
+                    and open_t.get("strike") is not None
+                    and chain_fetches < max_chain_fetches
+                ):
+                    try:
+                        from odte_scanner.options.live_chain import fetch_live_option_quote
+
+                        oq = fetch_live_option_quote(
+                            sym,
+                            str(open_t.get("expiry")),
+                            float(open_t.get("strike")),
+                            yahoo_symbol=aliases.get(sym),
+                            right="put" if right == "P" else "call",
+                        )
+                        chain_fetches += 1
+                        if oq:
+                            live_bid = float(oq.bid) if oq.bid and float(oq.bid) > 0 else None
+                            live_ask = float(oq.ask) if oq.ask and float(oq.ask) > 0 else None
+                            live_last = float(oq.last) if oq.last and float(oq.last) > 0 else None
+                            live_vol = int(oq.volume or 0)
+                            live_oi = int(oq.open_interest or 0)
+                            if oq.spot:
+                                spot = float(oq.spot)
+                                spot_source = "live"
+                                live_ok = True
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("open mark refresh %s: %s", sym, exc)
+                # Never prefer stale entry ask as a "bid" when we have no live print
+                stale_mark = open_t.get("mark")
+                if (
+                    stale_mark is not None
+                    and open_t.get("entry_ask") is not None
+                    and abs(float(stale_mark) - float(open_t["entry_ask"])) < 1e-9
+                    and live_bid is None
+                    and live_last is None
+                ):
+                    stale_mark = None
                 contract = {
                     "contract": open_t.get("contract"),
                     "right": open_t.get("right") or right,
@@ -921,11 +979,13 @@ def build_challenge_board(
                     "dte": open_t.get("dte_at_entry"),
                     "strike": open_t.get("strike"),
                     "spot": spot,
-                    "bid": open_t.get("mark") or open_t.get("exit_bid"),
-                    "ask": open_t.get("entry_ask"),
+                    "bid": live_bid if live_bid is not None else stale_mark,
+                    "ask": live_ask if live_ask is not None else open_t.get("entry_ask"),
+                    "last": live_last,
+                    "mark_source": "bid" if live_bid else ("last" if live_last else "ledger"),
                     "moneyness_pct": None,
-                    "open_interest": None,
-                    "volume": None,
+                    "open_interest": live_oi,
+                    "volume": live_vol,
                 }
 
         # Refresh hold period with DTE (short-dated → sprint)
@@ -1356,7 +1416,7 @@ def build_challenge_board(
             ),
         },
         "rules": [
-            "Sprint desk: short-dated calls/puts (≈1–10 DTE), hold ~1–3 days — not multi-month LEAPs.",
+            "Sprint desk: liquid short-dated calls/puts (≈1–7 DTE, real day volume), hold ~1–3 days — not LEAPs.",
             "Hist-win filter: prefer 100% (n≥3), else ≥80% (n≥5) on weekly/swing quality signals.",
             "Auto paper ENTER when an ENTRY ticket has a live listed ask + contract; cash/equity update on each ENTER/EXIT.",
             "Without listed asks the sleeve stays WAIT — that is why a dormant auto_enter=false desk sits at $1,000.",

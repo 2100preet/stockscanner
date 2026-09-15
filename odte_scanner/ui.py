@@ -517,7 +517,7 @@ PAGE = r"""
     <section class="tabpane" id="tab-challenge">
       <h2>$1,000 → $1,000,000 challenge</h2>
       <p class="lede">
-        Sprint desk: target <strong>~50–100%</strong> premium in about <strong>1–3 days</strong> on short-dated tickets. Path still tracks a <strong>4-month → $500k</strong> pace
+        Sprint desk: target <strong>~50–100%</strong> premium in about <strong>1–3 days</strong> on <strong>liquid</strong> short-dated puts/calls (real volume + live exit marks). Path still tracks a <strong>4-month → $500k</strong> pace
         on the way to $1M. Sure-shot hist filter (prefer <strong>100% hist win</strong>, else ≥80% n≥5).
         Status: <strong>ENTRY · HOLD · EXIT</strong>. After each Paper ENTER/EXIT the sleeve
         <strong>cash &amp; equity balance</strong> updates so you know where you are.
@@ -4122,9 +4122,19 @@ def create_app(config_path: str | None = None) -> Flask:
                 ch_path,
                 starting_cash=float(actions_cfg.get("challenge_start_usd", 1000)),
             )
+            # Live option marks BEFORE evaluate/EXIT — otherwise exits book at entry ($0 P&L)
+            fetch_ch_contracts = bool(actions_cfg.get("challenge_fetch_contracts", True)) and (
+                (not offline) or bool(actions_cfg.get("challenge_fetch_contracts_offline", True))
+            )
+            ch_live_marks: dict = {}
+            if fetch_ch_contracts and tracker.open_trades():
+                for t in tracker.open_trades():
+                    aliases.setdefault(t.symbol, resolve_yahoo_symbol(t.symbol, cfg))
+                ch_live_marks = tracker.refresh_open_marks(aliases=aliases)
             # Pre-evaluate opens so board sees HOLD/EXIT
             for t in tracker.open_trades():
-                tracker.evaluate_open(t, mark=t.mark, quote=quotes.get(t.symbol))
+                mark = ch_live_marks.get(t.id) or ch_live_marks.get(t.contract) or t.mark
+                tracker.evaluate_open(t, mark=mark, quote=quotes.get(t.symbol))
             tracker.save()
 
             # Seed walls from Echo DealerEdge profiles (already fetched ladders)
@@ -4155,9 +4165,6 @@ def create_app(config_path: str | None = None) -> Flask:
 
             # $1k→$1M sleeve needs listed asks to flip ENTRY; Pages was stuck at $1k
             # because fetch_contracts was hard-disabled and auto_enter was false.
-            fetch_ch_contracts = bool(actions_cfg.get("challenge_fetch_contracts", True)) and (
-                (not offline) or bool(actions_cfg.get("challenge_fetch_contracts_offline", True))
-            )
             challenge = build_challenge_board(
                 win_table=win_table if isinstance(win_table, dict) else None,
                 scores=scan.get("scores") or [],
@@ -4176,16 +4183,22 @@ def create_app(config_path: str | None = None) -> Flask:
                 walls_map=echo_walls,
                 sprint_desk=bool(actions_cfg.get("challenge_sprint_desk", True)),
                 min_dte=int(actions_cfg.get("challenge_min_dte", 1)),
-                max_dte=int(actions_cfg.get("challenge_max_dte", 10)),
-                prefer_dte=int(actions_cfg.get("challenge_prefer_dte", 5)),
+                max_dte=int(actions_cfg.get("challenge_max_dte", 7)),
+                prefer_dte=int(actions_cfg.get("challenge_prefer_dte", 3)),
                 target_premium_min=float(actions_cfg.get("challenge_target_premium_min", 1.5)),
                 target_premium_max=float(actions_cfg.get("challenge_target_premium_max", 2.0)),
+                min_option_volume=int(actions_cfg.get("challenge_min_option_volume", 100)),
+                min_option_oi=int(actions_cfg.get("challenge_min_option_oi", 200)),
+                allow_zero_volume_if_oi=int(actions_cfg.get("challenge_allow_zero_volume_if_oi", 0)),
             )
             live_contracts = {
                 (str(t.get("symbol")), str(t.get("right") or "C")): t
                 for t in (challenge.get("tickets") or [])
                 if t.get("ask") is not None or t.get("contract") or t.get("call_wall") is not None
             }
+            # Refresh marks again right before EXIT sync (board may have open bid)
+            if fetch_ch_contracts and tracker.open_trades():
+                ch_live_marks = {**ch_live_marks, **tracker.refresh_open_marks(aliases=aliases)}
             sync = tracker.sync_from_tickets(
                 challenge.get("tickets") or [],
                 quotes=quotes,
@@ -4193,6 +4206,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 auto_exit=bool(actions_cfg.get("challenge_auto_exit", True)),
                 max_open=int(actions_cfg.get("challenge_max_open", 1)),
                 sprint_desk=bool(actions_cfg.get("challenge_sprint_desk", True)),
+                live_marks=ch_live_marks,
             )
             challenge["sync"] = sync
             challenge["book"] = sync.get("book") or tracker.book.to_dict()
@@ -4215,10 +4229,13 @@ def create_app(config_path: str | None = None) -> Flask:
                 walls_map=challenge.get("walls_map") or echo_walls,
                 sprint_desk=bool(actions_cfg.get("challenge_sprint_desk", True)),
                 min_dte=int(actions_cfg.get("challenge_min_dte", 1)),
-                max_dte=int(actions_cfg.get("challenge_max_dte", 10)),
-                prefer_dte=int(actions_cfg.get("challenge_prefer_dte", 5)),
+                max_dte=int(actions_cfg.get("challenge_max_dte", 7)),
+                prefer_dte=int(actions_cfg.get("challenge_prefer_dte", 3)),
                 target_premium_min=float(actions_cfg.get("challenge_target_premium_min", 1.5)),
                 target_premium_max=float(actions_cfg.get("challenge_target_premium_max", 2.0)),
+                min_option_volume=int(actions_cfg.get("challenge_min_option_volume", 100)),
+                min_option_oi=int(actions_cfg.get("challenge_min_option_oi", 200)),
+                allow_zero_volume_if_oi=int(actions_cfg.get("challenge_allow_zero_volume_if_oi", 0)),
             )
             for t in challenge.get("tickets") or []:
                 prev = live_contracts.get((str(t.get("symbol")), str(t.get("right") or "C")))
