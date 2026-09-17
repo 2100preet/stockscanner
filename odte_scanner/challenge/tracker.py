@@ -206,11 +206,38 @@ class ChallengeTracker:
                 return t
         return None
 
+    def recent_loss_symbols(self, *, cooldown_days: int = 5) -> set[str]:
+        """Symbols with a losing closed flip inside the cooldown window."""
+        if cooldown_days <= 0:
+            return set()
+        now = datetime.now(timezone.utc)
+        blocked: set[str] = set()
+        for t in self.book.trades:
+            if t.status != "closed" or not t.exited_at:
+                continue
+            try:
+                exited = datetime.fromisoformat(t.exited_at.replace("Z", "+00:00"))
+            except Exception:  # noqa: BLE001
+                continue
+            age_days = (now - exited).total_seconds() / 86400.0
+            if age_days > float(cooldown_days):
+                continue
+            lost = False
+            if t.pnl_usd is not None and float(t.pnl_usd) < 0:
+                lost = True
+            if t.profit_pct is not None and float(t.profit_pct) < 0:
+                lost = True
+            if lost:
+                blocked.add(str(t.symbol).upper())
+        return blocked
+
     def enter(
         self,
         ticket: dict[str, Any],
         *,
         max_open: int = 1,
+        loss_cooldown_days: int = 5,
+        max_cash_frac: float = 0.35,
     ) -> ChallengeTrade | None:
         if ticket.get("action") not in {"ENTRY", "BUY_NOW"}:
             return None
@@ -223,6 +250,16 @@ class ChallengeTracker:
         if self.open_by_symbol_right(symbol, right):
             return None
         if len(self.open_trades()) >= max_open:
+            return None
+        # Do not chase the same loser immediately (e.g. SLV put loop)
+        if symbol.upper() in self.recent_loss_symbols(cooldown_days=loss_cooldown_days):
+            return None
+        # Require a live-looking print (volume or explicit live mark source)
+        vol = ticket.get("volume")
+        if vol is not None and int(vol) <= 0:
+            return None
+        mark_src = str(ticket.get("mark_source") or "")
+        if mark_src in {"zone", "ledger"} and not ticket.get("bid"):
             return None
 
         style = ticket.get("hold_style") or ticket.get("pace_style") or ticket.get("horizon")
@@ -237,7 +274,14 @@ class ChallengeTracker:
                 "label": ticket.get("hold_period_label") or hp["label"],
             }
         contracts = int(ticket.get("contracts_for_bankroll") or 1)
+        # Cap risk: never deploy more than max_cash_frac of cash on one flip
+        frac = float(ticket.get("max_cash_frac") or max_cash_frac or 0.35)
+        frac = min(1.0, max(0.05, frac))
+        max_cost = float(self.book.cash) * frac
         cost = ask * 100 * contracts
+        if cost > max_cost:
+            contracts = max(1, int(max_cost // (ask * 100)))
+            cost = ask * 100 * contracts
         if cost > self.book.cash:
             contracts = max(1, int(self.book.cash // (ask * 100)))
             cost = ask * 100 * contracts
@@ -251,6 +295,8 @@ class ChallengeTracker:
         target_ask = ticket.get("target_ask")
         if target_ask is None:
             target_ask = round(ask * mult, 2)
+        # Sprint flips: cut losers faster so one dog cannot erase a month of compounding
+        stop_pct = float(ticket.get("stop_loss_pct") or (35.0 if hp.get("style") == "sprint" else 45.0))
         side = "CALL" if right == "C" else "PUT"
         enter_plan = ticket.get("enter_plan") or (
             f"ENTER {side} now @ ≤${ask:.2f} · {ticket.get('expiry') or '?'} · "
@@ -258,7 +304,7 @@ class ChallengeTracker:
         )
         exit_plan = ticket.get("exit_plan") or (
             f"EXIT when premium ≥${float(target_ask):.2f} (+{target_pct:.0f}%), "
-            f"or stop −45%, or max hold {hp['max_days']}d"
+            f"or stop −{stop_pct:.0f}%, or max hold {hp['max_days']}d"
         )
         cash_before = round(self.book.cash, 2)
         trade = ChallengeTrade(
@@ -278,6 +324,7 @@ class ChallengeTracker:
             hold_max_days=int(hp["max_days"]),
             hold_ideal_days=int(hp["ideal_days"]),
             target_premium_mult=mult,
+            stop_loss_pct=stop_pct,
             contracts=contracts,
             cost=cost,
             mark=ask,
@@ -377,6 +424,14 @@ class ChallengeTracker:
         if unreal is not None and unreal >= target_pct:
             action = "EXIT"
             reasons.append(f"hit challenge target +{unreal:.0f}% (≥{target_pct:.0f}%)")
+        # 1-month sprint: bank +50% as soon as min hold clears (don't wait for full 78–100%)
+        elif (
+            unreal is not None
+            and unreal >= 50.0
+            and days >= max(0.2, float(trade.hold_min_days or 0) * 0.5)
+        ):
+            action = "EXIT"
+            reasons.append(f"bank sprint +{unreal:.0f}% (≥50%) after min hold")
         if unreal is not None and unreal <= -trade.stop_loss_pct:
             action = "EXIT"
             reasons.append(f"stop −{abs(unreal):.0f}%")
@@ -556,6 +611,8 @@ class ChallengeTracker:
         max_open: int = 1,
         sprint_desk: bool = True,
         live_marks: dict[str, float] | None = None,
+        loss_cooldown_days: int = 5,
+        max_cash_frac: float = 0.35,
     ) -> dict[str, Any]:
         quotes = quotes or {}
         live_marks = live_marks or {}
@@ -631,14 +688,22 @@ class ChallengeTracker:
                 if out:
                     exited.append(out.id)
 
-        # Auto-enter top ENTRY ticket if flat
+        # Auto-enter top ENTRY ticket if flat (skip recent losers / illiquid)
         if auto_enter and len(self.open_trades()) < max_open:
+            blocked = self.recent_loss_symbols(cooldown_days=loss_cooldown_days)
             for tk in tickets:
                 if tk.get("action") != "ENTRY":
                     continue
                 if not tk.get("contract") or tk.get("ask") in (None, 0):
                     continue
-                tr = self.enter(tk, max_open=max_open)
+                if str(tk.get("symbol") or "").upper() in blocked:
+                    continue
+                tr = self.enter(
+                    tk,
+                    max_open=max_open,
+                    loss_cooldown_days=loss_cooldown_days,
+                    max_cash_frac=max_cash_frac,
+                )
                 if tr:
                     entered.append(tr.id)
                     break

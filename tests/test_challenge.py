@@ -515,3 +515,163 @@ def test_sync_annotates_flat_exit_without_live_mark(tmp_path):
     closed = next(x for x in tr.book.trades if x.id == entered.id)
     assert closed.pnl_usd == 0.0
     assert "no live bid" in (closed.exit_reason or "").lower()
+
+
+def test_compound_path_15_flips_1mo_pace():
+    p = compound_path(start_usd=1000, target_usd=1_000_000, flips=15)
+    assert 55 <= p["pct_per_flip"] <= 65  # ~58%
+    assert p["schedule"][-1]["equity"] >= 999_000
+
+
+def test_time_boxed_path_1mo_1m_sprint():
+    pace = time_boxed_path(
+        start_usd=1000,
+        milestone_usd=1_000_000,
+        target_usd=1_000_000,
+        months=1,
+        ideal_hold_days=2,
+    )
+    assert pace["style"] == "sprint"
+    assert pace["flips_in_window"] >= 14
+    assert pace["milestone"]["pct_per_flip"] > 50
+    assert pace["schedule"][-1]["hit_milestone"] is True
+    assert "1-month" in pace["note"] or "1-month" in pace["note"].replace(" ", "") or "1" in pace["note"]
+
+
+def test_side_from_tape_sprint_needs_dump_for_puts():
+    # Weak bearish without dump → call on sprint desk (stops SLV-put grind-up loop)
+    assert (
+        _side_from_tape(
+            score={"ensemble_score": 44, "bullish": False},
+            quote={"mom_5m_pct": -0.05, "session_change_pct": -0.2},
+            sprint=True,
+        )
+        == "C"
+    )
+    # Clear dump → put
+    assert (
+        _side_from_tape(
+            score={"ensemble_score": 40, "bullish": False},
+            quote={"mom_5m_pct": -0.4, "session_change_pct": -1.5},
+            sprint=True,
+        )
+        == "P"
+    )
+
+
+def test_loss_cooldown_blocks_reentry(tmp_path):
+    ledger = tmp_path / "ch.json"
+    tr = ChallengeTracker(ledger, starting_cash=1000)
+    ticket = {
+        "action": "ENTRY",
+        "symbol": "SLV",
+        "right": "P",
+        "ask": 2.0,
+        "contract": "SLV260918P00028000",
+        "expiry": "2026-09-18",
+        "strike": 28,
+        "horizon": "sprint",
+        "hold_style": "sprint",
+        "dte": 3,
+        "spot": 30,
+        "target_premium_mult": 1.75,
+        "contracts_for_bankroll": 1,
+    }
+    entered = tr.enter(ticket)
+    assert entered is not None
+    out = tr.exit_trade(entered.id, exit_bid=0.8, reason="stop")
+    assert out is not None and out.pnl_usd < 0
+    blocked = tr.recent_loss_symbols(cooldown_days=5)
+    assert "SLV" in blocked
+    again = tr.enter(ticket, loss_cooldown_days=5)
+    assert again is None
+
+
+def test_max_cash_frac_caps_contracts(tmp_path):
+    ledger = tmp_path / "ch.json"
+    tr = ChallengeTracker(ledger, starting_cash=1000)
+    ticket = {
+        "action": "ENTRY",
+        "symbol": "NVDA",
+        "right": "C",
+        "ask": 2.0,
+        "contract": "NVDA260918C00180000",
+        "expiry": "2026-09-18",
+        "strike": 180,
+        "horizon": "sprint",
+        "hold_style": "sprint",
+        "dte": 2,
+        "spot": 175,
+        "target_premium_mult": 1.75,
+        "contracts_for_bankroll": 10,  # would be $2000 without cap
+    }
+    entered = tr.enter(ticket, max_cash_frac=0.35)
+    assert entered is not None
+    assert entered.contracts == 1  # 35% of 1000 = $350 → 1 contract @ $200
+    assert entered.cost == 200.0
+
+
+def test_bank_sprint_50pct_after_min_hold(tmp_path):
+    ledger = tmp_path / "ch.json"
+    tr = ChallengeTracker(ledger, starting_cash=1000)
+    ticket = {
+        "action": "ENTRY",
+        "symbol": "AAPL",
+        "right": "C",
+        "ask": 2.0,
+        "contract": "AAPL260918C00200000",
+        "expiry": "2026-09-18",
+        "strike": 200,
+        "horizon": "sprint",
+        "hold_style": "sprint",
+        "dte": 2,
+        "spot": 198,
+        "target_premium_mult": 1.9,  # +90% full target
+        "hold_min_days": 1,
+        "hold_max_days": 3,
+        "hold_ideal_days": 2,
+    }
+    entered = tr.enter(ticket)
+    assert entered is not None
+    entered.entered_at = (datetime.now(timezone.utc) - timedelta(hours=14)).isoformat()
+    tr.save()
+    ev = tr.evaluate_open(entered, mark=3.1, quote={}, sprint_desk=True)  # +55%
+    assert ev["action"] == "EXIT"
+    assert "bank sprint" in ev["detail"].lower() or "50" in ev["detail"]
+
+
+def test_board_waits_loss_cooldown_symbols():
+    win_table = {
+        "symbols": {
+            "SLV": {
+                "swing": {
+                    "win_pct": 100.0,
+                    "trades": 6,
+                    "wins": 6,
+                    "hit_1pct": 80.0,
+                    "hit_2pct": 60.0,
+                }
+            }
+        }
+    }
+    board = build_challenge_board(
+        win_table=win_table,
+        scores=[
+            {"symbol": "SLV", "horizon": "swing", "ensemble_score": 70, "quality": True, "last_price": 28}
+        ],
+        quotes={"SLV": {"last": 28, "mom_5m_pct": 0.2}},
+        fetch_contracts=False,
+        fetch_earnings=False,
+        flips=15,
+        pace_months=1.0,
+        pace_milestone_usd=1_000_000,
+        loss_cooldown_symbols={"SLV"},
+    )
+    assert board["path"]["flips"] == 15
+    assert board["pace"]["months"] == 1
+    t0 = board["tickets"][0]
+    assert t0["symbol"] == "SLV"
+    assert t0["action"] == "WAIT"
+    assert "cooldown" in (t0.get("status_detail") or t0.get("detail") or "").lower() or any(
+        "cooldown" in r.lower() for r in (t0.get("reasons") or [])
+    )

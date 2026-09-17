@@ -116,7 +116,7 @@ def compound_path(
     *,
     start_usd: float = 1000.0,
     target_usd: float = 1_000_000.0,
-    flips: int = 12,
+    flips: int = 15,
 ) -> dict[str, Any]:
     if flips <= 0 or start_usd <= 0:
         return {"flips": flips, "mult_per_flip": None, "pct_per_flip": None, "schedule": []}
@@ -220,7 +220,7 @@ def time_boxed_path(
         "months": months,
         "days": round(days, 1),
         "ideal_hold_days": ideal_hold_days,
-        "style": "weekly" if ideal_hold_days <= 14 else ("leap" if ideal_hold_days >= 50 else "swing"),
+        "style": ("sprint" if ideal_hold_days <= 3 else "weekly" if ideal_hold_days <= 14 else ("leap" if ideal_hold_days >= 50 else "swing")),
         "current_equity": round(equity, 2),
         "flips_in_window": flips_in_window,
         "milestone": milestone,
@@ -315,8 +315,13 @@ def _side_from_tape(
     *,
     score: dict[str, Any] | None,
     quote: dict[str, Any] | None,
+    sprint: bool = False,
 ) -> str:
-    """Return C (call) or P (put) from ensemble + live tape."""
+    """Return C (call) or P (put) from ensemble + live tape.
+
+    Sprint desk: puts need a clear dump confirmation. Weak "bearish quality"
+    alone (e.g. ensemble ~44) kept buying SLV puts into grind-ups.
+    """
     sc = score or {}
     q = quote or {}
     ens = float(sc.get("ensemble_score") or 0)
@@ -348,6 +353,14 @@ def _side_from_tape(
             bear_votes += 1
         elif float(live) >= 0.6:
             bull_votes += 1
+    if sprint:
+        # Require decisive dump for puts; default to calls in chop / weak bearish
+        dump = (mom5 is not None and float(mom5) <= -0.25) or (
+            live is not None and float(live) <= -0.8
+        )
+        if bear_votes > bull_votes and dump:
+            return "P"
+        return "C"
     return "P" if bear_votes > bull_votes else "C"
 
 
@@ -727,19 +740,20 @@ def build_challenge_board(
     fetch_walls: bool = True,
     wall_buffer_usd: float = WALL_EXIT_BUFFER_USD,
     walls_map: dict[str, dict[str, Any]] | None = None,
-    pace_months: float = 4.0,
-    pace_milestone_usd: float = 500_000.0,
+    pace_months: float = 1.0,
+    pace_milestone_usd: float = 1_000_000.0,
     prefer_weekly_pace: bool = True,
     current_equity: float | None = None,
     sprint_desk: bool = True,
     min_dte: int = 1,
-    max_dte: int = 7,
-    prefer_dte: int = 3,
+    max_dte: int = 5,
+    prefer_dte: int = 2,
     target_premium_min: float = 1.5,
     target_premium_max: float = 2.0,
     min_option_volume: int = 100,
     min_option_oi: int = 200,
     allow_zero_volume_if_oi: int = 0,
+    loss_cooldown_symbols: set[str] | list[str] | None = None,
 ) -> dict[str, Any]:
     quotes = quotes or {}
     aliases = aliases or {}
@@ -749,6 +763,12 @@ def build_challenge_board(
         (str(t.get("symbol")), str(t.get("right") or "C").upper()): t
         for t in open_trades
         if t.get("status", "open") == "open"
+    }
+    cooldown = {str(s).upper() for s in (loss_cooldown_symbols or [])}
+    # Mega-liquid names preferred for 1-month sprint compounding
+    liquid_boost = {
+        "SPY", "QQQ", "IWM", "TSLA", "NVDA", "AAPL", "MSFT", "META", "AMZN",
+        "GOOGL", "AMD", "NFLX", "AVGO", "COST", "PLTR", "MU", "SMCI",
     }
 
     score_map: dict[str, dict[str, Any]] = {}
@@ -842,7 +862,7 @@ def build_challenge_board(
             spot_source = "scan"
         live_ok = spot_source == "live"
 
-        right = _side_from_tape(score=sc, quote=q)
+        right = _side_from_tape(score=sc, quote=q, sprint=sprint_desk)
         horizon = str(row.get("horizon") or "swing")
         # Sprint desk: never force LEAPs — wait through earnings prints instead
         prefer_leap = bool(earn.get("prefer_leap")) and not sprint_desk
@@ -1063,6 +1083,9 @@ def build_challenge_board(
         elif len(open_map) > 0:
             action = "WAIT"
             status_detail = "WAIT — challenge sleeve already has an open flip (max 1)"
+        elif sym.upper() in cooldown:
+            action = "WAIT"
+            status_detail = f"WAIT — {sym} on loss cooldown (do not re-chase losers)"
         elif (earn.get("window") == "earnings_day") and not open_t:
             action = "WAIT"
             status_detail = "WAIT — earnings day; skip new long-premium ENTRY"
@@ -1092,7 +1115,11 @@ def build_challenge_board(
         if fits_4mo:
             reasons.insert(
                 3,
-                f"4mo→${pace_milestone_usd/1000:.0f}k pace: need ~{pace_pct:.0f}%/flip on weekly-style ticket",
+                (
+                    f"1mo→$1M pace: need ~{pace_pct:.0f}%/flip on sprint ticket"
+                    if float(pace_months) <= 1.5
+                    else f"4mo→${pace_milestone_usd/1000:.0f}k pace: need ~{pace_pct:.0f}%/flip on weekly-style ticket"
+                ),
             )
         if spot_source == "live":
             reasons.append(f"Live spot ${spot:.2f}" + (f" @ {quote_asof}" if quote_asof else ""))
@@ -1325,6 +1352,9 @@ def build_challenge_board(
     tickets.sort(
         key=lambda t: (
             rank_action.get(t.action, 9),
+            0 if t.symbol.upper() not in cooldown else 1,
+            0 if t.symbol.upper() in liquid_boost else 1,
+            0 if (t.volume or 0) >= 500 else 1 if (t.volume or 0) >= 100 else 2,
             0 if t.fits_4mo_500k else 1,
             0 if t.pace_style in {"weekly", "sprint"} else 1,
             -earn_boosts.get(t.symbol, 0),
@@ -1416,7 +1446,7 @@ def build_challenge_board(
             ),
         },
         "rules": [
-            "Sprint desk: liquid short-dated calls/puts (≈1–7 DTE, real day volume), hold ~1–3 days — not LEAPs.",
+            "1-month sprint: liquid short-dated calls/puts (≈1–5 DTE, real day volume), hold ~1–3 days — compound toward $1M.",
             "Hist-win filter: prefer 100% (n≥3), else ≥80% (n≥5) on weekly/swing quality signals.",
             "Auto paper ENTER when an ENTRY ticket has a live listed ask + contract; cash/equity update on each ENTER/EXIT.",
             "Without listed asks the sleeve stays WAIT — that is why a dormant auto_enter=false desk sits at $1,000.",
@@ -1427,6 +1457,9 @@ def build_challenge_board(
             "Hold periods: sprint 1–3d · weekly 5–14d · swing 20–60d · LEAP 30–90d — EXIT at target, stop, or max hold.",
             f"Each flip targets ~50–100% option premium (clamped; path math ~{primary_path['pct_per_flip']:.0f}%); then EXIT and roll.",
             "Long-dated opens are auto-retired so cash can re-enter 1–3d sprint tickets.",
+            "After a losing flip, that symbol is blocked ~5d — no SLV-put death loops.",
+            "Bank +50% early on sprint tickets; cap each ENTRY to ~35% of cash.",
+            "Puts need a clear dump confirmation; weak bearish scores default to calls.",
             "Status updates: ENTRY (new), HOLD (open inside window), EXIT (target/stop/time).",
             "Max 1 open challenge flip at a time. Research / paper only.",
         ],
