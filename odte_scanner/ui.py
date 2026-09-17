@@ -517,8 +517,8 @@ PAGE = r"""
     <section class="tabpane" id="tab-challenge">
       <h2>$1,000 → $1,000,000 challenge</h2>
       <p class="lede">
-        Sprint desk: target <strong>~50–100%</strong> premium in about <strong>1–3 days</strong> on <strong>liquid</strong> short-dated puts/calls (real volume + live exit marks). Path still tracks a <strong>4-month → $500k</strong> pace
-        on the way to $1M. Sure-shot hist filter (prefer <strong>100% hist win</strong>, else ≥80% n≥5).
+        Goal: <strong>$1k → $1M in ~1 month</strong> via sprint flips (~15× @ ~2d, target <strong>+50–100%</strong>) on <strong>liquid</strong> short-dated puts/calls. Loss-cooldown stops re-chasing the same loser.
+        Sure-shot hist filter (prefer <strong>100% hist win</strong>, else ≥80% n≥5).
         Status: <strong>ENTRY · HOLD · EXIT</strong>. After each Paper ENTER/EXIT the sleeve
         <strong>cash &amp; equity balance</strong> updates so you know where you are.
         <em>Hist 100% ≠ guaranteed future wins — options can go to zero.</em>
@@ -1702,11 +1702,10 @@ PAGE = r"""
       if (metrics) metrics.innerHTML = [
         m("Sleeve cash", book.cash!=null?`$${Number(book.cash).toLocaleString(undefined,{maximumFractionDigits:0})}`:"—"),
         m("Sleeve equity", book.equity!=null?`$${Number(book.equity).toLocaleString(undefined,{maximumFractionDigits:0})}`:`$${(ch.start_usd||1000).toLocaleString()}`),
-        m("→ $500k", book.milestone_500k_pct!=null?`${fmt(book.milestone_500k_pct,2)}%`:(book.equity!=null?`${fmt((book.equity/500000)*100,2)}%`:"—"), "up"),
         m("→ $1M", book.progress_pct!=null?`${fmt(book.progress_pct,3)}%`:"—", "up"),
-        m("4mo need / flip", paceM.pct_per_flip==null?"—":`+${fmt(paceM.pct_per_flip,0)}%`, "up"),
+        m("1mo need / flip", paceM.pct_per_flip==null?"—":`+${fmt(paceM.pct_per_flip,0)}%`, "up"),
         m("Classic need / flip", path.pct_per_flip==null?"—":`+${fmt(path.pct_per_flip,0)}%`),
-        m("4mo fits", `${c.fits_4mo_500k||0} / weekly ${c.weekly_pace||0}`),
+        m("Sprint fits", `${c.fits_4mo_500k||0} / weekly ${c.weekly_pace||0}`),
         m("ENTRY / HOLD / EXIT", `${c.entry||0} / ${c.hold||0} / ${c.exit||0}`),
         m("Closed flips", `${book.flips_closed||0} (W${book.wins||0}/L${book.losses||0})`),
         m("Earn today / week", `${c.earn_today||0} / ${c.earn_this_week||0}`),
@@ -1771,7 +1770,7 @@ PAGE = r"""
           const kind = act==="EXIT"?"short":(act==="ENTRY"||act==="HOLD"?"long":"wait");
           primaryEl.innerHTML = `<article class="action-card ${kind}">
             <div class="ac-top">
-              <div class="ac-sym">${t0.symbol} <span class="tag">${t0.right==="P"?"PUT":"CALL"}</span> <span class="tag">${(t0.market_cap_tier||"").replace("_","/")}</span> ${earnBadge(t0)} ${spotBadge(t0)}${t0.fits_4mo_500k?` <span class="badge buy">4MO $500k</span>`:""}</div>
+              <div class="ac-sym">${t0.symbol} <span class="tag">${t0.right==="P"?"PUT":"CALL"}</span> <span class="tag">${(t0.market_cap_tier||"").replace("_","/")}</span> ${earnBadge(t0)} ${spotBadge(t0)}${t0.fits_4mo_500k?` <span class="badge buy">1MO $1M</span>`:""}</div>
               <div class="ac-dir ${kind}">${act} · ${tier.toUpperCase()}</div>
             </div>
             <div class="ac-conf">Hist win ${fmt(t0.hist_win_pct,0)}% · n=${t0.hist_samples} · <strong>approx hold ${holdLbl(t0)}</strong></div>
@@ -1938,7 +1937,7 @@ PAGE = r"""
         const sched = pace.schedule || path.schedule || [];
         const balLog = book.balance_log || [];
         pathEl.innerHTML = `
-          <p class="lede" style="margin-top:0"><strong>4-month → $500k pace:</strong> ${pace.note||"—"}</p>
+          <p class="lede" style="margin-top:0"><strong>1-month → $1M pace:</strong> ${pace.note||"—"}</p>
           <p class="lede" style="margin-top:.35rem">${path.note||""}</p>
           <div class="playbook" style="margin-bottom:.55rem">
             ${["sprint","weekly","swing","leap"].map(k=>{
@@ -1947,13 +1946,13 @@ PAGE = r"""
             }).join("")}
             <span class="tag">Prefer sprint 1–3d / 50–100%</span>
           </div>
-          <div class="status" style="margin:.2rem 0 .4rem">4mo compound schedule (sprint ~${pace.ideal_hold_days||2}d holds)</div>
-          <table><thead><tr><th>Flip</th><th>Months</th><th>Equity</th><th>Milestone</th></tr></thead>
+          <div class="status" style="margin:.2rem 0 .4rem">1mo compound schedule (sprint ~${pace.ideal_hold_days||2}d holds)</div>
+          <table><thead><tr><th>Flip</th><th>Days</th><th>Equity</th><th>Milestone</th></tr></thead>
           <tbody>${(sched.slice(0,16)).map(s=>`<tr>
             <td class="mono">${s.flip}</td>
-            <td class="mono">${s.months_elapsed==null?"—":fmt(s.months_elapsed,1)}</td>
+            <td class="mono">${s.months_elapsed==null?"—":fmt((s.months_elapsed||0)*30,0)}</td>
             <td class="mono up"><strong>$${Number(s.equity||0).toLocaleString()}</strong></td>
-            <td class="why">${s.hit_target?"$1M":(s.hit_milestone?"$500k":"—")}</td>
+            <td class="why">${s.hit_target||s.hit_milestone?"$1M":"—"}</td>
           </tr>`).join("")||`<tr><td colspan="4" class="empty">No pace schedule</td></tr>`}</tbody></table>
           <div class="status" style="margin:.75rem 0 .4rem">Classic path flip counts</div>
           <table><thead><tr><th>Flips</th><th>Need / flip</th><th>Multiple / flip</th></tr></thead>
@@ -1994,7 +1993,7 @@ PAGE = r"""
           return `<tr>
           <td><span class="badge ${cls}">${a}</span></td>
           <td class="mono">${t.right==="P"?"PUT":"CALL"}</td>
-          <td><strong>${t.symbol}</strong> ${spotBadge(t)} ${earnBadge(t)}${t.fits_4mo_500k?` <span class="badge buy">4MO $500k</span>`:""}${t.pace_style==="weekly"?` <span class="tag">weekly pace</span>`:""}<div class="why">spot ${t.spot==null?"—":"$"+fmt(t.spot,2)}</div></td>
+          <td><strong>${t.symbol}</strong> ${spotBadge(t)} ${earnBadge(t)}${t.fits_4mo_500k?` <span class="badge buy">1MO $1M</span>`:""}${t.pace_style==="sprint"||t.pace_style==="weekly"?` <span class="tag">${t.pace_style} pace</span>`:""}<div class="why">spot ${t.spot==null?"—":"$"+fmt(t.spot,2)}</div></td>
           <td class="mono"><strong>${t.strike==null?"—":fmt(t.strike,2)}</strong><div class="why">${t.expiry||"—"} · ${t.dte==null?"":t.dte+"d"}</div></td>
           <td class="mono"><span class="up">${t.call_wall==null?"—":fmt(t.call_wall,2)}</span> / <span class="down">${t.put_wall==null?"—":fmt(t.put_wall,2)}</span></td>
           <td class="mono up"><strong>${t.soft_exit==null?"—":"$"+fmt(t.soft_exit,2)}</strong><div class="why">${t.wall_exit_hint||""}</div></td>
@@ -4165,6 +4164,8 @@ def create_app(config_path: str | None = None) -> Flask:
 
             # $1k→$1M sleeve needs listed asks to flip ENTRY; Pages was stuck at $1k
             # because fetch_contracts was hard-disabled and auto_enter was false.
+            loss_cd_days = int(actions_cfg.get("challenge_loss_cooldown_days", 5))
+            loss_cooldown_syms = tracker.recent_loss_symbols(cooldown_days=loss_cd_days)
             challenge = build_challenge_board(
                 win_table=win_table if isinstance(win_table, dict) else None,
                 scores=scan.get("scores") or [],
@@ -4173,8 +4174,8 @@ def create_app(config_path: str | None = None) -> Flask:
                 open_trades=[t.to_dict() for t in tracker.book.trades],
                 start_usd=float(actions_cfg.get("challenge_start_usd", 1000)),
                 target_usd=float(actions_cfg.get("challenge_target_usd", 1_000_000)),
-                flips=int(actions_cfg.get("challenge_flips", 12)),
-                max_tickets=int(actions_cfg.get("challenge_max_tickets", 8)),
+                flips=int(actions_cfg.get("challenge_flips", 15)),
+                max_tickets=int(actions_cfg.get("challenge_max_tickets", 10)),
                 fetch_contracts=fetch_ch_contracts,
                 fetch_earnings=bool(actions_cfg.get("challenge_fetch_earnings", True)) and not offline,
                 earnings_max_fetch=int(actions_cfg.get("challenge_earnings_max_fetch", 36)),
@@ -4183,13 +4184,18 @@ def create_app(config_path: str | None = None) -> Flask:
                 walls_map=echo_walls,
                 sprint_desk=bool(actions_cfg.get("challenge_sprint_desk", True)),
                 min_dte=int(actions_cfg.get("challenge_min_dte", 1)),
-                max_dte=int(actions_cfg.get("challenge_max_dte", 7)),
-                prefer_dte=int(actions_cfg.get("challenge_prefer_dte", 3)),
+                max_dte=int(actions_cfg.get("challenge_max_dte", 5)),
+                prefer_dte=int(actions_cfg.get("challenge_prefer_dte", 2)),
                 target_premium_min=float(actions_cfg.get("challenge_target_premium_min", 1.5)),
                 target_premium_max=float(actions_cfg.get("challenge_target_premium_max", 2.0)),
                 min_option_volume=int(actions_cfg.get("challenge_min_option_volume", 100)),
                 min_option_oi=int(actions_cfg.get("challenge_min_option_oi", 200)),
                 allow_zero_volume_if_oi=int(actions_cfg.get("challenge_allow_zero_volume_if_oi", 0)),
+                loss_cooldown_symbols=loss_cooldown_syms,
+                pace_months=float(actions_cfg.get("challenge_pace_months", 1)),
+                pace_milestone_usd=float(actions_cfg.get("challenge_pace_milestone_usd", 1_000_000)),
+                prefer_weekly_pace=bool(actions_cfg.get("challenge_prefer_weekly_pace", True)),
+                current_equity=float(tracker.book.equity or tracker.book.cash or 1000),
             )
             live_contracts = {
                 (str(t.get("symbol")), str(t.get("right") or "C")): t
@@ -4207,6 +4213,8 @@ def create_app(config_path: str | None = None) -> Flask:
                 max_open=int(actions_cfg.get("challenge_max_open", 1)),
                 sprint_desk=bool(actions_cfg.get("challenge_sprint_desk", True)),
                 live_marks=ch_live_marks,
+                loss_cooldown_days=int(actions_cfg.get("challenge_loss_cooldown_days", 5)),
+                max_cash_frac=float(actions_cfg.get("challenge_max_cash_frac", 0.35)),
             )
             challenge["sync"] = sync
             challenge["book"] = sync.get("book") or tracker.book.to_dict()
@@ -4219,8 +4227,8 @@ def create_app(config_path: str | None = None) -> Flask:
                 open_trades=[t.to_dict() for t in tracker.book.trades],
                 start_usd=float(actions_cfg.get("challenge_start_usd", 1000)),
                 target_usd=float(actions_cfg.get("challenge_target_usd", 1_000_000)),
-                flips=int(actions_cfg.get("challenge_flips", 12)),
-                max_tickets=int(actions_cfg.get("challenge_max_tickets", 8)),
+                flips=int(actions_cfg.get("challenge_flips", 15)),
+                max_tickets=int(actions_cfg.get("challenge_max_tickets", 10)),
                 fetch_contracts=False,
                 fetch_earnings=False,
                 earnings_max_fetch=int(actions_cfg.get("challenge_earnings_max_fetch", 36)),
@@ -4229,13 +4237,18 @@ def create_app(config_path: str | None = None) -> Flask:
                 walls_map=challenge.get("walls_map") or echo_walls,
                 sprint_desk=bool(actions_cfg.get("challenge_sprint_desk", True)),
                 min_dte=int(actions_cfg.get("challenge_min_dte", 1)),
-                max_dte=int(actions_cfg.get("challenge_max_dte", 7)),
-                prefer_dte=int(actions_cfg.get("challenge_prefer_dte", 3)),
+                max_dte=int(actions_cfg.get("challenge_max_dte", 5)),
+                prefer_dte=int(actions_cfg.get("challenge_prefer_dte", 2)),
                 target_premium_min=float(actions_cfg.get("challenge_target_premium_min", 1.5)),
                 target_premium_max=float(actions_cfg.get("challenge_target_premium_max", 2.0)),
                 min_option_volume=int(actions_cfg.get("challenge_min_option_volume", 100)),
                 min_option_oi=int(actions_cfg.get("challenge_min_option_oi", 200)),
                 allow_zero_volume_if_oi=int(actions_cfg.get("challenge_allow_zero_volume_if_oi", 0)),
+                loss_cooldown_symbols=loss_cooldown_syms,
+                pace_months=float(actions_cfg.get("challenge_pace_months", 1)),
+                pace_milestone_usd=float(actions_cfg.get("challenge_pace_milestone_usd", 1_000_000)),
+                prefer_weekly_pace=bool(actions_cfg.get("challenge_prefer_weekly_pace", True)),
+                current_equity=float(tracker.book.equity or tracker.book.cash or 1000),
             )
             for t in challenge.get("tickets") or []:
                 prev = live_contracts.get((str(t.get("symbol")), str(t.get("right") or "C")))
@@ -4882,16 +4895,21 @@ def create_app(config_path: str | None = None) -> Flask:
             open_trades=[t.to_dict() for t in tracker.book.trades],
             start_usd=float(actions_cfg.get("challenge_start_usd", 1000)),
             target_usd=float(actions_cfg.get("challenge_target_usd", 1_000_000)),
-            flips=int(actions_cfg.get("challenge_flips", 12)),
-            max_tickets=int(actions_cfg.get("challenge_max_tickets", 8)),
+            flips=int(actions_cfg.get("challenge_flips", 15)),
+            max_tickets=int(actions_cfg.get("challenge_max_tickets", 10)),
             fetch_contracts=True,
             fetch_earnings=False,
             sprint_desk=bool(actions_cfg.get("challenge_sprint_desk", True)),
             min_dte=int(actions_cfg.get("challenge_min_dte", 1)),
-            max_dte=int(actions_cfg.get("challenge_max_dte", 10)),
-            prefer_dte=int(actions_cfg.get("challenge_prefer_dte", 5)),
+            max_dte=int(actions_cfg.get("challenge_max_dte", 5)),
+            prefer_dte=int(actions_cfg.get("challenge_prefer_dte", 2)),
             target_premium_min=float(actions_cfg.get("challenge_target_premium_min", 1.5)),
             target_premium_max=float(actions_cfg.get("challenge_target_premium_max", 2.0)),
+            loss_cooldown_symbols=tracker.recent_loss_symbols(
+                cooldown_days=int(actions_cfg.get("challenge_loss_cooldown_days", 5))
+            ),
+            pace_months=float(actions_cfg.get("challenge_pace_months", 1)),
+            pace_milestone_usd=float(actions_cfg.get("challenge_pace_milestone_usd", 1_000_000)),
         )
         ticket = next(
             (
@@ -4920,9 +4938,14 @@ def create_app(config_path: str | None = None) -> Flask:
                     },
                 }
             ), 409
-        trade = tracker.enter(ticket, max_open=int(actions_cfg.get("challenge_max_open", 1)))
+        trade = tracker.enter(
+            ticket,
+            max_open=int(actions_cfg.get("challenge_max_open", 1)),
+            loss_cooldown_days=int(actions_cfg.get("challenge_loss_cooldown_days", 5)),
+            max_cash_frac=float(actions_cfg.get("challenge_max_cash_frac", 0.35)),
+        )
         if not trade:
-            return jsonify({"ok": False, "error": "enter rejected (cash/contract/open limit)"}), 409
+            return jsonify({"ok": False, "error": "enter rejected (cash/contract/open limit/cooldown)"}), 409
         return jsonify({"ok": True, "trade": trade.to_dict(), "book": tracker.book.to_dict()})
 
     @app.post("/api/challenge/exit")
