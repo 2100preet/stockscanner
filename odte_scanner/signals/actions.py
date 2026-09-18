@@ -100,6 +100,8 @@ def decide_entry(
     weekly_max_hold_days: int = 7,
     odte_flatten_et: str = "15:45",
     now: datetime | None = None,
+    loss_cooldown_symbols: set[str] | list[str] | None = None,
+    loss_cooldown_contracts: set[str] | list[str] | None = None,
 ) -> ActionSignal:
     """
     Turn a call/put candidate into BUY_NOW / WAIT / HOLD.
@@ -211,6 +213,21 @@ def decide_entry(
             headline=f"HOLD {symbol}",
             detail=f"Already in an open paper {side_lbl} — manage exit, don't pyramid. {plan}",
             **base_kwargs,
+        )
+
+    # Shared loss cooldown (Options BUY NOW must not rebuy recent losers / same OCC)
+    blocked_syms = {str(s).upper() for s in (loss_cooldown_symbols or [])}
+    blocked_ct = {str(c).upper() for c in (loss_cooldown_contracts or [])}
+    occ = str(contract or "").upper()
+    if occ and occ in blocked_ct:
+        return _wait(
+            f"Contract {occ} on loss cooldown — do not rebuy the same losing ticket.",
+            35,
+        )
+    if symbol.upper() in blocked_syms:
+        return _wait(
+            f"{symbol} on loss cooldown — recent losing flip; skip new BUY NOW.",
+            35,
         )
 
     # Never BUY an expired contract (stale Pages snapshot / next-day rebuild).
@@ -760,6 +777,8 @@ def build_action_board(
     flow_min_net_score: float = 8.0,
     flow_min_tier: str = "aggressive",
     flow_require_vol_gt_oi: bool = False,
+    loss_cooldown_symbols: set[str] | list[str] | None = None,
+    loss_cooldown_contracts: set[str] | list[str] | None = None,
 ) -> dict[str, Any]:
     score_by_symbol = {
         str(s.get("symbol")): float(s.get("ensemble_score") or 0) for s in scores or []
@@ -767,6 +786,8 @@ def build_action_board(
     # Journal opens drive auto SELL NOW; paper ledger alone was leaving exits dark
     merged = merge_exit_ledgers(ledger, journal_opens)
     open_trades = list(merged.get("trades") or [])
+    cooldown_syms = {str(s).upper() for s in (loss_cooldown_symbols or [])}
+    cooldown_cts = {str(c).upper() for c in (loss_cooldown_contracts or [])}
     open_symbols = {str(t.get("symbol")) for t in open_trades}
     store = load_signal_store(signal_times_path)
 
@@ -811,6 +832,8 @@ def build_action_board(
             weekly_max_hold_days=weekly_max_hold_days,
             odte_flatten_et=odte_flatten_et,
             now=now,
+            loss_cooldown_symbols=cooldown_syms,
+            loss_cooldown_contracts=cooldown_cts,
         )
         sig = _attach_win_stats(sig, win_rate_table)
         sig = apply_hist_win_gate(
@@ -892,6 +915,8 @@ def build_action_board(
             "odte_flatten_et": odte_flatten_et,
             "weekly_max_hold_days": weekly_max_hold_days,
             "require_live_confirm": require_live_confirm,
+            "loss_cooldown_symbols": sorted(cooldown_syms),
+            "loss_cooldown_contracts": sorted(cooldown_cts)[:40],
             "exit_criteria": [
                 f"take profit ≥ +{take_profit_pct:.0f}% premium",
                 f"stop loss ≤ −{abs(stop_loss_pct):.0f}% premium",

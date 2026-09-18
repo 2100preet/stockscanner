@@ -378,6 +378,9 @@ actions:
   challenge_prefer_weekly_pace: true
   # After a losing flip, do not re-enter that symbol for N days
   challenge_loss_cooldown_days: 5
+  # Options BUY NOW: block symbols after a losing flip; block same OCC longer
+  buy_now_loss_cooldown_days: 5
+  buy_now_contract_cooldown_days: 45
   # Cap each ENTRY to this fraction of cash (avoid all-in lottery)
   challenge_max_cash_frac: 0.35
   challenge_fetch_contracts: true

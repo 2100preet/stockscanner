@@ -224,7 +224,7 @@ PAGE = r"""
 
     <section class="tabpane active" id="tab-nowboard">
       <h2>BUY NOW / SELL NOW — all desks</h2>
-      <p class="lede">Live option BUY NOW / SELL NOW across 0DTE, weeklies, swing, Explosive, ML6, Challenge, and 0DTE $1K IN/OUT. Hist win ≥80% (n≥5) gates most BUY NOW tickets. SETUP rows are quality tape without a contract yet — not a buy.</p>
+      <p class="lede">Live option BUY NOW / SELL NOW across 0DTE, weeklies, swing, Explosive, ML6, Challenge, and 0DTE $1K IN/OUT. Hist win ≥80% (n≥5) gates most BUY NOW tickets. Recent losers (symbol ~5d / same contract ~45d) stay WAIT — not BUY NOW. SETUP rows are quality tape without a contract yet — not a buy.</p>
       <div class="metric-row" id="nowBoardMetrics"></div>
       <p class="lede" id="nowBoardNote" style="margin-top:0;font-size:.76rem"></p>
       <h2>BUY NOW</h2>
@@ -3794,6 +3794,59 @@ def create_app(config_path: str | None = None) -> Flask:
             actions_cfg.get("require_flow_confirm", False)
         )
 
+        # Shared loss cooldown for Options BUY NOW (journal + rec-log + challenge).
+        # Challenge-only cooldown left META weekly losers reappearing on BUY NOW.
+        from odte_scanner.signals.loss_cooldown import (
+            collect_loss_blocks,
+            loss_rows_from_journal_trades,
+            loss_rows_from_rec_log,
+        )
+
+        loss_cd_days = float(
+            actions_cfg.get(
+                "buy_now_loss_cooldown_days",
+                actions_cfg.get("challenge_loss_cooldown_days", 5),
+            )
+        )
+        loss_ct_days = float(actions_cfg.get("buy_now_contract_cooldown_days", 45))
+        loss_rows: list[dict] = []
+        if journal is not None:
+            loss_rows.extend(
+                loss_rows_from_journal_trades([t.to_dict() for t in journal.book.trades])
+            )
+        try:
+            from odte_scanner.trading.rec_log import RecommendationLog
+
+            rec_path_early = Path(actions_cfg.get("rec_log_path", "outputs/recommendation_log.json"))
+            if not rec_path_early.is_absolute():
+                rec_path_early = ROOT / rec_path_early
+            if rec_path_early.exists():
+                rlog_early = RecommendationLog(rec_path_early)
+                loss_rows.extend(loss_rows_from_rec_log(rlog_early.board(limit=200)))
+                by_sec = {}
+                for sec in ("lottery", "weekly", "odte", "swing", "challenge", "odte_1k"):
+                    by_sec[sec] = rlog_early.board(section=sec, limit=80)
+                loss_rows.extend(loss_rows_from_rec_log({"by_section": by_sec}))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("loss cooldown rec-log load failed: %s", exc)
+        try:
+            ch_path = Path(actions_cfg.get("challenge_ledger_path", "outputs/challenge_ledger.json"))
+            if not ch_path.is_absolute():
+                ch_path = ROOT / ch_path
+            ch_raw = _read_json(ch_path) or {}
+            loss_rows.extend(loss_rows_from_journal_trades(ch_raw.get("trades") or []))
+        except Exception:  # noqa: BLE001
+            pass
+        loss_cooldown_syms, loss_cooldown_cts = collect_loss_blocks(
+            loss_rows,
+            cooldown_days=loss_cd_days,
+            contract_cooldown_days=loss_ct_days,
+        )
+        loss_board_kw = dict(
+            loss_cooldown_symbols=loss_cooldown_syms,
+            loss_cooldown_contracts=loss_cooldown_cts,
+        )
+
         actions = build_action_board(
             candidates=refreshed,
             scores=scan.get("scores") or [],
@@ -3817,6 +3870,7 @@ def create_app(config_path: str | None = None) -> Flask:
             require_live_confirm=not offline,
             red_flag=red_flag_snapshot,
             **flow_board_kw,
+            **loss_board_kw,
         )
 
         if journal is not None:
@@ -3862,6 +3916,7 @@ def create_app(config_path: str | None = None) -> Flask:
                     require_live_confirm=not offline,
                     red_flag=red_flag_snapshot,
                     **flow_board_kw,
+                    **loss_board_kw,
                 )
                 more = journal.sync_from_actions(
                     actions,
@@ -4101,6 +4156,7 @@ def create_app(config_path: str | None = None) -> Flask:
                     require_live_confirm=not offline,
                     red_flag=red_flag_snapshot,
                     **flow_board_kw,
+                    **loss_board_kw,
                 )
         except Exception as exc:  # noqa: BLE001
             logger.warning("echo board unavailable: %s", exc)
