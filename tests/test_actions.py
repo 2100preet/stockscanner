@@ -485,3 +485,83 @@ def test_put_hist_gate_blocks_bullish_underlying():
     out = apply_hist_win_gate(sig, min_hist_win_pct=80, min_hist_win_samples=5)
     assert out.action == "WAIT"
     assert "put edge" in out.detail or "rips" in out.detail
+
+
+def test_loss_cooldown_blocks_meta_rebuy():
+    """Regression: META weekly loser must not reappear as BUY NOW."""
+    from odte_scanner.signals.loss_cooldown import collect_loss_blocks
+
+    rows = [
+        {
+            "symbol": "META",
+            "contract": "META260921C00682500",
+            "pnl_usd": -738.0,
+            "profit_pct": -82.92,
+            "status": "closed",
+            "exited_at": "2026-09-14T22:07:38+00:00",
+        }
+    ]
+    now = datetime(2026, 9, 18, 13, 0, tzinfo=ZoneInfo("UTC"))
+    syms, cts = collect_loss_blocks(rows, cooldown_days=5, contract_cooldown_days=45, now=now)
+    assert "META" in syms
+    assert "META260921C00682500" in cts
+
+    cand = {
+        "symbol": "META",
+        "score": 65,
+        "strike": 682.5,
+        "expiry": "2026-09-21",
+        "ask": 8.9,
+        "bid": 8.5,
+        "contract": "META260921C00682500",
+        "dte": 3,
+        "dte_bucket": "weekly",
+    }
+    sig = decide_entry(
+        cand,
+        quote={"last": 690, "session_change_pct": 0.4, "mom_5m_pct": 0.12, "mom_15m_pct": 0.2},
+        buy_score=62,
+        weekly_buy_score=65,
+        require_live_confirm=False,
+        now=_MORNING,
+        loss_cooldown_symbols=syms,
+        loss_cooldown_contracts=cts,
+    )
+    assert sig.action == "WAIT"
+    assert "cooldown" in sig.detail.lower()
+
+    board = build_action_board(
+        candidates=[cand],
+        scores=[{"symbol": "META", "ensemble_score": 65}],
+        quotes={"META": {"last": 690, "session_change_pct": 0.4, "mom_5m_pct": 0.12}},
+        ledger=None,
+        buy_score=62,
+        weekly_buy_score=65,
+        require_live_confirm=False,
+        require_hist_win=False,
+        now=_MORNING,
+        loss_cooldown_symbols=syms,
+        loss_cooldown_contracts=cts,
+    )
+    assert board["buy_now"] == []
+    assert any(w["symbol"] == "META" and w["action"] == "WAIT" for w in board["wait"])
+
+
+def test_contract_cooldown_outlasts_symbol_window():
+    from odte_scanner.signals.loss_cooldown import collect_loss_blocks
+
+    # Loss 20 days ago: symbol free, contract still blocked
+    rows = [
+        {
+            "symbol": "META",
+            "contract": "META260921C00682500",
+            "pnl_usd": -500.0,
+            "profit_pct": -50.0,
+            "status": "closed",
+            "exited_at": "2026-08-29T12:00:00+00:00",
+        }
+    ]
+    now = datetime(2026, 9, 18, 12, 0, tzinfo=ZoneInfo("UTC"))
+    syms, cts = collect_loss_blocks(rows, cooldown_days=5, contract_cooldown_days=45, now=now)
+    assert "META" not in syms
+    assert "META260921C00682500" in cts
