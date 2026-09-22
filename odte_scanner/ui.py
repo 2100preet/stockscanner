@@ -213,6 +213,7 @@ PAGE = r"""
       <button data-tab="odte1k">0DTE $1K</button>
       <button data-tab="powerhour">Power Hour</button>
       <button data-tab="explosive">Explosive</button>
+      <button data-tab="rip">RIP / META</button>
       <button data-tab="weekly">1 Week</button>
       <button data-tab="swing">Swing 1–3M</button>
       <button data-tab="ml6">ML6 Neocloud</button>
@@ -224,7 +225,7 @@ PAGE = r"""
 
     <section class="tabpane active" id="tab-nowboard">
       <h2>BUY NOW / SELL NOW — all desks</h2>
-      <p class="lede">Live option BUY NOW / SELL NOW across 0DTE, weeklies, swing, Explosive, ML6, Challenge, and 0DTE $1K IN/OUT. Hist win ≥80% (n≥5) gates most BUY NOW tickets. Recent losers (symbol ~5d / same contract ~45d) stay WAIT — not BUY NOW. SETUP rows are quality tape without a contract yet — not a buy.</p>
+      <p class="lede">Live option BUY NOW / SELL NOW across 0DTE, weeklies, swing, Explosive, <strong>RIP/META</strong>, ML6, Challenge, and 0DTE $1K IN/OUT. Hist win ≥80% (n≥5) gates Options BUY NOW. Same losing OCC stays blocked; mega names can still BUY when tape is ripping (see RIP tab). SETUP rows are quality tape without a contract yet — not a buy.</p>
       <div class="metric-row" id="nowBoardMetrics"></div>
       <p class="lede" id="nowBoardNote" style="margin-top:0;font-size:.76rem"></p>
       <h2>BUY NOW</h2>
@@ -445,6 +446,26 @@ PAGE = r"""
         <h2>Convexity candidates (raw scan)</h2>
         <div id="explosiveTable" class="empty">Run a scan to populate explosive tickets.</div>
       </div>
+    </section>
+
+    <section class="tabpane" id="tab-rip">
+      <h2>RIP / CONTINUATION — META-class megas</h2>
+      <p class="lede">
+        Liquid megas (<strong>META · GOOGL · AMD · BABA · NVDA · TSLA · …</strong>) when session is ripping and tape confirms.
+        Built for the META melt-up pattern: prior loss cooldown is <strong>waived on this lane</strong> when the name is +≥1% with a bounce —
+        but the <strong>same losing OCC contract stays blocked</strong>. Not hist-gated; size smaller than Options BUY NOW.
+      </p>
+      <div class="metric-row" id="ripMetrics"></div>
+      <div class="cards" id="ripPrimary"></div>
+      <div class="panel">
+        <h2>BUY RIP</h2>
+        <div id="ripBuy" class="empty">No BUY RIP yet — need mega + session rip + bounce.</div>
+      </div>
+      <div class="panel">
+        <h2>WATCH RIP</h2>
+        <div id="ripWatch" class="empty">—</div>
+      </div>
+      <p class="lede" id="ripRules" style="font-size:.72rem"></p>
     </section>
 
     <section class="tabpane" id="tab-weekly">
@@ -911,6 +932,9 @@ PAGE = r"""
       (lot.buy_now || []).forEach(r => add(r, "BUY", "Explosive"));
       (lot.sell_now || []).forEach(r => add(r, "SELL", "Explosive"));
       (lot.wait || []).slice(0, 8).forEach(r => add(r, "WAIT", "Explosive"));
+      const rip = DATA.rip_radar || DATA.rip || {};
+      (rip.buy_rip || rip.buy_now || []).forEach(r => add(Object.assign({}, r, { action: r.action || "BUY_RIP" }), "BUY", "RIP/META"));
+      (rip.watch || []).slice(0, 8).forEach(r => add(Object.assign({}, r, { action: r.action || "WAIT" }), "WAIT", "RIP/META"));
       const ml = (DATA.ml6 && DATA.ml6.actions) || {};
       (ml.buy_now || []).forEach(r => add(r, "BUY", "ML6"));
       (ml.sell_now || []).forEach(r => add(r, "SELL", "ML6"));
@@ -952,8 +976,11 @@ PAGE = r"""
       const win = Number(r.win_pct ?? r.hist_win_pct);
       const n = Number(r.win_samples ?? r.hist_samples);
       const gated = buy && win >= 80 && (Number.isNaN(n) || n >= 3);
-      const cls = buy ? (gated ? "enter-now" : "long") : (wait || setup ? "wait" : "short");
-      const label = buy ? (gated ? "ENTER NOW" : "BUY NOW") : (setup ? "SETUP · not BUY" : (wait ? "WAIT" : "SELL NOW"));
+      const isRip = buy && String(r.action || "").includes("RIP");
+      const cls = buy ? (isRip ? "long" : (gated ? "enter-now" : "long")) : (wait || setup ? "wait" : "short");
+      const label = buy
+        ? (isRip ? "BUY RIP" : (gated ? "ENTER NOW" : "BUY NOW"))
+        : (setup ? "SETUP · not BUY" : (wait ? "WAIT" : "SELL NOW"));
       const strike = r.strike == null ? "—" : `${fmt(r.strike, Number(r.strike) % 1 ? 2 : 0)}${right === "PUT" ? "p" : "c"}`;
       const px = buy ? (r.ask ?? r.entry_ask) : (r.bid ?? r.mark ?? r.ask ?? r.exit_bid);
       const when = r.signaled_at_cst || fmtCST(r.signaled_at || r.recommended_at);
@@ -1473,6 +1500,67 @@ PAGE = r"""
           : `<div class="empty">${ch.note||"Chase lane idle."}</div>`;
       }
       if (noteEl) noteEl.textContent = ch.score_note || "";
+    }
+
+    function ripCard(r) {
+      const act = String(r.action || "");
+      const buy = act.includes("BUY");
+      const cls = buy ? "long" : "wait";
+      const label = buy ? "BUY RIP" : (act.includes("WATCH") ? "WATCH RIP" : "RIP COOL");
+      return `<div class="action-card ${cls}">
+        <div class="ac-top"><span class="badge ${buy?"buy":"wait"}">${label}</span>
+          <strong>${r.symbol}</strong> <span class="tag">${r.dte_bucket||"—"}</span>
+          ${r.cooldown_waived?`<span class="tag">cooldown waived</span>`:""}</div>
+        <div class="ac-conf">${r.headline||""}</div>
+        <div class="ac-meta">
+          <div>Ask<strong>${r.ask==null?"—":"$"+fmt(r.ask,2)}</strong></div>
+          <div>Session<strong class="${pctClass(r.live_change_pct)}">${r.live_change_pct==null?"—":fmt(r.live_change_pct,2)+"%"}</strong></div>
+          <div>5m<strong>${r.mom_5m_pct==null?"—":fmt(r.mom_5m_pct,2)+"%"}</strong></div>
+          <div>Strike<strong>${r.strike==null?"—":fmt(r.strike,1)}</strong></div>
+        </div>
+        <div class="why">${r.detail||""}</div>
+      </div>`;
+    }
+
+    function renderRipRadar(rip) {
+      const metrics = document.getElementById("ripMetrics");
+      const buyEl = document.getElementById("ripBuy");
+      const watchEl = document.getElementById("ripWatch");
+      const primaryEl = document.getElementById("ripPrimary");
+      const rulesEl = document.getElementById("ripRules");
+      const ch = rip || {};
+      const c = ch.counts || {};
+      const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
+      if (metrics) {
+        metrics.innerHTML = [
+          m("BUY RIP", c.buy_rip||c.buy_now||0, (c.buy_rip||c.buy_now||0)>0?"up":""),
+          m("WATCH", c.watch||0),
+          m("COOL", c.cool||0),
+          m("Megas tracked", (ch.mega_symbols||[]).length||0),
+        ].join("");
+      }
+      if (primaryEl) {
+        const p = ch.primary;
+        primaryEl.innerHTML = p
+          ? `<div class="cards">${ripCard(p)}</div><p class="lede" style="margin-top:.4rem;font-size:.76rem">${ch.purpose||""}</p>`
+          : `<div class="empty">No primary RIP ticket — waiting for META-class session rip.</div>`;
+      }
+      if (buyEl) {
+        const rows = ch.buy_rip || ch.buy_now || [];
+        buyEl.innerHTML = rows.length
+          ? `<div class="cards">${rows.map(ripCard).join("")}</div>`
+          : `<div class="empty">No BUY RIP — need META/GOOGL/AMD/BABA-class mega + session ≥~1% + bounce.</div>`;
+      }
+      if (watchEl) {
+        const gated = [...(ch.watch||[]), ...(ch.cool||[]).slice(0,6)];
+        watchEl.innerHTML = gated.length
+          ? `<div class="cards">${gated.map(ripCard).join("")}</div>`
+          : `<div class="empty">RIP lane idle.</div>`;
+      }
+      if (rulesEl) {
+        const rules = ch.rules || [];
+        rulesEl.innerHTML = rules.length ? `<strong>Rules:</strong> ${rules.join(" · ")}` : "";
+      }
     }
 
     function fillRecLogMetrics(metricsId, board) {
@@ -3104,6 +3192,7 @@ PAGE = r"""
       renderMl6(DATA.ml6 || { watchlist: ((DATA.horizons||{}).ml6||[]), bottom_line_rules: (DATA.ml6&&DATA.ml6.bottom_line_rules)||[] });
       renderRadar(DATA.radar || {});
       renderChaseRadar(DATA.chase_radar || DATA.convex_risk || {});
+      renderRipRadar(DATA.rip_radar || DATA.rip || {});
       renderEcho(DATA.echo || {});
       renderDarkpoolMini(DATA.echo || {});
       renderChallenge(DATA.challenge || {});
@@ -3125,7 +3214,7 @@ PAGE = r"""
       const lc = (DATA.lottery && DATA.lottery.counts) || {};
       const rc = (DATA.radar && DATA.radar.counts) || {};
       document.getElementById("counts").textContent =
-        `BUY ${c.buy_now||0} · SELL ${c.sell_now||0} · WAIT ${c.wait||0} · LOTTO B/S ${lc.buy_now||0}/${lc.sell_now||0} · ML6 B/S ${(DATA.ml6&&DATA.ml6.actions&&DATA.ml6.actions.counts&&DATA.ml6.actions.counts.buy_now)||0}/${(DATA.ml6&&DATA.ml6.actions&&DATA.ml6.actions.counts&&DATA.ml6.actions.counts.sell_now)||0} · RADAR HOT ${rc.hot||0}`;
+        `BUY ${c.buy_now||0} · SELL ${c.sell_now||0} · WAIT ${c.wait||0} · RIP ${(DATA.rip_radar&&DATA.rip_radar.counts&&DATA.rip_radar.counts.buy_rip)||0} · LOTTO B/S ${lc.buy_now||0}/${lc.sell_now||0} · ML6 B/S ${(DATA.ml6&&DATA.ml6.actions&&DATA.ml6.actions.counts&&DATA.ml6.actions.counts.buy_now)||0}/${(DATA.ml6&&DATA.ml6.actions&&DATA.ml6.actions.counts&&DATA.ml6.actions.counts.sell_now)||0} · RADAR HOT ${rc.hot||0}`;
       const gate = acts.hist_win_gate || DATA.hist_win_gate || {};
       const gateEl = document.getElementById("histWinGate");
       if (gateEl) {
@@ -4110,6 +4199,70 @@ def create_app(config_path: str | None = None) -> Flask:
                     "score_note": "",
                 }
 
+        # META-class RIP / CONTINUATION (megas ripping — symbol cooldown waived)
+        rip_radar: dict = {
+            "buy_rip": [],
+            "buy_now": [],
+            "watch": [],
+            "cool": [],
+            "counts": {},
+            "mega_symbols": [],
+            "rules": [],
+        }
+        try:
+            from odte_scanner.signals.rip_radar import build_rip_board, is_mega_rip_symbol
+
+            score_rows = scan.get("scores") or []
+            mega_cands = list(refreshed)
+            seen_syms = {str(c.get("symbol") or "").upper() for c in mega_cands}
+            for s in score_rows:
+                sym = str(s.get("symbol") or "").upper()
+                if not is_mega_rip_symbol(sym) or sym in seen_syms:
+                    continue
+                seen_syms.add(sym)
+                q = quotes.get(sym) or {}
+                mega_cands.append(
+                    {
+                        "symbol": sym,
+                        "score": s.get("ensemble_score"),
+                        "right": "C",
+                        "live_change_pct": q.get("session_change_pct") or q.get("change_pct"),
+                    }
+                )
+            for sym in ("BABA", "GOOGL", "AMD", "META"):
+                if sym in seen_syms:
+                    continue
+                seen_syms.add(sym)
+                q = quotes.get(sym) or {}
+                mega_cands.append(
+                    {
+                        "symbol": sym,
+                        "score": 0,
+                        "right": "C",
+                        "live_change_pct": q.get("session_change_pct") or q.get("change_pct"),
+                    }
+                )
+            rip_radar = build_rip_board(
+                candidates=mega_cands,
+                scores=score_rows,
+                quotes=quotes,
+                loss_cooldown_contracts=loss_cooldown_cts,
+                min_live_pct=float(actions_cfg.get("rip_min_live_pct", 1.0)),
+                min_mom5=float(actions_cfg.get("rip_min_mom_5m", 0.05)),
+                max_tickets=int(actions_cfg.get("rip_max_tickets", 12)),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("rip radar unavailable: %s", exc)
+            rip_radar = {
+                "error": str(exc),
+                "buy_rip": [],
+                "buy_now": [],
+                "watch": [],
+                "cool": [],
+                "counts": {},
+                "note": "RIP radar temporarily unavailable.",
+            }
+
         from odte_scanner.challenge import build_challenge_board
         from odte_scanner.data.universe import liquid_universe
         from odte_scanner.echo import build_echo_board
@@ -4847,6 +5000,7 @@ def create_app(config_path: str | None = None) -> Flask:
                         "odte_1k": odte_1k,
                         "radar": radar,
                         "chase_radar": chase_radar,
+                        "rip_radar": rip_radar,
                     },
                     indent=2,
                     default=str,
@@ -4892,6 +5046,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 "free_dealer": free_dealer,
                 "radar": radar,
                 "chase_radar": chase_radar,
+                "rip_radar": rip_radar,
                 "echo": echo,
                 "challenge": challenge,
                 "odte_1k": odte_1k,

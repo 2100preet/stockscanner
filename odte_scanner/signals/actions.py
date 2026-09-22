@@ -225,10 +225,21 @@ def decide_entry(
             35,
         )
     if symbol.upper() in blocked_syms:
-        return _wait(
-            f"{symbol} on loss cooldown — recent losing flip; skip new BUY NOW.",
-            35,
-        )
+        # META-class override: if the name is ripping again, allow a *fresh* contract.
+        # Same OCC stays blocked above. Blanket symbol blocks killed META melt-ups.
+        from odte_scanner.signals.rip_radar import is_mega_rip_symbol, mega_rip_tape_ok
+
+        live_now = live
+        if live_now is None and candidate.get("live_change_pct") is not None:
+            live_now = float(candidate["live_change_pct"])
+        if not (
+            is_mega_rip_symbol(symbol)
+            and mega_rip_tape_ok(live=live_now, mom5=mom5, mom15=mom15)
+        ):
+            return _wait(
+                f"{symbol} on loss cooldown — recent losing flip; skip new BUY NOW.",
+                35,
+            )
 
     # Never BUY an expired contract (stale Pages snapshot / next-day rebuild).
     exp = candidate.get("expiry")
