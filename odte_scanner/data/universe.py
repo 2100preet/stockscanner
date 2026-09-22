@@ -175,7 +175,7 @@ _DARLINGS = frozenset(s.replace(".", "-").upper() for s in EARNINGS_DARLINGS_UNI
 # Focus list stays smaller for 0DTE options chains (rate limits)
 FOCUS_DEFAULT: list[str] = [
     "SPY", "QQQ", "IWM", "SPX", "XSP", "GLD", "SLV", "TLT", "SMH", "XLF",
-    "AAPL", "MSFT", "NVDA", "TSLA", "AMD", "META", "AMZN", "GOOGL", "AVGO",
+    "AAPL", "MSFT", "NVDA", "TSLA", "AMD", "META", "AMZN", "GOOGL", "BABA", "AVGO",
     "INTC", "MU", "USO", "UNG", "NFLX", "CRM", "ORCL", "ADBE", "QCOM", "AMAT",
     "ARM", "PLTR", "COIN", "MSTR", "HOOD", "UBER", "JPM", "BAC", "XOM", "COST",
     "TSM", "DIA", "XLK", "XLE", "SOXX", "HYG", "EEM", "SPCX", "DDOG",

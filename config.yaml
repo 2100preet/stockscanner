@@ -25,6 +25,7 @@ tickers:
   - META
   - AMZN
   - GOOGL
+  - BABA   # Alibaba ADR — China mega; META-class rip sleeve
   - AVGO
   - INTC
   - MU
@@ -201,6 +202,7 @@ expiry_calendars:
     - XOM
     - COST
     - TSM
+    - BABA
     - DIA
     - XLK
     - XLE
@@ -349,6 +351,10 @@ actions:
   radar_max_ask: 2.50
   radar_otm_pct_max: 1.50
   radar_enrich_live: true   # short Yahoo chain sweep for focus indices only
+  # META-class RIP / CONTINUATION lane
+  rip_min_live_pct: 1.0
+  rip_min_mom_5m: 0.05
+  rip_max_tickets: 12
   # Chase / high-convexity lane — far-OTM or already-ripping wings (MU-style)
   # Separate bucket: BUY — BIT RISKY / WATCH CONVEX (not hist-gated BUY NOW)
   chase_radar_enabled: true
