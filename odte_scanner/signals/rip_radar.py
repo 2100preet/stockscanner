@@ -20,7 +20,7 @@ ET = ZoneInfo("America/New_York")
 MEGA_RIP_SYMBOLS = {
     "META", "GOOGL", "GOOG", "AMD", "BABA", "NVDA", "TSLA", "AAPL", "AMZN",
     "MSFT", "NFLX", "AVGO", "MU", "SMCI", "PLTR", "TSM", "QCOM", "ARM",
-    "SPOT", "SHOP", "CRWD", "PANW", "ORCL", "IBM", "INTC",
+    "SPOT", "SHOP", "CRWD", "PANW", "ORCL", "IBM", "INTC", "SNDK",
 }
 
 

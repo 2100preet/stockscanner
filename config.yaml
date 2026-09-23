@@ -378,10 +378,20 @@ actions:
   challenge_prefer_dte: 2
   challenge_target_premium_min: 1.5   # +50%
   challenge_target_premium_max: 2.0   # +100%
-  # 1-month pace straight at $1M (~15 flips @ 2d holds → ~+58%/flip)
-  challenge_pace_months: 1
+  # Deadline: $1M by end of October 2026 (~5 weeks from late Sep)
+  challenge_deadline: "2026-10-31"
+  challenge_pace_months: 1.3
   challenge_pace_milestone_usd: 1000000
   challenge_prefer_weekly_pace: true
+  # Beauty / monthly lane (AMD META MU SNDK class — ~1mo DTE)
+  beauty_enabled: true
+  beauty_min_dte: 18
+  beauty_max_dte: 45
+  beauty_prefer_dte: 30
+  beauty_min_month_pct: 5.0
+  beauty_max_tickets: 12
+  beauty_fetch_contracts: true
+  beauty_max_live_symbols: 6
   # After a losing flip, do not re-enter that symbol for N days
   challenge_loss_cooldown_days: 5
   # Options BUY NOW: block symbols after a losing flip; block same OCC longer

@@ -214,6 +214,7 @@ PAGE = r"""
       <button data-tab="powerhour">Power Hour</button>
       <button data-tab="explosive">Explosive</button>
       <button data-tab="rip">RIP / META</button>
+      <button data-tab="beauty">Beauty 1mo</button>
       <button data-tab="weekly">1 Week</button>
       <button data-tab="swing">Swing 1–3M</button>
       <button data-tab="ml6">ML6 Neocloud</button>
@@ -468,6 +469,27 @@ PAGE = r"""
       <p class="lede" id="ripRules" style="font-size:.72rem"></p>
     </section>
 
+    <section class="tabpane" id="tab-beauty">
+      <h2>BEAUTY / MONTHLY — AMD · META · MU · SNDK class</h2>
+      <p class="lede">
+        Sep 2026 lesson: <strong>AMD ~+34%</strong>, <strong>META ~+28%</strong>, <strong>MU ~+12%</strong>, <strong>SNDK ~+15%</strong> month-to-date
+        (low→high up to <strong>+40%</strong>). 0DTE/short weeklies missed the multi-bag — this lane prefers
+        <strong>~18–45 DTE (~1 month out)</strong> near-ATM calls on liquid mega/semi trends. Target bank <strong>3–5×</strong> premium.
+      </p>
+      <div class="metric-row" id="beautyMetrics"></div>
+      <p class="lede" id="beautyPace" style="margin-top:0;font-size:.76rem"></p>
+      <div class="cards" id="beautyPrimary"></div>
+      <div class="panel">
+        <h2>BUY BEAUTY</h2>
+        <div id="beautyBuy" class="empty">No BUY BEAUTY yet — need monthly DTE ticket on a trending mega/semi.</div>
+      </div>
+      <div class="panel">
+        <h2>WATCH BEAUTY</h2>
+        <div id="beautyWatch" class="empty">—</div>
+      </div>
+      <p class="lede" id="beautyRules" style="font-size:.72rem"></p>
+    </section>
+
     <section class="tabpane" id="tab-weekly">
       <h2>1 Week — swinglet / weekly calls</h2>
       <p class="lede">EMA stack, MACD, RS, pullback entries. Win% ≈ 5-session forward return.</p>
@@ -538,7 +560,7 @@ PAGE = r"""
     <section class="tabpane" id="tab-challenge">
       <h2>$1,000 → $1,000,000 challenge</h2>
       <p class="lede">
-        Goal: <strong>$1k → $1M in ~1 month</strong> via sprint flips (~15× @ ~2d, target <strong>+50–100%</strong>) on <strong>liquid</strong> short-dated puts/calls. Loss-cooldown stops re-chasing the same loser.
+        Goal: <strong>$1k → $1M by Oct 31, 2026</strong> via sprint flips (~2d, target <strong>+50–100%</strong>) on liquid short-dated tickets — and <strong>Beauty 1mo</strong> for AMD/META/MU/SNDK-class monthly melts. Loss-cooldown blocks same OCC losers; megas can still rip-buy on fresh contracts.
         Sure-shot hist filter (prefer <strong>100% hist win</strong>, else ≥80% n≥5).
         Status: <strong>ENTRY · HOLD · EXIT</strong>. After each Paper ENTER/EXIT the sleeve
         <strong>cash &amp; equity balance</strong> updates so you know where you are.
@@ -935,6 +957,9 @@ PAGE = r"""
       const rip = DATA.rip_radar || DATA.rip || {};
       (rip.buy_rip || rip.buy_now || []).forEach(r => add(Object.assign({}, r, { action: r.action || "BUY_RIP" }), "BUY", "RIP/META"));
       (rip.watch || []).slice(0, 8).forEach(r => add(Object.assign({}, r, { action: r.action || "WAIT" }), "WAIT", "RIP/META"));
+      const beauty = DATA.beauty_monthly || DATA.beauty || {};
+      (beauty.buy_beauty || beauty.buy_now || []).forEach(r => add(Object.assign({}, r, { action: r.action || "BUY_BEAUTY" }), "BUY", "Beauty 1mo"));
+      (beauty.watch || []).slice(0, 8).forEach(r => add(Object.assign({}, r, { action: r.action || "WAIT" }), "WAIT", "Beauty 1mo"));
       const ml = (DATA.ml6 && DATA.ml6.actions) || {};
       (ml.buy_now || []).forEach(r => add(r, "BUY", "ML6"));
       (ml.sell_now || []).forEach(r => add(r, "SELL", "ML6"));
@@ -977,9 +1002,10 @@ PAGE = r"""
       const n = Number(r.win_samples ?? r.hist_samples);
       const gated = buy && win >= 80 && (Number.isNaN(n) || n >= 3);
       const isRip = buy && String(r.action || "").includes("RIP");
-      const cls = buy ? (isRip ? "long" : (gated ? "enter-now" : "long")) : (wait || setup ? "wait" : "short");
+      const isBeauty = buy && String(r.action || "").includes("BEAUTY");
+      const cls = buy ? (isRip || isBeauty ? "long" : (gated ? "enter-now" : "long")) : (wait || setup ? "wait" : "short");
       const label = buy
-        ? (isRip ? "BUY RIP" : (gated ? "ENTER NOW" : "BUY NOW"))
+        ? (isBeauty ? "BUY BEAUTY" : (isRip ? "BUY RIP" : (gated ? "ENTER NOW" : "BUY NOW")))
         : (setup ? "SETUP · not BUY" : (wait ? "WAIT" : "SELL NOW"));
       const strike = r.strike == null ? "—" : `${fmt(r.strike, Number(r.strike) % 1 ? 2 : 0)}${right === "PUT" ? "p" : "c"}`;
       const px = buy ? (r.ask ?? r.entry_ask) : (r.bid ?? r.mark ?? r.ask ?? r.exit_bid);
@@ -1563,6 +1589,74 @@ PAGE = r"""
       }
     }
 
+    function beautyCard(r) {
+      const act = String(r.action || "");
+      const buy = act.includes("BUY");
+      const cls = buy ? "long" : "wait";
+      const label = buy ? "BUY BEAUTY" : (act.includes("WATCH") ? "WATCH BEAUTY" : "BEAUTY COOL");
+      return `<div class="action-card ${cls}">
+        <div class="ac-top"><span class="badge ${buy?"buy":"wait"}">${label}</span>
+          <strong>${r.symbol}</strong> <span class="tag">DTE ${r.dte==null?"—":r.dte}</span>
+          <span class="tag">~1mo</span></div>
+        <div class="ac-conf">${r.headline||""}</div>
+        <div class="ac-meta">
+          <div>Ask<strong>${r.ask==null?"—":"$"+fmt(r.ask,2)}</strong></div>
+          <div>Month<strong class="${pctClass(r.month_change_pct)}">${r.month_change_pct==null?"—":fmt(r.month_change_pct,1)+"%"}</strong></div>
+          <div>Day<strong class="${pctClass(r.live_change_pct)}">${r.live_change_pct==null?"—":fmt(r.live_change_pct,2)+"%"}</strong></div>
+          <div>Strike<strong>${r.strike==null?"—":fmt(r.strike,1)}</strong></div>
+          <div>Target<strong>×${fmt(r.target_premium_mult||3,1)}</strong></div>
+        </div>
+        <div class="why">${r.detail||""}</div>
+      </div>`;
+    }
+
+    function renderBeautyMonthly(beauty) {
+      const metrics = document.getElementById("beautyMetrics");
+      const buyEl = document.getElementById("beautyBuy");
+      const watchEl = document.getElementById("beautyWatch");
+      const primaryEl = document.getElementById("beautyPrimary");
+      const rulesEl = document.getElementById("beautyRules");
+      const paceEl = document.getElementById("beautyPace");
+      const ch = beauty || {};
+      const c = ch.counts || {};
+      const pace = ch.oct_end_pace || {};
+      const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
+      if (metrics) {
+        metrics.innerHTML = [
+          m("BUY BEAUTY", c.buy_beauty||c.buy_now||0, (c.buy_beauty||c.buy_now||0)>0?"up":""),
+          m("WATCH", c.watch||0),
+          m("COOL", c.cool||0),
+          m("Days to Oct-end", pace.days_left!=null?pace.days_left:"—", "up"),
+          m("Need / flip", pace.pct_per_flip==null?"—":`+${fmt(pace.pct_per_flip,0)}%`, "up"),
+        ].join("");
+      }
+      if (paceEl) {
+        paceEl.innerHTML = `<strong>Lesson:</strong> ${ch.lesson||""}<br/><strong>Pace:</strong> ${pace.note||ch.purpose||""}`;
+      }
+      if (primaryEl) {
+        const p = ch.primary;
+        primaryEl.innerHTML = p
+          ? `<div class="cards">${beautyCard(p)}</div>`
+          : `<div class="empty">No primary beauty ticket — waiting for ~1mo DTE on AMD/META/MU/SNDK-class trend.</div>`;
+      }
+      if (buyEl) {
+        const rows = ch.buy_beauty || ch.buy_now || [];
+        buyEl.innerHTML = rows.length
+          ? `<div class="cards">${rows.map(beautyCard).join("")}</div>`
+          : `<div class="empty">No BUY BEAUTY — need 18–45 DTE call on a trending beauty name.</div>`;
+      }
+      if (watchEl) {
+        const gated = [...(ch.watch||[]), ...(ch.cool||[]).slice(0,8)];
+        watchEl.innerHTML = gated.length
+          ? `<div class="cards">${gated.map(beautyCard).join("")}</div>`
+          : `<div class="empty">Beauty lane idle.</div>`;
+      }
+      if (rulesEl) {
+        const rules = ch.rules || [];
+        rulesEl.innerHTML = rules.length ? `<strong>Rules:</strong> ${rules.join(" · ")}` : "";
+      }
+    }
+
     function fillRecLogMetrics(metricsId, board) {
       const metrics = document.getElementById(metricsId);
       if (!metrics || !board) return;
@@ -1791,7 +1885,8 @@ PAGE = r"""
         m("Sleeve cash", book.cash!=null?`$${Number(book.cash).toLocaleString(undefined,{maximumFractionDigits:0})}`:"—"),
         m("Sleeve equity", book.equity!=null?`$${Number(book.equity).toLocaleString(undefined,{maximumFractionDigits:0})}`:`$${(ch.start_usd||1000).toLocaleString()}`),
         m("→ $1M", book.progress_pct!=null?`${fmt(book.progress_pct,3)}%`:"—", "up"),
-        m("1mo need / flip", paceM.pct_per_flip==null?"—":`+${fmt(paceM.pct_per_flip,0)}%`, "up"),
+        m("Days to Oct-end", (ch.oct_end_pace&&ch.oct_end_pace.days_left)!=null?ch.oct_end_pace.days_left:(pace.days!=null?Math.round(pace.days):"—"), "up"),
+        m("1mo/Oct need / flip", (ch.oct_end_pace&&ch.oct_end_pace.pct_per_flip)!=null?`+${fmt(ch.oct_end_pace.pct_per_flip,0)}%`:(paceM.pct_per_flip==null?"—":`+${fmt(paceM.pct_per_flip,0)}%`), "up"),
         m("Classic need / flip", path.pct_per_flip==null?"—":`+${fmt(path.pct_per_flip,0)}%`),
         m("Sprint fits", `${c.fits_4mo_500k||0} / weekly ${c.weekly_pace||0}`),
         m("ENTRY / HOLD / EXIT", `${c.entry||0} / ${c.hold||0} / ${c.exit||0}`),
@@ -3193,6 +3288,7 @@ PAGE = r"""
       renderRadar(DATA.radar || {});
       renderChaseRadar(DATA.chase_radar || DATA.convex_risk || {});
       renderRipRadar(DATA.rip_radar || DATA.rip || {});
+      renderBeautyMonthly(DATA.beauty_monthly || DATA.beauty || {});
       renderEcho(DATA.echo || {});
       renderDarkpoolMini(DATA.echo || {});
       renderChallenge(DATA.challenge || {});
@@ -4263,6 +4359,141 @@ def create_app(config_path: str | None = None) -> Flask:
                 "note": "RIP radar temporarily unavailable.",
             }
 
+        # Beauty / monthly lane — AMD META MU SNDK class (~1mo DTE)
+        beauty_monthly: dict = {
+            "buy_beauty": [],
+            "buy_now": [],
+            "watch": [],
+            "cool": [],
+            "counts": {},
+            "beauty_symbols": [],
+            "rules": [],
+        }
+        if actions_cfg.get("beauty_enabled", True):
+            try:
+                from odte_scanner.signals.beauty_monthly import (
+                    build_beauty_board,
+                    is_beauty_symbol,
+                    oct_end_pace_note,
+                )
+
+                score_rows = scan.get("scores") or []
+                beauty_cands = [
+                    c for c in refreshed if is_beauty_symbol(str(c.get("symbol") or ""))
+                ]
+                seen_b = {str(c.get("symbol") or "").upper() for c in beauty_cands}
+                for s in score_rows:
+                    sym = str(s.get("symbol") or "").upper()
+                    if not is_beauty_symbol(sym) or sym in seen_b:
+                        continue
+                    seen_b.add(sym)
+                    q = quotes.get(sym) or {}
+                    beauty_cands.append(
+                        {
+                            "symbol": sym,
+                            "score": s.get("ensemble_score"),
+                            "right": "C",
+                            "live_change_pct": q.get("session_change_pct") or q.get("change_pct"),
+                            "month_change_pct": q.get("month_change_pct") or q.get("1m_change_pct"),
+                        }
+                    )
+                for sym in ("AMD", "META", "MU", "SNDK", "BABA", "GOOGL", "NVDA"):
+                    if sym in seen_b:
+                        continue
+                    seen_b.add(sym)
+                    q = quotes.get(sym) or {}
+                    beauty_cands.append(
+                        {
+                            "symbol": sym,
+                            "score": 0,
+                            "right": "C",
+                            "live_change_pct": q.get("session_change_pct") or q.get("change_pct"),
+                            "month_change_pct": q.get("month_change_pct") or q.get("1m_change_pct"),
+                        }
+                    )
+                # Pull ~1mo contracts for top beauty names (capped)
+                if bool(actions_cfg.get("beauty_fetch_contracts", True)):
+                    try:
+                        from odte_scanner.options.yahoo_session import pick_challenge_contract
+
+                        fetch_n = int(actions_cfg.get("beauty_max_live_symbols", 6))
+                        prefer = int(actions_cfg.get("beauty_prefer_dte", 30))
+                        min_d = int(actions_cfg.get("beauty_min_dte", 18))
+                        max_d = int(actions_cfg.get("beauty_max_dte", 45))
+                        fetched = 0
+                        for row in beauty_cands:
+                            if fetched >= fetch_n:
+                                break
+                            sym = str(row.get("symbol") or "").upper()
+                            if row.get("ask") and row.get("dte") and min_d <= int(row["dte"]) <= max_d:
+                                continue
+                            spot = float((quotes.get(sym) or {}).get("last") or row.get("score") or 0)
+                            if spot <= 1:
+                                # last-price from scores often missing — skip pick without spot
+                                qlast = (quotes.get(sym) or {}).get("last")
+                                if qlast:
+                                    spot = float(qlast)
+                                else:
+                                    continue
+                            aliases.setdefault(sym, resolve_yahoo_symbol(sym, cfg))
+                            picked = pick_challenge_contract(
+                                sym,
+                                spot,
+                                right="C",
+                                min_dte=min_d,
+                                max_dte=max_d,
+                                prefer_dte=prefer,
+                                yahoo_symbol=aliases.get(sym),
+                            )
+                            if not picked or not picked.get("ask"):
+                                continue
+                            row.update(
+                                {
+                                    "ask": picked.get("ask"),
+                                    "bid": picked.get("bid"),
+                                    "strike": picked.get("strike"),
+                                    "expiry": picked.get("expiry"),
+                                    "contract": picked.get("contract"),
+                                    "dte": picked.get("dte"),
+                                    "dte_bucket": "monthly",
+                                    "volume": picked.get("volume"),
+                                    "open_interest": picked.get("open_interest") or picked.get("oi"),
+                                    "spot": spot,
+                                    "moneyness_pct": picked.get("moneyness_pct"),
+                                }
+                            )
+                            fetched += 1
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("beauty contract fetch skipped: %s", exc)
+
+                beauty_monthly = build_beauty_board(
+                    candidates=beauty_cands,
+                    scores=score_rows,
+                    quotes=quotes,
+                    loss_cooldown_contracts=loss_cooldown_cts,
+                    min_dte=int(actions_cfg.get("beauty_min_dte", 18)),
+                    max_dte=int(actions_cfg.get("beauty_max_dte", 45)),
+                    prefer_dte=int(actions_cfg.get("beauty_prefer_dte", 30)),
+                    min_month_pct=float(actions_cfg.get("beauty_min_month_pct", 5.0)),
+                    max_tickets=int(actions_cfg.get("beauty_max_tickets", 12)),
+                )
+                beauty_monthly["oct_end_pace"] = oct_end_pace_note(
+                    equity=1000.0,
+                    target_usd=float(actions_cfg.get("challenge_target_usd", 1_000_000)),
+                    deadline=str(actions_cfg.get("challenge_deadline") or "2026-10-31"),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("beauty monthly unavailable: %s", exc)
+                beauty_monthly = {
+                    "error": str(exc),
+                    "buy_beauty": [],
+                    "buy_now": [],
+                    "watch": [],
+                    "cool": [],
+                    "counts": {},
+                    "note": "Beauty monthly temporarily unavailable.",
+                }
+
         from odte_scanner.challenge import build_challenge_board
         from odte_scanner.data.universe import liquid_universe
         from odte_scanner.echo import build_echo_board
@@ -4375,6 +4606,11 @@ def create_app(config_path: str | None = None) -> Flask:
             # because fetch_contracts was hard-disabled and auto_enter was false.
             loss_cd_days = int(actions_cfg.get("challenge_loss_cooldown_days", 5))
             loss_cooldown_syms = tracker.recent_loss_symbols(cooldown_days=loss_cd_days)
+            from odte_scanner.signals.beauty_monthly import days_to_deadline, oct_end_pace_note
+
+            deadline = str(actions_cfg.get("challenge_deadline") or "2026-10-31")
+            days_left = days_to_deadline(deadline)
+            pace_months = max(0.25, days_left / 30.4375)
             challenge = build_challenge_board(
                 win_table=win_table if isinstance(win_table, dict) else None,
                 scores=scan.get("scores") or [],
@@ -4401,7 +4637,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 min_option_oi=int(actions_cfg.get("challenge_min_option_oi", 200)),
                 allow_zero_volume_if_oi=int(actions_cfg.get("challenge_allow_zero_volume_if_oi", 0)),
                 loss_cooldown_symbols=loss_cooldown_syms,
-                pace_months=float(actions_cfg.get("challenge_pace_months", 1)),
+                pace_months=pace_months,
                 pace_milestone_usd=float(actions_cfg.get("challenge_pace_milestone_usd", 1_000_000)),
                 prefer_weekly_pace=bool(actions_cfg.get("challenge_prefer_weekly_pace", True)),
                 current_equity=float(tracker.book.equity or tracker.book.cash or 1000),
@@ -4427,6 +4663,14 @@ def create_app(config_path: str | None = None) -> Flask:
             )
             challenge["sync"] = sync
             challenge["book"] = sync.get("book") or tracker.book.to_dict()
+            challenge["deadline"] = deadline
+            challenge["oct_end_pace"] = oct_end_pace_note(
+                equity=float(tracker.book.equity or tracker.book.cash or 1000),
+                target_usd=float(actions_cfg.get("challenge_target_usd", 1_000_000)),
+                deadline=deadline,
+            )
+            if isinstance(beauty_monthly, dict):
+                beauty_monthly["oct_end_pace"] = challenge["oct_end_pace"]
             # Rebuild statuses after sync; keep prior contract fields when present
             challenge = build_challenge_board(
                 win_table=win_table if isinstance(win_table, dict) else None,
@@ -4454,11 +4698,21 @@ def create_app(config_path: str | None = None) -> Flask:
                 min_option_oi=int(actions_cfg.get("challenge_min_option_oi", 200)),
                 allow_zero_volume_if_oi=int(actions_cfg.get("challenge_allow_zero_volume_if_oi", 0)),
                 loss_cooldown_symbols=loss_cooldown_syms,
-                pace_months=float(actions_cfg.get("challenge_pace_months", 1)),
+                pace_months=pace_months,
                 pace_milestone_usd=float(actions_cfg.get("challenge_pace_milestone_usd", 1_000_000)),
                 prefer_weekly_pace=bool(actions_cfg.get("challenge_prefer_weekly_pace", True)),
                 current_equity=float(tracker.book.equity or tracker.book.cash or 1000),
             )
+            challenge["sync"] = sync
+            challenge["book"] = sync.get("book") or tracker.book.to_dict()
+            challenge["deadline"] = deadline
+            challenge["oct_end_pace"] = oct_end_pace_note(
+                equity=float(tracker.book.equity or tracker.book.cash or 1000),
+                target_usd=float(actions_cfg.get("challenge_target_usd", 1_000_000)),
+                deadline=deadline,
+            )
+            if isinstance(beauty_monthly, dict):
+                beauty_monthly["oct_end_pace"] = challenge["oct_end_pace"]
             for t in challenge.get("tickets") or []:
                 prev = live_contracts.get((str(t.get("symbol")), str(t.get("right") or "C")))
                 if not prev:
@@ -5001,6 +5255,7 @@ def create_app(config_path: str | None = None) -> Flask:
                         "radar": radar,
                         "chase_radar": chase_radar,
                         "rip_radar": rip_radar,
+                        "beauty_monthly": beauty_monthly,
                     },
                     indent=2,
                     default=str,
@@ -5047,6 +5302,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 "radar": radar,
                 "chase_radar": chase_radar,
                 "rip_radar": rip_radar,
+                "beauty_monthly": beauty_monthly,
                 "echo": echo,
                 "challenge": challenge,
                 "odte_1k": odte_1k,

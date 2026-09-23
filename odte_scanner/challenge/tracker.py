@@ -133,11 +133,18 @@ class ChallengeBook:
     trades: list[ChallengeTrade] = field(default_factory=list)
     balance_log: list[dict[str, Any]] = field(default_factory=list)
 
-    def to_dict(self) -> dict[str, Any]:
+    @property
+    def equity(self) -> float:
+        """Cash + mark-to-market of open challenge flips."""
         open_mtm = sum(
-            (t.mark or t.entry_ask) * 100 * t.contracts for t in self.trades if t.status == "open"
+            (t.mark or t.entry_ask or 0) * 100 * int(t.contracts or 1)
+            for t in self.trades
+            if t.status == "open"
         )
-        equity = round(self.cash + open_mtm, 2)
+        return round(float(self.cash) + float(open_mtm), 2)
+
+    def to_dict(self) -> dict[str, Any]:
+        equity = self.equity
         return {
             "starting_cash": self.starting_cash,
             "cash": round(self.cash, 2),
