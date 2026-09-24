@@ -392,8 +392,10 @@ class RecommendationLog:
         return changed
 
     def save(self) -> None:
+        from odte_scanner.json_util import dumps_strict
+
         self.book.updated_at = _now()
-        self.path.write_text(json.dumps(self.book.to_dict(), indent=2))
+        self.path.write_text(dumps_strict(self.book.to_dict(), indent=2, default=str))
 
     def _key(self, section: str, symbol: str, right: str = "C") -> str:
         return f"{section.upper()}|{str(symbol).upper()}|{str(right or 'C').upper()}"

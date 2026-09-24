@@ -111,11 +111,23 @@ def export_pages(
         if not isinstance(payload, dict):
             raise RuntimeError("snapshot export returned non-JSON object")
 
-    from odte_scanner.json_util import dumps_strict
+    import re
 
-    (data_dir / "snapshot.json").write_text(dumps_strict(payload, indent=2, default=str))
+    from odte_scanner.json_util import dumps_strict, sanitize_for_json
+
+    snap_text = dumps_strict(payload, indent=2, default=str)
+    if re.search(r"\b(?:NaN|-?Infinity)\b", snap_text):
+        raise RuntimeError("snapshot.json would contain NaN/Infinity — refusing export")
+    (data_dir / "snapshot.json").write_text(snap_text)
     scan_src = ROOT / "outputs" / "latest_scan.json"
-    (data_dir / "latest_scan.json").write_text(scan_src.read_text() if scan_src.exists() else "{}")
+    if scan_src.exists():
+        try:
+            scan_obj = json.loads(scan_src.read_text())
+            (data_dir / "latest_scan.json").write_text(dumps_strict(scan_obj, indent=2, default=str))
+        except Exception:  # noqa: BLE001
+            (data_dir / "latest_scan.json").write_text("{}")
+    else:
+        (data_dir / "latest_scan.json").write_text("{}")
 
     # Echo ladder cache for offline flow leaders on Pages
     ladders_src = ROOT / "outputs" / "echo_ladders"
@@ -123,7 +135,11 @@ def export_pages(
         ladders_dst = data_dir / "echo_ladders"
         ladders_dst.mkdir(parents=True, exist_ok=True)
         for path in ladders_src.glob("*.json"):
-            (ladders_dst / path.name).write_text(path.read_text())
+            try:
+                obj = json.loads(path.read_text())
+                (ladders_dst / path.name).write_text(dumps_strict(obj, indent=2, default=str))
+            except Exception:  # noqa: BLE001
+                (ladders_dst / path.name).write_text(path.read_text())
 
     # Copy paper ledgers into static site (gitignored outputs/ otherwise vanish on Pages)
     ledgers_dir = data_dir / "ledgers"
@@ -139,7 +155,11 @@ def export_pages(
     ):
         src = ROOT / "outputs" / name
         if src.exists():
-            (ledgers_dir / name).write_text(src.read_text())
+            try:
+                obj = json.loads(src.read_text())
+                (ledgers_dir / name).write_text(dumps_strict(sanitize_for_json(obj), indent=2, default=str))
+            except Exception:  # noqa: BLE001
+                (ledgers_dir / name).write_text(src.read_text())
 
     (out / "index.html").write_text(_static_html(PAGE))
     (out / ".nojekyll").write_text("")
@@ -156,5 +176,5 @@ def export_pages(
         "closed_journal": len(insights.get("closed_trades") or []),
         "url_hint": "https://2100preet.github.io/stockscanner/",
     }
-    (out / "meta.json").write_text(json.dumps(meta, indent=2))
+    (out / "meta.json").write_text(dumps_strict(meta, indent=2, default=str))
     return out
