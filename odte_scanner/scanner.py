@@ -289,6 +289,20 @@ def run_scan(
         ),
     }
 
+    out_dir = Path("outputs")
+    out_dir.mkdir(exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    path = out_dir / f"scan_{stamp}.json"
+
+    def _persist() -> None:
+        path.write_text(json.dumps(report, indent=2))
+        (out_dir / "latest_scan.json").write_text(json.dumps(report, indent=2))
+        if ml6_board:
+            (out_dir / "latest_ml6.json").write_text(json.dumps(ml6_board, indent=2))
+
+    # Persist before hist-win enrichment so a hung win-rate rebuild cannot leave Pages empty.
+    _persist()
+
     try:
         from odte_scanner.backtest.win_rates import build_win_rate_table
 
@@ -309,19 +323,13 @@ def run_scan(
             | set(focus[:20])
             | set(challenge_hist_universe())
         )
-        win_table = build_win_rate_table(wr_syms, config_path=config_path)
+        # Prefer cache for up to 3d so Pages/CI does not rebake the full table every run.
+        win_table = build_win_rate_table(wr_syms, config_path=config_path, max_age_hours=72.0)
         report["win_rates"] = win_table
+        _persist()
     except Exception as exc:  # noqa: BLE001
         logger.warning("win rate table failed: %s", exc)
 
-    out_dir = Path("outputs")
-    out_dir.mkdir(exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    path = out_dir / f"scan_{stamp}.json"
-    path.write_text(json.dumps(report, indent=2))
-    (out_dir / "latest_scan.json").write_text(json.dumps(report, indent=2))
-    if ml6_board:
-        (out_dir / "latest_ml6.json").write_text(json.dumps(ml6_board, indent=2))
     logger.info(
         "Wrote %s (universe=%s n=%d 0DTE_calls=%d weekly=%d puts=%d swing_cards=%d ml6=%d)",
         path,
