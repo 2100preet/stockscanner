@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from odte_scanner.time_cst import to_cst_label
+from odte_scanner.json_util import finite_float
 
 logger = logging.getLogger(__name__)
 
@@ -211,7 +212,7 @@ class SignalJournal:
             entry_ask=ask,
             entry_score=signal.get("score"),
             entry_reason=signal.get("detail") or signal.get("headline") or "BUY_NOW",
-            entry_spot=signal.get("live_last"),
+            entry_spot=finite_float(signal.get("live_last") or signal.get("spot") or signal.get("live_spot")),
             entered_at_cst=signal.get("signaled_at_cst") or to_cst_label(entered),
             right=right,
             contracts=contracts,

@@ -85,7 +85,10 @@ def _f(v: Any) -> float | None:
     try:
         if v is None or v == "":
             return None
-        return float(v)
+        f = float(v)
+        if f != f or f == float("inf") or f == float("-inf"):  # NaN / Inf
+            return None
+        return f
     except (TypeError, ValueError):
         return None
 

@@ -111,7 +111,9 @@ def export_pages(
         if not isinstance(payload, dict):
             raise RuntimeError("snapshot export returned non-JSON object")
 
-    (data_dir / "snapshot.json").write_text(json.dumps(payload, indent=2, default=str))
+    from odte_scanner.json_util import dumps_strict
+
+    (data_dir / "snapshot.json").write_text(dumps_strict(payload, indent=2, default=str))
     scan_src = ROOT / "outputs" / "latest_scan.json"
     (data_dir / "latest_scan.json").write_text(scan_src.read_text() if scan_src.exists() else "{}")
 
