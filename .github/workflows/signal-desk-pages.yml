@@ -62,9 +62,11 @@ jobs:
           restore-keys: |
             desk-ledgers-
 
+      # Keep scan short so a hung Yahoo/focus pull cannot block NaN-safe publish.
       - name: Focus scan
         id: scan
         continue-on-error: true
+        timeout-minutes: 8
         run: |
           mkdir -p outputs
           python -m odte_scanner scan --universe focus --no-paper
@@ -84,10 +86,18 @@ jobs:
           done
           python - <<'PY'
           import json
+          import re
           from pathlib import Path
+
+          raw = Path("site/data/snapshot.json").read_text()
+          # Browsers reject NaN/Infinity; Python json.loads accepts them — check raw text.
+          bad = re.findall(r"\b(?:NaN|-?Infinity)\b", raw)
+          assert not bad, f"snapshot.json not browser-safe: found {bad[:5]!r} ({len(bad)} total)"
+          json.loads(raw, parse_constant=lambda x: (_ for _ in ()).throw(ValueError(x)))
+
           meta = json.loads(Path("site/meta.json").read_text())
           print("scores:", meta.get("scores"), "at", meta.get("generated_at"))
-          snap = json.loads(Path("site/data/snapshot.json").read_text())
+          snap = json.loads(raw)
           assert "scores" in snap
           acts = snap.get("actions") or {}
           journ = (snap.get("insights") or {})

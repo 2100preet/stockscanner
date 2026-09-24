@@ -198,13 +198,15 @@ class ChallengeTracker:
             logger.warning("challenge ledger load failed: %s", exc)
 
     def save(self) -> None:
+        from odte_scanner.json_util import dumps_strict
+
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = self.book.to_dict()
         # preserve counters explicitly
         payload["flips_closed"] = self.book.flips_closed
         payload["wins"] = self.book.wins
         payload["losses"] = self.book.losses
-        self.path.write_text(json.dumps(payload, indent=2))
+        self.path.write_text(dumps_strict(payload, indent=2, default=str))
 
     def open_trades(self) -> list[ChallengeTrade]:
         return [t for t in self.book.trades if t.status == "open"]

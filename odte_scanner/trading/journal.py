@@ -145,7 +145,9 @@ class SignalJournal:
             self.book = TradeJournal(starting_cash=starting_cash, cash=starting_cash)
 
     def save(self) -> None:
-        self.path.write_text(json.dumps(self.book.to_dict(), indent=2))
+        from odte_scanner.json_util import dumps_strict
+
+        self.path.write_text(dumps_strict(self.book.to_dict(), indent=2, default=str))
 
     def open_symbols(self) -> set[str]:
         return {t.symbol for t in self.book.trades if t.status == "open"}
