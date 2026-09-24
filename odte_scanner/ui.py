@@ -13,6 +13,7 @@ from pathlib import Path
 from flask import Flask, jsonify, render_template_string, request
 
 from odte_scanner.config import load_config
+from odte_scanner.json_util import dumps_strict, sanitize_for_json
 from odte_scanner.signals.actions import build_action_board
 from odte_scanner.backtest.win_rates import (
     build_win_rate_table,
@@ -3348,7 +3349,11 @@ PAGE = r"""
           note.style.display = "none";
         }
       } catch (e) {
-        note.textContent = "Load failed: " + (e.message||e);
+        const msg = String(e.message||e);
+        note.textContent = "Load failed: " + msg +
+          (msg.includes("NaN") || msg.includes("JSON")
+            ? " — snapshot had invalid numbers; hard-refresh after the next Pages deploy."
+            : "");
       }
     }
 
@@ -5245,7 +5250,7 @@ def create_app(config_path: str | None = None) -> Flask:
         try:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             cache_path.write_text(
-                json.dumps(
+                dumps_strict(
                     {
                         "generated_at": datetime.now(timezone.utc).isoformat(),
                         "actions": actions,
@@ -5280,7 +5285,8 @@ def create_app(config_path: str | None = None) -> Flask:
                 webull_payload = {**(webull_payload or {}), "auto_sync_error": str(exc)}
 
         return jsonify(
-            {
+            sanitize_for_json(
+                {
                 "generated_at": datetime.now(timezone.utc).isoformat(),
                 "offline": offline,
                 "host": "github-pages" if offline else "live",
@@ -5318,7 +5324,8 @@ def create_app(config_path: str | None = None) -> Flask:
                 "win_rates": win_table,
                 "rec_log": rec_log_payload,
                 "webull": webull_payload,
-            }
+                }
+            )
         )
 
     def _challenge_tracker():

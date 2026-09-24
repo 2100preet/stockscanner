@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from odte_scanner.json_util import finite_float
+
 logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -325,7 +327,7 @@ class ChallengeTracker:
             dte_at_entry=ticket.get("dte"),
             entered_at=_now(),
             entry_ask=ask,
-            entry_spot=ticket.get("spot") or ticket.get("live_last"),
+            entry_spot=finite_float(ticket.get("spot") or ticket.get("live_last")),
             entry_reason=ticket.get("thesis") or ticket.get("detail") or "CHALLENGE ENTRY",
             hold_min_days=int(hp["min_days"]),
             hold_max_days=int(hp["max_days"]),
