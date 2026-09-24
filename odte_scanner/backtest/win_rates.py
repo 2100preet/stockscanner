@@ -166,7 +166,12 @@ def build_win_rate_table(
                 and has_monthly
             ):
                 return raw
-            if age_h <= max_age_hours and has_swing:
+            if has_swing and has_monthly:
+                # Soft reuse: fill gaps only (even when slightly stale) so CI/Pages
+                # don't rebake the entire challenge universe every deploy.
+                cached_raw = raw
+                need_force_monthly = False
+            elif age_h <= max_age_hours and has_swing:
                 cached_raw = raw
                 need_force_monthly = not has_monthly
         except Exception:  # noqa: BLE001
