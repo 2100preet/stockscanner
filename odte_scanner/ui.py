@@ -834,12 +834,21 @@ PAGE = r"""
       if (soft == null && callW != null && !Number.isNaN(Number(callW))) {
         soft = Number(callW) - Number(row.wall_buffer_usd ?? walls.wall_buffer_usd ?? 0.10);
       }
-      const spot = spotLookup(sym, row);
+      const spot = spotLookup(sym, row) ?? row.spot;
+      const support = row.support;
+      const breakout = row.breakout;
+      const tgts = Array.isArray(row.targets) ? row.targets.slice(0, 3) : [];
+      const ta = (support != null || breakout != null)
+        ? `<div>Support<strong class="down">${support==null?"—":"$"+fmt(support,2)}</strong></div>
+          <div>Breakout<strong class="up">${breakout==null?"—":"$"+fmt(breakout,2)}</strong></div>
+          <div>Targets<strong>${tgts.length?tgts.map(x=>"$"+fmt(x,2)).join(" → "):"—"}</strong></div>`
+        : "";
       return `
           <div>Spot (scan)<strong>${spot==null?"—":"$"+fmt(spot,2)}</strong></div>
           <div title="Max call OI ≥ spot">Call wall<strong class="up">${callW==null?"—":fmt(callW,2)}</strong></div>
           <div title="Max put OI ≤ spot">Put wall<strong class="down">${putW==null?"—":fmt(putW,2)}</strong></div>
-          <div title="Take profit on underlying before OI wall">Soft EXIT<strong class="up">${soft==null?"—":"$"+fmt(soft,2)}</strong></div>`;
+          <div title="Take profit on underlying before OI wall">Soft EXIT<strong class="up">${soft==null?"—":"$"+fmt(soft,2)}</strong></div>
+          ${ta}`;
     }
 
     function allTickets() {
