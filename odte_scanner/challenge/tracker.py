@@ -134,6 +134,8 @@ class ChallengeBook:
     losses: int = 0
     trades: list[ChallengeTrade] = field(default_factory=list)
     balance_log: list[dict[str, Any]] = field(default_factory=list)
+    epoch: str = ""
+    archive: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def equity(self) -> float:
@@ -160,14 +162,28 @@ class ChallengeBook:
             "open_trades": sum(1 for t in self.trades if t.status == "open"),
             "trades": [t.to_dict() for t in self.trades],
             "balance_log": list(self.balance_log[-40:]),
+            "epoch": self.epoch,
+            "archive": list(self.archive[-5:]),
         }
 
 
 class ChallengeTracker:
-    def __init__(self, path: str | Path | None = None, *, starting_cash: float = 1000.0):
+    def __init__(
+        self,
+        path: str | Path | None = None,
+        *,
+        starting_cash: float = 1000.0,
+        epoch: str | None = None,
+        rebuild_seed_usd: float | None = None,
+        rebuild_reason: str | None = None,
+    ):
         self.path = Path(path) if path else DEFAULT_PATH
-        self.book = ChallengeBook(starting_cash=starting_cash, cash=starting_cash)
+        self.epoch = str(epoch or "").strip()
+        self.rebuild_seed_usd = rebuild_seed_usd
+        self.rebuild_reason = rebuild_reason
+        self.book = ChallengeBook(starting_cash=starting_cash, cash=starting_cash, epoch=self.epoch)
         self.load()
+        self._apply_epoch_rebuild(starting_cash=starting_cash)
 
     def load(self) -> None:
         if not self.path.exists():
@@ -184,18 +200,86 @@ class ChallengeTracker:
                     trades.append(ChallengeTrade(**payload))
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("skip bad challenge trade: %s", exc)
+            start = float(raw["starting_cash"]) if raw.get("starting_cash") is not None else self.book.starting_cash
+            # Do not treat cash=0 as missing (``or start`` previously reset to $1k)
+            cash = float(raw["cash"]) if raw.get("cash") is not None else start
             self.book = ChallengeBook(
-                starting_cash=float(raw.get("starting_cash") or self.book.starting_cash),
-                cash=float(raw.get("cash") or self.book.starting_cash),
-                target_usd=float(raw.get("target_usd") or 1_000_000),
+                starting_cash=start,
+                cash=cash,
+                target_usd=float(raw["target_usd"]) if raw.get("target_usd") is not None else 1_000_000.0,
                 flips_closed=int(raw.get("flips_closed") or 0),
                 wins=int(raw.get("wins") or 0),
                 losses=int(raw.get("losses") or 0),
                 trades=trades,
                 balance_log=list(raw.get("balance_log") or []),
+                epoch=str(raw.get("epoch") or ""),
+                archive=list(raw.get("archive") or []),
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("challenge ledger load failed: %s", exc)
+
+    def _apply_epoch_rebuild(self, *, starting_cash: float) -> bool:
+        """Archive death spiral / stale epoch and reseed cash for Oct pace."""
+        if not self.epoch:
+            return False
+        if self.book.epoch == self.epoch:
+            return False
+        seed = float(self.rebuild_seed_usd if self.rebuild_seed_usd is not None else starting_cash)
+        seed = max(100.0, seed)
+        prior = self.book.to_dict()
+        prior_note = {
+            "archived_at": _now(),
+            "from_epoch": self.book.epoch or "legacy",
+            "to_epoch": self.epoch,
+            "prior_cash": prior.get("cash"),
+            "prior_equity": prior.get("equity"),
+            "prior_wins": prior.get("wins"),
+            "prior_losses": prior.get("losses"),
+            "prior_flips": prior.get("flips_closed"),
+            "reason": self.rebuild_reason
+            or "pace rebuild — death spiral / epoch bump",
+            "trades": prior.get("trades") or [],
+            "balance_log": prior.get("balance_log") or [],
+        }
+        archive = list(self.book.archive or [])
+        archive.append(prior_note)
+        self.book = ChallengeBook(
+            starting_cash=seed,
+            cash=seed,
+            target_usd=float(prior.get("target_usd") or 1_000_000.0),
+            flips_closed=0,
+            wins=0,
+            losses=0,
+            trades=[],
+            balance_log=[
+                {
+                    "at": _now(),
+                    "action": "REBUILD",
+                    "symbol": "",
+                    "right": "",
+                    "trade_id": "",
+                    "cash_before": prior.get("cash"),
+                    "cash_after": seed,
+                    "equity_after": seed,
+                    "debit_usd": None,
+                    "pnl_usd": None,
+                    "note": prior_note["reason"],
+                    "epoch": self.epoch,
+                }
+            ],
+            epoch=self.epoch,
+            archive=archive[-5:],
+        )
+        self.save()
+        logger.warning(
+            "challenge sleeve rebuilt epoch=%s seed=$%.2f (was $%s / %sW-%sL)",
+            self.epoch,
+            seed,
+            prior.get("cash"),
+            prior.get("wins"),
+            prior.get("losses"),
+        )
+        return True
 
     def save(self) -> None:
         from odte_scanner.json_util import dumps_strict
@@ -242,13 +326,46 @@ class ChallengeTracker:
                 blocked.add(str(t.symbol).upper())
         return blocked
 
+    def lifetime_loss_symbols(self, *, min_losses: int = 2) -> set[str]:
+        """Symbols with ≥min_losses closed losing flips (any epoch/archive-safe on current book)."""
+        counts: dict[str, int] = {}
+        for t in self.book.trades:
+            if t.status != "closed":
+                continue
+            lost = (t.pnl_usd is not None and float(t.pnl_usd) < 0) or (
+                t.profit_pct is not None and float(t.profit_pct) < 0
+            )
+            if not lost:
+                continue
+            sym = str(t.symbol).upper()
+            counts[sym] = counts.get(sym, 0) + 1
+        return {s for s, n in counts.items() if n >= int(min_losses)}
+
+    def consecutive_losses(self) -> int:
+        """Trailing closed losses since last win (0 if last closed was a win)."""
+        closed = [t for t in self.book.trades if t.status == "closed"]
+        n = 0
+        for t in reversed(closed):
+            lost = (t.pnl_usd is not None and float(t.pnl_usd) < 0) or (
+                t.profit_pct is not None and float(t.profit_pct) < 0
+            )
+            if lost:
+                n += 1
+            else:
+                break
+        return n
+
     def enter(
         self,
         ticket: dict[str, Any],
         *,
         max_open: int = 1,
         loss_cooldown_days: int = 5,
-        max_cash_frac: float = 0.35,
+        max_cash_frac: float = 0.25,
+        max_contracts: int = 2,
+        prefer_calls: bool = True,
+        min_ensemble: float = 55.0,
+        max_consecutive_losses: int = 3,
     ) -> ChallengeTrade | None:
         if ticket.get("action") not in {"ENTRY", "BUY_NOW"}:
             return None
@@ -262,8 +379,19 @@ class ChallengeTracker:
             return None
         if len(self.open_trades()) >= max_open:
             return None
+        if self.consecutive_losses() >= int(max_consecutive_losses):
+            return None
         # Do not chase the same loser immediately (e.g. SLV put loop)
         if symbol.upper() in self.recent_loss_symbols(cooldown_days=loss_cooldown_days):
+            return None
+        if symbol.upper() in self.lifetime_loss_symbols(min_losses=2):
+            return None
+        if prefer_calls and right == "P":
+            # Puts only when ticket explicitly dump-confirmed
+            if not ticket.get("dump_confirm"):
+                return None
+        ens = ticket.get("ensemble_score")
+        if ens is not None and float(ens) < float(min_ensemble):
             return None
         # Require a live-looking print (volume or explicit live mark source)
         vol = ticket.get("volume")
@@ -285,16 +413,19 @@ class ChallengeTracker:
                 "label": ticket.get("hold_period_label") or hp["label"],
             }
         contracts = int(ticket.get("contracts_for_bankroll") or 1)
+        contracts = max(1, min(int(max_contracts), contracts))
         # Cap risk: never deploy more than max_cash_frac of cash on one flip
-        frac = float(ticket.get("max_cash_frac") or max_cash_frac or 0.35)
+        frac = float(ticket.get("max_cash_frac") or max_cash_frac or 0.25)
         frac = min(1.0, max(0.05, frac))
         max_cost = float(self.book.cash) * frac
         cost = ask * 100 * contracts
         if cost > max_cost:
             contracts = max(1, int(max_cost // (ask * 100)))
+            contracts = min(int(max_contracts), contracts)
             cost = ask * 100 * contracts
         if cost > self.book.cash:
             contracts = max(1, int(self.book.cash // (ask * 100)))
+            contracts = min(int(max_contracts), contracts)
             cost = ask * 100 * contracts
             if cost <= 0 or cost > self.book.cash:
                 return None
@@ -446,9 +577,30 @@ class ChallengeTracker:
         if unreal is not None and unreal <= -trade.stop_loss_pct:
             action = "EXIT"
             reasons.append(f"stop −{abs(unreal):.0f}%")
+        # Early sprint cut — don't wait for full −35/−45 if already −25% after min hold
+        elif (
+            unreal is not None
+            and unreal <= -25.0
+            and days >= max(0.15, float(trade.hold_min_days or 0) * 0.5)
+            and str(trade.horizon or "").lower() in {"sprint", "weekly", "fast", "1-3d"}
+        ):
+            action = "EXIT"
+            reasons.append(f"early sprint cut −{abs(unreal):.0f}%")
         if days >= trade.hold_max_days:
             action = "EXIT"
             reasons.append(f"max hold {trade.hold_max_days}d reached ({days:.1f}d)")
+            # If we only have a stale entry reprint as mark, salvage a small residual
+            if (
+                trade.entry_ask
+                and mark is not None
+                and abs(float(bid) - float(trade.entry_ask)) < 1e-9
+            ):
+                salvage = max(0.01, float(trade.entry_ask) * 0.05)
+                trade.mark = salvage
+                bid = salvage
+                unreal = ((bid - trade.entry_ask) / trade.entry_ask * 100.0) if trade.entry_ask else None
+                trade.unrealized_pct = round(unreal, 2) if unreal is not None else None
+                reasons.append(f"no live mark — salvage exit @ ${salvage:.2f}")
         # Thesis fail: call vs dump / put vs rip
         if trade.right == "C" and mom5 is not None and mom5 <= -0.35 and days >= trade.hold_min_days:
             action = "EXIT"
@@ -623,7 +775,11 @@ class ChallengeTracker:
         sprint_desk: bool = True,
         live_marks: dict[str, float] | None = None,
         loss_cooldown_days: int = 5,
-        max_cash_frac: float = 0.35,
+        max_cash_frac: float = 0.25,
+        max_contracts: int = 2,
+        prefer_calls: bool = True,
+        min_ensemble: float = 55.0,
+        max_consecutive_losses: int = 3,
     ) -> dict[str, Any]:
         quotes = quotes or {}
         live_marks = live_marks or {}
@@ -701,8 +857,30 @@ class ChallengeTracker:
 
         # Auto-enter top ENTRY ticket if flat (skip recent losers / illiquid)
         if auto_enter and len(self.open_trades()) < max_open:
-            blocked = self.recent_loss_symbols(cooldown_days=loss_cooldown_days)
-            for tk in tickets:
+            if self.consecutive_losses() >= int(max_consecutive_losses):
+                return {
+                    "entered": entered,
+                    "exited": exited,
+                    "holds": holds,
+                    "cash": round(self.book.cash, 2),
+                    "equity": self.book.equity,
+                    "paused": True,
+                    "pause_reason": f"{max_consecutive_losses}+ consecutive losses — auto-enter paused",
+                }
+            blocked = self.recent_loss_symbols(cooldown_days=loss_cooldown_days) | self.lifetime_loss_symbols(
+                min_losses=2
+            )
+            # Prefer CALL ENTRY tickets when compounding toward $1M
+            ordered = list(tickets)
+            if prefer_calls:
+                ordered = sorted(
+                    ordered,
+                    key=lambda tk: (
+                        0 if str(tk.get("right") or "C").upper() == "C" else 1,
+                        -float(tk.get("ensemble_score") or 0),
+                    ),
+                )
+            for tk in ordered:
                 if tk.get("action") != "ENTRY":
                     continue
                 if not tk.get("contract") or tk.get("ask") in (None, 0):
@@ -714,6 +892,10 @@ class ChallengeTracker:
                     max_open=max_open,
                     loss_cooldown_days=loss_cooldown_days,
                     max_cash_frac=max_cash_frac,
+                    max_contracts=max_contracts,
+                    prefer_calls=prefer_calls,
+                    min_ensemble=min_ensemble,
+                    max_consecutive_losses=max_consecutive_losses,
                 )
                 if tr:
                     entered.append(tr.id)

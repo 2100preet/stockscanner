@@ -4611,6 +4611,13 @@ def create_app(config_path: str | None = None) -> Flask:
             tracker = ChallengeTracker(
                 ch_path,
                 starting_cash=float(actions_cfg.get("challenge_start_usd", 1000)),
+                epoch=str(actions_cfg.get("challenge_epoch") or ""),
+                rebuild_seed_usd=(
+                    float(actions_cfg["challenge_rebuild_seed_usd"])
+                    if actions_cfg.get("challenge_rebuild_seed_usd") is not None
+                    else None
+                ),
+                rebuild_reason=str(actions_cfg.get("challenge_rebuild_reason") or "") or None,
             )
             # Live option marks BEFORE evaluate/EXIT — otherwise exits book at entry ($0 P&L)
             fetch_ch_contracts = bool(actions_cfg.get("challenge_fetch_contracts", True)) and (
@@ -4710,7 +4717,11 @@ def create_app(config_path: str | None = None) -> Flask:
                 sprint_desk=bool(actions_cfg.get("challenge_sprint_desk", True)),
                 live_marks=ch_live_marks,
                 loss_cooldown_days=int(actions_cfg.get("challenge_loss_cooldown_days", 5)),
-                max_cash_frac=float(actions_cfg.get("challenge_max_cash_frac", 0.35)),
+                max_cash_frac=float(actions_cfg.get("challenge_max_cash_frac", 0.25)),
+                max_contracts=int(actions_cfg.get("challenge_max_contracts", 2)),
+                prefer_calls=bool(actions_cfg.get("challenge_prefer_calls", True)),
+                min_ensemble=float(actions_cfg.get("challenge_min_ensemble", 55)),
+                max_consecutive_losses=int(actions_cfg.get("challenge_max_consecutive_losses", 3)),
             )
             challenge["sync"] = sync
             challenge["book"] = sync.get("book") or tracker.book.to_dict()
@@ -5385,6 +5396,13 @@ def create_app(config_path: str | None = None) -> Flask:
         return ChallengeTracker(
             ch_path,
             starting_cash=float(actions_cfg.get("challenge_start_usd", 1000)),
+            epoch=str(actions_cfg.get("challenge_epoch") or ""),
+            rebuild_seed_usd=(
+                float(actions_cfg["challenge_rebuild_seed_usd"])
+                if actions_cfg.get("challenge_rebuild_seed_usd") is not None
+                else None
+            ),
+            rebuild_reason=str(actions_cfg.get("challenge_rebuild_reason") or "") or None,
         )
 
     @app.post("/api/challenge/enter")
