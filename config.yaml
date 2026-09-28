@@ -138,8 +138,15 @@ tickers:
   - PANW  # Palo Alto — IV ±9.6%
   - LULU  # Lululemon — IV ±9.5%
   - MDT   # Medtronic — IV ±5.1%
+  # Sticky TA level-watch (user notes Sep 2026) — elevate onto focus for BUY/SELL alerts
+  - AXTI  # AXT — $80 breakout / $77 support
+  - BE    # Bloom Energy — range breakout; was liquid mid-only
+  - BMNR  # BitMine — $26.55 range breakout
+  - CAT   # Caterpillar — range box; was liquid mega-only
+  - FPS   # Double inside day under range top
   # CRM / AMAT already listed above under Friday weeklies
   # AVGO / DELL already on focus above
+  # ALAB / AMD already on focus above
 
 # Yahoo Finance symbol overrides (indexes need ^ prefix for quotes/chains)
 symbol_aliases:
@@ -272,6 +279,11 @@ expiry_calendars:
     - MDT
     - HYG
     - EEM
+    - AXTI
+    - BE
+    - BMNR
+    - CAT
+    - FPS
 
 regime:
   spy: SPY

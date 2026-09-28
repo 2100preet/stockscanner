@@ -51,6 +51,8 @@ MID_SMALL_UNIVERSE: list[str] = [
     "NTAP", "AMBA", "YEXT", "ASAN", "CIEN", "PVH", "DOCU", "FIVE",  # ER IV week names not already liquid
     # AI connectivity / infra / miners elevated to focus
     "ALAB", "CRDO", "VRT", "APLD", "CIFR", "WULF", "CEG", "GEV",
+    # Sticky TA level-watch (thin / mid names not already liquid megas)
+    "AXTI", "BMNR", "FPS",
 ]
 
 # Earnings Whispers–style most-anticipated names (often missing from S&P100 lists).
@@ -193,6 +195,8 @@ FOCUS_DEFAULT: list[str] = [
     # Earnings this week — IV expected-move sleeve
     "MDB", "SNOW", "NTAP", "AMBA", "YEXT", "ASAN", "GTLB", "AI", "ZS", "PATH",
     "CIEN", "PVH", "HPE", "DOCU", "FIVE", "NIO", "PANW", "LULU", "MDT",
+    # Sticky TA level-watch — elevate liquid/mid names onto focus options scan
+    "AXTI", "BE", "BMNR", "CAT", "FPS",
 ]
 
 

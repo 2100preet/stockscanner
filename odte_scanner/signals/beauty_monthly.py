@@ -21,6 +21,8 @@ BEAUTY_SYMBOLS = {
     "AMD", "META", "MU", "SNDK", "NVDA", "AVGO", "SMCI", "TSM", "ARM", "QCOM",
     "BABA", "GOOGL", "GOOG", "AMZN", "TSLA", "AAPL", "MSFT", "NFLX", "PLTR",
     "ORCL", "CRM", "NOW", "CRWD", "ANET", "ALAB", "VRT", "MRVL",
+    # Range / monthly continuation peers from sticky TA notes
+    "AMAT", "DELL", "CAT", "BE",
 }
 
 

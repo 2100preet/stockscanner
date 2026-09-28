@@ -227,7 +227,7 @@ PAGE = r"""
 
     <section class="tabpane active" id="tab-nowboard">
       <h2>BUY NOW / SELL NOW — all desks</h2>
-      <p class="lede">Live option BUY NOW / SELL NOW across 0DTE, weeklies, swing, Explosive, <strong>RIP/META</strong>, ML6, Challenge, and 0DTE $1K IN/OUT. Hist win ≥80% (n≥5) gates Options BUY NOW. Same losing OCC stays blocked; mega names can still BUY when tape is ripping (see RIP tab). SETUP rows are quality tape without a contract yet — not a buy.</p>
+      <p class="lede">Live option BUY NOW / SELL NOW across 0DTE, weeklies, swing, Explosive, <strong>RIP/META</strong>, <strong>Levels</strong>, ML6, Challenge, and 0DTE $1K IN/OUT. Hist win ≥80% (n≥5) gates Options BUY NOW. Same losing OCC stays blocked; mega names can still BUY when tape is ripping (see RIP tab). SETUP rows are quality tape without a contract yet — not a buy.</p>
       <div class="metric-row" id="nowBoardMetrics"></div>
       <p class="lede" id="nowBoardNote" style="margin-top:0;font-size:.76rem"></p>
       <h2>BUY NOW</h2>
@@ -906,7 +906,7 @@ PAGE = r"""
       <p class="pc-why"><strong>EXIT:</strong> ${t.planOut}</p>`;
     }
 
-    const NOW_DESK_ORDER = ["0DTE", "1 Week", "Swing 1–3M", "Explosive", "ML6", "Challenge", "0DTE $1K", "Options"];
+    const NOW_DESK_ORDER = ["0DTE", "1 Week", "Swing 1–3M", "Levels", "Explosive", "ML6", "Challenge", "0DTE $1K", "Options"];
 
     function horizonDesk(row, fallback) {
       const b = String(row.dte_bucket || row.horizon || row.hold_style || row.style || "").toLowerCase();
@@ -961,6 +961,10 @@ PAGE = r"""
       const beauty = DATA.beauty_monthly || DATA.beauty || {};
       (beauty.buy_beauty || beauty.buy_now || []).forEach(r => add(Object.assign({}, r, { action: r.action || "BUY_BEAUTY" }), "BUY", "Beauty 1mo"));
       (beauty.watch || []).slice(0, 8).forEach(r => add(Object.assign({}, r, { action: r.action || "WAIT" }), "WAIT", "Beauty 1mo"));
+      const levels = DATA.level_watch || DATA.levels || {};
+      (levels.buy_level || levels.buy_now || []).forEach(r => add(Object.assign({}, r, { action: r.action || "BUY_LEVEL" }), "BUY", "Levels"));
+      (levels.watch || []).slice(0, 12).forEach(r => add(Object.assign({}, r, { action: r.action || "WAIT" }), "WAIT", "Levels"));
+      (levels.cool || []).slice(0, 4).forEach(r => add(Object.assign({}, r, { action: r.action || "SETUP" }), "SETUP", "Levels"));
       const ml = (DATA.ml6 && DATA.ml6.actions) || {};
       (ml.buy_now || []).forEach(r => add(r, "BUY", "ML6"));
       (ml.sell_now || []).forEach(r => add(r, "SELL", "ML6"));
@@ -1004,9 +1008,10 @@ PAGE = r"""
       const gated = buy && win >= 80 && (Number.isNaN(n) || n >= 3);
       const isRip = buy && String(r.action || "").includes("RIP");
       const isBeauty = buy && String(r.action || "").includes("BEAUTY");
-      const cls = buy ? (isRip || isBeauty ? "long" : (gated ? "enter-now" : "long")) : (wait || setup ? "wait" : "short");
+      const isLevel = buy && String(r.action || "").includes("LEVEL");
+      const cls = buy ? (isRip || isBeauty || isLevel ? "long" : (gated ? "enter-now" : "long")) : (wait || setup ? "wait" : "short");
       const label = buy
-        ? (isBeauty ? "BUY BEAUTY" : (isRip ? "BUY RIP" : (gated ? "ENTER NOW" : "BUY NOW")))
+        ? (isLevel ? "BUY LEVEL" : (isBeauty ? "BUY BEAUTY" : (isRip ? "BUY RIP" : (gated ? "ENTER NOW" : "BUY NOW"))))
         : (setup ? "SETUP · not BUY" : (wait ? "WAIT" : "SELL NOW"));
       const strike = r.strike == null ? "—" : `${fmt(r.strike, Number(r.strike) % 1 ? 2 : 0)}${right === "PUT" ? "p" : "c"}`;
       const px = buy ? (r.ask ?? r.entry_ask) : (r.bid ?? r.mark ?? r.ask ?? r.exit_bid);
@@ -4499,6 +4504,38 @@ def create_app(config_path: str | None = None) -> Flask:
                     "note": "Beauty monthly temporarily unavailable.",
                 }
 
+        # Sticky TA level-watch — ALAB/AMAT/AMD/AXTI/BE/BMNR/CAT/DELL/FPS
+        level_watch: dict = {
+            "buy_level": [],
+            "buy_now": [],
+            "watch": [],
+            "cool": [],
+            "counts": {},
+            "level_symbols": [],
+        }
+        if actions_cfg.get("level_watch_enabled", True):
+            try:
+                from odte_scanner.signals.level_watch import build_level_board
+
+                level_watch = build_level_board(
+                    quotes=quotes,
+                    scores=scan.get("scores") or [],
+                    candidates=refreshed,
+                    near_breakout_pct=float(actions_cfg.get("level_near_breakout_pct", 1.5)),
+                )
+                level_watch["generated_at"] = datetime.now(timezone.utc).isoformat()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("level watch unavailable: %s", exc)
+                level_watch = {
+                    "error": str(exc),
+                    "buy_level": [],
+                    "buy_now": [],
+                    "watch": [],
+                    "cool": [],
+                    "counts": {},
+                    "note": "Level watch temporarily unavailable.",
+                }
+
         from odte_scanner.challenge import build_challenge_board
         from odte_scanner.data.universe import liquid_universe
         from odte_scanner.echo import build_echo_board
@@ -5261,6 +5298,7 @@ def create_app(config_path: str | None = None) -> Flask:
                         "chase_radar": chase_radar,
                         "rip_radar": rip_radar,
                         "beauty_monthly": beauty_monthly,
+                        "level_watch": level_watch,
                     },
                     indent=2,
                     default=str,
@@ -5309,6 +5347,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 "chase_radar": chase_radar,
                 "rip_radar": rip_radar,
                 "beauty_monthly": beauty_monthly,
+                "level_watch": level_watch,
                 "echo": echo,
                 "challenge": challenge,
                 "odte_1k": odte_1k,
