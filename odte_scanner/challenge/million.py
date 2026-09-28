@@ -107,6 +107,7 @@ class ChallengeTicket:
     pace_required_mult: float | None = None
     pace_required_pct: float | None = None
     pace_style: str | None = None
+    dump_confirm: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -863,6 +864,18 @@ def build_challenge_board(
         live_ok = spot_source == "live"
 
         right = _side_from_tape(score=sc, quote=q, sprint=sprint_desk)
+        dump_confirm = False
+        if right == "P":
+            mom5 = q.get("mom_5m_pct")
+            live_pct = q.get("session_change_pct")
+            if live_pct is None:
+                live_pct = q.get("change_pct")
+            dump_confirm = (mom5 is not None and float(mom5) <= -0.25) or (
+                live_pct is not None and float(live_pct) <= -0.8
+            )
+            if sprint_desk and not dump_confirm:
+                # Belt-and-suspenders: never leave a put ENTRY without dump confirm
+                right = "C"
         horizon = str(row.get("horizon") or "swing")
         # Sprint desk: never force LEAPs — wait through earnings prints instead
         prefer_leap = bool(earn.get("prefer_leap")) and not sprint_desk
@@ -1034,10 +1047,17 @@ def build_challenge_board(
         contracts_n = 1
         debit = 0.0
         if ask and ask > 0:
-            max_contracts = max(1, int(start_usd // (ask * 100)))
-            contracts_n = min(max_contracts, 5) if max_contracts else 1
+            # Size off CURRENT sleeve equity (not the original $1k start)
+            bankroll = max(100.0, float(equity_now))
+            max_frac = 0.25
+            max_contracts = max(1, int((bankroll * max_frac) // (ask * 100)))
+            max_contracts = min(2, max_contracts)  # never >2 — cheap-ask lottery killed the sleeve
+            contracts_n = max(1, max_contracts)
             debit = round(ask * 100 * contracts_n, 2)
-            if debit > start_usd and ask * 100 <= start_usd * 1.05:
+            if debit > bankroll * max_frac:
+                contracts_n = 1
+                debit = round(ask * 100, 2)
+            if debit > bankroll:
                 contracts_n = 1
                 debit = round(ask * 100, 2)
 
@@ -1342,6 +1362,7 @@ def build_challenge_board(
                 pace_required_mult=round(ticket_need_mult, 3),
                 pace_required_pct=round((ticket_need_mult - 1.0) * 100.0, 1),
                 pace_style=style,
+                dump_confirm=dump_confirm,
             )
         )
         if len(tickets) >= max_tickets:

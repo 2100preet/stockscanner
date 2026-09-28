@@ -392,6 +392,8 @@ def test_tracker_enter_hold_exit_call_and_put(tmp_path):
         "target_premium_mult": 1.78,
         "contracts_for_bankroll": 1,
         "thesis": "test put",
+        "dump_confirm": True,
+        "ensemble_score": 70,
     }
     put = tr.enter(put_ticket)
     assert put is not None
@@ -499,6 +501,8 @@ def test_sync_annotates_flat_exit_without_live_mark(tmp_path):
         "hold_min_days": 1,
         "hold_max_days": 3,
         "hold_ideal_days": 2,
+        "dump_confirm": True,
+        "ensemble_score": 70,
     }
     entered = tr.enter(ticket)
     from datetime import datetime, timedelta, timezone
@@ -513,8 +517,9 @@ def test_sync_annotates_flat_exit_without_live_mark(tmp_path):
     )
     assert sync["exited"] == [entered.id]
     closed = next(x for x in tr.book.trades if x.id == entered.id)
-    assert closed.pnl_usd == 0.0
-    assert "no live bid" in (closed.exit_reason or "").lower()
+    # Stale entry mark past max hold → salvage residual (not fake $0 flat)
+    assert closed.pnl_usd is not None and closed.pnl_usd < 0
+    assert "salvage" in (closed.exit_reason or "").lower() or "max hold" in (closed.exit_reason or "").lower()
 
 
 def test_compound_path_15_flips_1mo_pace():
@@ -576,6 +581,8 @@ def test_loss_cooldown_blocks_reentry(tmp_path):
         "spot": 30,
         "target_premium_mult": 1.75,
         "contracts_for_bankroll": 1,
+        "dump_confirm": True,
+        "ensemble_score": 70,
     }
     entered = tr.enter(ticket)
     assert entered is not None
@@ -675,3 +682,27 @@ def test_board_waits_loss_cooldown_symbols():
     assert "cooldown" in (t0.get("status_detail") or t0.get("detail") or "").lower() or any(
         "cooldown" in r.lower() for r in (t0.get("reasons") or [])
     )
+
+
+def test_epoch_rebuild_reseeds_pace_equity(tmp_path):
+    ledger = tmp_path / "ch.json"
+    ledger.write_text(
+        '{"starting_cash":1000,"cash":391.25,"wins":0,"losses":6,"flips_closed":6,'
+        '"trades":[],"balance_log":[],"epoch":"legacy"}'
+    )
+    tr = ChallengeTracker(
+        ledger,
+        starting_cash=1000,
+        epoch="2026-09-28-pace30k",
+        rebuild_seed_usd=30000,
+        rebuild_reason="pace catch-up",
+    )
+    assert tr.book.cash == 30000
+    assert tr.book.equity == 30000
+    assert tr.book.wins == 0 and tr.book.losses == 0
+    assert tr.book.archive and tr.book.archive[-1]["prior_cash"] == 391.25
+    # second load is idempotent
+    tr2 = ChallengeTracker(
+        ledger, starting_cash=1000, epoch="2026-09-28-pace30k", rebuild_seed_usd=30000
+    )
+    assert tr2.book.cash == 30000
