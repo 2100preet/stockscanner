@@ -533,6 +533,11 @@ def build_lottery_board(
     min_confirms: int = 4,
     now: datetime | None = None,
     signal_times_path: str | None = "outputs/lottery_signal_times.json",
+    flow_leaders: list[dict[str, Any]] | None = None,
+    require_flow_confirm: bool = False,
+    flow_leaders_top_n: int = 20,
+    flow_min_net_score: float = 8.0,
+    market_tide: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Ranked lottery actions — only promote BUY/SELL when playbook clears."""
     quotes = quotes or {}
@@ -549,6 +554,13 @@ def build_lottery_board(
         prev = by_symbol_best.get(sym)
         if prev is None or float(t.get("lottery_score") or 0) > float(prev.get("lottery_score") or 0):
             by_symbol_best[sym] = t
+
+    from odte_scanner.signals.flow_gate import (
+        apply_flow_gate,
+        apply_uw_buy_boost,
+        apply_uw_market_tide,
+        apply_uw_sell_boost,
+    )
 
     sells: list[LotteryAction] = []
     holds: list[LotteryAction] = []
@@ -590,6 +602,19 @@ def build_lottery_board(
             min_confirms=min_confirms,
             now=now,
         )
+        sig = apply_flow_gate(
+            sig,
+            flow_leaders=flow_leaders,
+            require_flow_confirm=require_flow_confirm,
+            flow_leaders_top_n=flow_leaders_top_n,
+            flow_min_net_score=flow_min_net_score,
+        )
+        sig = apply_uw_buy_boost(
+            sig,
+            flow_leaders=flow_leaders,
+            flow_min_net_score=flow_min_net_score,
+        )
+        sig = apply_uw_market_tide(sig, market_tide=market_tide)
         if sig.action == "BUY_NOW":
             sig, store = _apply_persisted_lottery(sig, store)
             buys.append(sig)
@@ -599,6 +624,20 @@ def build_lottery_board(
             holds.append(sig)
         else:
             skips.append(sig)
+
+    boosted_holds: list[LotteryAction] = []
+    for sig in holds:
+        sig2 = apply_uw_sell_boost(
+            sig,
+            flow_leaders=flow_leaders,
+            flow_min_net_score=flow_min_net_score,
+        )
+        if sig2.action == "SELL_NOW":
+            sig2, store = _apply_persisted_lottery(sig2, store)
+            sells.append(sig2)
+        else:
+            boosted_holds.append(sig2)
+    holds = boosted_holds
 
     buys.sort(key=lambda s: (s.strength, s.best_mult or 0), reverse=True)
     sells.sort(key=lambda s: s.strength, reverse=True)
@@ -626,10 +665,16 @@ def build_lottery_board(
             "hold": len(holds),
             "skip": len(skips),
         },
+        "uw_flow": {
+            "leaders_count": len(flow_leaders or []),
+            "require_flow_confirm": require_flow_confirm,
+            "market_tide": (market_tide or {}).get("sentiment") if market_tide else None,
+        },
         "signal_times": store,
         "playbook_note": (
             "Lottery BUY NOW requires convexity + liquidity + tape confirm + session timing "
-            "+ underlying multi-algo score. SELL NOW banks +120%/+300% or cuts on tape/premium fail. "
+            "+ underlying multi-algo score + Unusual Whales flow/tide when keyed. "
+            "SELL NOW banks +120%/+300% or cuts on tape/premium fail / UW flip. "
             "BUY NOW time shown in US Central (CST/CDT) from the first pulse. "
             "Research only — options can go to zero."
         ),
