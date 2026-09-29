@@ -5500,6 +5500,35 @@ def create_app(config_path: str | None = None) -> Flask:
                     "ok": uw_summary.get("ok"),
                     "market_tide": (uw_summary.get("market_tide") or {}).get("sentiment"),
                 }
+        # Tradier marks status (token presence + optional quote smoke)
+        tradier_status: dict = {"configured": False, "ok": False, "source": "tradier"}
+        try:
+            from odte_scanner.data.tradier import fetch_quotes, status as tradier_status_fn
+
+            tradier_status = {**tradier_status_fn(), "ok": False}
+            if tradier_status.get("configured"):
+                smoke = fetch_quotes(["SPY"], timeout=10.0)
+                tradier_status["ok"] = bool(smoke.get("ok"))
+                tradier_status["smoke_n"] = smoke.get("n")
+                tradier_status["error"] = smoke.get("error")
+                logger.info(
+                    "Tradier marks configured=%s ok=%s sandbox=%s",
+                    tradier_status.get("configured"),
+                    tradier_status.get("ok"),
+                    tradier_status.get("sandbox"),
+                )
+            else:
+                logger.warning("Tradier marks skipped — TRADIER_ACCESS_TOKEN not set")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("tradier status failed: %s", exc)
+            tradier_status = {
+                "configured": False,
+                "ok": False,
+                "error": str(exc),
+                "source": "tradier",
+            }
+        if isinstance(actions, dict):
+            actions["tradier"] = tradier_status
         cache_path = ROOT / "outputs" / "ui_snapshot_cache.json"
         try:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -5567,6 +5596,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 "level_watch": level_watch,
                 "echo": echo,
                 "challenge": challenge,
+                "tradier": tradier_status,
                 "odte_1k": odte_1k,
                 "power_hour": power_hour,
                 "market": market,

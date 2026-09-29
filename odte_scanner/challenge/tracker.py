@@ -751,6 +751,7 @@ class ChallengeTracker:
                     float(t.strike),
                     yahoo_symbol=aliases.get(t.symbol),
                     right=opt_right,
+                    contract=str(t.contract or "") or None,
                 )
             except Exception:  # noqa: BLE001
                 q = None

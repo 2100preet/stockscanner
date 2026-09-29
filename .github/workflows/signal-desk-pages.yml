@@ -76,21 +76,37 @@ jobs:
           else
             echo "UW_API_KEY configured=NO — add repo secret UNUSUAL_WHALES_API_KEY"
           fi
+          if [ -n "${TRADIER_ACCESS_TOKEN:-}" ]; then
+            echo "TRADIER_TOKEN configured=yes len=${#TRADIER_ACCESS_TOKEN}"
+          else
+            echo "TRADIER_TOKEN configured=NO — add repo secret TRADIER_ACCESS_TOKEN"
+          fi
           python -m odte_scanner scan --universe focus --no-paper
         env:
           PYTHONUNBUFFERED: "1"
           UNUSUAL_WHALES_API_KEY: ${{ secrets.UNUSUAL_WHALES_API_KEY }}
+          TRADIER_ACCESS_TOKEN: ${{ secrets.TRADIER_ACCESS_TOKEN }}
+          TRADIER_ACCOUNT_ID: ${{ secrets.TRADIER_ACCOUNT_ID }}
+          TRADIER_SANDBOX: ${{ secrets.TRADIER_SANDBOX }}
 
       - name: Export static site
         env:
           PYTHONUNBUFFERED: "1"
           UNUSUAL_WHALES_API_KEY: ${{ secrets.UNUSUAL_WHALES_API_KEY }}
+          TRADIER_ACCESS_TOKEN: ${{ secrets.TRADIER_ACCESS_TOKEN }}
+          TRADIER_ACCOUNT_ID: ${{ secrets.TRADIER_ACCOUNT_ID }}
+          TRADIER_SANDBOX: ${{ secrets.TRADIER_SANDBOX }}
         run: |
           mkdir -p outputs
           if [ -n "${UNUSUAL_WHALES_API_KEY:-}" ]; then
             echo "UW_API_KEY configured=yes len=${#UNUSUAL_WHALES_API_KEY}"
           else
             echo "UW_API_KEY configured=NO — add repo secret UNUSUAL_WHALES_API_KEY"
+          fi
+          if [ -n "${TRADIER_ACCESS_TOKEN:-}" ]; then
+            echo "TRADIER_TOKEN configured=yes len=${#TRADIER_ACCESS_TOKEN} sandbox=${TRADIER_SANDBOX:-unset} account=${TRADIER_ACCOUNT_ID:+set}"
+          else
+            echo "TRADIER_TOKEN configured=NO — add repo secret TRADIER_ACCESS_TOKEN"
           fi
           python -m odte_scanner export-pages --out site
           test -f site/index.html
@@ -118,6 +134,7 @@ jobs:
           acts = snap.get("actions") or {}
           journ = (snap.get("insights") or {})
           uw = acts.get("uw_flow") or (snap.get("challenge") or {}).get("uw_flow") or {}
+          tr = snap.get("tradier") or acts.get("tradier") or {}
           print(
               "sell_now:", (acts.get("counts") or {}).get("sell_now"),
               "buy_puts:", (acts.get("counts") or {}).get("buy_now_puts"),
@@ -126,6 +143,8 @@ jobs:
               "uw_ok:", uw.get("ok"),
               "uw_configured:", uw.get("configured"),
               "uw_alerts:", uw.get("alerts_n"),
+              "tradier_configured:", tr.get("configured"),
+              "tradier_ok:", tr.get("ok"),
           )
           ch = snap.get("challenge") or {}
           book = ch.get("book") or {}
