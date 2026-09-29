@@ -282,6 +282,30 @@ def pick_challenge_contract(
     - Require OI ≥ min_oi (or very high OI if volume is temporarily 0)
     - Prefer live bid/ask over last-only marks
     """
+    # Prefer Tradier chains when TRADIER_ACCESS_TOKEN is set (live marks + Greeks)
+    try:
+        from odte_scanner.data.tradier import access_token_from_env, pick_option_contract
+
+        if access_token_from_env():
+            picked = pick_option_contract(
+                yahoo_symbol or symbol,
+                float(spot),
+                right=right,
+                min_dte=min_dte,
+                max_dte=max_dte,
+                prefer_dte=prefer_dte,
+                otm_pct_max=otm_pct_max,
+                itm_pct_max=itm_pct_max,
+                min_volume=min_volume,
+                min_oi=min_oi,
+                require_bid=require_bid,
+            )
+            if picked and picked.get("ask"):
+                picked["symbol"] = str(symbol).upper()
+                return picked
+    except Exception:  # noqa: BLE001
+        pass
+
     right = right.upper()
     root = fetch_option_chain(symbol, yahoo_symbol=yahoo_symbol)
     if not root:

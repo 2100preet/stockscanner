@@ -3650,6 +3650,16 @@ def _snapshot_offline() -> bool:
         return False
 
 
+def _tradier_live_ok() -> bool:
+    """True when TRADIER_ACCESS_TOKEN is set — Pages can still pull live marks/bars."""
+    try:
+        from odte_scanner.data.tradier import access_token_from_env
+
+        return bool(access_token_from_env())
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _prioritize_action_board_rows(
     deduped: list[dict],
     win_table: dict | None,
@@ -3704,6 +3714,9 @@ def create_app(config_path: str | None = None) -> Flask:
         from odte_scanner.options.live_chain import refresh_candidate_quote
 
         offline = _snapshot_offline()
+        tradier_live = _tradier_live_ok()
+        # Pages sets offline=1 to skip Yahoo fan-out; Tradier still supplies live marks/bars
+        live_marks = (not offline) or tradier_live
         scan = _read_json(ROOT / "outputs" / "latest_scan.json") or {}
         watch = _read_json(ROOT / "outputs" / "watch" / "latest_watch.json")
         ledger_path = Path(cfg.get("paper_trading", {}).get("ledger_path", "outputs/paper_ledger.json"))
@@ -3809,7 +3822,7 @@ def create_app(config_path: str | None = None) -> Flask:
             dram_syms = []
         quote_syms = (
             []
-            if offline
+            if not live_marks
             else sorted(set(syms[:8]) | set(challenge_syms[:12]) | set(dram_syms))
         )
         for s in quote_syms:
@@ -3827,9 +3840,8 @@ def create_app(config_path: str | None = None) -> Flask:
         refreshed: list[dict] = []
 
         def _refresh(item: dict) -> dict:
-            # Use scan-time option fields; live chain refresh is too slow for UI paint.
-            # Do NOT mark real scan asks as stale — that + require_live_confirm wiped every
-            # live BUY NOW ("Option quote stale — not buying blind").
+            # Equity tape always overlays; when Tradier is live also refresh option marks
+            # so BUY NOW / WAIT see real bid/ask (scan-time Yahoo asks go stale on Pages).
             out = dict(item)
             ask = item.get("ask")
             has_mark = ask is not None and float(ask or 0) > 0
@@ -3843,12 +3855,43 @@ def create_app(config_path: str | None = None) -> Flask:
             if q:
                 out["live_change_pct"] = q.get("session_change_pct", q.get("change_pct"))
                 out["live_last"] = q.get("last")
+            if live_marks and item.get("expiry") and item.get("strike") is not None:
+                try:
+                    refreshed_opt = refresh_candidate_quote(
+                        out,
+                        yahoo_symbol=aliases.get(sym),
+                    )
+                    out.update(refreshed_opt)
+                    if float(out.get("ask") or 0) > 0:
+                        out["quote_stale"] = False
+                        out["synthetic"] = False
+                except Exception:  # noqa: BLE001
+                    pass
             return out
 
+        # Cap live option fan-out — Tradier OCC quotes are fast but still N calls
+        refresh_cap = 16 if live_marks else len(board_rows)
         with ThreadPoolExecutor(max_workers=6) as pool:
-            futs = [pool.submit(_refresh, item) for item in board_rows]
+            futs = [pool.submit(_refresh, item) for item in board_rows[:refresh_cap]]
             for fut in as_completed(futs):
                 refreshed.append(fut.result())
+        # Keep remaining board rows without live option refresh
+        if refresh_cap < len(board_rows):
+            for item in board_rows[refresh_cap:]:
+                out = dict(item)
+                ask = item.get("ask")
+                has_mark = ask is not None and float(ask or 0) > 0
+                contract = item.get("contract")
+                synthetic = bool(item.get("synthetic")) or (
+                    isinstance(contract, str) and contract.endswith("_SYN")
+                )
+                out["quote_stale"] = synthetic or not has_mark
+                sym = str(item.get("symbol"))
+                q = quotes.get(sym)
+                if q:
+                    out["live_change_pct"] = q.get("session_change_pct", q.get("change_pct"))
+                    out["live_last"] = q.get("last")
+                refreshed.append(out)
 
         refreshed.sort(key=lambda c: float(c.get("score") or 0), reverse=True)
 
@@ -3876,7 +3919,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 journal.reprice_flat_exits_from_reasons()
             # Mark open journal calls FIRST so TP/SL / SELL NOW see live premium
             open_syms_for_quotes: list[str] = []
-            if not offline:
+            if live_marks:
                 for t in journal.book.trades:
                     if t.status != "open":
                         continue
@@ -3909,7 +3952,7 @@ def create_app(config_path: str | None = None) -> Flask:
                     except Exception:  # noqa: BLE001
                         pass
             else:
-                # Pages offline: mark from matching board asks so open P&L is not blank
+                # Pages offline without Tradier: mark from matching board asks so open P&L is not blank
                 by_contract = {
                     str(c.get("contract") or ""): c for c in refreshed if c.get("contract")
                 }
@@ -5070,7 +5113,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 )
                 max_q = int(actions_cfg.get("odte_1k_max_quote_fetch", 48))
                 # Ensure quotes for ORB symbols (capped — full focus sleeve is large)
-                if not offline:
+                if live_marks:
                     for s in o1k_syms[:max_q]:
                         if s not in quotes:
                             aliases.setdefault(s, resolve_yahoo_symbol(s, cfg))
@@ -5094,8 +5137,8 @@ def create_app(config_path: str | None = None) -> Flask:
                     max_trades_per_day=int(actions_cfg.get("odte_1k_max_trades_per_day", 2)),
                     max_orb_fetch=int(actions_cfg.get("odte_1k_max_orb_fetch", 20)),
                     max_contract_fetch=int(actions_cfg.get("odte_1k_max_contract_fetch", 8)),
-                    fetch_bars=bool(actions_cfg.get("odte_1k_fetch_bars", True)) and not offline,
-                    fetch_contracts=bool(actions_cfg.get("odte_1k_fetch_contracts", True)) and not offline,
+                    fetch_bars=bool(actions_cfg.get("odte_1k_fetch_bars", True)) and live_marks,
+                    fetch_contracts=bool(actions_cfg.get("odte_1k_fetch_contracts", True)) and live_marks,
                     flatten_et=str(actions_cfg.get("odte_flatten_et", "15:45")),
                     aliases=aliases,
                     include_backtest=bool(actions_cfg.get("odte_1k_include_backtest", True)) and not offline,
@@ -5191,7 +5234,7 @@ def create_app(config_path: str | None = None) -> Flask:
                     config=cfg,
                 )
                 max_q = int(actions_cfg.get("power_hour_max_quote_fetch", 48))
-                if not offline:
+                if live_marks:
                     for s in (["QQQ"] + ph_syms)[:max_q]:
                         if s not in quotes:
                             aliases.setdefault(s, resolve_yahoo_symbol(s, cfg))
@@ -5205,7 +5248,7 @@ def create_app(config_path: str | None = None) -> Flask:
                     quotes=quotes,
                     symbols=ph_syms,
                     config=cfg,
-                    fetch_bars=bool(actions_cfg.get("power_hour_fetch_bars", True)) and not offline,
+                    fetch_bars=bool(actions_cfg.get("power_hour_fetch_bars", True)) and live_marks,
                     max_bar_fetch=int(actions_cfg.get("power_hour_max_bar_fetch", 16)),
                     aliases=aliases,
                 )
@@ -5394,7 +5437,7 @@ def create_app(config_path: str | None = None) -> Flask:
         ml6 = ml6 or {}
 
         # Refresh ML6 BUY/SELL automation with live quotes + open journal trades
-        if not offline:
+        if live_marks:
             try:
                 from odte_scanner.data.fetcher import fetch_many as _fetch_many
                 from odte_scanner.data.live_quotes import fetch_live_quote as _flq
@@ -5500,22 +5543,20 @@ def create_app(config_path: str | None = None) -> Flask:
                     "ok": uw_summary.get("ok"),
                     "market_tide": (uw_summary.get("market_tide") or {}).get("sentiment"),
                 }
-        # Tradier marks status (token presence + optional quote smoke)
+        # Tradier full market pack (quotes/chains/expirations/timesales/clock)
         tradier_status: dict = {"configured": False, "ok": False, "source": "tradier"}
         try:
-            from odte_scanner.data.tradier import fetch_quotes, status as tradier_status_fn
+            from odte_scanner.data.tradier import probe as tradier_probe
 
-            tradier_status = {**tradier_status_fn(), "ok": False}
+            tradier_status = tradier_probe()
             if tradier_status.get("configured"):
-                smoke = fetch_quotes(["SPY"], timeout=10.0)
-                tradier_status["ok"] = bool(smoke.get("ok"))
-                tradier_status["smoke_n"] = smoke.get("n")
-                tradier_status["error"] = smoke.get("error")
                 logger.info(
-                    "Tradier marks configured=%s ok=%s sandbox=%s",
+                    "Tradier marks configured=%s ok=%s sandbox=%s clock=%s endpoints=%s",
                     tradier_status.get("configured"),
                     tradier_status.get("ok"),
                     tradier_status.get("sandbox"),
+                    (tradier_status.get("clock") or {}).get("state"),
+                    tradier_status.get("endpoints"),
                 )
             else:
                 logger.warning("Tradier marks skipped — TRADIER_ACCESS_TOKEN not set")
@@ -5529,6 +5570,39 @@ def create_app(config_path: str | None = None) -> Flask:
             }
         if isinstance(actions, dict):
             actions["tradier"] = tradier_status
+            # Desk confidence ladder: Yahoo-only ≈55–65; +UW ≈70; +Tradier marks ≈75–80
+            uw_ok = bool((actions.get("uw_flow") or {}).get("ok"))
+            tr_ok = bool(tradier_status.get("ok"))
+            conf = 58
+            if uw_ok:
+                conf += 12
+            if tr_ok:
+                conf += 10
+            if uw_ok and tr_ok:
+                conf += 3  # stacked feeds
+            if tradier_live and offline:
+                conf += 2  # Pages still live via Tradier
+            actions["data_confidence"] = {
+                "pct": min(80, conf),
+                "cap_note": "Hard cap ~80% without Polygon/ORATS/intraday runner",
+                "unusual_whales": uw_ok,
+                "tradier": tr_ok,
+                "tradier_live_on_pages": bool(tradier_live and offline),
+                "quotes_landed": len(quotes),
+                "mark_source_priority": ["tradier", "yahoo", "cache"],
+                "feeds": {
+                    "uw": "flow+tide+darkpool" if uw_ok else "off",
+                    "tradier": (
+                        "quotes+chains+expirations+timesales+clock"
+                        if tr_ok
+                        else ("configured-fail" if tradier_status.get("configured") else "off")
+                    ),
+                },
+            }
+            # Soft haircut when Pages claimed live Tradier but no quotes landed
+            if offline and tradier_live and len(quotes) == 0:
+                actions["data_confidence"]["pct"] = max(55, int(actions["data_confidence"]["pct"]) - 8)
+                actions["data_confidence"]["note"] = "Tradier token set but no equity quotes in snapshot"
         cache_path = ROOT / "outputs" / "ui_snapshot_cache.json"
         try:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -5597,6 +5671,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 "echo": echo,
                 "challenge": challenge,
                 "tradier": tradier_status,
+                "data_confidence": (actions.get("data_confidence") if isinstance(actions, dict) else None),
                 "odte_1k": odte_1k,
                 "power_hour": power_hour,
                 "market": market,
@@ -5724,23 +5799,29 @@ def create_app(config_path: str | None = None) -> Flask:
         if not trade:
             return jsonify({"ok": False, "error": "open trade not found"}), 404
         mark = float(body.get("exit_bid") or trade.mark or trade.entry_ask or 0)
-        # Refresh mark from live chain when possible
+        # Refresh mark from the open OCC contract (not a re-pick)
         try:
-            from odte_scanner.options.yahoo_session import pick_challenge_contract
+            from odte_scanner.options.live_chain import fetch_live_option_quote
 
             if trade.expiry and trade.strike is not None:
-                live = pick_challenge_contract(
+                opt_right = "put" if str(trade.right or "C").upper() == "P" else "call"
+                live = fetch_live_option_quote(
                     trade.symbol,
-                    float(trade.entry_spot or 0) or 1.0,
-                    right=trade.right,
-                    min_dte=max(1, int(trade.dte_at_entry or 30) - 30),
-                    max_dte=int(trade.dte_at_entry or 200) + 60,
-                    prefer_dte=int(trade.dte_at_entry or 120),
+                    str(trade.expiry),
+                    float(trade.strike),
+                    right=opt_right,
+                    contract=str(trade.contract or "") or None,
                 )
-                if live and live.get("ask"):
-                    # Prefer matching strike
-                    if abs(float(live.get("strike") or 0) - float(trade.strike)) < 0.02:
-                        mark = float(live.get("bid") or live.get("last") or live.get("ask") or mark)
+                if live:
+                    px = None
+                    if live.bid and float(live.bid) > 0:
+                        px = float(live.bid)
+                    elif live.last and float(live.last) > 0:
+                        px = float(live.last)
+                    elif live.ask and float(live.ask) > 0:
+                        px = float(live.ask)
+                    if px and px > 0:
+                        mark = px
         except Exception:  # noqa: BLE001
             pass
         reason = body.get("reason") or trade.last_action_detail or "Manual paper EXIT"

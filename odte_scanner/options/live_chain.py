@@ -24,6 +24,7 @@ class LiveOptionQuote:
     percent_change: float | None = None
     spot: float | None = None
     moneyness_pct: float | None = None
+    source: str = "yahoo"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -76,6 +77,7 @@ def fetch_live_option_quote(
                     percent_change=None,
                     spot=None,
                     moneyness_pct=None,
+                    source="tradier",
                 )
     except Exception as exc:  # noqa: BLE001
         logger.debug("tradier option quote fallback %s: %s", symbol, exc)
@@ -129,6 +131,7 @@ def fetch_live_option_quote(
             percent_change=float(pct) if pct is not None else None,
             spot=spot,
             moneyness_pct=moneyness,
+            source="yahoo",
         )
     except Exception as exc:  # noqa: BLE001
         logger.debug("live option quote failed %s %s %s: %s", symbol, expiry, strike, exc)
@@ -154,14 +157,7 @@ def refresh_candidate_quote(candidate: dict[str, Any], *, yahoo_symbol: str | No
     if not q:
         out["quote_stale"] = True
         return out
-    mark_src = "yahoo"
-    try:
-        from odte_scanner.data.tradier import access_token_from_env
-
-        if access_token_from_env() and float(q.ask or 0) > 0:
-            mark_src = "tradier"
-    except Exception:  # noqa: BLE001
-        pass
+    mark_src = str(getattr(q, "source", None) or "yahoo")
     out.update(
         {
             "bid": q.bid,
