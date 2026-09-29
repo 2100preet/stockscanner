@@ -4708,19 +4708,50 @@ def create_app(config_path: str | None = None) -> Flask:
             # Refresh marks again right before EXIT sync (board may have open bid)
             if fetch_ch_contracts and tracker.open_trades():
                 ch_live_marks = {**ch_live_marks, **tracker.refresh_open_marks(aliases=aliases)}
+            # Feed RIP megas into challenge auto-enter (sprint sleeve needs movers)
+            ch_tickets = list(challenge.get("tickets") or [])
+            try:
+                rip_buys = list((rip_radar or {}).get("buy_rip") or (rip_radar or {}).get("buy_now") or [])
+                seen_occ = {
+                    str(t.get("contract") or "")
+                    for t in ch_tickets
+                    if t.get("contract")
+                }
+                for r in rip_buys[:6]:
+                    occ = str(r.get("contract") or "")
+                    if not occ or occ in seen_occ or not r.get("ask"):
+                        continue
+                    seen_occ.add(occ)
+                    ch_tickets.append(
+                        {
+                            **r,
+                            "action": "BUY_RIP",
+                            "right": str(r.get("right") or "C").upper(),
+                            "hold_style": "sprint",
+                            "horizon": "sprint",
+                            "hold_min_days": 0,
+                            "hold_max_days": 1,
+                            "hold_ideal_days": 1,
+                            "target_premium_mult": float(r.get("target_premium_mult") or 1.5),
+                            "ensemble_score": float(r.get("ensemble_score") or r.get("strength") or 70),
+                            "thesis": r.get("detail") or r.get("headline") or "BUY_RIP → challenge",
+                        }
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("rip→challenge bridge skipped: %s", exc)
             sync = tracker.sync_from_tickets(
-                challenge.get("tickets") or [],
+                ch_tickets,
                 quotes=quotes,
                 auto_enter=bool(actions_cfg.get("challenge_auto_enter", True)),
                 auto_exit=bool(actions_cfg.get("challenge_auto_exit", True)),
                 max_open=int(actions_cfg.get("challenge_max_open", 1)),
                 sprint_desk=bool(actions_cfg.get("challenge_sprint_desk", True)),
                 live_marks=ch_live_marks,
-                loss_cooldown_days=int(actions_cfg.get("challenge_loss_cooldown_days", 5)),
+                loss_cooldown_days=int(actions_cfg.get("challenge_loss_cooldown_days", 2)),
                 max_cash_frac=float(actions_cfg.get("challenge_max_cash_frac", 0.25)),
                 max_contracts=int(actions_cfg.get("challenge_max_contracts", 2)),
                 prefer_calls=bool(actions_cfg.get("challenge_prefer_calls", True)),
-                min_ensemble=float(actions_cfg.get("challenge_min_ensemble", 55)),
+                min_ensemble=float(actions_cfg.get("challenge_min_ensemble", 58)),
                 max_consecutive_losses=int(actions_cfg.get("challenge_max_consecutive_losses", 3)),
             )
             challenge["sync"] = sync

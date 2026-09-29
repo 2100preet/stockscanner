@@ -20,17 +20,22 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PATH = ROOT / "outputs" / "challenge_ledger.json"
 
 # Hold windows (calendar days) by horizon / style
-# sprint = challenge desk default: aim for ~50–100% premium in ~1–3 days
+# sprint = challenge desk default: aim for ~40–100% premium in ~1 day (2 flips/day possible)
 HOLD_PERIODS: dict[str, dict[str, int]] = {
-    "sprint": {"min_days": 1, "max_days": 3, "ideal_days": 2},
+    "sprint": {"min_days": 0, "max_days": 1, "ideal_days": 1},
     "weekly": {"min_days": 5, "max_days": 14, "ideal_days": 8},
     "swing": {"min_days": 20, "max_days": 60, "ideal_days": 35},
     "leap": {"min_days": 30, "max_days": 90, "ideal_days": 55},
 }
 
 # Open flips with longer hold / DTE than this are retired when sprint desk is on
-SPRINT_RETIRE_MAX_HOLD_DAYS = 7
-SPRINT_RETIRE_MAX_DTE = 14
+SPRINT_RETIRE_MAX_HOLD_DAYS = 2
+SPRINT_RETIRE_MAX_DTE = 7
+
+# Core megas for $1k→$1M sprint — highest liquidity / mover density
+CORE_MEGAS: frozenset[str] = frozenset(
+    {"SPY", "QQQ", "IWM", "NVDA", "TSLA", "AMD", "META", "MU", "AAPL", "MSFT", "AMZN", "GOOGL"}
+)
 
 
 def _now() -> str:
@@ -367,7 +372,7 @@ class ChallengeTracker:
         min_ensemble: float = 55.0,
         max_consecutive_losses: int = 3,
     ) -> ChallengeTrade | None:
-        if ticket.get("action") not in {"ENTRY", "BUY_NOW"}:
+        if ticket.get("action") not in {"ENTRY", "BUY_NOW", "BUY_RIP"}:
             return None
         symbol = str(ticket.get("symbol") or "")
         right = str(ticket.get("right") or "C").upper()
@@ -487,6 +492,13 @@ class ChallengeTracker:
             certainty_tier=ticket.get("certainty_tier"),
             cash_before=cash_before,
         )
+        # Soft wall EXIT on underlying (copied from board walls)
+        soft = ticket.get("soft_exit")
+        if soft is not None:
+            try:
+                trade.soft_exit = float(soft)  # type: ignore[attr-defined]
+            except (TypeError, ValueError):
+                pass
         self.book.cash -= cost
         cash_after = round(self.book.cash, 2)
         equity_after = round(cash_after + ask * 100 * contracts, 2)
@@ -566,14 +578,14 @@ class ChallengeTracker:
         if unreal is not None and unreal >= target_pct:
             action = "EXIT"
             reasons.append(f"hit challenge target +{unreal:.0f}% (≥{target_pct:.0f}%)")
-        # 1-month sprint: bank +50% as soon as min hold clears (don't wait for full 78–100%)
+        # 1-month sprint: bank +40% as soon as a scrap of hold clears (2 flips/day path)
         elif (
             unreal is not None
-            and unreal >= 50.0
-            and days >= max(0.2, float(trade.hold_min_days or 0) * 0.5)
+            and unreal >= 40.0
+            and days >= max(0.05, float(trade.hold_min_days or 0) * 0.25)
         ):
             action = "EXIT"
-            reasons.append(f"bank sprint +{unreal:.0f}% (≥50%) after min hold")
+            reasons.append(f"bank sprint +{unreal:.0f}% (≥40%) — free capital for next flip")
         if unreal is not None and unreal <= -trade.stop_loss_pct:
             action = "EXIT"
             reasons.append(f"stop −{abs(unreal):.0f}%")
@@ -870,19 +882,32 @@ class ChallengeTracker:
             blocked = self.recent_loss_symbols(cooldown_days=loss_cooldown_days) | self.lifetime_loss_symbols(
                 min_losses=2
             )
-            # Prefer CALL ENTRY tickets when compounding toward $1M
+            # Prefer CALL + CORE MEGA ENTRY tickets when compounding toward $1M
             ordered = list(tickets)
             if prefer_calls:
                 ordered = sorted(
                     ordered,
                     key=lambda tk: (
                         0 if str(tk.get("right") or "C").upper() == "C" else 1,
-                        -float(tk.get("ensemble_score") or 0),
+                        0 if str(tk.get("symbol") or "").upper() in CORE_MEGAS else 1,
+                        0 if str(tk.get("action") or "") in {"ENTRY", "BUY_RIP", "BUY_NOW"} else 1,
+                        -float(tk.get("ensemble_score") or tk.get("strength") or 0),
                     ),
                 )
             for tk in ordered:
-                if tk.get("action") != "ENTRY":
+                act = str(tk.get("action") or "")
+                if act not in {"ENTRY", "BUY_NOW", "BUY_RIP"}:
                     continue
+                # Normalize rip tickets into ENTRY for the paper sleeve
+                if act == "BUY_RIP":
+                    tk = dict(tk)
+                    tk["action"] = "ENTRY"
+                    tk.setdefault("hold_style", "sprint")
+                    tk.setdefault("horizon", "sprint")
+                    tk.setdefault("hold_min_days", 0)
+                    tk.setdefault("hold_max_days", 1)
+                    tk.setdefault("hold_ideal_days", 1)
+                    tk.setdefault("target_premium_mult", 1.5)
                 if not tk.get("contract") or tk.get("ask") in (None, 0):
                     continue
                 if str(tk.get("symbol") or "").upper() in blocked:

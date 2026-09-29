@@ -78,11 +78,11 @@ def test_hold_periods_weekly_swing_leap():
 
 def test_hold_periods_sprint_and_short_dte():
     sp = hold_period_for("sprint")
-    assert sp["style"] == "sprint" and sp["min_days"] == 1 and sp["max_days"] == 3
-    assert sp["ideal_days"] == 2
+    assert sp["style"] == "sprint" and sp["min_days"] == 0 and sp["max_days"] == 1
+    assert sp["ideal_days"] == 1
     # Short-dated contracts map to sprint even if hist horizon was swing
     short = hold_period_for("swing", 5)
-    assert short["style"] == "sprint" and short["max_days"] == 3
+    assert short["style"] == "sprint" and short["max_days"] == 1
 
 
 def test_side_from_tape_calls_and_puts():
@@ -147,7 +147,7 @@ def test_challenge_board_picks_perfect_hist():
         assert t["hold_period_label"]
         assert t["hold_approx_label"]
         assert t["approx_hold_days"] > 0
-        assert t["hold_min_days"] > 0
+        assert t["hold_min_days"] >= 0
         assert t["hold_max_days"] >= t["hold_min_days"]
         assert t["recommend_reason"]
         assert isinstance(t["reasons"], list) and len(t["reasons"]) >= 3
@@ -423,8 +423,8 @@ def test_tracker_enter_hold_exit_call_and_put(tmp_path):
             tr.exit_trade(ot.id, exit_bid=float(ot.entry_ask), reason="clear")
     sprint = tr.enter(sprint_ticket)
     assert sprint is not None
-    assert sprint.hold_min_days == 1
-    assert sprint.hold_max_days == 3
+    assert sprint.hold_min_days == 0
+    assert sprint.hold_max_days == 1
     assert 1.5 <= sprint.target_premium_mult <= 2.0
 
 
@@ -618,7 +618,7 @@ def test_max_cash_frac_caps_contracts(tmp_path):
     assert entered.cost == 200.0
 
 
-def test_bank_sprint_50pct_after_min_hold(tmp_path):
+def test_bank_sprint_40pct_early(tmp_path):
     ledger = tmp_path / "ch.json"
     tr = ChallengeTracker(ledger, starting_cash=1000)
     ticket = {
@@ -631,20 +631,21 @@ def test_bank_sprint_50pct_after_min_hold(tmp_path):
         "strike": 200,
         "horizon": "sprint",
         "hold_style": "sprint",
-        "dte": 2,
+        "dte": 1,
         "spot": 198,
         "target_premium_mult": 1.9,  # +90% full target
-        "hold_min_days": 1,
-        "hold_max_days": 3,
-        "hold_ideal_days": 2,
+        "hold_min_days": 0,
+        "hold_max_days": 1,
+        "hold_ideal_days": 1,
+        "ensemble_score": 70,
     }
     entered = tr.enter(ticket)
     assert entered is not None
-    entered.entered_at = (datetime.now(timezone.utc) - timedelta(hours=14)).isoformat()
+    entered.entered_at = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
     tr.save()
-    ev = tr.evaluate_open(entered, mark=3.1, quote={}, sprint_desk=True)  # +55%
+    ev = tr.evaluate_open(entered, mark=2.85, quote={}, sprint_desk=True)  # +42.5%
     assert ev["action"] == "EXIT"
-    assert "bank sprint" in ev["detail"].lower() or "50" in ev["detail"]
+    assert "bank sprint" in ev["detail"].lower() or "40" in ev["detail"]
 
 
 def test_board_waits_loss_cooldown_symbols():
@@ -694,7 +695,7 @@ def test_epoch_rebuild_reseeds_honest_1k(tmp_path):
     tr = ChallengeTracker(
         ledger,
         starting_cash=1000,
-        epoch="2026-09-29-1k-honest",
+        epoch="2026-09-29-1k-fastflips",
         rebuild_seed_usd=1000,
         rebuild_reason="honest restart",
     )
@@ -705,6 +706,6 @@ def test_epoch_rebuild_reseeds_honest_1k(tmp_path):
     assert tr.book.archive and tr.book.archive[-1]["prior_cash"] == 30000
     # second load is idempotent
     tr2 = ChallengeTracker(
-        ledger, starting_cash=1000, epoch="2026-09-29-1k-honest", rebuild_seed_usd=1000
+        ledger, starting_cash=1000, epoch="2026-09-29-1k-fastflips", rebuild_seed_usd=1000
     )
     assert tr2.book.cash == 1000

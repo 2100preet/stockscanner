@@ -382,19 +382,19 @@ actions:
   # Honest path only: no fake equity. Earn every dollar from $1,000 paper cash.
   challenge_start_usd: 1000
   challenge_target_usd: 1000000
-  challenge_flips: 15
-  challenge_max_tickets: 10
-  # Epoch bump clears the fake $30k reseed + archived $391 death spiral; restart at real $1k.
-  challenge_epoch: "2026-09-29-1k-honest"
+  challenge_flips: 30
+  challenge_max_tickets: 12
+  # Epoch: honest $1k + fast-flip desk (1d holds / bank +40% / rip→challenge)
+  challenge_epoch: "2026-09-29-1k-fastflips"
   challenge_rebuild_seed_usd: 1000
-  challenge_rebuild_reason: "honest restart — $1k→$1M in ~1 month; no pace catch-up seed"
+  challenge_rebuild_reason: "honest $1k restart + 1d sprint flips toward Oct 31 $1M"
   # Sprint desk: short-dated liquid flips (not multi-month LEAPs)
   challenge_sprint_desk: true
   challenge_min_dte: 1
-  challenge_max_dte: 5
-  challenge_prefer_dte: 2
-  challenge_target_premium_min: 1.5   # +50%
-  challenge_target_premium_max: 2.0   # +100%
+  challenge_max_dte: 3
+  challenge_prefer_dte: 1
+  challenge_target_premium_min: 1.4   # +40% bank early
+  challenge_target_premium_max: 2.0   # +100% stretch
   # Deadline: $1M by end of October 2026 (~1 month)
   challenge_deadline: "2026-10-31"
   challenge_pace_months: 1.0
@@ -402,9 +402,11 @@ actions:
   challenge_prefer_weekly_pace: true
   # Prefer CALLS for compound; puts need dump_confirm
   challenge_prefer_calls: true
-  challenge_min_ensemble: 55
+  challenge_min_ensemble: 58
   challenge_max_contracts: 2
   challenge_max_consecutive_losses: 3
+  # Shorter same-symbol cooldown so megas can re-enter after a cut
+  challenge_loss_cooldown_days: 2
   # Beauty / monthly lane (AMD META MU SNDK class — ~1mo DTE)
   beauty_enabled: true
   beauty_min_dte: 18
@@ -414,8 +416,6 @@ actions:
   beauty_max_tickets: 12
   beauty_fetch_contracts: true
   beauty_max_live_symbols: 6
-  # After a losing flip, do not re-enter that symbol for N days
-  challenge_loss_cooldown_days: 5
   # Options BUY NOW: block symbols after a losing flip; block same OCC longer
   buy_now_loss_cooldown_days: 5
   buy_now_contract_cooldown_days: 45
