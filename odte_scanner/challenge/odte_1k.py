@@ -256,6 +256,40 @@ def _suggest_put_zone(spot: float) -> dict[str, Any]:
 
 
 def _pick_0dte_put(symbol: str, spot: float, *, yahoo_symbol: str | None = None) -> dict[str, Any] | None:
+    # Prefer Tradier when token set — Pages offline Yahoo chains often empty
+    try:
+        from odte_scanner.data.tradier import access_token_from_env, pick_option_contract
+
+        if access_token_from_env() and float(spot or 0) > 0:
+            picked = pick_option_contract(
+                yahoo_symbol or symbol,
+                float(spot),
+                right="P",
+                min_dte=0,
+                max_dte=1,
+                prefer_dte=0,
+                otm_pct_max=1.5,
+                itm_pct_max=0.5,
+                min_volume=50,
+                min_oi=100,
+                require_bid=True,
+            )
+            if picked and picked.get("ask"):
+                ask = float(picked.get("ask") or 0)
+                if 0 < ask <= 12.0:
+                    return {
+                        "strike": picked.get("strike"),
+                        "expiry": picked.get("expiry"),
+                        "dte": picked.get("dte") if picked.get("dte") is not None else 0,
+                        "ask": picked.get("ask"),
+                        "bid": picked.get("bid"),
+                        "contract": picked.get("contract"),
+                        "mark_source": picked.get("mark_source") or "ask",
+                        "source": "tradier",
+                    }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("0dte put tradier pick %s: %s", symbol, exc)
+
     try:
         from odte_scanner.options.selector import select_puts
 

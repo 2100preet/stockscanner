@@ -173,6 +173,14 @@ def compute_vwap(bars_1m: pd.DataFrame | None) -> float | None:
     if bars_1m is None or bars_1m.empty:
         return None
     df = _to_et(bars_1m)
+    # Session-day only — Tradier lookback can span 2 days; don't blend VWAP
+    try:
+        today = datetime.now(ET).date()
+        df = df.loc[df.index.date == today]
+    except Exception:  # noqa: BLE001
+        pass
+    if df is None or df.empty:
+        return None
     if "Close" not in df.columns:
         return None
     vol = df["Volume"] if "Volume" in df.columns else pd.Series(1.0, index=df.index)
@@ -193,6 +201,13 @@ def resample_15m(bars_1m: pd.DataFrame | None) -> pd.DataFrame | None:
     if bars_1m is None or bars_1m.empty:
         return None
     df = _to_et(bars_1m)
+    try:
+        today = datetime.now(ET).date()
+        df = df.loc[df.index.date == today]
+    except Exception:  # noqa: BLE001
+        pass
+    if df is None or df.empty:
+        return None
     ohlc = {
         "Open": "first",
         "High": "max",

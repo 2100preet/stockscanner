@@ -301,12 +301,12 @@ def fetch_live_quotes(
                 fetch_syms.append(fs)
                 back_map.setdefault(fs, sym)
             tq = fetch_quotes(fetch_syms, timeout=15.0)
-            if tq.get("ok"):
-                for fs, row in (tq.get("quotes") or {}).items():
-                    desk_sym = back_map.get(fs, fs)
-                    mapped = _from_tradier_row(desk_sym, row)
-                    if mapped:
-                        out[desk_sym] = mapped
+            # Accept partial batches — one failed chunk must not discard good quotes
+            for fs, row in (tq.get("quotes") or {}).items():
+                desk_sym = back_map.get(fs, fs)
+                mapped = _from_tradier_row(desk_sym, row)
+                if mapped:
+                    out[desk_sym] = mapped
     except Exception as exc:  # noqa: BLE001
         logger.debug("tradier batch quotes failed: %s", exc)
 

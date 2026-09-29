@@ -124,7 +124,8 @@ def test_pick_option_contract(monkeypatch):
     monkeypatch.setattr(tr, "fetch_option_chain", fake_chain)
     picked = tr.pick_option_contract("NVDA", 100.0, right="C", min_dte=0, max_dte=40000, prefer_dte=3)
     assert picked is not None
-    assert picked["mark_source"] == "tradier"
+    assert picked["mark_source"] == "ask"
+    assert picked["source"] == "tradier"
     assert picked["ask"] == 1.1
 
 

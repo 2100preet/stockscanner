@@ -186,6 +186,74 @@ def _select_side(
 ) -> list[CallCandidate]:
     right = right.upper()
     fetch_sym = yahoo_symbol or symbol
+
+    # Prefer Tradier chains when token set (Pages offline Yahoo often empty)
+    tradier_out: list[CallCandidate] = []
+    try:
+        from odte_scanner.data.tradier import access_token_from_env, pick_option_contract
+
+        if access_token_from_env() and float(spot or 0) > 0:
+            thesis = "; ".join(reasons) or ("ensemble bearish" if right == "P" else "ensemble bullish")
+            windows = [
+                ("0dte", 0, odte_max_dte, 0),
+                ("weekly", odte_max_dte + 1, max_dte, min(max_dte, 5)),
+            ]
+            for bucket, min_d, max_d, prefer in windows:
+                if max_d < min_d:
+                    continue
+                picked = pick_option_contract(
+                    fetch_sym,
+                    float(spot),
+                    right=right,
+                    min_dte=min_d,
+                    max_dte=max_d,
+                    prefer_dte=prefer,
+                    otm_pct_max=otm_pct_max,
+                    itm_pct_max=itm_pct_max,
+                    min_volume=min_volume,
+                    min_oi=min_open_interest,
+                    require_bid=True,
+                )
+                if not picked or not picked.get("ask"):
+                    continue
+                ask = float(picked.get("ask") or 0)
+                if ask <= 0 or ask > max_ask:
+                    continue
+                bid = float(picked.get("bid") or 0)
+                mid = (bid + ask) / 2 if bid > 0 else ask
+                dte = int(picked.get("dte") or 0)
+                strike = float(picked.get("strike") or 0)
+                if right == "P":
+                    moneyness = (spot - strike) / spot * 100 if spot else 0.0
+                else:
+                    moneyness = (strike - spot) / spot * 100 if spot else 0.0
+                tradier_out.append(
+                    CallCandidate(
+                        symbol=str(symbol).upper(),
+                        contract=str(picked.get("contract") or ""),
+                        expiry=str(picked.get("expiry") or ""),
+                        dte=dte,
+                        strike=strike,
+                        spot=float(spot),
+                        bid=bid,
+                        ask=ask,
+                        mid=mid,
+                        volume=int(picked.get("volume") or 0),
+                        open_interest=int(picked.get("open_interest") or 0),
+                        moneyness_pct=float(moneyness),
+                        score=float(score),
+                        thesis=thesis,
+                        dte_bucket=bucket,  # type: ignore[arg-type]
+                        right=right,
+                    )
+                )
+                if len(tradier_out) >= per_bucket * 2:
+                    break
+            if tradier_out:
+                return tradier_out[: max(1, per_bucket * 2)]
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("tradier select_%s %s: %s", "puts" if right == "P" else "calls", symbol, exc)
+
     try:
         t = yf.Ticker(fetch_sym)
         expirations = list(t.options or [])

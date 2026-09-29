@@ -742,7 +742,9 @@ def fetch_option_quote(
         if dist < best_dist:
             best_dist = dist
             best = opt
-    if not best:
+    # Reject nearest-strike when too far (wrong expiry/spot) — fall through to Yahoo
+    max_dist = max(0.51, abs(float(strike)) * 0.0025)
+    if not best or best_dist > max_dist:
         return None
     out = {
         "symbol": str(best.get("symbol") or ""),
@@ -850,14 +852,19 @@ def pick_option_contract(
             vol = int(_as_float(opt.get("volume")))
             if vol < min_volume or oi < min_oi:
                 continue
-            mark_source = "ask"
+            mark_kind = "ask"
             if ask <= 0 and last > 0:
                 ask = last
                 bid = bid or round(last * 0.95, 2)
-                mark_source = "last"
+                mark_kind = "last"
             if ask <= 0:
                 continue
             if require_bid and bid <= 0:
+                continue
+            # Allow fortress-OI names with thin day volume (early session / ORCL-class)
+            if vol < min_volume and oi < max(min_oi * 5, 5000):
+                continue
+            if vol < min_volume and oi < min_oi:
                 continue
             spread = ((ask - bid) / ask) if ask and bid > 0 else 0.5
             if spread > 0.35 and vol < min_volume:
@@ -869,7 +876,7 @@ def pick_option_contract(
                 - spread * 30.0
                 + min(30.0, oi / 150.0)
                 + min(50.0, vol / 15.0)
-                + (8.0 if mark_source == "ask" and bid > 0 else 0.0)
+                + (8.0 if mark_kind == "ask" and bid > 0 else 0.0)
             )
             if rank > best_rank:
                 best_rank = rank
@@ -884,7 +891,8 @@ def pick_option_contract(
                     "bid": round(bid, 2) if bid > 0 else None,
                     "ask": round(ask, 2),
                     "last": round(last, 2) if last > 0 else None,
-                    "mark_source": "tradier",
+                    # Preserve ask|last semantics for challenge UI; feed is separate
+                    "mark_source": mark_kind,
                     "moneyness_pct": round(mny, 3),
                     "open_interest": oi,
                     "volume": vol,
