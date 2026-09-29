@@ -767,10 +767,12 @@ def build_challenge_board(
     }
     cooldown = {str(s).upper() for s in (loss_cooldown_symbols or [])}
     # Mega-liquid names preferred for 1-month sprint compounding
-    liquid_boost = {
-        "SPY", "QQQ", "IWM", "TSLA", "NVDA", "AAPL", "MSFT", "META", "AMZN",
-        "GOOGL", "AMD", "NFLX", "AVGO", "COST", "PLTR", "MU", "SMCI",
+    from odte_scanner.challenge.tracker import CORE_MEGAS
+
+    liquid_boost = set(CORE_MEGAS) | {
+        "AVGO", "COST", "PLTR", "SMCI", "NFLX", "BABA",
     }
+    core_megas = set(CORE_MEGAS)
 
     score_map: dict[str, dict[str, Any]] = {}
     for s in scores:
@@ -796,7 +798,7 @@ def build_challenge_board(
         milestone_usd=pace_milestone_usd,
         target_usd=target_usd,
         months=pace_months,
-        ideal_hold_days=2 if sprint_desk else (8 if prefer_weekly_pace else 35),
+        ideal_hold_days=1 if sprint_desk else (8 if prefer_weekly_pace else 35),
         current_equity=equity_now,
     )
     pace_mult = float((pace.get("milestone") or {}).get("mult_per_flip") or need_mult_base)
@@ -1368,22 +1370,21 @@ def build_challenge_board(
         if len(tickets) >= max_tickets:
             break
 
-    # Rank: EXIT first, then 4mo-pace weekly fits, earnings boost, certainty, hist
+    # Rank: EXIT first, then CORE MEGAS, liquid, volume, pace, hist
     rank_action = {"EXIT": 0, "ENTRY": 1, "HOLD": 2, "WAIT": 3}
     tickets.sort(
         key=lambda t: (
             rank_action.get(t.action, 9),
             0 if t.symbol.upper() not in cooldown else 1,
+            0 if t.symbol.upper() in core_megas else 1,
             0 if t.symbol.upper() in liquid_boost else 1,
+            0 if str(t.right or "C").upper() == "C" else 1,
             0 if (t.volume or 0) >= 500 else 1 if (t.volume or 0) >= 100 else 2,
             0 if t.fits_4mo_500k else 1,
             0 if t.pace_style in {"weekly", "sprint"} else 1,
             -earn_boosts.get(t.symbol, 0),
             0 if t.certainty_tier == "perfect" else 1 if t.certainty_tier == "elite" else 2,
-            0
-            if t.market_cap_tier in {"mid", "small", "dram_memory"}
-            and t.earnings_window == "post_earnings"
-            else 1,
+            -float(t.ensemble_score or 0),
             -t.hist_win_pct,
             -t.hist_samples,
         )
