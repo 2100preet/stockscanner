@@ -3994,7 +3994,9 @@ def create_app(config_path: str | None = None) -> Flask:
         # Unusual Whales — fetch once, drive BUY NOW / SELL NOW + challenge
         uw_flow: dict = {"ok": False, "configured": bool(api_key_from_env()), "skipped": True}
         try:
-            if not offline:
+            # Pages export runs offline=1 (no Yahoo live tape) but UW REST still works
+            # whenever the Actions secret is present — always fetch when keyed.
+            if api_key_from_env():
                 uw_flow = build_uw_flow_board(
                     limit=int(actions_cfg.get("uw_flow_limit", 100)),
                     min_premium=float(actions_cfg.get("uw_min_premium", 50_000)),
@@ -4014,6 +4016,15 @@ def create_app(config_path: str | None = None) -> Flask:
                         uw_flow.get("configured"),
                         uw_flow.get("error"),
                     )
+            else:
+                logger.warning("UW flow skipped — UNUSUAL_WHALES_API_KEY not set")
+                uw_flow = {
+                    "ok": False,
+                    "configured": False,
+                    "skipped": True,
+                    "error": "UNUSUAL_WHALES_API_KEY not set",
+                    "source": "unusual_whales",
+                }
         except Exception as exc:  # noqa: BLE001
             logger.warning("unusual_whales flow failed: %s", exc)
             uw_flow = {
