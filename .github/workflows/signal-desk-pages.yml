@@ -9,10 +9,9 @@ on:
   push:
     branches:
       - main
-      - cursor/ddog-focus-universe-4571
-      - cursor/stockscanner-pages-zeroloss-desk-8ac0
-      - cursor/zeroloss-flow-desk-8ac0
-    # No paths filter: ensure bot/merge pushes always rebuild the live desk.
+    # Only main may publish to github-pages (env branch policy). Feature-branch
+    # push triggers previously cancelled main runs via shared concurrency, then
+    # failed deploy — leaving live desk stuck on stale equity.
 
 permissions:
   contents: read
@@ -20,11 +19,14 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
+  group: pages-main
   cancel-in-progress: true
 
 jobs:
   build:
+    # Schedule / dispatch / main-push only; never waste a focus scan on a
+    # branch that cannot deploy.
+    if: ${{ github.event_name != 'push' || github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -123,6 +125,7 @@ jobs:
 
   deploy:
     needs: build
+    if: ${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     environment:
       name: github-pages
