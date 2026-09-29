@@ -684,25 +684,27 @@ def test_board_waits_loss_cooldown_symbols():
     )
 
 
-def test_epoch_rebuild_reseeds_pace_equity(tmp_path):
+def test_epoch_rebuild_reseeds_honest_1k(tmp_path):
+    """Fake pace seeds are banned — rebuild must restart at real $1k."""
     ledger = tmp_path / "ch.json"
     ledger.write_text(
-        '{"starting_cash":1000,"cash":391.25,"wins":0,"losses":6,"flips_closed":6,'
-        '"trades":[],"balance_log":[],"epoch":"legacy"}'
+        '{"starting_cash":30000,"cash":30000,"wins":0,"losses":0,"flips_closed":0,'
+        '"trades":[],"balance_log":[],"epoch":"2026-09-28-pace30k"}'
     )
     tr = ChallengeTracker(
         ledger,
         starting_cash=1000,
-        epoch="2026-09-28-pace30k",
-        rebuild_seed_usd=30000,
-        rebuild_reason="pace catch-up",
+        epoch="2026-09-29-1k-honest",
+        rebuild_seed_usd=1000,
+        rebuild_reason="honest restart",
     )
-    assert tr.book.cash == 30000
-    assert tr.book.equity == 30000
+    assert tr.book.cash == 1000
+    assert tr.book.equity == 1000
+    assert tr.book.starting_cash == 1000
     assert tr.book.wins == 0 and tr.book.losses == 0
-    assert tr.book.archive and tr.book.archive[-1]["prior_cash"] == 391.25
+    assert tr.book.archive and tr.book.archive[-1]["prior_cash"] == 30000
     # second load is idempotent
     tr2 = ChallengeTracker(
-        ledger, starting_cash=1000, epoch="2026-09-28-pace30k", rebuild_seed_usd=30000
+        ledger, starting_cash=1000, epoch="2026-09-29-1k-honest", rebuild_seed_usd=1000
     )
-    assert tr2.book.cash == 30000
+    assert tr2.book.cash == 1000

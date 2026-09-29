@@ -379,15 +379,15 @@ actions:
   chase_max_live_symbols: 8
   chase_feed_journal: false  # never auto paper-enter risky chase tickets
   # $1k → $1M challenge — 1-MONTH sprint compound (≈15 flips @ ~2d / +50–100%)
+  # Honest path only: no fake equity. Earn every dollar from $1,000 paper cash.
   challenge_start_usd: 1000
   challenge_target_usd: 1000000
   challenge_flips: 15
   challenge_max_tickets: 10
-  # Pace rebuild: death spiral was $1k→$391 (0W/6L). Sep 11→28 ≈8 flips @ +50% ⇒ ~$25–30k.
-  # Epoch bump archives the loser book and reseeds so Oct-end path can compound again.
-  challenge_epoch: "2026-09-28-pace30k"
-  challenge_rebuild_seed_usd: 30000
-  challenge_rebuild_reason: "pace catch-up — 0W/6L death spiral (SLV puts + AMAT bleed); reseed ~$30k for Oct 31 path"
+  # Epoch bump clears the fake $30k reseed + archived $391 death spiral; restart at real $1k.
+  challenge_epoch: "2026-09-29-1k-honest"
+  challenge_rebuild_seed_usd: 1000
+  challenge_rebuild_reason: "honest restart — $1k→$1M in ~1 month; no pace catch-up seed"
   # Sprint desk: short-dated liquid flips (not multi-month LEAPs)
   challenge_sprint_desk: true
   challenge_min_dte: 1
@@ -395,9 +395,9 @@ actions:
   challenge_prefer_dte: 2
   challenge_target_premium_min: 1.5   # +50%
   challenge_target_premium_max: 2.0   # +100%
-  # Deadline: $1M by end of October 2026 (~5 weeks from late Sep)
+  # Deadline: $1M by end of October 2026 (~1 month)
   challenge_deadline: "2026-10-31"
-  challenge_pace_months: 1.3
+  challenge_pace_months: 1.0
   challenge_pace_milestone_usd: 1000000
   challenge_prefer_weekly_pace: true
   # Prefer CALLS for compound; puts need dump_confirm

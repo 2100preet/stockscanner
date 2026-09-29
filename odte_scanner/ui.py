@@ -561,7 +561,7 @@ PAGE = r"""
     <section class="tabpane" id="tab-challenge">
       <h2>$1,000 → $1,000,000 challenge</h2>
       <p class="lede">
-        Goal: <strong>$1k → $1M by Oct 31, 2026</strong> via sprint flips (~2d, target <strong>+50–100%</strong>) on liquid short-dated tickets — and <strong>Beauty 1mo</strong> for AMD/META/MU/SNDK-class monthly melts. Loss-cooldown blocks same OCC losers; megas can still rip-buy on fresh contracts.
+        Goal: <strong>$1k → $1M by Oct 31, 2026</strong> via sprint flips (~2d, target <strong>+50–100%</strong>) on liquid short-dated tickets — and <strong>Beauty 1mo</strong> for AMD/META/MU/SNDK-class monthly melts. Paper sleeve starts at <strong>$1,000 real cash</strong> (no fake equity). Loss-cooldown blocks same OCC losers; megas can still rip-buy on fresh contracts.
         Sure-shot hist filter (prefer <strong>100% hist win</strong>, else ≥80% n≥5).
         Status: <strong>ENTRY · HOLD · EXIT</strong>. After each Paper ENTER/EXIT the sleeve
         <strong>cash &amp; equity balance</strong> updates so you know where you are.
