@@ -47,7 +47,7 @@ def test_annotate_dict_confirms_put():
     assert row["strength"] >= 78
 
 
-def test_market_tide_blocks_call_buy():
+def test_market_tide_soft_haircut_on_call_buy():
     sig = ActionSignal(
         action="BUY_NOW",
         symbol="AMD",
@@ -60,8 +60,9 @@ def test_market_tide_blocks_call_buy():
         sig,
         market_tide={"ok": True, "sentiment": "bearish", "tide_net": -400_000_000},
     )
-    assert out.action == "WAIT"
-    assert "market-tide bearish" in out.detail
+    assert out.action == "BUY_NOW"
+    assert "UW tide bearish" in out.detail
+    assert out.strength <= 65
 
 
 def test_fetch_market_tide_skipped_without_key(monkeypatch):

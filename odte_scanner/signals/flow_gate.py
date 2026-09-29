@@ -185,28 +185,40 @@ def apply_uw_market_tide(
     sig: Any,
     *,
     market_tide: dict[str, Any] | None = None,
+    hard_block: bool = False,
 ) -> Any:
-    """Market-wide UW tide: demote fresh call BUY_NOW when tide is strongly bearish."""
+    """Market-wide UW tide overlay on BUY_NOW.
+
+    Default is soft (annotate + strength haircut). Set hard_block=True to force WAIT
+    on fresh calls when tide is strongly bearish.
+    """
     if not market_tide or not market_tide.get("ok"):
         return sig
     if getattr(sig, "action", None) != "BUY_NOW":
         return sig
     is_put = str(getattr(sig, "right", None) or "C").upper() == "P"
     sentiment = str(market_tide.get("sentiment") or "neutral")
+    tide_m = float(market_tide.get("tide_net") or 0) / 1e6
     if (not is_put) and sentiment == "bearish":
-        sig.action = "WAIT"
-        sig.headline = str(sig.headline or "").replace("BUY NOW", "WAIT", 1)
-        sig.detail = (
-            f"{sig.detail} · blocked: UW market-tide bearish "
-            f"(call−put ${float(market_tide.get('tide_net') or 0) / 1e6:+.1f}M)"
-        )
-        sig.strength = min(float(sig.strength or 0), 50.0)
+        if hard_block:
+            sig.action = "WAIT"
+            sig.headline = str(sig.headline or "").replace("BUY NOW", "WAIT", 1)
+            sig.detail = (
+                f"{sig.detail} · blocked: UW market-tide bearish "
+                f"(call−put ${tide_m:+.1f}M)"
+            )
+            sig.strength = min(float(sig.strength or 0), 50.0)
+        else:
+            sig.detail = (
+                f"{sig.detail} · UW tide bearish (${tide_m:+.1f}M) — prefer puts / wait rip"
+            )
+            sig.strength = min(float(sig.strength or 0), max(55.0, float(sig.strength or 0) - 10.0))
     elif is_put and sentiment == "bullish":
         sig.detail = (
             f"{sig.detail} · UW tide soft: market bullish — puts need stronger dump"
         )
     elif sentiment in {"bullish", "bearish"}:
-        sig.detail = f"{sig.detail} · UW tide {sentiment}"
+        sig.detail = f"{sig.detail} · UW tide {sentiment} (${tide_m:+.1f}M)"
     return sig
 
 
@@ -278,23 +290,12 @@ def annotate_dict_with_uw(
 
     if market_tide and market_tide.get("ok"):
         tide_s = str(market_tide.get("sentiment") or "neutral")
-        if (not is_put) and tide_s == "bearish" and hard_block and action in {
-            "BUY_NOW",
-            "BUY_RIP",
-            "BUY_BEAUTY",
-            "BUY_LEVEL",
-            "CALL_NOW",
-            "ENTRY",
-        }:
-            if action in {"BUY_NOW", "ENTRY"}:
-                out["action"] = "WAIT"
-            else:
-                out["action"] = str(out.get("action") or "").replace("BUY_", "WATCH_", 1)
-            out["alert_action"] = "WAIT"
-            detail = f"{detail} · UW tide bearish — skip fresh calls".strip(" ·")
-            strength = min(strength, 50.0)
+        tide_m = float(market_tide.get("tide_net") or 0) / 1e6
+        if (not is_put) and tide_s == "bearish":
+            detail = f"{detail} · UW tide bearish (${tide_m:+.1f}M)".strip(" ·")
+            strength = min(strength, max(55.0, strength - 8.0))
         elif tide_s in {"bullish", "bearish"}:
-            detail = f"{detail} · UW tide {tide_s}".strip(" ·")
+            detail = f"{detail} · UW tide {tide_s} (${tide_m:+.1f}M)".strip(" ·")
 
     out["detail"] = detail
     if "status_detail" in out:
