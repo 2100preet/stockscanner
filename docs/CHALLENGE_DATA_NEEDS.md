@@ -29,6 +29,13 @@ Cloud Agents cannot write GitHub secrets (403). Do **not** commit the key.
      - `TRADIER_ACCOUNT_ID` (for orders later)
      - `TRADIER_SANDBOX` optional (`true` = 15m delayed sandbox)
    - Client: `odte_scanner/data/tradier.py`
+   - Wired feeds (when token set — including Pages offline export):
+     - `/markets/quotes` (+ POST batch) → equity + OCC marks (prefer over Yahoo)
+     - `/markets/options/chains` + `/expirations` + `/strikes` → contract pick
+     - `/markets/timesales` → ORB15 / Power Hour 1m bars
+     - `/markets/history` → daily bars fallback
+     - `/markets/clock` → session state in snapshot `tradier.clock`
+   - Desk `data_confidence.pct` rises when UW + Tradier both ok (soft cap ~80%)
 
 3. **Polygon.io Options Starter+** (or Massive / Intrinio options)
    - Why: reliable bid/ask marks so stops fire at −25/−35% not −90%

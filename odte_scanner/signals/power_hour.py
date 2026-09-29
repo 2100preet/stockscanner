@@ -211,10 +211,20 @@ def resample_15m(bars_1m: pd.DataFrame | None) -> pd.DataFrame | None:
 
 
 def fetch_intraday_1m(symbol: str, *, yahoo_symbol: str | None = None) -> pd.DataFrame | None:
+    fetch_sym = yahoo_symbol or symbol
+    try:
+        from odte_scanner.data.tradier import access_token_from_env, fetch_intraday_bars
+
+        if access_token_from_env():
+            tdf = fetch_intraday_bars(str(fetch_sym).upper(), interval="1min", lookback_days=2)
+            if tdf is not None and not tdf.empty:
+                return tdf
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("power hour tradier bars %s: %s", symbol, exc)
     try:
         import yfinance as yf
 
-        t = yf.Ticker(yahoo_symbol or symbol)
+        t = yf.Ticker(fetch_sym)
         df = t.history(period="1d", interval="1m", prepost=False, auto_adjust=False)
         if df is None or df.empty:
             df = t.history(period="5d", interval="1m", prepost=False, auto_adjust=False)

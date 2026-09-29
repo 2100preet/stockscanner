@@ -127,12 +127,55 @@ def _quote_from_daily_cache(symbol: str, *, yahoo_symbol: str | None = None) -> 
         return None
 
 
-def fetch_live_quote(symbol: str, *, yahoo_symbol: str | None = None) -> LiveQuote | None:
-    """Best-effort last price including extended / overnight bars when Yahoo has them.
+def _from_tradier_row(symbol: str, row: dict[str, Any]) -> LiveQuote | None:
+    try:
+        from odte_scanner.data.tradier import quote_to_live_dict
 
-    Falls back to cached daily bars when Yahoo rate-limits live endpoints.
+        d = quote_to_live_dict(row, symbol=symbol)
+        if not d or not d.get("last"):
+            return None
+        return LiveQuote(
+            symbol=symbol,
+            last=float(d["last"]),
+            prev_close=float(d["prev_close"]),
+            change=float(d["change"]),
+            change_pct=float(d["change_pct"]),
+            session=str(d.get("session") or "regular"),
+            asof=str(d.get("asof") or datetime.now(timezone.utc).isoformat()),
+            day_high=d.get("day_high"),
+            day_low=d.get("day_low"),
+            session_open=d.get("session_open"),
+            session_change=d.get("session_change"),
+            session_change_pct=d.get("session_change_pct"),
+            mom_5m_pct=d.get("mom_5m_pct"),
+            mom_15m_pct=d.get("mom_15m_pct"),
+            dist_from_day_high_pct=d.get("dist_from_day_high_pct"),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("tradier quote map %s: %s", symbol, exc)
+        return None
+
+
+def fetch_live_quote(symbol: str, *, yahoo_symbol: str | None = None) -> LiveQuote | None:
+    """Best-effort last price — Tradier first when token set, then Yahoo, then cache.
+
+    Falls back to cached daily bars when live endpoints fail.
     """
     fetch_sym = yahoo_symbol or symbol
+    # Prefer Tradier production marks when TRADIER_ACCESS_TOKEN is set
+    try:
+        from odte_scanner.data.tradier import access_token_from_env, fetch_quotes
+
+        if access_token_from_env():
+            tq = fetch_quotes([str(fetch_sym).upper()], timeout=10.0)
+            row = (tq.get("quotes") or {}).get(str(fetch_sym).upper())
+            if tq.get("ok") and row:
+                mapped = _from_tradier_row(symbol, row)
+                if mapped:
+                    return mapped
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("tradier equity quote fallback %s: %s", symbol, exc)
+
     # Prefer chart API (crumb session) — more reliable under yfinance 429s
     try:
         from odte_scanner.options.yahoo_session import fetch_yahoo_quote
@@ -246,7 +289,30 @@ def fetch_live_quotes(
 ) -> dict[str, LiveQuote]:
     aliases = aliases or {}
     out: dict[str, LiveQuote] = {}
+    # Batch Tradier when available (one POST vs N Yahoo calls)
+    try:
+        from odte_scanner.data.tradier import access_token_from_env, fetch_quotes
+
+        if access_token_from_env() and symbols:
+            fetch_syms = []
+            back_map: dict[str, str] = {}
+            for sym in symbols:
+                fs = str(aliases.get(sym) or sym).upper()
+                fetch_syms.append(fs)
+                back_map.setdefault(fs, sym)
+            tq = fetch_quotes(fetch_syms, timeout=15.0)
+            if tq.get("ok"):
+                for fs, row in (tq.get("quotes") or {}).items():
+                    desk_sym = back_map.get(fs, fs)
+                    mapped = _from_tradier_row(desk_sym, row)
+                    if mapped:
+                        out[desk_sym] = mapped
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("tradier batch quotes failed: %s", exc)
+
     for sym in symbols:
+        if sym in out:
+            continue
         q = fetch_live_quote(sym, yahoo_symbol=aliases.get(sym))
         if q:
             out[sym] = q

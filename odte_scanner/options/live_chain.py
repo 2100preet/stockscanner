@@ -158,9 +158,13 @@ def refresh_candidate_quote(candidate: dict[str, Any], *, yahoo_symbol: str | No
     try:
         from odte_scanner.data.tradier import access_token_from_env
 
+        # live_chain already preferred Tradier — if token set and we got a mark, credit Tradier
         if access_token_from_env() and float(q.ask or 0) > 0:
             mark_src = "tradier"
     except Exception:  # noqa: BLE001
+        pass
+    # Prefer explicit source when LiveOptionQuote came from Tradier OCC symbol
+    if str(getattr(q, "contract", "") or "").startswith(str(candidate.get("symbol") or "")):
         pass
     out.update(
         {

@@ -3650,6 +3650,16 @@ def _snapshot_offline() -> bool:
         return False
 
 
+def _tradier_live_ok() -> bool:
+    """True when TRADIER_ACCESS_TOKEN is set — Pages can still pull live marks/bars."""
+    try:
+        from odte_scanner.data.tradier import access_token_from_env
+
+        return bool(access_token_from_env())
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _prioritize_action_board_rows(
     deduped: list[dict],
     win_table: dict | None,
@@ -3704,6 +3714,9 @@ def create_app(config_path: str | None = None) -> Flask:
         from odte_scanner.options.live_chain import refresh_candidate_quote
 
         offline = _snapshot_offline()
+        tradier_live = _tradier_live_ok()
+        # Pages sets offline=1 to skip Yahoo fan-out; Tradier still supplies live marks/bars
+        live_marks = (not offline) or tradier_live
         scan = _read_json(ROOT / "outputs" / "latest_scan.json") or {}
         watch = _read_json(ROOT / "outputs" / "watch" / "latest_watch.json")
         ledger_path = Path(cfg.get("paper_trading", {}).get("ledger_path", "outputs/paper_ledger.json"))
@@ -3809,7 +3822,7 @@ def create_app(config_path: str | None = None) -> Flask:
             dram_syms = []
         quote_syms = (
             []
-            if offline
+            if not live_marks
             else sorted(set(syms[:8]) | set(challenge_syms[:12]) | set(dram_syms))
         )
         for s in quote_syms:
@@ -3876,7 +3889,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 journal.reprice_flat_exits_from_reasons()
             # Mark open journal calls FIRST so TP/SL / SELL NOW see live premium
             open_syms_for_quotes: list[str] = []
-            if not offline:
+            if live_marks:
                 for t in journal.book.trades:
                     if t.status != "open":
                         continue
@@ -3909,7 +3922,7 @@ def create_app(config_path: str | None = None) -> Flask:
                     except Exception:  # noqa: BLE001
                         pass
             else:
-                # Pages offline: mark from matching board asks so open P&L is not blank
+                # Pages offline without Tradier: mark from matching board asks so open P&L is not blank
                 by_contract = {
                     str(c.get("contract") or ""): c for c in refreshed if c.get("contract")
                 }
@@ -5070,7 +5083,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 )
                 max_q = int(actions_cfg.get("odte_1k_max_quote_fetch", 48))
                 # Ensure quotes for ORB symbols (capped — full focus sleeve is large)
-                if not offline:
+                if live_marks:
                     for s in o1k_syms[:max_q]:
                         if s not in quotes:
                             aliases.setdefault(s, resolve_yahoo_symbol(s, cfg))
@@ -5094,8 +5107,8 @@ def create_app(config_path: str | None = None) -> Flask:
                     max_trades_per_day=int(actions_cfg.get("odte_1k_max_trades_per_day", 2)),
                     max_orb_fetch=int(actions_cfg.get("odte_1k_max_orb_fetch", 20)),
                     max_contract_fetch=int(actions_cfg.get("odte_1k_max_contract_fetch", 8)),
-                    fetch_bars=bool(actions_cfg.get("odte_1k_fetch_bars", True)) and not offline,
-                    fetch_contracts=bool(actions_cfg.get("odte_1k_fetch_contracts", True)) and not offline,
+                    fetch_bars=bool(actions_cfg.get("odte_1k_fetch_bars", True)) and live_marks,
+                    fetch_contracts=bool(actions_cfg.get("odte_1k_fetch_contracts", True)) and live_marks,
                     flatten_et=str(actions_cfg.get("odte_flatten_et", "15:45")),
                     aliases=aliases,
                     include_backtest=bool(actions_cfg.get("odte_1k_include_backtest", True)) and not offline,
@@ -5191,7 +5204,7 @@ def create_app(config_path: str | None = None) -> Flask:
                     config=cfg,
                 )
                 max_q = int(actions_cfg.get("power_hour_max_quote_fetch", 48))
-                if not offline:
+                if live_marks:
                     for s in (["QQQ"] + ph_syms)[:max_q]:
                         if s not in quotes:
                             aliases.setdefault(s, resolve_yahoo_symbol(s, cfg))
@@ -5205,7 +5218,7 @@ def create_app(config_path: str | None = None) -> Flask:
                     quotes=quotes,
                     symbols=ph_syms,
                     config=cfg,
-                    fetch_bars=bool(actions_cfg.get("power_hour_fetch_bars", True)) and not offline,
+                    fetch_bars=bool(actions_cfg.get("power_hour_fetch_bars", True)) and live_marks,
                     max_bar_fetch=int(actions_cfg.get("power_hour_max_bar_fetch", 16)),
                     aliases=aliases,
                 )
@@ -5394,7 +5407,7 @@ def create_app(config_path: str | None = None) -> Flask:
         ml6 = ml6 or {}
 
         # Refresh ML6 BUY/SELL automation with live quotes + open journal trades
-        if not offline:
+        if live_marks:
             try:
                 from odte_scanner.data.fetcher import fetch_many as _fetch_many
                 from odte_scanner.data.live_quotes import fetch_live_quote as _flq
@@ -5500,22 +5513,20 @@ def create_app(config_path: str | None = None) -> Flask:
                     "ok": uw_summary.get("ok"),
                     "market_tide": (uw_summary.get("market_tide") or {}).get("sentiment"),
                 }
-        # Tradier marks status (token presence + optional quote smoke)
+        # Tradier full market pack (quotes/chains/expirations/timesales/clock)
         tradier_status: dict = {"configured": False, "ok": False, "source": "tradier"}
         try:
-            from odte_scanner.data.tradier import fetch_quotes, status as tradier_status_fn
+            from odte_scanner.data.tradier import probe as tradier_probe
 
-            tradier_status = {**tradier_status_fn(), "ok": False}
+            tradier_status = tradier_probe()
             if tradier_status.get("configured"):
-                smoke = fetch_quotes(["SPY"], timeout=10.0)
-                tradier_status["ok"] = bool(smoke.get("ok"))
-                tradier_status["smoke_n"] = smoke.get("n")
-                tradier_status["error"] = smoke.get("error")
                 logger.info(
-                    "Tradier marks configured=%s ok=%s sandbox=%s",
+                    "Tradier marks configured=%s ok=%s sandbox=%s clock=%s endpoints=%s",
                     tradier_status.get("configured"),
                     tradier_status.get("ok"),
                     tradier_status.get("sandbox"),
+                    (tradier_status.get("clock") or {}).get("state"),
+                    tradier_status.get("endpoints"),
                 )
             else:
                 logger.warning("Tradier marks skipped — TRADIER_ACCESS_TOKEN not set")
@@ -5529,6 +5540,34 @@ def create_app(config_path: str | None = None) -> Flask:
             }
         if isinstance(actions, dict):
             actions["tradier"] = tradier_status
+            # Desk confidence ladder: Yahoo-only ≈55–65; +UW ≈70; +Tradier marks ≈75–80
+            uw_ok = bool((actions.get("uw_flow") or {}).get("ok"))
+            tr_ok = bool(tradier_status.get("ok"))
+            conf = 58
+            if uw_ok:
+                conf += 12
+            if tr_ok:
+                conf += 10
+            if uw_ok and tr_ok:
+                conf += 3  # stacked feeds
+            if tradier_live and offline:
+                conf += 2  # Pages still live via Tradier
+            actions["data_confidence"] = {
+                "pct": min(80, conf),
+                "cap_note": "Hard cap ~80% without Polygon/ORATS/intraday runner",
+                "unusual_whales": uw_ok,
+                "tradier": tr_ok,
+                "tradier_live_on_pages": bool(tradier_live and offline),
+                "mark_source_priority": ["tradier", "yahoo", "cache"],
+                "feeds": {
+                    "uw": "flow+tide+darkpool" if uw_ok else "off",
+                    "tradier": (
+                        "quotes+chains+expirations+timesales+clock"
+                        if tr_ok
+                        else ("configured-fail" if tradier_status.get("configured") else "off")
+                    ),
+                },
+            }
         cache_path = ROOT / "outputs" / "ui_snapshot_cache.json"
         try:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -5597,6 +5636,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 "echo": echo,
                 "challenge": challenge,
                 "tradier": tradier_status,
+                "data_confidence": (actions.get("data_confidence") if isinstance(actions, dict) else None),
                 "odte_1k": odte_1k,
                 "power_hour": power_hour,
                 "market": market,

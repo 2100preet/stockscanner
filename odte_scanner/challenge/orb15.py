@@ -136,11 +136,21 @@ def fetch_orb15_bars(
     yahoo_symbol: str | None = None,
     period: str = "1d",
 ) -> pd.DataFrame | None:
-    """Fetch 1-minute bars for ORB15; fall back to 5m (first 3 bars ≈ 15m)."""
+    """Fetch 1-minute bars for ORB15 — Tradier timesales first, Yahoo fallback."""
+    fetch_sym = yahoo_symbol or symbol
+    try:
+        from odte_scanner.data.tradier import access_token_from_env, fetch_intraday_bars
+
+        if access_token_from_env():
+            tdf = fetch_intraday_bars(str(fetch_sym).upper(), interval="1min", lookback_days=2)
+            if tdf is not None and not tdf.empty:
+                return tdf
+    except Exception:  # noqa: BLE001
+        pass
     try:
         import yfinance as yf
 
-        t = yf.Ticker(yahoo_symbol or symbol)
+        t = yf.Ticker(fetch_sym)
         df = t.history(period=period, interval="1m", prepost=False, auto_adjust=False)
         if df is None or df.empty:
             # Try 5d for holidays / early session gaps

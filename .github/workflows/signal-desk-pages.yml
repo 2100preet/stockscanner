@@ -145,6 +145,8 @@ jobs:
               "uw_alerts:", uw.get("alerts_n"),
               "tradier_configured:", tr.get("configured"),
               "tradier_ok:", tr.get("ok"),
+              "tradier_clock:", (tr.get("clock") or {}).get("state"),
+              "data_confidence:", (snap.get("data_confidence") or acts.get("data_confidence") or {}).get("pct"),
           )
           ch = snap.get("challenge") or {}
           book = ch.get("book") or {}
