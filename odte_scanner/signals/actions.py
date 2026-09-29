@@ -790,6 +790,7 @@ def build_action_board(
     flow_require_vol_gt_oi: bool = False,
     loss_cooldown_symbols: set[str] | list[str] | None = None,
     loss_cooldown_contracts: set[str] | list[str] | None = None,
+    market_tide: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     score_by_symbol = {
         str(s.get("symbol")): float(s.get("ensemble_score") or 0) for s in scores or []
@@ -856,6 +857,7 @@ def build_action_board(
         from odte_scanner.signals.flow_gate import (
             apply_flow_gate,
             apply_uw_buy_boost,
+            apply_uw_market_tide,
             apply_uw_sell_boost,
         )
 
@@ -873,6 +875,7 @@ def build_action_board(
             flow_leaders=flow_leaders,
             flow_min_net_score=flow_min_net_score,
         )
+        sig = apply_uw_market_tide(sig, market_tide=market_tide)
         if sig.action == "BUY_NOW":
             sig, store = _apply_persisted_action(sig, store)
             buys.append(sig)
@@ -987,6 +990,8 @@ def build_action_board(
             "min_tier": flow_min_tier,
             "require_vol_gt_oi": flow_require_vol_gt_oi,
             "leaders_count": len(flow_leaders or []),
+            "market_tide": (market_tide or {}).get("sentiment") if market_tide else None,
+            "tide_net": (market_tide or {}).get("tide_net") if market_tide else None,
         },
         "flow_leaders": list(flow_leaders or [])[:flow_leaders_top_n],
         "counts": {

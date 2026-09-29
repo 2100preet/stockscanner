@@ -19,6 +19,9 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "https://api.unusualwhales.com"
 FLOW_ALERTS = f"{BASE_URL}/api/option-trades/flow-alerts"
+MARKET_TIDE = f"{BASE_URL}/api/market/market-tide"
+DARKPOOL_RECENT = f"{BASE_URL}/api/darkpool/recent"
+NET_PREM_TMPL = f"{BASE_URL}/api/stock/{{ticker}}/net-prem-ticks"
 CLIENT_API_ID = "100001"
 
 
@@ -282,3 +285,158 @@ def merge_flow_leaders(
     for i, row in enumerate(leaders, start=1):
         row["rank"] = i
     return leaders
+
+
+def fetch_market_tide(
+    *,
+    api_key: str | None = None,
+    timeout: float = 15.0,
+) -> dict[str, Any]:
+    """GET /api/market/market-tide — whole-market call vs put premium tape."""
+    key = api_key if api_key is not None else api_key_from_env()
+    if not key:
+        return {"ok": False, "configured": False, "skipped": True, "source": "unusual_whales"}
+    try:
+        r = requests.get(MARKET_TIDE, headers=_headers(key), timeout=timeout)
+        r.raise_for_status()
+        payload = r.json() if r.content else {}
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, list) or not data:
+            return {
+                "ok": False,
+                "configured": True,
+                "source": "unusual_whales",
+                "error": "empty market-tide",
+            }
+        last = data[-1] if isinstance(data[-1], dict) else {}
+        call_p = _as_float(last.get("net_call_premium"))
+        put_p = _as_float(last.get("net_put_premium"))
+        net = call_p - put_p
+        if net >= 50_000_000:
+            sentiment = "bullish"
+        elif net <= -50_000_000:
+            sentiment = "bearish"
+        else:
+            sentiment = "neutral"
+        return {
+            "ok": True,
+            "configured": True,
+            "source": "unusual_whales",
+            "sentiment": sentiment,
+            "net_call_premium": call_p,
+            "net_put_premium": put_p,
+            "tide_net": net,
+            "net_volume": _as_float(last.get("net_volume")),
+            "asof": last.get("timestamp") or last.get("date"),
+            "points": len(data),
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("unusual_whales market-tide failed: %s", exc)
+        return {
+            "ok": False,
+            "configured": True,
+            "source": "unusual_whales",
+            "error": str(exc),
+        }
+
+
+def fetch_darkpool_recent(
+    *,
+    api_key: str | None = None,
+    limit: int = 40,
+    timeout: float = 15.0,
+) -> dict[str, Any]:
+    """GET /api/darkpool/recent — large ATS prints for desk context."""
+    key = api_key if api_key is not None else api_key_from_env()
+    if not key:
+        return {"ok": False, "configured": False, "skipped": True, "source": "unusual_whales"}
+    try:
+        r = requests.get(
+            DARKPOOL_RECENT,
+            headers=_headers(key),
+            params={"limit": int(limit)},
+            timeout=timeout,
+        )
+        r.raise_for_status()
+        payload = r.json() if r.content else {}
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, list):
+            data = []
+        by_sym: dict[str, float] = {}
+        prints: list[dict[str, Any]] = []
+        for row in data:
+            if not isinstance(row, dict):
+                continue
+            sym = _normalize_ticker(row.get("ticker") or row.get("symbol"))
+            if not sym:
+                continue
+            notional = _as_float(row.get("premium") or row.get("notional") or 0)
+            if notional <= 0:
+                px = _as_float(row.get("price"))
+                sz = _as_float(row.get("size"))
+                notional = px * sz
+            by_sym[sym] = by_sym.get(sym, 0.0) + notional
+            prints.append(
+                {
+                    "symbol": sym,
+                    "price": row.get("price"),
+                    "size": row.get("size"),
+                    "notional": round(notional, 0),
+                    "executed_at": row.get("executed_at") or row.get("timestamp"),
+                }
+            )
+        leaders = sorted(
+            [{"symbol": s, "notional": round(v, 0)} for s, v in by_sym.items()],
+            key=lambda x: -float(x["notional"]),
+        )
+        return {
+            "ok": True,
+            "configured": True,
+            "source": "unusual_whales",
+            "prints": prints[:limit],
+            "leaders": leaders[:20],
+            "symbols": [r["symbol"] for r in leaders[:20]],
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("unusual_whales darkpool failed: %s", exc)
+        return {
+            "ok": False,
+            "configured": True,
+            "source": "unusual_whales",
+            "error": str(exc),
+            "prints": [],
+            "leaders": [],
+        }
+
+
+def build_uw_desk_context(
+    *,
+    api_key: str | None = None,
+    flow_limit: int = 100,
+    min_premium: float = 50_000.0,
+    timeout: float = 18.0,
+) -> dict[str, Any]:
+    """Full desk pack: flow leaders + market tide + dark-pool leaders."""
+    flow = build_uw_flow_board(
+        api_key=api_key,
+        limit=flow_limit,
+        min_premium=min_premium,
+        timeout=timeout,
+    )
+    tide = fetch_market_tide(api_key=api_key, timeout=min(timeout, 15.0))
+    dark = fetch_darkpool_recent(api_key=api_key, limit=40, timeout=min(timeout, 15.0))
+    return {
+        "ok": bool(flow.get("ok")),
+        "configured": bool(flow.get("configured") or tide.get("configured") or dark.get("configured")),
+        "source": "unusual_whales",
+        "flow": flow,
+        "market_tide": tide,
+        "darkpool": dark,
+        # Flatten common fields so existing challenge/actions code keeps working
+        "alerts_n": flow.get("alerts_n"),
+        "leaders": flow.get("leaders") or [],
+        "bullish_calls": flow.get("bullish_calls") or [],
+        "bearish_puts": flow.get("bearish_puts") or [],
+        "by_symbol": flow.get("by_symbol") or {},
+        "error": flow.get("error") or tide.get("error") or dark.get("error"),
+    }

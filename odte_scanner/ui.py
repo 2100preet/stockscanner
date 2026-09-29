@@ -3985,34 +3985,38 @@ def create_app(config_path: str | None = None) -> Flask:
         from odte_scanner.echo.flow_snapshot import flow_leaders_from_cache
         from odte_scanner.signals.unusual_whales import (
             api_key_from_env,
-            build_uw_flow_board,
+            build_uw_desk_context,
             merge_flow_leaders,
         )
 
         flow_top_n = int(actions_cfg.get("flow_leaders_top_n", 12))
         flow_leaders = flow_leaders_from_cache(top_n=max(flow_top_n, 20))
-        # Unusual Whales — fetch once, drive BUY NOW / SELL NOW + challenge
+        # Unusual Whales desk pack — flow + market tide + dark pool (even on Pages offline)
         uw_flow: dict = {"ok": False, "configured": bool(api_key_from_env()), "skipped": True}
+        market_tide: dict = {}
+        darkpool_symbols: list[str] = []
         try:
-            # Pages export runs offline=1 (no Yahoo live tape) but UW REST still works
-            # whenever the Actions secret is present — always fetch when keyed.
             if api_key_from_env():
-                uw_flow = build_uw_flow_board(
-                    limit=int(actions_cfg.get("uw_flow_limit", 100)),
+                uw_flow = build_uw_desk_context(
+                    flow_limit=int(actions_cfg.get("uw_flow_limit", 100)),
                     min_premium=float(actions_cfg.get("uw_min_premium", 50_000)),
                     timeout=float(actions_cfg.get("uw_timeout_sec", 18)),
                 )
+                market_tide = uw_flow.get("market_tide") or {}
+                darkpool_symbols = list((uw_flow.get("darkpool") or {}).get("symbols") or [])
                 if uw_flow.get("ok"):
                     flow_leaders = merge_flow_leaders(flow_leaders, uw_flow, prefer_uw=True)
                     logger.info(
-                        "UW flow ok alerts=%s bullish=%s bearish=%s",
+                        "UW desk ok alerts=%s bullish=%s bearish=%s tide=%s dp=%s",
                         uw_flow.get("alerts_n"),
                         len(uw_flow.get("bullish_calls") or []),
                         len(uw_flow.get("bearish_puts") or []),
+                        market_tide.get("sentiment"),
+                        len(darkpool_symbols),
                     )
                 else:
                     logger.warning(
-                        "UW flow not active configured=%s err=%s",
+                        "UW desk not active configured=%s err=%s",
                         uw_flow.get("configured"),
                         uw_flow.get("error"),
                     )
@@ -4026,7 +4030,7 @@ def create_app(config_path: str | None = None) -> Flask:
                     "source": "unusual_whales",
                 }
         except Exception as exc:  # noqa: BLE001
-            logger.warning("unusual_whales flow failed: %s", exc)
+            logger.warning("unusual_whales desk failed: %s", exc)
             uw_flow = {
                 "ok": False,
                 "configured": bool(api_key_from_env()),
@@ -4044,8 +4048,41 @@ def create_app(config_path: str | None = None) -> Flask:
             flow_min_net_score=float(actions_cfg.get("flow_min_net_score", 8.0)),
             flow_min_tier=str(actions_cfg.get("flow_min_tier", "aggressive")),
             flow_require_vol_gt_oi=bool(actions_cfg.get("flow_require_vol_gt_oi", False)),
+            market_tide=market_tide if market_tide.get("ok") else None,
         )
         flow_gate_journal = bool(jcfg.get("require_flow_gate", False)) and require_flow
+
+        def _uw_annotate_board(
+            board: dict,
+            *,
+            keys: tuple[str, ...] = ("buy_now",),
+            hard_block: bool = True,
+            right_default: str = "C",
+        ) -> dict:
+            """Stamp Unusual Whales confirm/veto onto desk lane rows."""
+            if not isinstance(board, dict) or not uw_flow.get("ok"):
+                return board
+            from odte_scanner.signals.flow_gate import annotate_dict_with_uw
+
+            for key in keys:
+                rows = board.get(key)
+                if not isinstance(rows, list):
+                    continue
+                board[key] = [
+                    annotate_dict_with_uw(
+                        r,
+                        flow_leaders=flow_board_kw.get("flow_leaders"),
+                        market_tide=flow_board_kw.get("market_tide"),
+                        darkpool_symbols=darkpool_symbols,
+                        hard_block=hard_block,
+                        right_default=right_default,
+                    )
+                    if isinstance(r, dict)
+                    else r
+                    for r in rows
+                ]
+            board["uw_annotated"] = True
+            return board
 
         # Shared loss cooldown for Options BUY NOW (journal + rec-log + challenge).
         # Challenge-only cooldown left META weekly losers reappearing on BUY NOW.
@@ -4236,6 +4273,11 @@ def create_app(config_path: str | None = None) -> Flask:
             open_trades=open_lottery_trades,
             min_lottery_score=float(actions_cfg.get("lottery_min_score", 62)),
             min_confirms=int(actions_cfg.get("lottery_min_confirms", 4)),
+            flow_leaders=flow_board_kw.get("flow_leaders"),
+            require_flow_confirm=bool(flow_board_kw.get("require_flow_confirm")),
+            flow_leaders_top_n=int(flow_board_kw.get("flow_leaders_top_n") or 20),
+            flow_min_net_score=float(flow_board_kw.get("flow_min_net_score") or 8.0),
+            market_tide=flow_board_kw.get("market_tide"),
         )
 
         # Paper journal also follows lottery BUY/SELL NOW
@@ -4415,6 +4457,9 @@ def create_app(config_path: str | None = None) -> Flask:
                 min_mom5=float(actions_cfg.get("rip_min_mom_5m", 0.05)),
                 max_tickets=int(actions_cfg.get("rip_max_tickets", 12)),
             )
+            rip_radar = _uw_annotate_board(
+                rip_radar, keys=("buy_rip", "buy_now", "watch"), hard_block=True
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("rip radar unavailable: %s", exc)
             rip_radar = {
@@ -4545,6 +4590,9 @@ def create_app(config_path: str | None = None) -> Flask:
                     min_month_pct=float(actions_cfg.get("beauty_min_month_pct", 5.0)),
                     max_tickets=int(actions_cfg.get("beauty_max_tickets", 12)),
                 )
+                beauty_monthly = _uw_annotate_board(
+                    beauty_monthly, keys=("buy_beauty", "buy_now", "watch"), hard_block=True
+                )
                 beauty_monthly["oct_end_pace"] = oct_end_pace_note(
                     equity=1000.0,
                     target_usd=float(actions_cfg.get("challenge_target_usd", 1_000_000)),
@@ -4580,6 +4628,9 @@ def create_app(config_path: str | None = None) -> Flask:
                     scores=scan.get("scores") or [],
                     candidates=refreshed,
                     near_breakout_pct=float(actions_cfg.get("level_near_breakout_pct", 1.5)),
+                )
+                level_watch = _uw_annotate_board(
+                    level_watch, keys=("buy_level", "buy_now", "watch"), hard_block=True
                 )
                 level_watch["generated_at"] = datetime.now(timezone.utc).isoformat()
             except Exception as exc:  # noqa: BLE001
@@ -5049,9 +5100,20 @@ def create_app(config_path: str | None = None) -> Flask:
                     aliases=aliases,
                     include_backtest=bool(actions_cfg.get("odte_1k_include_backtest", True)) and not offline,
                 )
+                odte_1k = _uw_annotate_board(
+                    odte_1k,
+                    keys=("put_now", "call_now", "entry", "in"),
+                    hard_block=True,
+                    right_default="P",
+                )
                 # Auto IN on PUT_NOW when armed (zone ask is enough for paper)
                 if bool(actions_cfg.get("odte_1k_auto_enter", True)):
                     for sig in odte_1k.get("put_now") or []:
+                        if str(sig.get("action") or sig.get("alert_action") or "").upper() in {
+                            "WAIT",
+                            "WATCH",
+                        }:
+                            continue
                         if not sig.get("ask"):
                             continue
                         if any(t.symbol == str(sig.get("symbol") or "").upper() for t in o1k_tracker.open_trades()):
@@ -5406,17 +5468,38 @@ def create_app(config_path: str | None = None) -> Flask:
                 "bearish_puts": list((uw_flow or {}).get("bearish_puts") or [])[:24],
                 "error": (uw_flow or {}).get("error"),
                 "source": "unusual_whales",
-                "drives": ["BUY_NOW", "SELL_NOW", "challenge_ENTRY"],
+                "market_tide": (uw_flow or {}).get("market_tide") or market_tide or {},
+                "darkpool_leaders": list(
+                    ((uw_flow or {}).get("darkpool") or {}).get("leaders") or []
+                )[:12],
+                "drives": [
+                    "BUY_NOW",
+                    "SELL_NOW",
+                    "lottery",
+                    "rip",
+                    "beauty",
+                    "level_watch",
+                    "odte_1k",
+                    "challenge_ENTRY",
+                ],
             }
             actions["uw_flow"] = uw_summary
             fg = dict(actions.get("flow_gate") or {})
             fg["unusual_whales"] = uw_summary.get("ok")
             fg["uw_configured"] = uw_summary.get("configured")
+            fg["market_tide"] = (uw_summary.get("market_tide") or {}).get("sentiment")
             actions["flow_gate"] = fg
             if isinstance(echo, dict):
                 echo["uw_flow"] = uw_summary
                 if flow_board_kw.get("flow_leaders"):
                     echo["flow_leaders"] = flow_board_kw["flow_leaders"][:20]
+                if (uw_flow or {}).get("darkpool"):
+                    echo["uw_darkpool"] = (uw_flow or {}).get("darkpool")
+            if isinstance(lottery, dict):
+                lottery["uw_flow"] = {
+                    "ok": uw_summary.get("ok"),
+                    "market_tide": (uw_summary.get("market_tide") or {}).get("sentiment"),
+                }
         cache_path = ROOT / "outputs" / "ui_snapshot_cache.json"
         try:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
