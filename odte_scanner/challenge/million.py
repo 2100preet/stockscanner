@@ -755,6 +755,8 @@ def build_challenge_board(
     min_option_oi: int = 200,
     allow_zero_volume_if_oi: int = 0,
     loss_cooldown_symbols: set[str] | list[str] | None = None,
+    uw_flow: dict[str, Any] | None = None,
+    require_uw_flow: bool = False,
 ) -> dict[str, Any]:
     quotes = quotes or {}
     aliases = aliases or {}
@@ -766,6 +768,11 @@ def build_challenge_board(
         if t.get("status", "open") == "open"
     }
     cooldown = {str(s).upper() for s in (loss_cooldown_symbols or [])}
+    uw = uw_flow if isinstance(uw_flow, dict) else {}
+    uw_ok = bool(uw.get("ok"))
+    uw_by = uw.get("by_symbol") if isinstance(uw.get("by_symbol"), dict) else {}
+    uw_bullish = {str(s).upper() for s in (uw.get("bullish_calls") or [])}
+    uw_bearish = {str(s).upper() for s in (uw.get("bearish_puts") or [])}
     # Mega-liquid names preferred for 1-month sprint compounding
     from odte_scanner.challenge.tracker import CORE_MEGAS
 
@@ -1111,7 +1118,35 @@ def build_challenge_board(
         elif (earn.get("window") == "earnings_day") and not open_t:
             action = "WAIT"
             status_detail = "WAIT — earnings day; skip new long-premium ENTRY"
-        elif ask is None:
+
+        # Unusual Whales session-flow gate (when API key is live) — before liquidity WAIT
+        uw_row = uw_by.get(sym.upper()) if isinstance(uw_by, dict) else None
+        if action == "ENTRY" and uw_ok:
+            if right == "C" and sym.upper() in uw_bearish:
+                action = "WAIT"
+                status_detail = (
+                    "WAIT — UW flow bearish (put premium dominates); skip call ENTRY"
+                )
+            elif right == "P" and sym.upper() in uw_bullish and not dump_confirm:
+                action = "WAIT"
+                status_detail = (
+                    "WAIT — UW flow bullish call tape; need dump confirm for puts"
+                )
+            elif require_uw_flow and right == "C" and sym.upper() not in uw_bullish:
+                action = "WAIT"
+                status_detail = "WAIT — no UW bullish call flow on symbol this session"
+            elif right == "C" and sym.upper() in uw_bullish:
+                status_detail = (
+                    f"{status_detail} · UW bullish call flow confirmed"
+                )
+            elif uw_row:
+                status_detail = (
+                    f"{status_detail} · UW {uw_row.get('sentiment')} "
+                    f"(call ${float(uw_row.get('call_premium') or 0):,.0f} / "
+                    f"put ${float(uw_row.get('put_premium') or 0):,.0f})"
+                )
+
+        if action == "ENTRY" and ask is None:
             action = "WAIT"
             status_detail = "WAIT — no liquid listed option (need volume + OI + live ask)"
             if earn.get("window") == "pre_earnings":
@@ -1370,12 +1405,19 @@ def build_challenge_board(
         if len(tickets) >= max_tickets:
             break
 
-    # Rank: EXIT first, then CORE MEGAS, liquid, volume, pace, hist
+    # Rank: EXIT first, then UW bullish calls, CORE MEGAS, liquid, volume, pace, hist
     rank_action = {"EXIT": 0, "ENTRY": 1, "HOLD": 2, "WAIT": 3}
     tickets.sort(
         key=lambda t: (
             rank_action.get(t.action, 9),
             0 if t.symbol.upper() not in cooldown else 1,
+            0
+            if (
+                uw_ok
+                and str(t.right or "C").upper() == "C"
+                and t.symbol.upper() in uw_bullish
+            )
+            else 1,
             0 if t.symbol.upper() in core_megas else 1,
             0 if t.symbol.upper() in liquid_boost else 1,
             0 if str(t.right or "C").upper() == "C" else 1,
@@ -1450,6 +1492,16 @@ def build_challenge_board(
             "leap": hold_period_for("leap", 200),
         },
         "walls_map": walls_map,
+        "uw_flow": {
+            "ok": uw_ok,
+            "configured": bool(uw.get("configured")),
+            "alerts_n": uw.get("alerts_n"),
+            "bullish_calls": sorted(uw_bullish)[:24],
+            "bearish_puts": sorted(uw_bearish)[:24],
+            "error": uw.get("error"),
+            "source": uw.get("source") or "unusual_whales",
+            "require_uw_flow": require_uw_flow,
+        },
         "strategy_notes": {
             "earnings": (
                 "Prefer post-earnings continuation (IV already crushed) for CALL/PUT swings. "

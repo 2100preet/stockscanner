@@ -3,12 +3,23 @@
 If you can buy one or more of these, wire credentials as repo secrets / env
 and tell the agent — Yahoo-only is the current bottleneck for marks + flow.
 
+## Add Unusual Whales key (required for live Pages)
+
+1. Open https://github.com/2100preet/stockscanner/settings/secrets/actions
+2. **New repository secret**
+3. Name: `UNUSUAL_WHALES_API_KEY`
+4. Value: your Unusual Whales API token
+5. Save — then re-run **Signal Desk Pages** (or wait for the next cron)
+
+Cloud Agents cannot write GitHub secrets (403). Do **not** commit the key.
+
 ## Priority (highest leverage first)
 
 1. **Unusual Whales** or **FlowAlgo / Cheddar Flow** (options flow)
    - Why: real-time sweep / dark-pool / premium flow beats Yahoo OI lag
    - Use: gate challenge ENTRY to symbols with bullish call flow that session
    - Env: `UNUSUAL_WHALES_API_KEY` or `FLOWALGO_USER` / `FLOWALGO_PASS`
+   - Client: `odte_scanner/signals/unusual_whales.py` (flow-alerts → challenge board)
 
 2. **Polygon.io Options Starter+** (or Massive / Intrinio options)
    - Why: reliable bid/ask marks so stops fire at −25/−35% not −90%
