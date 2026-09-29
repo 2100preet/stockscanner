@@ -71,6 +71,11 @@ jobs:
         timeout-minutes: 25
         run: |
           mkdir -p outputs
+          if [ -n "${UNUSUAL_WHALES_API_KEY:-}" ]; then
+            echo "UW_API_KEY configured=yes len=${#UNUSUAL_WHALES_API_KEY}"
+          else
+            echo "UW_API_KEY configured=NO — add repo secret UNUSUAL_WHALES_API_KEY"
+          fi
           python -m odte_scanner scan --universe focus --no-paper
         env:
           PYTHONUNBUFFERED: "1"
@@ -82,6 +87,11 @@ jobs:
           UNUSUAL_WHALES_API_KEY: ${{ secrets.UNUSUAL_WHALES_API_KEY }}
         run: |
           mkdir -p outputs
+          if [ -n "${UNUSUAL_WHALES_API_KEY:-}" ]; then
+            echo "UW_API_KEY configured=yes len=${#UNUSUAL_WHALES_API_KEY}"
+          else
+            echo "UW_API_KEY configured=NO — add repo secret UNUSUAL_WHALES_API_KEY"
+          fi
           python -m odte_scanner export-pages --out site
           test -f site/index.html
           test -f site/data/snapshot.json
@@ -107,11 +117,22 @@ jobs:
           assert "scores" in snap
           acts = snap.get("actions") or {}
           journ = (snap.get("insights") or {})
+          uw = acts.get("uw_flow") or (snap.get("challenge") or {}).get("uw_flow") or {}
           print(
               "sell_now:", (acts.get("counts") or {}).get("sell_now"),
               "buy_puts:", (acts.get("counts") or {}).get("buy_now_puts"),
               "closed_journal:", journ.get("closed_trades") and len(journ.get("closed_trades") or []),
               "just_exited:", len(acts.get("just_exited") or []),
+              "uw_ok:", uw.get("ok"),
+              "uw_configured:", uw.get("configured"),
+              "uw_alerts:", uw.get("alerts_n"),
+          )
+          ch = snap.get("challenge") or {}
+          book = ch.get("book") or {}
+          print(
+              "challenge_equity:", ch.get("current_equity") or book.get("equity"),
+              "epoch:", book.get("epoch"),
+              "challenge_error:", ch.get("error"),
           )
           PY
 

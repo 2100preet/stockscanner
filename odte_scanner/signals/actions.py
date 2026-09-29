@@ -853,7 +853,11 @@ def build_action_board(
             min_hist_win_samples=min_hist_win_samples,
             require_hist_win=require_hist_win,
         )
-        from odte_scanner.signals.flow_gate import apply_flow_gate
+        from odte_scanner.signals.flow_gate import (
+            apply_flow_gate,
+            apply_uw_buy_boost,
+            apply_uw_sell_boost,
+        )
 
         sig = apply_flow_gate(
             sig,
@@ -864,6 +868,11 @@ def build_action_board(
             flow_min_tier=flow_min_tier,
             require_vol_gt_oi=flow_require_vol_gt_oi,
         )
+        sig = apply_uw_buy_boost(
+            sig,
+            flow_leaders=flow_leaders,
+            flow_min_net_score=flow_min_net_score,
+        )
         if sig.action == "BUY_NOW":
             sig, store = _apply_persisted_action(sig, store)
             buys.append(sig)
@@ -872,10 +881,31 @@ def build_action_board(
         else:
             waits.append(sig)
 
+    # UW flow flip can force SELL_NOW on open HOLDs
+    from odte_scanner.signals.flow_gate import apply_uw_sell_boost
+
+    boosted_holds: list[ActionSignal] = []
+    for sig in holds:
+        sig2 = apply_uw_sell_boost(
+            sig,
+            flow_leaders=flow_leaders,
+            flow_min_net_score=flow_min_net_score,
+        )
+        if sig2.action == "SELL_NOW":
+            sig2, store = _apply_persisted_action(sig2, store)
+            sells.append(sig2)
+        else:
+            boosted_holds.append(sig2)
+    holds = boosted_holds
+
     save_signal_store(signal_times_path, store)
 
-    # Rank buys by historical win% then strength
-    buys.sort(key=lambda s: (s.win_pct or 0, s.strength), reverse=True)
+    # Rank buys: UW-confirmed first, then hist win%, then strength
+    def _uw_rank(s: ActionSignal) -> int:
+        detail = str(s.detail or "")
+        return 0 if "UW BUY confirm" in detail or "UW OK" in detail else 1
+
+    buys.sort(key=lambda s: (_uw_rank(s), -(s.win_pct or 0), -s.strength))
     sells.sort(key=lambda s: s.strength, reverse=True)
     waits.sort(key=lambda s: (s.win_pct or 0, s.strength), reverse=True)
 

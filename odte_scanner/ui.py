@@ -3983,20 +3983,58 @@ def create_app(config_path: str | None = None) -> Flask:
         )
 
         from odte_scanner.echo.flow_snapshot import flow_leaders_from_cache
+        from odte_scanner.signals.unusual_whales import (
+            api_key_from_env,
+            build_uw_flow_board,
+            merge_flow_leaders,
+        )
 
         flow_top_n = int(actions_cfg.get("flow_leaders_top_n", 12))
         flow_leaders = flow_leaders_from_cache(top_n=max(flow_top_n, 20))
+        # Unusual Whales — fetch once, drive BUY NOW / SELL NOW + challenge
+        uw_flow: dict = {"ok": False, "configured": bool(api_key_from_env()), "skipped": True}
+        try:
+            if not offline:
+                uw_flow = build_uw_flow_board(
+                    limit=int(actions_cfg.get("uw_flow_limit", 100)),
+                    min_premium=float(actions_cfg.get("uw_min_premium", 50_000)),
+                    timeout=float(actions_cfg.get("uw_timeout_sec", 18)),
+                )
+                if uw_flow.get("ok"):
+                    flow_leaders = merge_flow_leaders(flow_leaders, uw_flow, prefer_uw=True)
+                    logger.info(
+                        "UW flow ok alerts=%s bullish=%s bearish=%s",
+                        uw_flow.get("alerts_n"),
+                        len(uw_flow.get("bullish_calls") or []),
+                        len(uw_flow.get("bearish_puts") or []),
+                    )
+                else:
+                    logger.warning(
+                        "UW flow not active configured=%s err=%s",
+                        uw_flow.get("configured"),
+                        uw_flow.get("error"),
+                    )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("unusual_whales flow failed: %s", exc)
+            uw_flow = {
+                "ok": False,
+                "configured": bool(api_key_from_env()),
+                "error": str(exc),
+                "source": "unusual_whales",
+            }
+        # When UW is live, always enforce flow confirm on BUY NOW
+        require_flow = bool(actions_cfg.get("require_flow_confirm", False)) or bool(
+            uw_flow.get("ok")
+        )
         flow_board_kw = dict(
             flow_leaders=flow_leaders,
-            require_flow_confirm=bool(actions_cfg.get("require_flow_confirm", False)),
-            flow_leaders_top_n=flow_top_n,
+            require_flow_confirm=require_flow,
+            flow_leaders_top_n=max(flow_top_n, 20) if uw_flow.get("ok") else flow_top_n,
             flow_min_net_score=float(actions_cfg.get("flow_min_net_score", 8.0)),
             flow_min_tier=str(actions_cfg.get("flow_min_tier", "aggressive")),
             flow_require_vol_gt_oi=bool(actions_cfg.get("flow_require_vol_gt_oi", False)),
         )
-        flow_gate_journal = bool(jcfg.get("require_flow_gate", False)) and bool(
-            actions_cfg.get("require_flow_confirm", False)
-        )
+        flow_gate_journal = bool(jcfg.get("require_flow_gate", False)) and require_flow
 
         # Shared loss cooldown for Options BUY NOW (journal + rec-log + challenge).
         # Challenge-only cooldown left META weekly losers reappearing on BUY NOW.
@@ -4568,7 +4606,14 @@ def create_app(config_path: str | None = None) -> Flask:
                 fetch_ladders=bool(actions_cfg.get("echo_fetch_ladders", True)) and not offline,
             )
             if echo.get("flow_leaders"):
-                flow_board_kw["flow_leaders"] = echo["flow_leaders"]
+                # Keep UW leaders on top of Yahoo echo flow
+                from odte_scanner.signals.unusual_whales import merge_flow_leaders
+
+                flow_board_kw["flow_leaders"] = merge_flow_leaders(
+                    echo.get("flow_leaders") or [],
+                    uw_flow if isinstance(uw_flow, dict) else None,
+                    prefer_uw=True,
+                )
                 actions = build_action_board(
                     candidates=refreshed,
                     scores=scan.get("scores") or [],
@@ -4669,24 +4714,9 @@ def create_app(config_path: str | None = None) -> Flask:
             deadline = str(actions_cfg.get("challenge_deadline") or "2026-10-31")
             days_left = days_to_deadline(deadline)
             pace_months = max(0.25, days_left / 30.4375)
-            uw_flow: dict = {"ok": False, "configured": False, "skipped": True}
-            try:
-                from odte_scanner.signals.unusual_whales import build_uw_flow_board
-
-                if not offline:
-                    uw_flow = build_uw_flow_board(
-                        limit=int(actions_cfg.get("uw_flow_limit", 80)),
-                        min_premium=float(actions_cfg.get("uw_min_premium", 50_000)),
-                        timeout=float(actions_cfg.get("uw_timeout_sec", 18)),
-                    )
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("unusual_whales flow skipped: %s", exc)
-                uw_flow = {
-                    "ok": False,
-                    "configured": False,
-                    "error": str(exc),
-                    "source": "unusual_whales",
-                }
+            # Reuse UW board already fetched for BUY/SELL NOW (do not double-hit API)
+            if not isinstance(uw_flow, dict):
+                uw_flow = {"ok": False, "configured": False, "skipped": True}
             challenge = build_challenge_board(
                 win_table=win_table if isinstance(win_table, dict) else None,
                 scores=scan.get("scores") or [],
@@ -4719,6 +4749,60 @@ def create_app(config_path: str | None = None) -> Flask:
                 current_equity=float(tracker.book.equity or tracker.book.cash or 1000),
                 uw_flow=uw_flow,
                 require_uw_flow=bool(actions_cfg.get("challenge_require_uw_flow", False)),
+            )
+            live_contracts = {
+                (str(t.get("symbol")), str(t.get("right") or "C")): t
+                for t in (challenge.get("tickets") or [])
+                if t.get("ask") is not None or t.get("contract") or t.get("call_wall") is not None
+            }
+            # Refresh marks again right before EXIT sync (board may have open bid)
+            if fetch_ch_contracts and tracker.open_trades():
+                ch_live_marks = {**ch_live_marks, **tracker.refresh_open_marks(aliases=aliases)}
+            # Feed RIP megas into challenge auto-enter (sprint sleeve needs movers)
+            ch_tickets = list(challenge.get("tickets") or [])
+            try:
+                rip_buys = list((rip_radar or {}).get("buy_rip") or (rip_radar or {}).get("buy_now") or [])
+                seen_occ = {
+                    str(t.get("contract") or "")
+                    for t in ch_tickets
+                    if t.get("contract")
+                }
+                for r in rip_buys[:6]:
+                    occ = str(r.get("contract") or "")
+                    if not occ or occ in seen_occ or not r.get("ask"):
+                        continue
+                    seen_occ.add(occ)
+                    ch_tickets.append(
+                        {
+                            **r,
+                            "action": "BUY_RIP",
+                            "right": str(r.get("right") or "C").upper(),
+                            "hold_style": "sprint",
+                            "horizon": "sprint",
+                            "hold_min_days": 0,
+                            "hold_max_days": 1,
+                            "hold_ideal_days": 1,
+                            "target_premium_mult": float(r.get("target_premium_mult") or 1.5),
+                            "ensemble_score": float(r.get("ensemble_score") or r.get("strength") or 70),
+                            "thesis": r.get("detail") or r.get("headline") or "BUY_RIP → challenge",
+                        }
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("rip→challenge bridge skipped: %s", exc)
+            sync = tracker.sync_from_tickets(
+                ch_tickets,
+                quotes=quotes,
+                auto_enter=bool(actions_cfg.get("challenge_auto_enter", True)),
+                auto_exit=bool(actions_cfg.get("challenge_auto_exit", True)),
+                max_open=int(actions_cfg.get("challenge_max_open", 1)),
+                sprint_desk=bool(actions_cfg.get("challenge_sprint_desk", True)),
+                live_marks=ch_live_marks,
+                loss_cooldown_days=int(actions_cfg.get("challenge_loss_cooldown_days", 2)),
+                max_cash_frac=float(actions_cfg.get("challenge_max_cash_frac", 0.25)),
+                max_contracts=int(actions_cfg.get("challenge_max_contracts", 2)),
+                prefer_calls=bool(actions_cfg.get("challenge_prefer_calls", True)),
+                min_ensemble=float(actions_cfg.get("challenge_min_ensemble", 58)),
+                max_consecutive_losses=int(actions_cfg.get("challenge_max_consecutive_losses", 3)),
             )
             challenge["sync"] = sync
             challenge["book"] = sync.get("book") or tracker.book.to_dict()
@@ -5302,6 +5386,26 @@ def create_app(config_path: str | None = None) -> Flask:
                 logger.warning("ML6 live action refresh failed: %s", exc)
 
         # Persist boards so /api/webull/sync + auto_sync see the same ENTER/EXIT set
+        if isinstance(actions, dict):
+            uw_summary = {
+                "ok": bool((uw_flow or {}).get("ok")),
+                "configured": bool((uw_flow or {}).get("configured")),
+                "alerts_n": (uw_flow or {}).get("alerts_n"),
+                "bullish_calls": list((uw_flow or {}).get("bullish_calls") or [])[:24],
+                "bearish_puts": list((uw_flow or {}).get("bearish_puts") or [])[:24],
+                "error": (uw_flow or {}).get("error"),
+                "source": "unusual_whales",
+                "drives": ["BUY_NOW", "SELL_NOW", "challenge_ENTRY"],
+            }
+            actions["uw_flow"] = uw_summary
+            fg = dict(actions.get("flow_gate") or {})
+            fg["unusual_whales"] = uw_summary.get("ok")
+            fg["uw_configured"] = uw_summary.get("configured")
+            actions["flow_gate"] = fg
+            if isinstance(echo, dict):
+                echo["uw_flow"] = uw_summary
+                if flow_board_kw.get("flow_leaders"):
+                    echo["flow_leaders"] = flow_board_kw["flow_leaders"][:20]
         cache_path = ROOT / "outputs" / "ui_snapshot_cache.json"
         try:
             cache_path.parent.mkdir(parents=True, exist_ok=True)

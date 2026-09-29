@@ -99,7 +99,81 @@ def apply_flow_gate(
         sig.detail = f"{sig.detail} · flow soft: no vol>OI on {sym}"
         return sig
 
+    src = str(row.get("source") or "yahoo")
+    tag = "UW" if src == "unusual_whales" else "flow"
     sig.detail = (
-        f"{sig.detail} · flow OK: #{rank} {sentiment} net {net:+.0f} tier {top_tier}"
+        f"{sig.detail} · {tag} OK: #{rank} {sentiment} net {net:+.0f} tier {top_tier}"
     )
+    return sig
+
+
+def apply_uw_sell_boost(
+    sig: ActionSignal,
+    *,
+    flow_leaders: list[dict[str, Any]] | None = None,
+    flow_min_net_score: float = 8.0,
+) -> ActionSignal:
+    """Promote HOLD → SELL_NOW when Unusual Whales flow flips against the open side."""
+    if sig.action != "HOLD":
+        return sig
+    sym = str(sig.symbol or "").upper()
+    if not sym:
+        return sig
+    row = _leader_map(flow_leaders).get(sym)
+    if not row or str(row.get("source") or "") != "unusual_whales":
+        return sig
+    sentiment = str(row.get("sentiment") or "neutral")
+    net = float(row.get("net_flow_score") or 0)
+    is_put = str(sig.right or "C").upper() == "P"
+    if (not is_put) and sentiment == "bearish" and net <= -flow_min_net_score:
+        sig.action = "SELL_NOW"
+        sig.headline = (sig.headline or "").replace("HOLD", "SELL NOW", 1)
+        if "SELL NOW" not in (sig.headline or ""):
+            sig.headline = f"SELL NOW {sym} — UW flow flipped bearish"
+        sig.detail = (
+            f"{sig.detail} · UW exit: bearish flow net {net:+.0f} "
+            f"(put prem ${float(row.get('put_premium') or 0):,.0f})"
+        )
+        sig.strength = max(float(sig.strength or 0), 72.0)
+        return sig
+    if is_put and sentiment == "bullish" and net >= flow_min_net_score:
+        sig.action = "SELL_NOW"
+        sig.headline = (sig.headline or "").replace("HOLD", "SELL NOW", 1)
+        if "SELL NOW" not in (sig.headline or ""):
+            sig.headline = f"SELL NOW {sym} put — UW flow flipped bullish"
+        sig.detail = (
+            f"{sig.detail} · UW exit: bullish call flow net {net:+.0f} "
+            f"(call prem ${float(row.get('call_premium') or 0):,.0f})"
+        )
+        sig.strength = max(float(sig.strength or 0), 72.0)
+        return sig
+    return sig
+
+
+def apply_uw_buy_boost(
+    sig: ActionSignal,
+    *,
+    flow_leaders: list[dict[str, Any]] | None = None,
+    flow_min_net_score: float = 8.0,
+) -> ActionSignal:
+    """Annotate / boost BUY_NOW strength when UW confirms the side."""
+    if sig.action != "BUY_NOW":
+        return sig
+    sym = str(sig.symbol or "").upper()
+    row = _leader_map(flow_leaders).get(sym)
+    if not row or str(row.get("source") or "") != "unusual_whales":
+        return sig
+    sentiment = str(row.get("sentiment") or "neutral")
+    net = float(row.get("net_flow_score") or 0)
+    is_put = str(sig.right or "C").upper() == "P"
+    if (not is_put) and sentiment == "bullish" and net >= flow_min_net_score:
+        sig.strength = min(99.0, float(sig.strength or 0) + 8.0)
+        sig.detail = (
+            f"{sig.detail} · UW BUY confirm: bullish call flow net {net:+.0f}"
+        )
+    elif is_put and sentiment == "bearish" and net <= -flow_min_net_score:
+        sig.strength = min(99.0, float(sig.strength or 0) + 8.0)
+        sig.detail = (
+            f"{sig.detail} · UW BUY confirm: bearish put flow net {net:+.0f}"
+        )
     return sig
