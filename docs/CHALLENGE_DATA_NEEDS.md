@@ -21,22 +21,31 @@ Cloud Agents cannot write GitHub secrets (403). Do **not** commit the key.
    - Env: `UNUSUAL_WHALES_API_KEY` or `FLOWALGO_USER` / `FLOWALGO_PASS`
    - Client: `odte_scanner/signals/unusual_whales.py` (flow-alerts → challenge board)
 
-2. **Polygon.io Options Starter+** (or Massive / Intrinio options)
+2. **Tradier** (broker + options marks) — preferred next
+   - Why: live bid/ask for ENTRY/EXIT + sandbox/paper orders in one API
+   - Use: replace Yahoo marks in `live_chain` / challenge `refresh_open_marks`
+   - Env secrets:
+     - `TRADIER_ACCESS_TOKEN` (production token for realtime marks)
+     - `TRADIER_ACCOUNT_ID` (for orders later)
+     - `TRADIER_SANDBOX` optional (`true` = 15m delayed sandbox)
+   - Client: `odte_scanner/data/tradier.py`
+
+3. **Polygon.io Options Starter+** (or Massive / Intrinio options)
    - Why: reliable bid/ask marks so stops fire at −25/−35% not −90%
    - Use: replace Yahoo live_chain for challenge open marks + entry asks
    - Env: `POLYGON_API_KEY`
 
-3. **ORATS** or **LiveVol** (IV surface / skew / earnings IV crush)
+4. **ORATS** or **LiveVol** (IV surface / skew / earnings IV crush)
    - Why: avoid buying rich premium into IV crush; prefer cheap convexity
    - Use: skip ENTRY when IV rank > 80 without dump/rip tape
    - Env: `ORATS_API_KEY`
 
-4. **Benzinga** or **Briefing.com** movers / news websocket
+5. **Benzinga** or **Briefing.com** movers / news websocket
    - Why: catch catalyst opens (FDA, guidance, upgrades) in first minutes
    - Use: boost CORE_MEGAS + named movers onto challenge ENTRY same bar
    - Env: `BENZINGA_API_KEY`
 
-5. **Optional broker paper API** (Webull / IBKR paper)
+6. **Optional broker paper API** (Webull already stubbed; Tradier preferred)
    - Why: fills + live greeks instead of Yahoo snapshots on Pages cron
    - Already partially stubbed under live_trading / webull
 
