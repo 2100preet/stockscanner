@@ -4669,6 +4669,24 @@ def create_app(config_path: str | None = None) -> Flask:
             deadline = str(actions_cfg.get("challenge_deadline") or "2026-10-31")
             days_left = days_to_deadline(deadline)
             pace_months = max(0.25, days_left / 30.4375)
+            uw_flow: dict = {"ok": False, "configured": False, "skipped": True}
+            try:
+                from odte_scanner.signals.unusual_whales import build_uw_flow_board
+
+                if not offline:
+                    uw_flow = build_uw_flow_board(
+                        limit=int(actions_cfg.get("uw_flow_limit", 80)),
+                        min_premium=float(actions_cfg.get("uw_min_premium", 50_000)),
+                        timeout=float(actions_cfg.get("uw_timeout_sec", 18)),
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("unusual_whales flow skipped: %s", exc)
+                uw_flow = {
+                    "ok": False,
+                    "configured": False,
+                    "error": str(exc),
+                    "source": "unusual_whales",
+                }
             challenge = build_challenge_board(
                 win_table=win_table if isinstance(win_table, dict) else None,
                 scores=scan.get("scores") or [],
@@ -4699,60 +4717,8 @@ def create_app(config_path: str | None = None) -> Flask:
                 pace_milestone_usd=float(actions_cfg.get("challenge_pace_milestone_usd", 1_000_000)),
                 prefer_weekly_pace=bool(actions_cfg.get("challenge_prefer_weekly_pace", True)),
                 current_equity=float(tracker.book.equity or tracker.book.cash or 1000),
-            )
-            live_contracts = {
-                (str(t.get("symbol")), str(t.get("right") or "C")): t
-                for t in (challenge.get("tickets") or [])
-                if t.get("ask") is not None or t.get("contract") or t.get("call_wall") is not None
-            }
-            # Refresh marks again right before EXIT sync (board may have open bid)
-            if fetch_ch_contracts and tracker.open_trades():
-                ch_live_marks = {**ch_live_marks, **tracker.refresh_open_marks(aliases=aliases)}
-            # Feed RIP megas into challenge auto-enter (sprint sleeve needs movers)
-            ch_tickets = list(challenge.get("tickets") or [])
-            try:
-                rip_buys = list((rip_radar or {}).get("buy_rip") or (rip_radar or {}).get("buy_now") or [])
-                seen_occ = {
-                    str(t.get("contract") or "")
-                    for t in ch_tickets
-                    if t.get("contract")
-                }
-                for r in rip_buys[:6]:
-                    occ = str(r.get("contract") or "")
-                    if not occ or occ in seen_occ or not r.get("ask"):
-                        continue
-                    seen_occ.add(occ)
-                    ch_tickets.append(
-                        {
-                            **r,
-                            "action": "BUY_RIP",
-                            "right": str(r.get("right") or "C").upper(),
-                            "hold_style": "sprint",
-                            "horizon": "sprint",
-                            "hold_min_days": 0,
-                            "hold_max_days": 1,
-                            "hold_ideal_days": 1,
-                            "target_premium_mult": float(r.get("target_premium_mult") or 1.5),
-                            "ensemble_score": float(r.get("ensemble_score") or r.get("strength") or 70),
-                            "thesis": r.get("detail") or r.get("headline") or "BUY_RIP → challenge",
-                        }
-                    )
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("rip→challenge bridge skipped: %s", exc)
-            sync = tracker.sync_from_tickets(
-                ch_tickets,
-                quotes=quotes,
-                auto_enter=bool(actions_cfg.get("challenge_auto_enter", True)),
-                auto_exit=bool(actions_cfg.get("challenge_auto_exit", True)),
-                max_open=int(actions_cfg.get("challenge_max_open", 1)),
-                sprint_desk=bool(actions_cfg.get("challenge_sprint_desk", True)),
-                live_marks=ch_live_marks,
-                loss_cooldown_days=int(actions_cfg.get("challenge_loss_cooldown_days", 2)),
-                max_cash_frac=float(actions_cfg.get("challenge_max_cash_frac", 0.25)),
-                max_contracts=int(actions_cfg.get("challenge_max_contracts", 2)),
-                prefer_calls=bool(actions_cfg.get("challenge_prefer_calls", True)),
-                min_ensemble=float(actions_cfg.get("challenge_min_ensemble", 58)),
-                max_consecutive_losses=int(actions_cfg.get("challenge_max_consecutive_losses", 3)),
+                uw_flow=uw_flow,
+                require_uw_flow=bool(actions_cfg.get("challenge_require_uw_flow", False)),
             )
             challenge["sync"] = sync
             challenge["book"] = sync.get("book") or tracker.book.to_dict()
@@ -4795,6 +4761,8 @@ def create_app(config_path: str | None = None) -> Flask:
                 pace_milestone_usd=float(actions_cfg.get("challenge_pace_milestone_usd", 1_000_000)),
                 prefer_weekly_pace=bool(actions_cfg.get("challenge_prefer_weekly_pace", True)),
                 current_equity=float(tracker.book.equity or tracker.book.cash or 1000),
+                uw_flow=uw_flow,
+                require_uw_flow=bool(actions_cfg.get("challenge_require_uw_flow", False)),
             )
             challenge["sync"] = sync
             challenge["book"] = sync.get("book") or tracker.book.to_dict()

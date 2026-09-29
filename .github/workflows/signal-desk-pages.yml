@@ -74,8 +74,12 @@ jobs:
           python -m odte_scanner scan --universe focus --no-paper
         env:
           PYTHONUNBUFFERED: "1"
+          UNUSUAL_WHALES_API_KEY: ${{ secrets.UNUSUAL_WHALES_API_KEY }}
 
       - name: Export static site
+        env:
+          PYTHONUNBUFFERED: "1"
+          UNUSUAL_WHALES_API_KEY: ${{ secrets.UNUSUAL_WHALES_API_KEY }}
         run: |
           mkdir -p outputs
           python -m odte_scanner export-pages --out site
