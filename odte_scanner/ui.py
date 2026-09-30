@@ -222,6 +222,7 @@ PAGE = r"""
       <button data-tab="echo">Flow Desk</button>
       <button data-tab="challenge">$1k→$1M</button>
       <button data-tab="screener">Screener</button>
+      <button data-tab="pnl">P&amp;L</button>
       <button data-tab="journal">Journal</button>
     </nav>
 
@@ -689,6 +690,39 @@ PAGE = r"""
         <button type="button" class="tag" data-sort="score">Score</button>
       </div>
       <div id="screener" class="empty">Loading market board…</div>
+    </section>
+
+    <section class="tabpane" id="tab-pnl">
+      <h2>Profit &amp; Loss dashboard</h2>
+      <p class="lede">
+        Daily realized P&amp;L across every sleeve the desk <strong>recommended and auto-took</strong>
+        (paper journal · challenge · 0DTE $1K · lottery · ML6 · RIP). Exit day in America/Chicago.
+        Each trade shows category, entry/exit premium, and entry/exit time (CST).
+      </p>
+      <div class="metric-row" id="pnlMetrics"></div>
+      <div class="panel">
+        <h2>Daily P&amp;L</h2>
+        <div id="pnlByDay" class="empty">No closed auto-takes yet.</div>
+      </div>
+      <div class="panel">
+        <h2>By category</h2>
+        <div id="pnlByCategory" class="empty">—</div>
+      </div>
+      <div class="panel">
+        <h2>Closed trades — entry / exit</h2>
+        <div id="pnlClosed" class="empty">No closed trades yet.</div>
+      </div>
+      <div class="panel">
+        <h2>Open positions</h2>
+        <div id="pnlOpen" class="empty">No open positions.</div>
+      </div>
+      <div class="panel">
+        <h2>Recommended but not auto-taken</h2>
+        <p class="lede" style="margin-top:0;font-size:.74rem">
+          Signal-log pulses that never filled a paper sleeve (Beauty / Levels are board-only and not listed here).
+        </p>
+        <div id="pnlRecommended" class="empty">—</div>
+      </div>
     </section>
 
     <section class="tabpane" id="tab-journal">
@@ -3260,6 +3294,110 @@ PAGE = r"""
         <div class="pb-grid">${grid}</div>`;
     }
 
+    function renderDailyPnl(board) {
+      const metrics = document.getElementById("pnlMetrics");
+      const byDayEl = document.getElementById("pnlByDay");
+      const byCatEl = document.getElementById("pnlByCategory");
+      const closedEl = document.getElementById("pnlClosed");
+      const openEl = document.getElementById("pnlOpen");
+      const recEl = document.getElementById("pnlRecommended");
+      if (!metrics) return;
+      board = board || {};
+      const t = board.totals || {};
+      const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
+      metrics.innerHTML = [
+        m("Realized P&L", t.realized_pnl_usd==null?"—":`$${fmt(t.realized_pnl_usd,2)}`, pctClass(t.realized_pnl_usd)),
+        m("Open P&L", t.unrealized_pnl_usd==null?"—":`$${fmt(t.unrealized_pnl_usd,2)}`, pctClass(t.unrealized_pnl_usd)),
+        m("Win rate", t.win_rate_pct==null?"—":`${fmt(t.win_rate_pct,0)}%`, (t.win_rate_pct||0)>=50?"up":""),
+        m("Closed", `${t.closed_n||0} · W${t.win_n||0}/L${t.loss_n||0}`),
+        m("Open", String(t.open_n||0)),
+        m("Rec only", String(t.recommended_not_taken_n||0)),
+      ].join("");
+
+      const days = board.by_day || [];
+      byDayEl.innerHTML = !days.length
+        ? `<div class="empty">No closed auto-takes yet — BUY NOW fills populate daily P&amp;L.</div>`
+        : `<table><thead><tr>
+            <th>Day (CT)</th><th>Realized</th><th>Closed</th><th>W / L</th><th>Categories</th>
+          </tr></thead><tbody>${days.map(d => {
+            const cats = (d.by_category||[]).map(c =>
+              `${c.category} $${fmt(c.realized_pnl_usd,2)} (${c.closed_n})`
+            ).join(" · ") || "—";
+            return `<tr>
+              <td class="mono">${d.day||"—"}</td>
+              <td class="mono ${pctClass(d.realized_pnl_usd)}"><strong>$${fmt(d.realized_pnl_usd,2)}</strong></td>
+              <td class="mono">${d.closed_n||0}</td>
+              <td class="mono">${d.win_n||0} / ${d.loss_n||0}</td>
+              <td class="why">${cats}</td>
+            </tr>`;
+          }).join("")}</tbody></table>`;
+
+      const cats = board.by_category || [];
+      byCatEl.innerHTML = !cats.length
+        ? `<div class="empty">No category totals yet.</div>`
+        : `<table><thead><tr>
+            <th>Category</th><th>Realized</th><th>Open P&amp;L</th><th>Closed</th><th>Open</th><th>W / L</th>
+          </tr></thead><tbody>${cats.map(c => `<tr>
+            <td><strong>${c.category}</strong></td>
+            <td class="mono ${pctClass(c.realized_pnl_usd)}">$${fmt(c.realized_pnl_usd,2)}</td>
+            <td class="mono ${pctClass(c.unrealized_pnl_usd)}">$${fmt(c.unrealized_pnl_usd,2)}</td>
+            <td class="mono">${c.closed_n||0}</td>
+            <td class="mono">${c.open_n||0}</td>
+            <td class="mono">${c.win_n||0} / ${c.loss_n||0}</td>
+          </tr>`).join("")}</tbody></table>`;
+
+      const tradeCard = (r, open=false) => {
+        const side = (r.right||"C")==="P" ? "PUT" : "CALL";
+        const entryT = r.entered_at_cst || fmtCST(r.entered_at) || "—";
+        const exitT = open ? "—" : (r.exited_at_cst || fmtCST(r.exited_at) || "—");
+        const pnl = open ? r.unrealized_pnl_usd : r.pnl_usd;
+        const pct = open ? r.unrealized_pct : r.profit_pct;
+        const mark = open ? (r.mark ?? r.exit_bid) : r.exit_bid;
+        return `<div class="card ${open?"long":(Number(pnl||0)>=0?"long":"short")}">
+          <div class="ac-top">
+            <div><span class="sym">${r.symbol}</span>
+              <span class="tag">${(r.category||"").toUpperCase()}</span>
+              <span class="tag">${side}</span>
+              <span class="tag">${r.sleeve||""}</span>
+              ${r.took?`<span class="tag">TOOK</span>`:`<span class="tag">REC</span>`}
+            </div>
+            <div class="ac-conf">${open?"OPEN":"CLOSED"} · ${r.contracts||1}ct</div>
+          </div>
+          <div class="grid2" style="margin:.35rem 0">
+            <div>Entry ask<strong>$${r.entry_ask==null?"—":fmt(r.entry_ask,2)}</strong></div>
+            <div>${open?"Mark":"Exit bid"}<strong>$${mark==null?"—":fmt(mark,2)}</strong></div>
+            <div>Entry time<strong style="font-size:.72rem">${entryT}</strong></div>
+            <div>Exit time<strong style="font-size:.72rem">${exitT}</strong></div>
+            <div>Strike / exp<strong>${r.strike==null?"—":fmt(r.strike,2)} · ${r.expiry||"—"}</strong></div>
+            <div>P&amp;L<strong class="${pctClass(pnl)}">${pct==null?"—":fmt(pct,1)+"%"}${pnl==null?"":" · $"+fmt(pnl,2)}</strong></div>
+          </div>
+          ${r.entry_reason?`<p class="why" style="margin:.15rem 0 0"><strong>Entry:</strong> ${r.entry_reason}</p>`:""}
+          ${r.exit_reason?`<p class="why" style="margin:.15rem 0 0"><strong>Exit:</strong> ${r.exit_reason}</p>`:""}
+          ${r.contract?`<p class="why mono" style="margin:.15rem 0 0;font-size:.7rem">${r.contract}</p>`:""}
+        </div>`;
+      };
+
+      const closed = board.closed || [];
+      closedEl.innerHTML = !closed.length
+        ? `<div class="empty">No closed auto-takes yet.</div>`
+        : closed.slice(0, 60).map(r => tradeCard(r, false)).join("");
+
+      const opens = board.open || [];
+      openEl.innerHTML = !opens.length
+        ? `<div class="empty">No open positions.</div>`
+        : opens.slice(0, 40).map(r => tradeCard(r, true)).join("");
+
+      const recs = board.recommended_not_taken || [];
+      recEl.innerHTML = !recs.length
+        ? `<div class="empty">No recommended-only pulses beyond auto-takes.</div>`
+        : recs.slice(0, 40).map(r => tradeCard(r, r.status==="open")).join("");
+
+      if (board.note) {
+        byDayEl.insertAdjacentHTML("beforeend",
+          `<p class="lede" style="margin:.55rem 0 0;font-size:.72rem">${board.note}</p>`);
+      }
+    }
+
     function paint() {
       renderMustTradeBanner();
       renderNowBoard();
@@ -3311,6 +3449,7 @@ PAGE = r"""
       renderPowerHour(DATA.power_hour || {});
       renderScreener(hz, DATA.market || {});
       renderInsights(DATA.insights);
+      renderDailyPnl(DATA.daily_pnl || {});
       renderRecLogAll(DATA.rec_log || {});
       renderWebull(DATA.webull || {});
       document.getElementById("session").textContent = (DATA.session||"—") + " · " + (DATA.universe_mode||"focus");
@@ -5642,6 +5781,27 @@ def create_app(config_path: str | None = None) -> Flask:
                 logger.warning("webull auto_sync failed: %s", exc)
                 webull_payload = {**(webull_payload or {}), "auto_sync_error": str(exc)}
 
+        daily_pnl: dict = {}
+        try:
+            from odte_scanner.trading.daily_pnl import build_daily_pnl
+
+            journal_book = None
+            if journal is not None:
+                try:
+                    journal_book = journal.book.to_dict()
+                except Exception:  # noqa: BLE001
+                    journal_book = None
+            daily_pnl = build_daily_pnl(
+                insights=insights if isinstance(insights, dict) else None,
+                journal_book=journal_book,
+                challenge=challenge if isinstance(challenge, dict) else None,
+                odte_1k=odte_1k if isinstance(odte_1k, dict) else None,
+                rec_log=rec_log_payload if isinstance(rec_log_payload, dict) else None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("daily_pnl build failed: %s", exc)
+            daily_pnl = {"error": str(exc), "totals": {}, "by_day": [], "closed": [], "open": []}
+
         return jsonify(
             sanitize_for_json(
                 {
@@ -5682,6 +5842,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 "hist_win_gate": actions.get("hist_win_gate"),
                 "insights": insights,
                 "journal_sync": journal_sync,
+                "daily_pnl": daily_pnl,
                 "win_rates": win_table,
                 "rec_log": rec_log_payload,
                 "webull": webull_payload,
