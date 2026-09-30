@@ -3304,6 +3304,7 @@ PAGE = r"""
       if (!metrics) return;
       board = board || {};
       const t = board.totals || {};
+      const conf = (DATA.data_confidence || {});
       const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
       metrics.innerHTML = [
         m("Realized P&L", t.realized_pnl_usd==null?"—":`$${fmt(t.realized_pnl_usd,2)}`, pctClass(t.realized_pnl_usd)),
@@ -3311,24 +3312,28 @@ PAGE = r"""
         m("Win rate", t.win_rate_pct==null?"—":`${fmt(t.win_rate_pct,0)}%`, (t.win_rate_pct||0)>=50?"up":""),
         m("Closed", `${t.closed_n||0} · W${t.win_n||0}/L${t.loss_n||0}`),
         m("Open", String(t.open_n||0)),
-        m("Rec only", String(t.recommended_not_taken_n||0)),
+        m("Desk conf", conf.pct==null?"—":`${fmt(conf.pct,0)}%`, conf.pct>=75?"up":""),
       ].join("");
+
+      const nameLine = (wins, losses) => {
+        const w = (wins||[]).length ? `<span class="up">W: ${(wins||[]).join(", ")}</span>` : "";
+        const l = (losses||[]).length ? `<span class="down">L: ${(losses||[]).join(", ")}</span>` : "";
+        if (!w && !l) return "—";
+        return [w,l].filter(Boolean).join(" · ");
+      };
 
       const days = board.by_day || [];
       byDayEl.innerHTML = !days.length
         ? `<div class="empty">No closed auto-takes yet — BUY NOW fills populate daily P&amp;L.</div>`
         : `<table><thead><tr>
-            <th>Day (CT)</th><th>Realized</th><th>Closed</th><th>W / L</th><th>Categories</th>
+            <th>Day (CT)</th><th>Realized</th><th>W / L</th><th>Profit / loss trades</th>
           </tr></thead><tbody>${days.map(d => {
-            const cats = (d.by_category||[]).map(c =>
-              `${c.category} $${fmt(c.realized_pnl_usd,2)} (${c.closed_n})`
-            ).join(" · ") || "—";
             return `<tr>
               <td class="mono">${d.day||"—"}</td>
-              <td class="mono ${pctClass(d.realized_pnl_usd)}"><strong>$${fmt(d.realized_pnl_usd,2)}</strong></td>
-              <td class="mono">${d.closed_n||0}</td>
+              <td class="mono ${pctClass(d.realized_pnl_usd)}"><strong>$${fmt(d.realized_pnl_usd,2)}</strong>
+                <div class="why">${d.closed_n||0} closed</div></td>
               <td class="mono">${d.win_n||0} / ${d.loss_n||0}</td>
-              <td class="why">${cats}</td>
+              <td class="why" style="font-size:.74rem;line-height:1.35">${nameLine(d.winners, d.losers)}</td>
             </tr>`;
           }).join("")}</tbody></table>`;
 
@@ -3336,32 +3341,34 @@ PAGE = r"""
       byCatEl.innerHTML = !cats.length
         ? `<div class="empty">No category totals yet.</div>`
         : `<table><thead><tr>
-            <th>Category</th><th>Realized</th><th>Open P&amp;L</th><th>Closed</th><th>Open</th><th>W / L</th>
+            <th>Category</th><th>Realized</th><th>W / L</th><th>Profit / loss trades</th>
           </tr></thead><tbody>${cats.map(c => `<tr>
-            <td><strong>${c.category}</strong></td>
+            <td><strong>${c.category}</strong>
+              <div class="why">${c.closed_n||0} closed · ${c.open_n||0} open</div></td>
             <td class="mono ${pctClass(c.realized_pnl_usd)}">$${fmt(c.realized_pnl_usd,2)}</td>
-            <td class="mono ${pctClass(c.unrealized_pnl_usd)}">$${fmt(c.unrealized_pnl_usd,2)}</td>
-            <td class="mono">${c.closed_n||0}</td>
-            <td class="mono">${c.open_n||0}</td>
             <td class="mono">${c.win_n||0} / ${c.loss_n||0}</td>
+            <td class="why" style="font-size:.74rem;line-height:1.35">${nameLine(c.winners, c.losers)}${(c.open_names||[]).length?`<div class="why">Open: ${(c.open_names||[]).join(", ")}</div>`:""}</td>
           </tr>`).join("")}</tbody></table>`;
 
       const tradeCard = (r, open=false) => {
         const side = (r.right||"C")==="P" ? "PUT" : "CALL";
+        const name = r.trade_name || `${r.symbol||"?"} ${r.strike==null?"":fmt(r.strike,2)}${(r.right||"C")==="P"?"P":"C"}`;
         const entryT = r.entered_at_cst || fmtCST(r.entered_at) || "—";
         const exitT = open ? "—" : (r.exited_at_cst || fmtCST(r.exited_at) || "—");
         const pnl = open ? r.unrealized_pnl_usd : r.pnl_usd;
         const pct = open ? r.unrealized_pct : r.profit_pct;
         const mark = open ? (r.mark ?? r.exit_bid) : r.exit_bid;
+        const resultTag = open ? "OPEN" : (Number(pnl||0)>0 ? "WIN" : (Number(pnl||0)<0 ? "LOSS" : "FLAT"));
         return `<div class="card ${open?"long":(Number(pnl||0)>=0?"long":"short")}">
           <div class="ac-top">
-            <div><span class="sym">${r.symbol}</span>
+            <div><span class="sym">${name}</span>
               <span class="tag">${(r.category||"").toUpperCase()}</span>
               <span class="tag">${side}</span>
               <span class="tag">${r.sleeve||""}</span>
+              <span class="tag">${resultTag}</span>
               ${r.took?`<span class="tag">TOOK</span>`:`<span class="tag">REC</span>`}
             </div>
-            <div class="ac-conf">${open?"OPEN":"CLOSED"} · ${r.contracts||1}ct</div>
+            <div class="ac-conf ${pctClass(pnl)}">${pnl==null?"—":((Number(pnl)>=0?"+":"")+"$"+fmt(pnl,2))} · ${r.contracts||1}ct</div>
           </div>
           <div class="grid2" style="margin:.35rem 0">
             <div>Entry ask<strong>$${r.entry_ask==null?"—":fmt(r.entry_ask,2)}</strong></div>
@@ -3369,7 +3376,7 @@ PAGE = r"""
             <div>Entry time<strong style="font-size:.72rem">${entryT}</strong></div>
             <div>Exit time<strong style="font-size:.72rem">${exitT}</strong></div>
             <div>Strike / exp<strong>${r.strike==null?"—":fmt(r.strike,2)} · ${r.expiry||"—"}</strong></div>
-            <div>P&amp;L<strong class="${pctClass(pnl)}">${pct==null?"—":fmt(pct,1)+"%"}${pnl==null?"":" · $"+fmt(pnl,2)}</strong></div>
+            <div>P&amp;L %<strong class="${pctClass(pct)}">${pct==null?"—":fmt(pct,1)+"%"}</strong></div>
           </div>
           ${r.entry_reason?`<p class="why" style="margin:.15rem 0 0"><strong>Entry:</strong> ${r.entry_reason}</p>`:""}
           ${r.exit_reason?`<p class="why" style="margin:.15rem 0 0"><strong>Exit:</strong> ${r.exit_reason}</p>`:""}
@@ -3394,7 +3401,7 @@ PAGE = r"""
 
       if (board.note) {
         byDayEl.insertAdjacentHTML("beforeend",
-          `<p class="lede" style="margin:.55rem 0 0;font-size:.72rem">${board.note}</p>`);
+          `<p class="lede" style="margin:.55rem 0 0;font-size:.72rem">${board.note}${conf.pct!=null?` · Desk data confidence ~${fmt(conf.pct,0)}% (${conf.cap_note||"soft cap"}).`:""}</p>`);
       }
     }
 

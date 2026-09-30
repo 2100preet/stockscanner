@@ -286,9 +286,45 @@ def _collect_rec_log(
     return rows
 
 
+def _trade_name(r: dict[str, Any]) -> str:
+    """Human trade label, e.g. 'LUNR 14.5P' or 'NVDA 100C'."""
+    sym = str(r.get("symbol") or "?").upper()
+    right = str(r.get("right") or "C").upper()
+    side = "P" if right.startswith("P") else "C"
+    strike = r.get("strike")
+    try:
+        if strike is not None:
+            k = float(strike)
+            strike_s = f"{k:g}"
+            return f"{sym} {strike_s}{side}"
+    except (TypeError, ValueError):
+        pass
+    return f"{sym} {side}"
+
+
+def _trade_summary(r: dict[str, Any]) -> dict[str, Any]:
+    pnl = float(r.get("pnl_usd") or 0)
+    return {
+        "symbol": r.get("symbol"),
+        "name": _trade_name(r),
+        "right": r.get("right"),
+        "strike": r.get("strike"),
+        "category": r.get("category"),
+        "sleeve": r.get("sleeve"),
+        "pnl_usd": r.get("pnl_usd"),
+        "profit_pct": r.get("profit_pct"),
+        "contract": r.get("contract"),
+        "result": "win" if pnl > 0 else ("loss" if pnl < 0 else "flat"),
+    }
+
+
 def _rollup(rows: list[dict[str, Any]]) -> dict[str, Any]:
     closed = [r for r in rows if r.get("status") == "closed" and r.get("took")]
     open_rows = [r for r in rows if r.get("status") == "open" and r.get("took")]
+    # Attach display name on every row for the UI
+    for r in rows:
+        r["trade_name"] = _trade_name(r)
+
     realized = round(sum(float(r.get("pnl_usd") or 0) for r in closed), 2)
     unreal = round(sum(float(r.get("unrealized_pnl_usd") or 0) for r in open_rows), 2)
     wins = sum(1 for r in closed if float(r.get("pnl_usd") or 0) > 0)
@@ -311,19 +347,33 @@ def _rollup(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 "win_n": 0,
                 "loss_n": 0,
                 "by_category": {},
+                "trades": [],
+                "winners": [],
+                "losers": [],
             },
         )
         pnl = float(r.get("pnl_usd") or 0)
+        summary = _trade_summary(r)
+        bucket["trades"].append(summary)
         bucket["realized_pnl_usd"] = round(bucket["realized_pnl_usd"] + pnl, 2)
         bucket["closed_n"] += 1
         if pnl > 0:
             bucket["win_n"] += 1
+            bucket["winners"].append(f"{summary['name']} +${pnl:.2f}")
         elif pnl < 0:
             bucket["loss_n"] += 1
+            bucket["losers"].append(f"{summary['name']} −${abs(pnl):.2f}")
         cat = str(r.get("category") or "other")
-        c = bucket["by_category"].setdefault(cat, {"realized_pnl_usd": 0.0, "closed_n": 0})
+        c = bucket["by_category"].setdefault(
+            cat, {"realized_pnl_usd": 0.0, "closed_n": 0, "trades": [], "winners": [], "losers": []}
+        )
         c["realized_pnl_usd"] = round(c["realized_pnl_usd"] + pnl, 2)
         c["closed_n"] += 1
+        c["trades"].append(summary)
+        if pnl > 0:
+            c["winners"].append(f"{summary['name']} +${pnl:.2f}")
+        elif pnl < 0:
+            c["losers"].append(f"{summary['name']} −${abs(pnl):.2f}")
 
     by_cat: dict[str, dict[str, Any]] = {}
     for r in rows:
@@ -340,30 +390,49 @@ def _rollup(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 "open_n": 0,
                 "win_n": 0,
                 "loss_n": 0,
+                "trades": [],
+                "winners": [],
+                "losers": [],
+                "open_names": [],
             },
         )
         if r.get("status") == "closed":
             pnl = float(r.get("pnl_usd") or 0)
+            summary = _trade_summary(r)
             c["realized_pnl_usd"] = round(c["realized_pnl_usd"] + pnl, 2)
             c["closed_n"] += 1
+            c["trades"].append(summary)
             if pnl > 0:
                 c["win_n"] += 1
+                c["winners"].append(f"{summary['name']} +${pnl:.2f}")
             elif pnl < 0:
                 c["loss_n"] += 1
+                c["losers"].append(f"{summary['name']} −${abs(pnl):.2f}")
         elif r.get("status") == "open":
             c["open_n"] += 1
             c["unrealized_pnl_usd"] = round(
                 c["unrealized_pnl_usd"] + float(r.get("unrealized_pnl_usd") or 0), 2
             )
+            c["open_names"].append(_trade_name(r))
 
     day_list = sorted(by_day.values(), key=lambda d: d["day"], reverse=True)
     for d in day_list:
+        # Sort trades winners first then by |pnl|
+        d["trades"] = sorted(
+            d["trades"],
+            key=lambda t: (-(1 if (t.get("pnl_usd") or 0) > 0 else 0), -abs(float(t.get("pnl_usd") or 0))),
+        )
         d["by_category"] = [
             {"category": k, **v}
             for k, v in sorted(d["by_category"].items(), key=lambda kv: -abs(kv[1]["realized_pnl_usd"]))
         ]
 
     cat_list = sorted(by_cat.values(), key=lambda c: -abs(c["realized_pnl_usd"]))
+    for c in cat_list:
+        c["trades"] = sorted(
+            c["trades"],
+            key=lambda t: (-(1 if (t.get("pnl_usd") or 0) > 0 else 0), -abs(float(t.get("pnl_usd") or 0))),
+        )
 
     def _sort_key(r: dict[str, Any]) -> str:
         return str(r.get("exited_at") or r.get("entered_at") or "")
