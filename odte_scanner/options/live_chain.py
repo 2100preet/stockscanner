@@ -82,6 +82,46 @@ def fetch_live_option_quote(
     except Exception as exc:  # noqa: BLE001
         logger.debug("tradier option quote fallback %s: %s", symbol, exc)
 
+    # Polygon / Massive backup when Tradier misses
+    try:
+        from odte_scanner.data.polygon import api_key_from_env as poly_key
+        from odte_scanner.data.polygon import fetch_option_quote as poly_option_quote
+
+        if poly_key():
+            pq = poly_option_quote(
+                symbol=fetch_sym,
+                expiry=str(expiry),
+                strike=float(strike),
+                right=right_norm,
+                contract=contract,
+            )
+            if pq and (pq.get("ask") or pq.get("bid") or pq.get("last")):
+                bid = float(pq.get("bid") or 0)
+                ask = float(pq.get("ask") or 0)
+                last = float(pq.get("last") or 0)
+                if ask <= 0 and last > 0:
+                    ask = last
+                if bid <= 0 and last > 0:
+                    bid = last * 0.95
+                return LiveOptionQuote(
+                    symbol=symbol,
+                    contract=str(pq.get("symbol") or contract or ""),
+                    expiry=str(expiry),
+                    strike=float(pq.get("strike") or strike),
+                    bid=bid,
+                    ask=ask,
+                    last=last,
+                    volume=int(pq.get("volume") or 0),
+                    open_interest=int(pq.get("open_interest") or 0),
+                    change=None,
+                    percent_change=None,
+                    spot=None,
+                    moneyness_pct=None,
+                    source="polygon",
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("polygon option quote fallback %s: %s", symbol, exc)
+
     try:
         t = yf.Ticker(fetch_sym)
         chain = t.option_chain(expiry)

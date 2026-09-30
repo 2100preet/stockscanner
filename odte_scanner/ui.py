@@ -5714,28 +5714,61 @@ def create_app(config_path: str | None = None) -> Flask:
                 "error": str(exc),
                 "source": "tradier",
             }
+        # Polygon / Massive backup marks
+        polygon_status: dict = {"configured": False, "ok": False, "source": "polygon"}
+        try:
+            from odte_scanner.data.polygon import probe as polygon_probe
+
+            polygon_status = polygon_probe()
+            if polygon_status.get("configured"):
+                logger.info(
+                    "Polygon/Massive configured=%s ok=%s source=%s",
+                    polygon_status.get("configured"),
+                    polygon_status.get("ok"),
+                    polygon_status.get("source"),
+                )
+            else:
+                logger.info("Polygon/Massive skipped — POLYGON_API_KEY not set")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("polygon status failed: %s", exc)
+            polygon_status = {
+                "configured": False,
+                "ok": False,
+                "error": str(exc),
+                "source": "polygon",
+            }
         if isinstance(actions, dict):
             actions["tradier"] = tradier_status
-            # Desk confidence ladder: Yahoo-only ≈55–65; +UW ≈70; +Tradier marks ≈75–80
+            actions["polygon"] = polygon_status
+            # Desk confidence: Yahoo≈58; +UW≈70; +Tradier≈80; +Polygon≈85; ORATS later ≈90
             uw_ok = bool((actions.get("uw_flow") or {}).get("ok"))
             tr_ok = bool(tradier_status.get("ok"))
+            poly_ok = bool(polygon_status.get("ok"))
             conf = 58
             if uw_ok:
                 conf += 12
             if tr_ok:
                 conf += 10
             if uw_ok and tr_ok:
-                conf += 3  # stacked feeds
+                conf += 3
             if tradier_live and offline:
-                conf += 2  # Pages still live via Tradier
+                conf += 2
+            if poly_ok:
+                conf += 5  # backup marks / denser snapshots
+            soft_cap = 88 if poly_ok else 80
             actions["data_confidence"] = {
-                "pct": min(80, conf),
-                "cap_note": "Hard cap ~80% without Polygon/ORATS/intraday runner",
+                "pct": min(soft_cap, conf),
+                "cap_note": (
+                    "Soft cap ~88% with Polygon backup; ORATS IV filter can push ~90"
+                    if poly_ok
+                    else "Hard cap ~80% without Polygon/ORATS"
+                ),
                 "unusual_whales": uw_ok,
                 "tradier": tr_ok,
+                "polygon": poly_ok,
                 "tradier_live_on_pages": bool(tradier_live and offline),
                 "quotes_landed": len(quotes),
-                "mark_source_priority": ["tradier", "yahoo", "cache"],
+                "mark_source_priority": ["tradier", "polygon", "yahoo", "cache"],
                 "feeds": {
                     "uw": "flow+tide+darkpool" if uw_ok else "off",
                     "tradier": (
@@ -5743,10 +5776,15 @@ def create_app(config_path: str | None = None) -> Flask:
                         if tr_ok
                         else ("configured-fail" if tradier_status.get("configured") else "off")
                     ),
+                    "polygon": (
+                        "equity+option snapshots"
+                        if poly_ok
+                        else ("configured-fail" if polygon_status.get("configured") else "off")
+                    ),
                 },
             }
             # Soft haircut when Pages claimed live Tradier but no quotes landed
-            if offline and tradier_live and len(quotes) == 0:
+            if offline and tradier_live and len(quotes) == 0 and not poly_ok:
                 actions["data_confidence"]["pct"] = max(55, int(actions["data_confidence"]["pct"]) - 8)
                 actions["data_confidence"]["note"] = "Tradier token set but no equity quotes in snapshot"
         cache_path = ROOT / "outputs" / "ui_snapshot_cache.json"
@@ -5838,6 +5876,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 "echo": echo,
                 "challenge": challenge,
                 "tradier": tradier_status,
+                "polygon": polygon_status,
                 "data_confidence": (actions.get("data_confidence") if isinstance(actions, dict) else None),
                 "odte_1k": odte_1k,
                 "power_hour": power_hour,

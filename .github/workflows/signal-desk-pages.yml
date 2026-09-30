@@ -81,6 +81,11 @@ jobs:
           else
             echo "TRADIER_TOKEN configured=NO — add repo secret TRADIER_ACCESS_TOKEN"
           fi
+          if [ -n "${POLYGON_API_KEY:-}" ] || [ -n "${MASSIVE_API_KEY:-}" ]; then
+            echo "POLYGON_API_KEY configured=yes"
+          else
+            echo "POLYGON_API_KEY configured=NO — add repo secret POLYGON_API_KEY (Massive key OK)"
+          fi
           python -m odte_scanner scan --universe focus --no-paper
         env:
           PYTHONUNBUFFERED: "1"
@@ -88,6 +93,8 @@ jobs:
           TRADIER_ACCESS_TOKEN: ${{ secrets.TRADIER_ACCESS_TOKEN }}
           TRADIER_ACCOUNT_ID: ${{ secrets.TRADIER_ACCOUNT_ID }}
           TRADIER_SANDBOX: ${{ secrets.TRADIER_SANDBOX }}
+          POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
+          MASSIVE_API_KEY: ${{ secrets.MASSIVE_API_KEY }}
 
       - name: Export static site
         env:
@@ -96,6 +103,8 @@ jobs:
           TRADIER_ACCESS_TOKEN: ${{ secrets.TRADIER_ACCESS_TOKEN }}
           TRADIER_ACCOUNT_ID: ${{ secrets.TRADIER_ACCOUNT_ID }}
           TRADIER_SANDBOX: ${{ secrets.TRADIER_SANDBOX }}
+          POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
+          MASSIVE_API_KEY: ${{ secrets.MASSIVE_API_KEY }}
         run: |
           mkdir -p outputs
           if [ -n "${UNUSUAL_WHALES_API_KEY:-}" ]; then
@@ -107,6 +116,11 @@ jobs:
             echo "TRADIER_TOKEN configured=yes len=${#TRADIER_ACCESS_TOKEN} sandbox=${TRADIER_SANDBOX:-unset} account=${TRADIER_ACCOUNT_ID:+set}"
           else
             echo "TRADIER_TOKEN configured=NO — add repo secret TRADIER_ACCESS_TOKEN"
+          fi
+          if [ -n "${POLYGON_API_KEY:-}" ] || [ -n "${MASSIVE_API_KEY:-}" ]; then
+            echo "POLYGON_API_KEY configured=yes"
+          else
+            echo "POLYGON_API_KEY configured=NO — add repo secret POLYGON_API_KEY (Massive key OK)"
           fi
           python -m odte_scanner export-pages --out site
           test -f site/index.html
@@ -135,6 +149,7 @@ jobs:
           journ = (snap.get("insights") or {})
           uw = acts.get("uw_flow") or (snap.get("challenge") or {}).get("uw_flow") or {}
           tr = snap.get("tradier") or acts.get("tradier") or {}
+          poly = snap.get("polygon") or acts.get("polygon") or {}
           print(
               "sell_now:", (acts.get("counts") or {}).get("sell_now"),
               "buy_puts:", (acts.get("counts") or {}).get("buy_now_puts"),
@@ -146,6 +161,8 @@ jobs:
               "tradier_configured:", tr.get("configured"),
               "tradier_ok:", tr.get("ok"),
               "tradier_clock:", (tr.get("clock") or {}).get("state"),
+              "polygon_configured:", poly.get("configured"),
+              "polygon_ok:", poly.get("ok"),
               "data_confidence:", (snap.get("data_confidence") or acts.get("data_confidence") or {}).get("pct"),
           )
           ch = snap.get("challenge") or {}

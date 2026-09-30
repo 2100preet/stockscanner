@@ -37,15 +37,21 @@ Cloud Agents cannot write GitHub secrets (403). Do **not** commit the key.
      - `/markets/clock` → session state in snapshot `tradier.clock`
    - Desk `data_confidence.pct` rises when UW + Tradier both ok (soft cap ~80%)
 
-3. **Polygon.io Options Starter+** (or Massive / Intrinio options)
-   - Why: reliable bid/ask marks so stops fire at −25/−35% not −90%
-   - Use: replace Yahoo live_chain for challenge open marks + entry asks
-   - Env: `POLYGON_API_KEY`
+3. **Polygon.io / Massive** (options + equity snapshots) — backup marks
+   - Why: denser bid/ask snapshots when Tradier is thin; second mark source for stops
+   - Use: fallback after Tradier in `live_chain` / equity quotes
+   - Env secrets (either name works):
+     - `POLYGON_API_KEY` (preferred name in this repo)
+     - `MASSIVE_API_KEY` (alias — Massive is current Polygon brand)
+   - Client: `odte_scanner/data/polygon.py`
+   - Desk `data_confidence` soft-cap rises to ~88% when Polygon probe ok
 
-4. **ORATS** or **LiveVol** (IV surface / skew / earnings IV crush)
-   - Why: avoid buying rich premium into IV crush; prefer cheap convexity
+4. **ORATS Data API** (IV rank / IV percentile / earnings crush)
+   - Why: skip rich premium into IV crush; prefer cheap convexity
+   - **Which product:** ORATS **Data API / API Access** (summaries with `ivRank` / `ivPctile`) — not chart-only UI
    - Use: skip ENTRY when IV rank > 80 without dump/rip tape
    - Env: `ORATS_API_KEY`
+   - After key is in GitHub secrets, tell the agent to wire it
 
 5. **Benzinga** or **Briefing.com** movers / news websocket
    - Why: catch catalyst opens (FDA, guidance, upgrades) in first minutes
