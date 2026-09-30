@@ -108,30 +108,93 @@ def _get(path: str, *, params: dict[str, Any] | None = None, timeout: float = 12
 
 
 def fetch_equity_quote(symbol: str, *, timeout: float = 10.0) -> dict[str, Any] | None:
-    """Best-effort equity last/prev from snapshot."""
+    """Best-effort equity last/prev from snapshot, then last-trade / daily aggs."""
     sym = str(symbol).upper()
     res = _get(f"/v2/snapshot/locale/us/markets/stocks/tickers/{sym}", timeout=timeout)
-    if not res.get("ok"):
-        return None
-    ticker = ((res.get("payload") or {}).get("ticker") or {})
-    day = ticker.get("day") or {}
-    prev = ticker.get("prevDay") or {}
-    last_trade = ticker.get("lastTrade") or {}
-    last = _as_float(last_trade.get("p") or day.get("c") or prev.get("c"))
-    prev_close = _as_float(prev.get("c") or day.get("c") or last)
-    if last <= 0:
-        return None
+    if res.get("ok"):
+        ticker = ((res.get("payload") or {}).get("ticker") or {})
+        day = ticker.get("day") or {}
+        prev = ticker.get("prevDay") or {}
+        last_trade = ticker.get("lastTrade") or {}
+        last = _as_float(last_trade.get("p") or day.get("c") or prev.get("c"))
+        prev_close = _as_float(prev.get("c") or day.get("c") or last)
+        if last > 0:
+            return {
+                "symbol": sym,
+                "last": last,
+                "prevclose": prev_close,
+                "open": _as_float(day.get("o")),
+                "high": _as_float(day.get("h")),
+                "low": _as_float(day.get("l")),
+                "close": _as_float(day.get("c")),
+                "volume": int(_as_float(day.get("v"))),
+                "change": last - prev_close if prev_close else 0.0,
+                "source": "polygon",
+            }
+
+    # Free / limited plans: last trade
+    lt = _get(f"/v2/last/trade/{sym}", timeout=timeout)
+    if lt.get("ok"):
+        results = (lt.get("payload") or {}).get("results") or {}
+        last = _as_float(results.get("p"))
+        if last > 0:
+            return {
+                "symbol": sym,
+                "last": last,
+                "prevclose": last,
+                "open": 0.0,
+                "high": 0.0,
+                "low": 0.0,
+                "close": last,
+                "volume": int(_as_float(results.get("s"))),
+                "change": 0.0,
+                "source": "polygon",
+            }
+
+    # Daily bars (often available on starter plans)
+    aggs = _get(
+        f"/v2/aggs/ticker/{sym}/prev",
+        params={"adjusted": "true"},
+        timeout=timeout,
+    )
+    if aggs.get("ok"):
+        rows = (aggs.get("payload") or {}).get("results") or []
+        row = rows[0] if isinstance(rows, list) and rows else {}
+        last = _as_float(row.get("c"))
+        if last > 0:
+            return {
+                "symbol": sym,
+                "last": last,
+                "prevclose": last,
+                "open": _as_float(row.get("o")),
+                "high": _as_float(row.get("h")),
+                "low": _as_float(row.get("l")),
+                "close": last,
+                "volume": int(_as_float(row.get("v"))),
+                "change": 0.0,
+                "source": "polygon",
+            }
+    return None
+
+
+def probe(*, timeout: float = 10.0) -> dict[str, Any]:
+    """Smoke-test key with SPY — snapshot, last trade, or prev daily."""
+    st = status()
+    if not st.get("configured"):
+        return {**st, "ok": False, "error": "POLYGON_API_KEY not set"}
+    q = fetch_equity_quote("SPY", timeout=timeout)
+    ok = bool(q and q.get("last"))
+    err = None
+    if not ok:
+        # Surface first API error for debugging plan entitlements
+        snap = _get("/v2/snapshot/locale/us/markets/stocks/tickers/SPY", timeout=timeout)
+        err = snap.get("error") or "SPY quote empty — check plan entitlement (stocks/options)"
     return {
-        "symbol": sym,
-        "last": last,
-        "prevclose": prev_close,
-        "open": _as_float(day.get("o")),
-        "high": _as_float(day.get("h")),
-        "low": _as_float(day.get("l")),
-        "close": _as_float(day.get("c")),
-        "volume": int(_as_float(day.get("v"))),
-        "change": last - prev_close if prev_close else 0.0,
-        "source": "polygon",
+        **st,
+        "ok": ok,
+        "smoke_last": (q or {}).get("last"),
+        "error": err,
+        "confidence_boost": "equity+option snapshots" if ok else None,
     }
 
 
@@ -210,20 +273,4 @@ def fetch_option_quote(
         "iv": _as_float(row.get("implied_volatility")),
         "greeks": greeks if isinstance(greeks, dict) else None,
         "source": "polygon",
-    }
-
-
-def probe(*, timeout: float = 10.0) -> dict[str, Any]:
-    """Smoke-test key with SPY equity snapshot."""
-    st = status()
-    if not st.get("configured"):
-        return {**st, "ok": False, "error": "POLYGON_API_KEY not set"}
-    q = fetch_equity_quote("SPY", timeout=timeout)
-    ok = bool(q and q.get("last"))
-    return {
-        **st,
-        "ok": ok,
-        "smoke_last": (q or {}).get("last"),
-        "error": None if ok else "SPY snapshot empty — check plan/options entitlement",
-        "confidence_boost": "equity+option snapshots" if ok else None,
     }
