@@ -18,7 +18,7 @@ def test_scan_ask_not_stale_blocks_buy():
             "symbol": "COST",
             "score": 68,
             "strike": 950,
-            "expiry": "2026-08-28",
+            "expiry": "2026-09-30",
             "ask": 8.5,
             "bid": 8.2,
             "contract": "COST260828C00950000",
@@ -46,7 +46,7 @@ def test_stale_without_ask_still_waits():
             "symbol": "COST",
             "score": 80,
             "strike": 950,
-            "expiry": "2026-08-28",
+            "expiry": "2026-09-30",
             "ask": None,
             "contract": "COST260828C00950000",
             "dte_bucket": "weekly",
@@ -67,7 +67,7 @@ def test_hood_chase_waits_until_pullback_reclaim():
         "symbol": "HOOD",
         "score": 75,
         "strike": 105,
-        "expiry": "2026-08-28",
+        "expiry": "2026-09-30",
         "ask": 4.0,
         "bid": 3.8,
         "contract": "HOOD260828C00105000",
@@ -141,10 +141,10 @@ def test_buy_now_requires_short_term_bounce():
             "symbol": "SPY",
             "score": 76,
             "strike": 770,
-            "expiry": "2026-08-05",
+            "expiry": "2026-09-18",
             "ask": 1.5,
             "bid": 1.4,
-            "contract": "SPY260805C00770000",
+            "contract": "SPY260918C00770000",
             "dte": 0,
             "dte_bucket": "0dte",
         },
@@ -169,10 +169,10 @@ def test_qqq_falling_is_wait_not_buy():
             "symbol": "QQQ",
             "score": 77,
             "strike": 724,
-            "expiry": "2026-08-05",
+            "expiry": "2026-09-18",
             "ask": 1.80,
             "bid": 1.79,
-            "contract": "QQQ260805C00724000",
+            "contract": "QQQ260918C00724000",
             "dte": 0,
             "dte_bucket": "0dte",
             "option_percent_change": -60.0,
@@ -195,7 +195,7 @@ def test_qqq_falling_is_wait_not_buy():
 
 def test_wait_on_soft_tape():
     sig = decide_entry(
-        {"symbol": "MU", "score": 75, "strike": 880, "expiry": "2026-08-05", "ask": 4.0, "contract": "X", "dte_bucket": "0dte"},
+        {"symbol": "MU", "score": 75, "strike": 880, "expiry": "2026-09-18", "ask": 4.0, "contract": "X", "dte_bucket": "0dte"},
         quote={"last": 876, "session_change_pct": -1.8, "change_pct": 5.0, "mom_5m_pct": -0.2},
         buy_score=70,
         now=_MORNING,
@@ -297,7 +297,7 @@ def test_action_board_primary_prefers_sell():
                 "symbol": "QQQ",
                 "score": 80,
                 "strike": 720,
-                "expiry": "2026-08-05",
+                "expiry": "2026-09-18",
                 "ask": 2.0,
                 "bid": 1.9,
                 "contract": "QQQ260805C00720000",
@@ -346,6 +346,53 @@ def test_hist_win_gate_blocks_sub_80():
     assert "blocked" in out.detail
 
 
+def test_hist_win_gate_mega_soft_floor():
+    """AAPL/GOOGL-class megas clear at soft hist floor so the desk still alerts."""
+    sig = ActionSignal(
+        action="BUY_NOW",
+        strength=70,
+        headline="BUY NOW AAPL · 1W",
+        detail="score ok",
+        symbol="AAPL",
+        win_pct=50.0,
+        win_samples=10,
+        dte_bucket="weekly",
+        live_change_pct=0.5,
+    )
+    out = apply_hist_win_gate(
+        sig,
+        min_hist_win_pct=80,
+        min_hist_win_samples=5,
+        mega_min_hist_win_pct=50,
+    )
+    assert out.action == "BUY_NOW"
+    assert "mega soft hist" in out.detail
+
+
+def test_hist_win_gate_mega_rip_override():
+    """INTC +3% session must clear even when hist is ~50%."""
+    sig = ActionSignal(
+        action="BUY_NOW",
+        strength=70,
+        headline="BUY NOW INTC · 1W",
+        detail="score ok",
+        symbol="INTC",
+        win_pct=50.0,
+        win_samples=10,
+        dte_bucket="weekly",
+        live_change_pct=2.95,
+    )
+    out = apply_hist_win_gate(
+        sig,
+        min_hist_win_pct=80,
+        min_hist_win_samples=5,
+        mega_min_hist_win_pct=55,
+        mega_rip_live_pct=1.0,
+    )
+    assert out.action == "BUY_NOW"
+    assert "mega rip override" in out.detail
+
+
 def test_hist_win_gate_allows_80_plus():
     sig = ActionSignal(
         action="BUY_NOW",
@@ -374,7 +421,7 @@ def test_board_requires_80_hist_win_for_buy():
                 "symbol": "QQQ",
                 "score": 80,
                 "strike": 720,
-                "expiry": "2026-08-05",
+                "expiry": "2026-09-18",
                 "ask": 2.0,
                 "bid": 1.9,
                 "contract": "QQQ1",
@@ -385,7 +432,7 @@ def test_board_requires_80_hist_win_for_buy():
                 "symbol": "MSFT",
                 "score": 80,
                 "strike": 420,
-                "expiry": "2026-08-05",
+                "expiry": "2026-09-18",
                 "ask": 2.5,
                 "bid": 2.4,
                 "contract": "MSFT1",
@@ -435,10 +482,10 @@ def test_put_blocked_on_rally_without_tape():
         "score": 72,
         "put_score": 72,
         "strike": 230,
-        "expiry": "2026-08-28",
+        "expiry": "2026-09-30",
         "ask": 3.15,
         "bid": 3.0,
-        "contract": "AMZN260828P00230000",
+        "contract": "AMZN260930P00230000",
         "dte": 0,
         "dte_bucket": "0dte",
         "right": "P",

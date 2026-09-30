@@ -3971,6 +3971,24 @@ def create_app(config_path: str | None = None) -> Flask:
             if not live_marks
             else sorted(set(syms[:8]) | set(challenge_syms[:12]) | set(dram_syms))
         )
+        # Always refresh CORE mega tape — RIP/BUY NOW was missing session % for INTC/GOOGL
+        try:
+            from odte_scanner.signals.rip_radar import MEGA_RIP_SYMBOLS
+
+            if live_marks:
+                mega_on_board = {
+                    str(c.get("symbol") or "").upper()
+                    for c in board_rows
+                    if str(c.get("symbol") or "").upper() in MEGA_RIP_SYMBOLS
+                }
+                mega_on_board |= {
+                    str(s.get("symbol") or "").upper()
+                    for s in (scan.get("scores") or [])
+                    if str(s.get("symbol") or "").upper() in MEGA_RIP_SYMBOLS
+                }
+                quote_syms = sorted(set(quote_syms) | mega_on_board)
+        except Exception:  # noqa: BLE001
+            pass
         for s in quote_syms:
             aliases.setdefault(s, resolve_yahoo_symbol(s, cfg))
 
@@ -3999,7 +4017,9 @@ def create_app(config_path: str | None = None) -> Flask:
             sym = str(item.get("symbol"))
             q = quotes.get(sym)
             if q:
-                out["live_change_pct"] = q.get("session_change_pct", q.get("change_pct"))
+                out["live_change_pct"] = q.get("session_change_pct")
+                if out["live_change_pct"] is None:
+                    out["live_change_pct"] = q.get("change_pct")
                 out["live_last"] = q.get("last")
             if live_marks and item.get("expiry") and item.get("strike") is not None:
                 try:
@@ -4035,7 +4055,9 @@ def create_app(config_path: str | None = None) -> Flask:
                 sym = str(item.get("symbol"))
                 q = quotes.get(sym)
                 if q:
-                    out["live_change_pct"] = q.get("session_change_pct", q.get("change_pct"))
+                    out["live_change_pct"] = q.get("session_change_pct")
+                    if out["live_change_pct"] is None:
+                        out["live_change_pct"] = q.get("change_pct")
                     out["live_last"] = q.get("last")
                 refreshed.append(out)
 
@@ -4343,6 +4365,12 @@ def create_app(config_path: str | None = None) -> Flask:
             min_hist_win_pct=float(actions_cfg.get("min_hist_win_pct", 80)),
             min_hist_win_samples=int(actions_cfg.get("min_hist_win_samples", 5)),
             require_hist_win=bool(actions_cfg.get("require_hist_win", True)),
+            mega_min_hist_win_pct=(
+                float(actions_cfg["mega_min_hist_win_pct"])
+                if actions_cfg.get("mega_min_hist_win_pct") is not None
+                else 50.0
+            ),
+            mega_rip_live_pct=float(actions_cfg.get("mega_rip_live_pct", 1.0)),
             weekly_max_hold_days=int(actions_cfg.get("weekly_max_hold_days", 7)),
             odte_flatten_et=str(actions_cfg.get("odte_flatten_et") or "15:45"),
             # Pages offline has no live tape — still allow gated BUY so journal/exits can run
@@ -4390,6 +4418,12 @@ def create_app(config_path: str | None = None) -> Flask:
                     min_hist_win_pct=float(actions_cfg.get("min_hist_win_pct", 80)),
                     min_hist_win_samples=int(actions_cfg.get("min_hist_win_samples", 5)),
                     require_hist_win=bool(actions_cfg.get("require_hist_win", True)),
+                    mega_min_hist_win_pct=(
+                        float(actions_cfg["mega_min_hist_win_pct"])
+                        if actions_cfg.get("mega_min_hist_win_pct") is not None
+                        else 50.0
+                    ),
+                    mega_rip_live_pct=float(actions_cfg.get("mega_rip_live_pct", 1.0)),
                     weekly_max_hold_days=int(actions_cfg.get("weekly_max_hold_days", 7)),
                     odte_flatten_et=str(actions_cfg.get("odte_flatten_et") or "15:45"),
                     require_live_confirm=not offline,
@@ -4647,7 +4681,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 max_tickets=int(actions_cfg.get("rip_max_tickets", 12)),
             )
             rip_radar = _uw_annotate_board(
-                rip_radar, keys=("buy_rip", "buy_now", "watch"), hard_block=True
+                rip_radar, keys=("buy_rip", "buy_now", "watch"), hard_block=False
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("rip radar unavailable: %s", exc)
@@ -4882,6 +4916,12 @@ def create_app(config_path: str | None = None) -> Flask:
                     min_hist_win_pct=float(actions_cfg.get("min_hist_win_pct", 80)),
                     min_hist_win_samples=int(actions_cfg.get("min_hist_win_samples", 5)),
                     require_hist_win=bool(actions_cfg.get("require_hist_win", True)),
+                    mega_min_hist_win_pct=(
+                        float(actions_cfg["mega_min_hist_win_pct"])
+                        if actions_cfg.get("mega_min_hist_win_pct") is not None
+                        else 50.0
+                    ),
+                    mega_rip_live_pct=float(actions_cfg.get("mega_rip_live_pct", 1.0)),
                     weekly_max_hold_days=int(actions_cfg.get("weekly_max_hold_days", 7)),
                     odte_flatten_et=str(actions_cfg.get("odte_flatten_et") or "15:45"),
                     require_live_confirm=not offline,

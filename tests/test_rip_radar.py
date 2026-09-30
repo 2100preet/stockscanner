@@ -22,6 +22,33 @@ def test_mega_rip_tape_ok():
     assert mega_rip_tape_ok(live=1.4, mom5=0.12)
     assert not mega_rip_tape_ok(live=0.4, mom5=0.12)
     assert not mega_rip_tape_ok(live=1.4, mom5=-0.1)
+    # Pages offline: session rip alone is enough when 5m/15m missing
+    assert mega_rip_tape_ok(live=2.9, mom5=None, mom15=None)
+
+
+def test_intc_session_rip_without_mom_bars():
+    """Regression: INTC +3% session must not die on RIP_COOL when mom bars are None."""
+    act = decide_rip_entry(
+        {
+            "symbol": "INTC",
+            "ask": 2.72,
+            "bid": 2.64,
+            "strike": 120,
+            "expiry": "2026-10-02",
+            "contract": "INTC261002C00120000",
+            "dte": 2,
+            "dte_bucket": "weekly",
+            "moneyness_pct": 0.3,
+            "volume": 700,
+            "open_interest": 1500,
+            "score": 69,
+            "live_change_pct": 2.95,
+        },
+        quote={"last": 119.65, "session_change_pct": 2.95, "mom_5m_pct": None, "mom_15m_pct": None},
+        now=_MORNING,
+    )
+    assert act.action == "BUY_RIP"
+    assert act.live_change_pct is not None and act.live_change_pct >= 1.0
 
 
 def test_buy_rip_on_meta_class_continuation():

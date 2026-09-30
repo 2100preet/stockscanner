@@ -67,13 +67,23 @@ def _apply_persisted_action(
     return sig, store
 
 
-def _live_pct(quote: dict[str, Any] | None) -> float | None:
-    if not quote:
-        return None
-    if quote.get("session_change_pct") is not None:
-        return float(quote["session_change_pct"])
-    if quote.get("change_pct") is not None:
-        return float(quote["change_pct"])
+def _live_pct(quote: dict[str, Any] | None, candidate: dict[str, Any] | None = None) -> float | None:
+    if quote:
+        for k in ("session_change_pct", "change_pct", "live_change_pct"):
+            v = quote.get(k)
+            if v is not None:
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    pass
+    if candidate:
+        for k in ("live_change_pct", "session_change_pct", "change_pct"):
+            v = candidate.get(k)
+            if v is not None:
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    pass
     return None
 
 
@@ -119,7 +129,7 @@ def decide_entry(
         right = "C"
     is_put = right == "P"
     side_lbl = "put" if is_put else "call"
-    live = _live_pct(quote)
+    live = _live_pct(quote, candidate)
     last = None
     if quote and quote.get("last") is not None:
         last = float(quote["last"])
@@ -697,23 +707,36 @@ def apply_hist_win_gate(
     min_hist_win_pct: float = 80.0,
     min_hist_win_samples: int = 5,
     require_hist_win: bool = True,
+    mega_min_hist_win_pct: float | None = None,
+    mega_rip_live_pct: float = 1.0,
 ) -> ActionSignal:
     """Demote BUY NOW → WAIT unless walk-forward hist win clears the bar.
 
     Calls: underlying green win% ≥ target.
     Puts: inverse — need bearish edge (100 − call win%) ≥ target and low ≥1% rip rate.
+
+    Liquid megas (AAPL/GOOGL/MSFT/INTC/…) use a softer hist floor when configured,
+    and can clear on a live session rip even when hist sits ~50% — otherwise the
+    desk never alerts megas that the tape is actually moving.
     """
     if not require_hist_win or sig.action != "BUY_NOW":
         return sig
     is_put = str(sig.right or "C").upper() == "P"
     n = int(sig.win_samples or 0)
     win = sig.win_pct
+    from odte_scanner.signals.rip_radar import is_mega_rip_symbol, mega_rip_tape_ok
+
+    is_mega = is_mega_rip_symbol(sig.symbol)
+    target = float(min_hist_win_pct)
+    if is_mega and mega_min_hist_win_pct is not None:
+        target = min(target, float(mega_min_hist_win_pct))
+
     if win is None:
         sig.action = "WAIT"
         sig.headline = sig.headline.replace("BUY NOW", "WAIT", 1)
         sig.detail = (
             f"{sig.detail} · blocked: no hist win backtest yet "
-            f"(need ≥{min_hist_win_pct:.0f}% over n≥{min_hist_win_samples})"
+            f"(need ≥{target:.0f}% over n≥{min_hist_win_samples})"
         )
         sig.strength = min(sig.strength, 45.0)
         return sig
@@ -722,18 +745,18 @@ def apply_hist_win_gate(
         sig.headline = sig.headline.replace("BUY NOW", "WAIT", 1)
         sig.detail = (
             f"{sig.detail} · blocked: hist n={n} < {min_hist_win_samples} "
-            f"(need ≥{min_hist_win_pct:.0f}% win)"
+            f"(need ≥{target:.0f}% win)"
         )
         sig.strength = min(sig.strength, 48.0)
         return sig
     if is_put:
         bear_edge = 100.0 - float(win)
-        if bear_edge < float(min_hist_win_pct):
+        if bear_edge < float(target):
             sig.action = "WAIT"
             sig.headline = sig.headline.replace("BUY NOW", "WAIT", 1)
             sig.detail = (
                 f"{sig.detail} · blocked: underlying green {win:.0f}% after signal "
-                f"(put edge {bear_edge:.0f}% < {min_hist_win_pct:.0f}% bear target)"
+                f"(put edge {bear_edge:.0f}% < {target:.0f}% bear target)"
             )
             sig.strength = min(sig.strength, 50.0)
             return sig
@@ -747,14 +770,40 @@ def apply_hist_win_gate(
             sig.strength = min(sig.strength, 50.0)
             return sig
         return sig
-    if float(win) < float(min_hist_win_pct):
-        sig.action = "WAIT"
-        sig.headline = sig.headline.replace("BUY NOW", "WAIT", 1)
-        sig.detail = (
-            f"{sig.detail} · blocked: hist win {win:.0f}% < {min_hist_win_pct:.0f}% target"
-        )
-        sig.strength = min(sig.strength, 50.0)
+    if float(win) >= float(target):
+        if is_mega and float(win) < float(min_hist_win_pct):
+            sig.detail = (
+                f"{sig.detail} · mega soft hist {win:.0f}% "
+                f"(floor {target:.0f}%; full gate {min_hist_win_pct:.0f}%)"
+            )
         return sig
+
+    # Mega session-rip override: INTC +3% days must not die on a 50% hist print
+    if (
+        is_mega
+        and not is_put
+        and mega_rip_tape_ok(
+            live=sig.live_change_pct,
+            mom5=None,
+            mom15=None,
+            min_live_pct=mega_rip_live_pct,
+        )
+        and float(win) >= max(40.0, float(target) - 15.0)
+    ):
+        sig.detail = (
+            f"{sig.detail} · mega rip override: session "
+            f"{float(sig.live_change_pct):+.2f}% clears soft hist "
+            f"(hist {win:.0f}% < {target:.0f}% floor)"
+        )
+        sig.headline = sig.headline.replace("BUY NOW", "BUY NOW · MEGA RIP", 1)
+        return sig
+
+    sig.action = "WAIT"
+    sig.headline = sig.headline.replace("BUY NOW", "WAIT", 1)
+    sig.detail = (
+        f"{sig.detail} · blocked: hist win {win:.0f}% < {target:.0f}% target"
+    )
+    sig.strength = min(sig.strength, 50.0)
     return sig
 
 
@@ -775,6 +824,8 @@ def build_action_board(
     min_hist_win_pct: float = 80.0,
     min_hist_win_samples: int = 5,
     require_hist_win: bool = True,
+    mega_min_hist_win_pct: float | None = 50.0,
+    mega_rip_live_pct: float = 1.0,
     journal_opens: list[dict[str, Any]] | None = None,
     weekly_max_hold_days: int = 7,
     odte_flatten_et: str = "15:45",
@@ -853,6 +904,8 @@ def build_action_board(
             min_hist_win_pct=min_hist_win_pct,
             min_hist_win_samples=min_hist_win_samples,
             require_hist_win=require_hist_win,
+            mega_min_hist_win_pct=mega_min_hist_win_pct,
+            mega_rip_live_pct=mega_rip_live_pct,
         )
         from odte_scanner.signals.flow_gate import (
             apply_flow_gate,
