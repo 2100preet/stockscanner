@@ -13,6 +13,7 @@ def test_daily_pnl_rolls_up_closed_by_exit_day():
                 "symbol": "NVDA",
                 "right": "C",
                 "contract": "NVDA260930C00100000",
+                "strike": 100.0,
                 "dte_bucket": "0dte",
                 "status": "closed",
                 "entered_at": "2026-09-29T14:00:00+00:00",
@@ -29,6 +30,7 @@ def test_daily_pnl_rolls_up_closed_by_exit_day():
                 "id": "j2",
                 "symbol": "AMD",
                 "right": "C",
+                "strike": 160.0,
                 "dte_bucket": "weekly",
                 "status": "open",
                 "entered_at": "2026-09-29T15:00:00+00:00",
@@ -48,6 +50,7 @@ def test_daily_pnl_rolls_up_closed_by_exit_day():
                     "id": "c1",
                     "symbol": "JPM",
                     "right": "C",
+                    "strike": 340.0,
                     "horizon": "sprint",
                     "status": "closed",
                     "entered_at": "2026-09-28T15:00:00+00:00",
@@ -69,6 +72,7 @@ def test_daily_pnl_rolls_up_closed_by_exit_day():
                     "id": "o1",
                     "symbol": "SPY",
                     "right": "P",
+                    "strike": 570.0,
                     "status": "closed",
                     "entered_at": "2026-09-29T14:35:00+00:00",
                     "exited_at": "2026-09-29T19:00:00+00:00",
@@ -93,13 +97,16 @@ def test_daily_pnl_rolls_up_closed_by_exit_day():
     assert board["totals"]["realized_pnl_usd"] == 50.0  # 50+30-30
     assert board["totals"]["win_n"] == 2
     assert board["totals"]["loss_n"] == 1
-    assert any(d["day"] == "2026-09-29" for d in board["by_day"])
+    day = next(d for d in board["by_day"] if d["day"] == "2026-09-29")
+    assert any("NVDA 100C" in w for w in day["winners"])
+    assert any("SPY 570P" in L for L in day["losers"])
+    assert any(t["name"] == "JPM 340C" for t in day["trades"])
     cats = {c["category"] for c in board["by_category"]}
     assert "0dte" in cats
     assert "challenge" in cats
     assert "odte_1k" in cats
     closed = board["closed"]
-    assert all("entered_at" in r and "category" in r for r in closed)
+    assert all(r.get("trade_name") for r in closed)
     assert any(r["symbol"] == "NVDA" and r["entry_ask"] == 1.0 and r["exit_bid"] == 1.5 for r in closed)
 
 
