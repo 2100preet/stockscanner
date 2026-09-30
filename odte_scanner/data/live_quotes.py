@@ -176,6 +176,20 @@ def fetch_live_quote(symbol: str, *, yahoo_symbol: str | None = None) -> LiveQuo
     except Exception as exc:  # noqa: BLE001
         logger.debug("tradier equity quote fallback %s: %s", symbol, exc)
 
+    # Polygon / Massive equity snapshot backup
+    try:
+        from odte_scanner.data.polygon import api_key_from_env as poly_key
+        from odte_scanner.data.polygon import fetch_equity_quote as poly_eq
+
+        if poly_key():
+            pq = poly_eq(str(fetch_sym).upper())
+            if pq and pq.get("last"):
+                mapped = _from_tradier_row(symbol, pq)  # same field shape
+                if mapped:
+                    return mapped
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("polygon equity quote fallback %s: %s", symbol, exc)
+
     # Prefer chart API (crumb session) — more reliable under yfinance 429s
     try:
         from odte_scanner.options.yahoo_session import fetch_yahoo_quote
