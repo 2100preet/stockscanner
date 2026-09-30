@@ -405,8 +405,8 @@ actions:
   challenge_min_ensemble: 58
   challenge_max_contracts: 2
   challenge_max_consecutive_losses: 3
-  # Shorter same-symbol cooldown so megas can re-enter after a cut
-  challenge_loss_cooldown_days: 2
+  # Same-symbol cooldown after a losing flip (survives epoch archive)
+  challenge_loss_cooldown_days: 7
   # Beauty / monthly lane (AMD META MU SNDK class — ~1mo DTE)
   beauty_enabled: true
   beauty_min_dte: 18

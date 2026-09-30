@@ -594,6 +594,52 @@ def test_loss_cooldown_blocks_reentry(tmp_path):
     assert again is None
 
 
+def test_loss_cooldown_survives_epoch_archive(tmp_path):
+    """Archived Monday losers must still block Challenge ENTRY after rebuild."""
+    ledger = tmp_path / "ch.json"
+    tr = ChallengeTracker(
+        ledger,
+        starting_cash=1000,
+        epoch="sprint-v1",
+        rebuild_seed_usd=1000,
+    )
+    ticket = {
+        "action": "ENTRY",
+        "symbol": "JPM",
+        "right": "C",
+        "ask": 1.0,
+        "contract": "JPM260925C00345000",
+        "expiry": "2026-09-25",
+        "strike": 345,
+        "horizon": "sprint",
+        "hold_style": "sprint",
+        "dte": 2,
+        "spot": 340,
+        "target_premium_mult": 1.5,
+        "ensemble_score": 70,
+    }
+    entered = tr.enter(ticket)
+    assert entered is not None
+    out = tr.exit_trade(entered.id, exit_bid=0.2, reason="stop")
+    assert out is not None and out.pnl_usd < 0
+    # Bump epoch → archives the loss off the live book
+    tr2 = ChallengeTracker(
+        ledger,
+        starting_cash=1000,
+        epoch="sprint-v2",
+        rebuild_seed_usd=1000,
+        rebuild_reason="test rebuild",
+    )
+    assert tr2.book.trades == []
+    assert tr2.book.archive
+    assert "JPM" in tr2.recent_loss_symbols(cooldown_days=7)
+    again = tr2.enter(
+        {**ticket, "contract": "JPM261002C00345000", "expiry": "2026-10-02"},
+        loss_cooldown_days=7,
+    )
+    assert again is None
+
+
 def test_max_cash_frac_caps_contracts(tmp_path):
     ledger = tmp_path / "ch.json"
     tr = ChallengeTracker(ledger, starting_cash=1000)

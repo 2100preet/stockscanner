@@ -486,3 +486,41 @@ def test_scrub_stale_board_exits_on_load(tmp_path: Path):
     assert rec.pnl_usd is None
     assert log.board()["closed_pnl_usd"] == 0
 
+
+def test_scrub_expired_open_contract_on_load(tmp_path: Path):
+    """Monday JPM OCC stayed open with a drifted expiry — must lapse off BUY NOW."""
+    path = tmp_path / "rec.json"
+    path.write_text(
+        json.dumps(
+            {
+                "updated_at": "2026-09-30T00:00:00+00:00",
+                "recommendations": [
+                    {
+                        "id": "rec-jpm",
+                        "section": "challenge",
+                        "symbol": "JPM",
+                        "right": "C",
+                        "open_action": "ENTRY",
+                        "recommended_at": "2026-09-23T18:00:00+00:00",
+                        "last_recommended_at": "2026-09-23T18:00:00+00:00",
+                        "entry_price": 1.04,
+                        "contract": "JPM260925C00345000",
+                        "expiry": "2026-10-02",
+                        "status": "open",
+                        "on_board": True,
+                        "source": "board",
+                        "headline": "ENTRY JPM C",
+                        "events": [],
+                    }
+                ],
+            }
+        )
+    )
+    log = RecommendationLog(path)
+    rec = log.book.recommendations[0]
+    assert rec.status == "lapsed"
+    assert rec.on_board is False
+    assert "expired" in (rec.exit_reason or "").lower()
+    assert rec.expiry == "2026-09-25"
+    assert log.board(section="challenge")["open"] == 0
+

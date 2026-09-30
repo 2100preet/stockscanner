@@ -1531,7 +1531,7 @@ def build_challenge_board(
             "Hold periods: sprint 1–3d · weekly 5–14d · swing 20–60d · LEAP 30–90d — EXIT at target, stop, or max hold.",
             f"Each flip targets ~50–100% option premium (clamped; path math ~{primary_path['pct_per_flip']:.0f}%); then EXIT and roll.",
             "Long-dated opens are auto-retired so cash can re-enter 1–3d sprint tickets.",
-            "After a losing flip, that symbol is blocked ~5d — no SLV-put death loops.",
+            "After a losing flip, that symbol is blocked ~7d (incl. archived epochs) — no JPM/SLV re-chase loops.",
             "Bank +50% early on sprint tickets; cap each ENTRY to ~35% of cash.",
             "Puts need a clear dump confirmation; weak bearish scores default to calls.",
             "Status updates: ENTRY (new), HOLD (open inside window), EXIT (target/stop/time).",
