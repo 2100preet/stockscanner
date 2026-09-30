@@ -350,6 +350,9 @@ actions:
   require_hist_win: true
   min_hist_win_pct: 80   # target ≥80% measured win rate on promoted trades
   min_hist_win_samples: 5
+  # Liquid megas (AAPL/GOOGL/MSFT/INTC/…) rarely clear 80% hist — soft floor + session rip override
+  mega_min_hist_win_pct: 50
+  mega_rip_live_pct: 1.0
   lottery_min_score: 62
   lottery_min_confirms: 4
   # Discord-style radar lane (cheap SPY/QQQ wings) — separate from BUY NOW

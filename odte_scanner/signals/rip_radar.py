@@ -61,11 +61,21 @@ class RipAction:
 
 def _live_pct(quote: dict[str, Any] | None, candidate: dict[str, Any] | None = None) -> float | None:
     if quote:
-        for k in ("session_change_pct", "change_pct", "live_change_pct"):
-            if quote.get(k) is not None:
-                return float(quote[k])
-    if candidate and candidate.get("live_change_pct") is not None:
-        return float(candidate["live_change_pct"])
+        for k in ("session_change_pct", "change_pct", "live_change_pct", "day_change_pct"):
+            v = quote.get(k)
+            if v is not None:
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    pass
+    if candidate:
+        for k in ("live_change_pct", "session_change_pct", "change_pct"):
+            v = candidate.get(k)
+            if v is not None:
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    pass
     return None
 
 
@@ -81,12 +91,18 @@ def mega_rip_tape_ok(
     min_live_pct: float = 1.0,
     min_mom5: float = 0.05,
 ) -> bool:
-    """True when underlying is in a META-class rip (session + bounce)."""
+    """True when underlying is in a META-class rip (session + bounce).
+
+    Pages offline often lacks 5m/15m bars — session ≥ min alone still counts
+    as a rip so INTC/GOOGL-class +2–3% days are not stuck on RIP_COOL.
+    """
     if live is None or live < float(min_live_pct):
         return False
+    if mom5 is None and mom15 is None:
+        return True
     if mom5 is not None and mom5 < float(min_mom5):
         return False
-    if mom5 is None and (mom15 is None or mom15 < float(min_mom5)):
+    if mom5 is None and mom15 is not None and mom15 < float(min_mom5):
         return False
     return True
 
@@ -225,6 +241,9 @@ def decide_rip_entry(
     confirms = 0
     if live is not None and live >= min_live_pct:
         confirms += 1
+        # Pages often has no 5m/15m — count session rip as bounce proxy once
+        if mom5 is None and mom15 is None:
+            confirms += 1
     if mom5 is not None and mom5 >= min_mom5:
         confirms += 1
     if mom15 is not None and mom15 >= 0:
@@ -332,9 +351,18 @@ def build_rip_board(
         if str(c.get("right") or "C").upper() == "P":
             continue
         seen.add(sym)
+        q = quotes.get(sym) or {}
+        # Stamp tape onto the ticket so decide_rip_entry still works when the
+        # quotes map missed a mega (Pages only refreshes a short quote_syms set).
+        if c.get("live_change_pct") is None:
+            live_pct = q.get("session_change_pct")
+            if live_pct is None:
+                live_pct = q.get("change_pct")
+            if live_pct is not None:
+                c = {**c, "live_change_pct": live_pct}
         act = decide_rip_entry(
             c,
-            quote=quotes.get(sym),
+            quote=q or None,
             ensemble_score=score_map.get(sym) or c.get("score"),
             loss_cooldown_contracts=blocked,
             min_live_pct=min_live_pct,
