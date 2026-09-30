@@ -306,43 +306,67 @@ class ChallengeTracker:
                 return t
         return None
 
+    def _closed_trade_rows(self) -> list[dict[str, Any]]:
+        """Current-book closed trades plus archived epoch closes (cooldown must survive rebuilds)."""
+        rows: list[dict[str, Any]] = []
+        for t in self.book.trades:
+            if getattr(t, "status", None) == "closed":
+                rows.append(t.to_dict() if hasattr(t, "to_dict") else dict(t))
+        for snap in self.book.archive or []:
+            if not isinstance(snap, dict):
+                continue
+            for t in snap.get("trades") or []:
+                if not isinstance(t, dict):
+                    continue
+                if str(t.get("status") or "").lower() != "closed":
+                    continue
+                rows.append(t)
+        return rows
+
     def recent_loss_symbols(self, *, cooldown_days: int = 5) -> set[str]:
-        """Symbols with a losing closed flip inside the cooldown window."""
+        """Symbols with a losing closed flip inside the cooldown window.
+
+        Includes archived epochs — sleeve rebuilds must not wipe loss memory
+        (JPM −76% on Sep 25 was archived, then reappeared as ENTRY the next week).
+        """
         if cooldown_days <= 0:
             return set()
         now = datetime.now(timezone.utc)
         blocked: set[str] = set()
-        for t in self.book.trades:
-            if t.status != "closed" or not t.exited_at:
+        for t in self._closed_trade_rows():
+            exited_raw = t.get("exited_at") if isinstance(t, dict) else getattr(t, "exited_at", None)
+            if not exited_raw:
                 continue
             try:
-                exited = datetime.fromisoformat(t.exited_at.replace("Z", "+00:00"))
+                exited = datetime.fromisoformat(str(exited_raw).replace("Z", "+00:00"))
             except Exception:  # noqa: BLE001
                 continue
             age_days = (now - exited).total_seconds() / 86400.0
             if age_days > float(cooldown_days):
                 continue
-            lost = False
-            if t.pnl_usd is not None and float(t.pnl_usd) < 0:
-                lost = True
-            if t.profit_pct is not None and float(t.profit_pct) < 0:
-                lost = True
+            pnl = t.get("pnl_usd") if isinstance(t, dict) else getattr(t, "pnl_usd", None)
+            pct = t.get("profit_pct") if isinstance(t, dict) else getattr(t, "profit_pct", None)
+            lost = (pnl is not None and float(pnl) < 0) or (pct is not None and float(pct) < 0)
             if lost:
-                blocked.add(str(t.symbol).upper())
+                sym = t.get("symbol") if isinstance(t, dict) else getattr(t, "symbol", "")
+                if sym:
+                    blocked.add(str(sym).upper())
         return blocked
 
     def lifetime_loss_symbols(self, *, min_losses: int = 2) -> set[str]:
-        """Symbols with ≥min_losses closed losing flips (any epoch/archive-safe on current book)."""
+        """Symbols with ≥min_losses closed losing flips (current book + archive)."""
         counts: dict[str, int] = {}
-        for t in self.book.trades:
-            if t.status != "closed":
-                continue
-            lost = (t.pnl_usd is not None and float(t.pnl_usd) < 0) or (
-                t.profit_pct is not None and float(t.profit_pct) < 0
-            )
+        for t in self._closed_trade_rows():
+            pnl = t.get("pnl_usd") if isinstance(t, dict) else getattr(t, "pnl_usd", None)
+            pct = t.get("profit_pct") if isinstance(t, dict) else getattr(t, "profit_pct", None)
+            lost = (pnl is not None and float(pnl) < 0) or (pct is not None and float(pct) < 0)
             if not lost:
                 continue
-            sym = str(t.symbol).upper()
+            sym = str(
+                (t.get("symbol") if isinstance(t, dict) else getattr(t, "symbol", "")) or ""
+            ).upper()
+            if not sym:
+                continue
             counts[sym] = counts.get(sym, 0) + 1
         return {s for s, n in counts.items() if n >= int(min_losses)}
 

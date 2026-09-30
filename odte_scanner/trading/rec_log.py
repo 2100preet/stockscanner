@@ -44,6 +44,9 @@ def _parse_live_entry_from_reason(reason: str | None) -> float | None:
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PATH = ROOT / "outputs" / "recommendation_log.json"
 
+# OCC root…YYMMDD[CP]strike — used to lapse opens past contract expiry
+_OCC_EXPIRY_RE = re.compile(r"(\d{6})[CP]\d{8}$", re.IGNORECASE)
+
 # Actions that open a recommendation
 _OPEN_ACTIONS = {
     "BUY_NOW",
@@ -289,6 +292,7 @@ class RecommendationLog:
             scrubbed = self._scrub_stale_board_exits() or scrubbed
             scrubbed = self._scrub_entry_drift_from_reason() or scrubbed
             scrubbed = self._scrub_fake_quality_opens() or scrubbed
+            scrubbed = self._scrub_expired_open_contracts() or scrubbed
             if scrubbed:
                 self.save()
         except Exception as exc:  # noqa: BLE001
@@ -315,6 +319,52 @@ class RecommendationLog:
                 r.pnl_usd = None
                 r.exit_reason = "reclassed — quality/stock last was not an option BUY NOW"
                 changed = True
+        return changed
+
+    def _scrub_expired_open_contracts(self) -> bool:
+        """Lapse open board recs whose OCC (or expiry field) is already past.
+
+        Example: JPM260925C… stayed ``open`` with a wrong expiry=10-02 after the
+        Sep-25 contract died — polluting BUY NOW / daily P&L recommended lists.
+        """
+        changed = False
+        today = datetime.now(timezone.utc).date()
+        for r in self.book.recommendations:
+            if r.status != "open":
+                continue
+            exp_date = None
+            occ = str(r.contract or "").upper().replace("O:", "")
+            m = _OCC_EXPIRY_RE.search(occ) if occ else None
+            if m:
+                yy, mm, dd = m.group(1)[:2], m.group(1)[2:4], m.group(1)[4:6]
+                try:
+                    exp_date = datetime(2000 + int(yy), int(mm), int(dd)).date()
+                except ValueError:
+                    exp_date = None
+            if exp_date is None and r.expiry:
+                try:
+                    exp_date = datetime.fromisoformat(str(r.expiry)[:10]).date()
+                except ValueError:
+                    exp_date = None
+            if exp_date is None or exp_date >= today:
+                continue
+            # Prefer OCC-derived date when expiry field drifted (JPM case)
+            if m:
+                try:
+                    r.expiry = datetime(2000 + int(yy), int(mm), int(dd)).date().isoformat()
+                except ValueError:
+                    pass
+            r.status = "lapsed"
+            r.close_action = "LAPSE"
+            r.on_board = False
+            r.closed_at = _now()
+            r.exit_price = None
+            r.profit_pct = None
+            r.pnl_usd = None
+            r.exit_reason = (
+                f"lapsed — contract expired {exp_date.isoformat()} (stale open rec scrubbed)"
+            )
+            changed = True
         return changed
 
     def _scrub_bogus_zero_closes(self) -> bool:
