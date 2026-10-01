@@ -24,6 +24,45 @@ def test_mega_rip_tape_ok():
     assert not mega_rip_tape_ok(live=1.4, mom5=-0.1)
     # Pages offline: session rip alone is enough when 5m/15m missing
     assert mega_rip_tape_ok(live=2.9, mom5=None, mom15=None)
+    # Day-low reclaim while still red vs prior close (TSLA 347→351)
+    assert mega_rip_tape_ok(
+        live=-0.5, mom5=None, mom15=None, bounce_from_low=1.3
+    )
+    assert not mega_rip_tape_ok(
+        live=-0.5, mom5=None, mom15=None, bounce_from_low=0.8
+    )
+
+
+def test_tsla_day_low_reclaim_alerts_without_green_session():
+    """Regression: TSLA bounce 346→351 must WATCH/BUY RIP even if session still <1%."""
+    act = decide_rip_entry(
+        {
+            "symbol": "TSLA",
+            "ask": 3.5,
+            "bid": 3.3,
+            "strike": 350,
+            "expiry": "2026-10-02",
+            "contract": "TSLA261002C00350000",
+            "dte": 2,
+            "dte_bucket": "weekly",
+            "moneyness_pct": -0.3,
+            "volume": 900,
+            "open_interest": 2000,
+            "score": 48,
+        },
+        quote={
+            "last": 351.0,
+            "session_change_pct": -0.52,
+            "mom_5m_pct": None,
+            "mom_15m_pct": None,
+            "day_low": 345.88,
+            "day_high": 355.0,
+            "prev_close": 352.84,
+        },
+        now=_MORNING,
+    )
+    assert act.action in {"BUY_RIP", "WATCH_RIP"}
+    assert "day-low" in act.detail.lower() or "off day-low" in act.detail.lower()
 
 
 def test_intc_session_rip_without_mom_bars():

@@ -83,6 +83,26 @@ def is_mega_rip_symbol(symbol: str) -> bool:
     return str(symbol or "").upper() in MEGA_RIP_SYMBOLS
 
 
+def bounce_from_day_low_pct(quote: dict[str, Any] | None, spot: float | None = None) -> float | None:
+    """Percent reclaim off the day low — catches TSLA 346→351 while still red vs prior close."""
+    if not quote:
+        return None
+    low = quote.get("day_low")
+    last = spot
+    if last is None:
+        last = quote.get("last")
+    if low is None or last is None:
+        return None
+    try:
+        low_f = float(low)
+        last_f = float(last)
+    except (TypeError, ValueError):
+        return None
+    if low_f <= 0:
+        return None
+    return (last_f / low_f - 1.0) * 100.0
+
+
 def mega_rip_tape_ok(
     *,
     live: float | None,
@@ -90,19 +110,33 @@ def mega_rip_tape_ok(
     mom15: float | None = None,
     min_live_pct: float = 1.0,
     min_mom5: float = 0.05,
+    bounce_from_low: float | None = None,
+    min_bounce_from_low: float = 1.2,
 ) -> bool:
     """True when underlying is in a META-class rip (session + bounce).
 
     Pages offline often lacks 5m/15m bars — session ≥ min alone still counts
     as a rip so INTC/GOOGL-class +2–3% days are not stuck on RIP_COOL.
+
+    Also treats a ≥min_bounce_from_low reclaim off the day low as a rip even when
+    session % vs prior close is still flat/red (TSLA 347→351 case).
     """
-    if live is None or live < float(min_live_pct):
+    reclaim = (
+        bounce_from_low is not None and float(bounce_from_low) >= float(min_bounce_from_low)
+    )
+    session_rip = live is not None and live >= float(min_live_pct)
+    if not session_rip and not reclaim:
         return False
     if mom5 is None and mom15 is None:
         return True
     if mom5 is not None and mom5 < float(min_mom5):
+        # Allow day-low reclaim through a soft 5m dip (washout bounce)
+        if reclaim and mom5 >= -0.15:
+            return True
         return False
     if mom5 is None and mom15 is not None and mom15 < float(min_mom5):
+        if reclaim and mom15 >= -0.20:
+            return True
         return False
     return True
 
@@ -138,6 +172,7 @@ def decide_rip_entry(
     live = _live_pct(quote, ticket)
     mom5 = float(quote["mom_5m_pct"]) if quote and quote.get("mom_5m_pct") is not None else None
     mom15 = float(quote["mom_15m_pct"]) if quote and quote.get("mom_15m_pct") is not None else None
+    bounce_low = bounce_from_day_low_pct(quote, spot or None)
     vol = int(ticket.get("volume") or 0)
     oi = int(ticket.get("open_interest") or ticket.get("oi") or 0)
     score = float(ensemble_score if ensemble_score is not None else (ticket.get("score") or 0))
@@ -166,11 +201,29 @@ def decide_rip_entry(
     )
 
     playbook = [
-        "META-class continuation: liquid mega + session rip + short-term bounce",
+        "META-class continuation: liquid mega + session rip / day-low reclaim",
         "Never rebuy the same losing OCC contract",
         "Size small vs gated hist BUY NOW — premium can still go to zero",
         "Exit: bank +50–80% or trail; cut −35–45%",
     ]
+
+    def _tape_ok() -> bool:
+        return mega_rip_tape_ok(
+            live=live,
+            mom5=mom5,
+            mom15=mom15,
+            min_live_pct=min_live_pct,
+            min_mom5=min_mom5,
+            bounce_from_low=bounce_low,
+        )
+
+    def _tape_label() -> str:
+        bits = []
+        if live is not None:
+            bits.append(f"session {live:+.2f}%")
+        if bounce_low is not None:
+            bits.append(f"off day-low +{bounce_low:.2f}%")
+        return ", ".join(bits) if bits else "tape"
 
     if not is_mega_rip_symbol(symbol):
         return RipAction(
@@ -195,15 +248,13 @@ def decide_rip_entry(
         )
 
     if ask <= 0 or ask < min_ask or ask > max_ask:
-        if mega_rip_tape_ok(live=live, mom5=mom5, mom15=mom15, min_live_pct=min_live_pct, min_mom5=min_mom5):
+        if _tape_ok():
             return RipAction(
                 action="WATCH_RIP",
-                strength=min(70.0, 45 + (live or 0) * 6),
+                strength=min(70.0, 45 + (live or 0) * 6 + (bounce_low or 0) * 4),
                 headline=f"WATCH RIP {symbol}",
                 detail=(
-                    f"Mega ripping (session {live:+.2f}%) but no liquid call ask on this snapshot — pull a near-ATM weekly."
-                    if live is not None
-                    else "Mega tape warm but no liquid call ask on this snapshot."
+                    f"Mega reclaiming ({_tape_label()}) but no liquid call ask on this snapshot — pull a near-ATM weekly."
                 ),
                 playbook=playbook,
                 risk_tag="continuation",
@@ -232,11 +283,10 @@ def decide_rip_entry(
             **base,
         )
 
-    ripping = mega_rip_tape_ok(
-        live=live, mom5=mom5, mom15=mom15, min_live_pct=min_live_pct, min_mom5=min_mom5
-    )
+    ripping = _tape_ok()
     # Offline Pages: session % alone can clear a softer watch
     offline_soft = live is not None and live >= min_live_pct and mom5 is None and mom15 is None
+    reclaim_soft = bounce_low is not None and bounce_low >= 1.2
 
     confirms = 0
     if live is not None and live >= min_live_pct:
@@ -244,6 +294,10 @@ def decide_rip_entry(
         # Pages often has no 5m/15m — count session rip as bounce proxy once
         if mom5 is None and mom15 is None:
             confirms += 1
+    if reclaim_soft:
+        confirms += 1
+        if mom5 is None and mom15 is None and (live is None or live < min_live_pct):
+            confirms += 1  # day-low reclaim stands in for session when still red vs prior
     if mom5 is not None and mom5 >= min_mom5:
         confirms += 1
     if mom15 is not None and mom15 >= 0:
@@ -257,6 +311,7 @@ def decide_rip_entry(
         100.0,
         35
         + (live or 0) * 8
+        + (bounce_low or 0) * 3
         + (mom5 or 0) * 20
         + max(0.0, score - 60) * 0.8
         + confirms * 4,
@@ -268,7 +323,7 @@ def decide_rip_entry(
             strength=strength,
             headline=f"BUY RIP {symbol} · continuation",
             detail=(
-                f"Mega rip: session {live:+.2f}%"
+                f"Mega rip: {_tape_label()}"
                 + (f", 5m {mom5:+.2f}%" if mom5 is not None else "")
                 + f" · {base['dte_bucket']} call @ ${ask:.2f}"
                 + (f" · {float(mny):.1f}% OTM" if mny is not None else "")
@@ -281,15 +336,13 @@ def decide_rip_entry(
             **base,
         )
 
-    if ripping or offline_soft or (live is not None and live >= min_live_pct * 0.7):
+    if ripping or offline_soft or reclaim_soft or (live is not None and live >= min_live_pct * 0.7):
         return RipAction(
             action="WATCH_RIP",
             strength=min(strength, 72.0),
             headline=f"WATCH RIP {symbol}",
             detail=(
-                f"Tape warming (session {live:+.2f}%) — need bounce confirm / liquidity for BUY RIP."
-                if live is not None
-                else "Tape warming — need bounce confirm / liquidity for BUY RIP."
+                f"Tape warming ({_tape_label()}) — need bounce confirm / liquidity for BUY RIP."
             ),
             playbook=playbook,
             risk_tag="continuation",
@@ -302,9 +355,7 @@ def decide_rip_entry(
         strength=max(0.0, strength * 0.5),
         headline=f"RIP COOL {symbol}",
         detail=(
-            f"No rip yet (session {live:+.2f}%, need ≥{min_live_pct:.1f}% + bounce)."
-            if live is not None
-            else f"No rip yet (need ≥{min_live_pct:.1f}% session + bounce)."
+            f"No rip yet ({_tape_label() or 'flat'}; need ≥{min_live_pct:.1f}% session or ≥1.2% off day-low)."
         ),
         playbook=playbook,
         risk_tag="cool",
@@ -400,7 +451,7 @@ def build_rip_board(
         },
         "mega_symbols": sorted(MEGA_RIP_SYMBOLS),
         "rules": [
-            "Need session ≥~1% and short-term bounce (or soft offline session rip).",
+            "Need session ≥~1% OR ≥1.2% reclaim off the day low (TSLA 347→351 style).",
             "Prefer ATM–near OTM (≤4%) liquid calls on focus megas.",
             "Same OCC after a loss stays blocked ~45d.",
             "Symbol cooldown waived on this lane when tape is ripping.",
