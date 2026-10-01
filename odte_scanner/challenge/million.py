@@ -455,7 +455,9 @@ def select_leap_option(
             dte = (d - today).days
             # Stay near the requested band — do not jump to LEAPs for sprint picks
             if max_dte <= 21:
-                if 0 <= dte <= max(max_dte, 14):
+                # Sprint desks must stay near the requested band (do not jump to ~2w)
+                band_max = max(int(max_dte), min(7, int(max_dte) + 2)) if int(max_dte) <= 5 else max(int(max_dte), 14)
+                if 0 <= dte <= band_max:
                     targets.append((exp, dte))
             elif 60 <= dte <= 550:
                 targets.append((exp, dte))
@@ -754,6 +756,7 @@ def build_challenge_board(
     min_option_volume: int = 100,
     min_option_oi: int = 200,
     allow_zero_volume_if_oi: int = 0,
+    max_ask: float = 2.50,
     loss_cooldown_symbols: set[str] | list[str] | None = None,
     uw_flow: dict[str, Any] | None = None,
     require_uw_flow: bool = False,
@@ -924,6 +927,7 @@ def build_challenge_board(
                     max_dte=pick_max_dte,
                     prefer_dte=pick_prefer_dte,
                     otm_pct_max=otm_cap,
+                    max_ask=float(max_ask) if sprint_desk else 80.0,
                     min_oi=int(min_option_oi),
                     min_volume=int(min_option_volume),
                     allow_zero_volume_if_oi=int(allow_zero_volume_if_oi),
@@ -1520,22 +1524,22 @@ def build_challenge_board(
             ),
         },
         "rules": [
-            "1-month sprint: liquid short-dated calls/puts (≈1–5 DTE, real day volume), hold ~1–3 days — compound toward $1M.",
+            "Oct $500k sprint first (stretch $1M): liquid mega short-dated calls (≈1–3 DTE, real day volume), hold ~1d — bank +40% early.",
             "Hist-win filter: prefer 100% (n≥3), else ≥80% (n≥5) on weekly/swing quality signals.",
-            "Auto paper ENTER when an ENTRY ticket has a live listed ask + contract; cash/equity update on each ENTER/EXIT.",
-            "Without listed asks the sleeve stays WAIT — that is why a dormant auto_enter=false desk sits at $1,000.",
-            "Universe: mega/large + mid/small + DRAM/memory optionables.",
+            "Auto paper ENTER when an ENTRY/BUY_RIP ticket has a live listed ask in the $0.20–$2.50 band and fits ≤30% cash.",
+            "Skip lottery pennies / rich asks that blow the cash-frac — 1ct must fit the risk budget.",
+            "Universe priority: CORE megas (SPY/QQQ/NVDA/TSLA/AMD/META/…) + RIP bridge; mid/small only when they clear quality.",
             "Earnings watch: today / this week / next week / post-print across challenge + DRAM sleeve.",
             "Earnings: boost post-print continuation; WAIT into/through the print on the sprint desk (no LEAP force).",
             f"OI walls: soft EXIT ${wall_buffer_usd:.2f} before call wall (long calls) or put wall (long puts).",
-            "Hold periods: sprint 1–3d · weekly 5–14d · swing 20–60d · LEAP 30–90d — EXIT at target, stop, or max hold.",
-            f"Each flip targets ~50–100% option premium (clamped; path math ~{primary_path['pct_per_flip']:.0f}%); then EXIT and roll.",
+            "Hold periods: sprint 0–1d · weekly 5–14d · swing 20–60d · LEAP 30–90d — EXIT at target, stop, or max hold.",
+            f"Each flip targets ~40–100% option premium (clamped; path math ~{primary_path['pct_per_flip']:.0f}%); then EXIT and roll.",
             "Long-dated opens are auto-retired so cash can re-enter 1–3d sprint tickets.",
-            "After a losing flip, that symbol is blocked ~7d (incl. archived epochs) — no JPM/SLV re-chase loops.",
-            "Bank +50% early on sprint tickets; cap each ENTRY to ~35% of cash.",
+            "After a losing flip, that symbol is blocked ~7d (incl. archived epochs) — no LUNR/QUBT/JPM re-chase loops.",
+            "Bank +40% early on sprint tickets; hard-skip ENTRY when 1 contract exceeds ~30% of cash.",
             "Puts need a clear dump confirmation; weak bearish scores default to calls.",
             "Status updates: ENTRY (new), HOLD (open inside window), EXIT (target/stop/time).",
-            "Max 1 open challenge flip at a time. Research / paper only.",
+            "Max 1 open challenge flip at a time. 3 consecutive losses pauses auto-enter until next quality epoch. Research / paper only.",
         ],
         "disclaimer": (
             "No strategy has a guaranteed 100% future win rate. "

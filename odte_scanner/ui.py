@@ -562,7 +562,7 @@ PAGE = r"""
     <section class="tabpane" id="tab-challenge">
       <h2>$1,000 → $1,000,000 challenge</h2>
       <p class="lede">
-        Goal: <strong>$1k → $1M by Oct 31, 2026</strong> via sprint flips (~2d, target <strong>+50–100%</strong>) on liquid short-dated tickets — and <strong>Beauty 1mo</strong> for AMD/META/MU/SNDK-class monthly melts. Paper sleeve starts at <strong>$1,000 real cash</strong> (no fake equity). Loss-cooldown blocks same OCC losers; megas can still rip-buy on fresh contracts.
+        Goal: <strong>$1k → $500k first</strong> (stretch <strong>$1M by Oct 31, 2026</strong>) via sprint flips (~1d, bank <strong>+40–100%</strong>) on liquid mega short-dated tickets — and <strong>Beauty 1mo</strong> for AMD/META/MU/SNDK-class monthly melts. Paper sleeve starts at <strong>$1,000 real cash</strong> (no fake equity). Lottery / penny names blocked; loss-cooldown survives epoch rebuilds; megas can still rip-buy on fresh contracts.
         Sure-shot hist filter (prefer <strong>100% hist win</strong>, else ≥80% n≥5).
         Status: <strong>ENTRY · HOLD · EXIT</strong>. After each Paper ENTER/EXIT the sleeve
         <strong>cash &amp; equity balance</strong> updates so you know where you are.
@@ -1933,7 +1933,8 @@ PAGE = r"""
       if (metrics) metrics.innerHTML = [
         m("Sleeve cash", book.cash!=null?`$${Number(book.cash).toLocaleString(undefined,{maximumFractionDigits:0})}`:"—"),
         m("Sleeve equity", book.equity!=null?`$${Number(book.equity).toLocaleString(undefined,{maximumFractionDigits:0})}`:`$${(ch.start_usd||1000).toLocaleString()}`),
-        m("→ $1M", book.progress_pct!=null?`${fmt(book.progress_pct,3)}%`:"—", "up"),
+        m("→ $500k", book.milestone_500k_pct!=null?`${fmt(book.milestone_500k_pct,3)}%`:"—", "up"),
+        m("→ $1M", book.progress_pct!=null?`${fmt(book.progress_pct,3)}%`:"—"),
         m("Days to Oct-end", (ch.oct_end_pace&&ch.oct_end_pace.days_left)!=null?ch.oct_end_pace.days_left:(pace.days!=null?Math.round(pace.days):"—"), "up"),
         m("1mo/Oct need / flip", (ch.oct_end_pace&&ch.oct_end_pace.pct_per_flip)!=null?`+${fmt(ch.oct_end_pace.pct_per_flip,0)}%`:(paceM.pct_per_flip==null?"—":`+${fmt(paceM.pct_per_flip,0)}%`), "up"),
         m("Classic need / flip", path.pct_per_flip==null?"—":`+${fmt(path.pct_per_flip,0)}%`),
@@ -5033,9 +5034,10 @@ def create_app(config_path: str | None = None) -> Flask:
                 min_option_volume=int(actions_cfg.get("challenge_min_option_volume", 100)),
                 min_option_oi=int(actions_cfg.get("challenge_min_option_oi", 200)),
                 allow_zero_volume_if_oi=int(actions_cfg.get("challenge_allow_zero_volume_if_oi", 0)),
+                max_ask=float(actions_cfg.get("challenge_max_ask", 2.50)),
                 loss_cooldown_symbols=loss_cooldown_syms,
                 pace_months=pace_months,
-                pace_milestone_usd=float(actions_cfg.get("challenge_pace_milestone_usd", 1_000_000)),
+                pace_milestone_usd=float(actions_cfg.get("challenge_pace_milestone_usd", 500_000)),
                 prefer_weekly_pace=bool(actions_cfg.get("challenge_prefer_weekly_pace", True)),
                 current_equity=float(tracker.book.equity or tracker.book.cash or 1000),
                 uw_flow=uw_flow,
@@ -5088,11 +5090,23 @@ def create_app(config_path: str | None = None) -> Flask:
                 max_open=int(actions_cfg.get("challenge_max_open", 1)),
                 sprint_desk=bool(actions_cfg.get("challenge_sprint_desk", True)),
                 live_marks=ch_live_marks,
-                loss_cooldown_days=int(actions_cfg.get("challenge_loss_cooldown_days", 2)),
-                max_cash_frac=float(actions_cfg.get("challenge_max_cash_frac", 0.25)),
+                loss_cooldown_days=int(actions_cfg.get("challenge_loss_cooldown_days", 7)),
+                max_cash_frac=float(actions_cfg.get("challenge_max_cash_frac", 0.30)),
                 max_contracts=int(actions_cfg.get("challenge_max_contracts", 2)),
                 prefer_calls=bool(actions_cfg.get("challenge_prefer_calls", True)),
-                min_ensemble=float(actions_cfg.get("challenge_min_ensemble", 58)),
+                prefer_core_megas=bool(actions_cfg.get("challenge_prefer_core_megas", True)),
+                min_ensemble=float(actions_cfg.get("challenge_min_ensemble", 60)),
+                mega_min_ensemble=(
+                    float(actions_cfg["challenge_mega_min_ensemble"])
+                    if actions_cfg.get("challenge_mega_min_ensemble") is not None
+                    else 55.0
+                ),
+                min_ask=float(actions_cfg.get("challenge_min_ask", 0.20)),
+                max_ask=(
+                    float(actions_cfg["challenge_max_ask"])
+                    if actions_cfg.get("challenge_max_ask") is not None
+                    else 2.50
+                ),
                 max_consecutive_losses=int(actions_cfg.get("challenge_max_consecutive_losses", 3)),
             )
             challenge["sync"] = sync
@@ -5100,8 +5114,9 @@ def create_app(config_path: str | None = None) -> Flask:
             challenge["deadline"] = deadline
             challenge["oct_end_pace"] = oct_end_pace_note(
                 equity=float(tracker.book.equity or tracker.book.cash or 1000),
-                target_usd=float(actions_cfg.get("challenge_target_usd", 1_000_000)),
+                target_usd=float(actions_cfg.get("challenge_pace_milestone_usd", 500_000)),
                 deadline=deadline,
+                ideal_hold_days=1.0,
             )
             if isinstance(beauty_monthly, dict):
                 beauty_monthly["oct_end_pace"] = challenge["oct_end_pace"]
@@ -5131,9 +5146,10 @@ def create_app(config_path: str | None = None) -> Flask:
                 min_option_volume=int(actions_cfg.get("challenge_min_option_volume", 100)),
                 min_option_oi=int(actions_cfg.get("challenge_min_option_oi", 200)),
                 allow_zero_volume_if_oi=int(actions_cfg.get("challenge_allow_zero_volume_if_oi", 0)),
+                max_ask=float(actions_cfg.get("challenge_max_ask", 2.50)),
                 loss_cooldown_symbols=loss_cooldown_syms,
                 pace_months=pace_months,
-                pace_milestone_usd=float(actions_cfg.get("challenge_pace_milestone_usd", 1_000_000)),
+                pace_milestone_usd=float(actions_cfg.get("challenge_pace_milestone_usd", 500_000)),
                 prefer_weekly_pace=bool(actions_cfg.get("challenge_prefer_weekly_pace", True)),
                 current_equity=float(tracker.book.equity or tracker.book.cash or 1000),
                 uw_flow=uw_flow,
@@ -5144,8 +5160,9 @@ def create_app(config_path: str | None = None) -> Flask:
             challenge["deadline"] = deadline
             challenge["oct_end_pace"] = oct_end_pace_note(
                 equity=float(tracker.book.equity or tracker.book.cash or 1000),
-                target_usd=float(actions_cfg.get("challenge_target_usd", 1_000_000)),
+                target_usd=float(actions_cfg.get("challenge_pace_milestone_usd", 500_000)),
                 deadline=deadline,
+                ideal_hold_days=1.0,
             )
             if isinstance(beauty_monthly, dict):
                 beauty_monthly["oct_end_pace"] = challenge["oct_end_pace"]
@@ -5998,7 +6015,8 @@ def create_app(config_path: str | None = None) -> Flask:
                 cooldown_days=int(actions_cfg.get("challenge_loss_cooldown_days", 5))
             ),
             pace_months=float(actions_cfg.get("challenge_pace_months", 1)),
-            pace_milestone_usd=float(actions_cfg.get("challenge_pace_milestone_usd", 1_000_000)),
+            pace_milestone_usd=float(actions_cfg.get("challenge_pace_milestone_usd", 500_000)),
+            max_ask=float(actions_cfg.get("challenge_max_ask", 2.50)),
         )
         ticket = next(
             (
@@ -6030,8 +6048,24 @@ def create_app(config_path: str | None = None) -> Flask:
         trade = tracker.enter(
             ticket,
             max_open=int(actions_cfg.get("challenge_max_open", 1)),
-            loss_cooldown_days=int(actions_cfg.get("challenge_loss_cooldown_days", 5)),
-            max_cash_frac=float(actions_cfg.get("challenge_max_cash_frac", 0.35)),
+            loss_cooldown_days=int(actions_cfg.get("challenge_loss_cooldown_days", 7)),
+            max_cash_frac=float(actions_cfg.get("challenge_max_cash_frac", 0.30)),
+            max_contracts=int(actions_cfg.get("challenge_max_contracts", 2)),
+            prefer_calls=bool(actions_cfg.get("challenge_prefer_calls", True)),
+            prefer_core_megas=bool(actions_cfg.get("challenge_prefer_core_megas", True)),
+            min_ensemble=float(actions_cfg.get("challenge_min_ensemble", 60)),
+            mega_min_ensemble=(
+                float(actions_cfg["challenge_mega_min_ensemble"])
+                if actions_cfg.get("challenge_mega_min_ensemble") is not None
+                else 55.0
+            ),
+            min_ask=float(actions_cfg.get("challenge_min_ask", 0.20)),
+            max_ask=(
+                float(actions_cfg["challenge_max_ask"])
+                if actions_cfg.get("challenge_max_ask") is not None
+                else 2.50
+            ),
+            max_consecutive_losses=int(actions_cfg.get("challenge_max_consecutive_losses", 3)),
         )
         if not trade:
             return jsonify({"ok": False, "error": "enter rejected (cash/contract/open limit/cooldown)"}), 409

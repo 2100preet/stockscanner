@@ -355,7 +355,8 @@ def test_tracker_enter_hold_exit_call_and_put(tmp_path):
         "contracts_for_bankroll": 1,
         "thesis": "test call",
     }
-    entered = tr.enter(call_ticket)
+    # Explicit frac: $400 ticket needs room; sprint desk hard-skips over-frac by default
+    entered = tr.enter(call_ticket, max_cash_frac=0.50)
     assert entered is not None
     assert entered.right == "C"
     assert entered.hold_max_days == 90  # LEAP by DTE
@@ -755,3 +756,152 @@ def test_epoch_rebuild_reseeds_honest_1k(tmp_path):
         ledger, starting_cash=1000, epoch="2026-09-29-1k-fastflips", rebuild_seed_usd=1000
     )
     assert tr2.book.cash == 1000
+
+
+def test_skip_over_cash_frac_and_ask_band(tmp_path):
+    """$500k sprint: never force a 1ct that blows the cash-frac / ask band."""
+    ledger = tmp_path / "ch.json"
+    tr = ChallengeTracker(ledger, starting_cash=1000)
+    rich = {
+        "action": "ENTRY",
+        "symbol": "MDB",
+        "right": "C",
+        "ask": 4.0,  # $400 > 30% of $1k
+        "contract": "MDB261002C00360000",
+        "expiry": "2026-10-02",
+        "strike": 360,
+        "horizon": "sprint",
+        "hold_style": "sprint",
+        "dte": 1,
+        "spot": 355,
+        "target_premium_mult": 1.5,
+        "ensemble_score": 70,
+        "volume": 500,
+    }
+    assert tr.enter(rich, max_cash_frac=0.30, max_ask=2.50) is None
+    assert tr.enter(rich, max_cash_frac=0.50, max_ask=2.50) is None  # ask band
+    penny = {**rich, "symbol": "LUNR", "ask": 0.05, "contract": "LUNR261002C00015000", "strike": 15}
+    assert tr.enter(penny, min_ask=0.20, max_ask=2.50, max_cash_frac=0.30) is None
+    ok = {
+        **rich,
+        "symbol": "NVDA",
+        "ask": 1.50,
+        "contract": "NVDA261002C00190000",
+        "strike": 190,
+        "spot": 188,
+    }
+    entered = tr.enter(ok, max_cash_frac=0.30, min_ask=0.20, max_ask=2.50, min_ensemble=60)
+    assert entered is not None
+    assert entered.cost == 150.0
+    assert entered.contracts == 1
+
+
+def test_500k_epoch_unpauses_after_three_losses(tmp_path):
+    """Death-spiral pause clears on epoch bump; archived losers stay on cooldown."""
+    ledger = tmp_path / "ch.json"
+    tr = ChallengeTracker(
+        ledger,
+        starting_cash=1000,
+        epoch="2026-09-29-1k-fastflips",
+        rebuild_seed_usd=1000,
+    )
+    for i, sym in enumerate(["LUNR", "QUBT", "GOOGL"]):
+        t = tr.enter(
+            {
+                "action": "ENTRY",
+                "symbol": sym,
+                "right": "C",
+                "ask": 0.50,
+                "contract": f"{sym}261002C00100000",
+                "expiry": "2026-10-02",
+                "strike": 100,
+                "horizon": "sprint",
+                "hold_style": "sprint",
+                "dte": 1,
+                "spot": 100,
+                "target_premium_mult": 1.5,
+                "ensemble_score": 70,
+                "volume": 200,
+            },
+            max_consecutive_losses=3,
+            max_cash_frac=0.30,
+            min_ask=0.20,
+            max_ask=2.50,
+        )
+        assert t is not None, sym
+        out = tr.exit_trade(t.id, exit_bid=0.10, reason="stop")
+        assert out is not None and out.pnl_usd < 0
+    assert tr.consecutive_losses() == 3
+    sync = tr.sync_from_tickets(
+        [
+            {
+                "action": "ENTRY",
+                "symbol": "NVDA",
+                "right": "C",
+                "ask": 1.2,
+                "contract": "NVDA261002C00190000",
+                "expiry": "2026-10-02",
+                "strike": 190,
+                "ensemble_score": 70,
+                "volume": 500,
+            }
+        ],
+        max_consecutive_losses=3,
+        max_cash_frac=0.30,
+        min_ask=0.20,
+        max_ask=2.50,
+    )
+    assert sync.get("paused") is True
+    assert sync.get("entered") == []
+
+    tr2 = ChallengeTracker(
+        ledger,
+        starting_cash=1000,
+        epoch="2026-10-01-500k-sprint",
+        rebuild_seed_usd=1000,
+        rebuild_reason="$500k sprint",
+    )
+    assert tr2.book.cash == 1000
+    assert tr2.book.losses == 0
+    assert tr2.consecutive_losses() == 0
+    for sym in ("LUNR", "QUBT", "GOOGL"):
+        assert sym in tr2.recent_loss_symbols(cooldown_days=7)
+    sync2 = tr2.sync_from_tickets(
+        [
+            {
+                "action": "BUY_RIP",
+                "symbol": "NVDA",
+                "right": "C",
+                "ask": 1.2,
+                "contract": "NVDA261002C00190000",
+                "expiry": "2026-10-02",
+                "strike": 190,
+                "ensemble_score": 58,
+                "volume": 800,
+            }
+        ],
+        max_consecutive_losses=3,
+        max_cash_frac=0.30,
+        min_ask=0.20,
+        max_ask=2.50,
+        prefer_core_megas=True,
+        min_ensemble=60,
+        mega_min_ensemble=55,
+    )
+    assert sync2.get("paused") is not True
+    assert sync2.get("entered")
+    assert tr2.open_trades()[0].symbol == "NVDA"
+
+
+def test_time_boxed_path_1mo_500k_sprint():
+    pace = time_boxed_path(
+        start_usd=1000,
+        milestone_usd=500_000,
+        target_usd=1_000_000,
+        months=1.0,
+        ideal_hold_days=1,
+    )
+    assert pace["flips_in_window"] >= 25
+    assert pace["milestone"]["pct_per_flip"] < 50  # ~+40%/flip path is feasible
+    assert pace["feasible"] is True
+    assert pace["schedule"][-1]["hit_milestone"] is True

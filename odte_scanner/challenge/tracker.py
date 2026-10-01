@@ -394,6 +394,10 @@ class ChallengeTracker:
         max_contracts: int = 2,
         prefer_calls: bool = True,
         min_ensemble: float = 55.0,
+        mega_min_ensemble: float | None = None,
+        min_ask: float = 0.0,
+        max_ask: float | None = None,
+        prefer_core_megas: bool = False,
         max_consecutive_losses: int = 3,
     ) -> ChallengeTrade | None:
         if ticket.get("action") not in {"ENTRY", "BUY_NOW", "BUY_RIP"}:
@@ -403,6 +407,10 @@ class ChallengeTracker:
         ask = float(ticket.get("ask") or 0)
         contract = str(ticket.get("contract") or "")
         if not symbol or ask <= 0 or not contract or contract.endswith("_SYN"):
+            return None
+        if float(min_ask or 0) > 0 and ask < float(min_ask):
+            return None
+        if max_ask is not None and float(max_ask) > 0 and ask > float(max_ask):
             return None
         if self.open_by_symbol_right(symbol, right):
             return None
@@ -415,12 +423,20 @@ class ChallengeTracker:
             return None
         if symbol.upper() in self.lifetime_loss_symbols(min_losses=2):
             return None
+        is_mega = symbol.upper() in CORE_MEGAS
+        if prefer_core_megas and not is_mega and str(ticket.get("action") or "") != "BUY_RIP":
+            # Non-mega ENTRY still allowed, but RIP/mega path is preferred upstream
+            pass
         if prefer_calls and right == "P":
             # Puts only when ticket explicitly dump-confirmed
             if not ticket.get("dump_confirm"):
                 return None
         ens = ticket.get("ensemble_score")
-        if ens is not None and float(ens) < float(min_ensemble):
+        ens_floor = float(min_ensemble)
+        if is_mega or str(ticket.get("action") or "") == "BUY_RIP" or ticket.get("from_rip"):
+            soft = mega_min_ensemble if mega_min_ensemble is not None else min(ens_floor, 55.0)
+            ens_floor = float(soft)
+        if ens is not None and float(ens) < float(ens_floor):
             return None
         # Require a live-looking print (volume or explicit live mark source)
         vol = ticket.get("volume")
@@ -443,20 +459,26 @@ class ChallengeTracker:
             }
         contracts = int(ticket.get("contracts_for_bankroll") or 1)
         contracts = max(1, min(int(max_contracts), contracts))
-        # Cap risk: never deploy more than max_cash_frac of cash on one flip
+        # Cap risk: never deploy more than max_cash_frac of cash on one flip.
+        # Hard skip when even 1 contract exceeds the frac (do not force oversized tickets).
         frac = float(ticket.get("max_cash_frac") or max_cash_frac or 0.25)
         frac = min(1.0, max(0.05, frac))
         max_cost = float(self.book.cash) * frac
-        cost = ask * 100 * contracts
+        unit = ask * 100.0
+        if unit > max_cost + 1e-9:
+            return None
+        cost = unit * contracts
         if cost > max_cost:
-            contracts = max(1, int(max_cost // (ask * 100)))
+            contracts = max(0, int(max_cost // unit))
             contracts = min(int(max_contracts), contracts)
-            cost = ask * 100 * contracts
+            if contracts < 1:
+                return None
+            cost = unit * contracts
         if cost > self.book.cash:
-            contracts = max(1, int(self.book.cash // (ask * 100)))
+            contracts = max(0, int(self.book.cash // unit))
             contracts = min(int(max_contracts), contracts)
-            cost = ask * 100 * contracts
-            if cost <= 0 or cost > self.book.cash:
+            cost = unit * contracts
+            if contracts < 1 or cost <= 0 or cost > self.book.cash:
                 return None
 
         mult = float(ticket.get("target_premium_mult") or 1.75)
@@ -815,7 +837,11 @@ class ChallengeTracker:
         max_cash_frac: float = 0.25,
         max_contracts: int = 2,
         prefer_calls: bool = True,
+        prefer_core_megas: bool = True,
         min_ensemble: float = 55.0,
+        mega_min_ensemble: float | None = None,
+        min_ask: float = 0.0,
+        max_ask: float | None = None,
         max_consecutive_losses: int = 3,
     ) -> dict[str, Any]:
         quotes = quotes or {}
@@ -823,6 +849,7 @@ class ChallengeTracker:
         entered: list[str] = []
         exited: list[str] = []
         holds: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
 
         # Evaluate opens first
         for t in list(self.open_trades()):
@@ -892,33 +919,42 @@ class ChallengeTracker:
                 if out:
                     exited.append(out.id)
 
-        # Auto-enter top ENTRY ticket if flat (skip recent losers / illiquid)
+        # Auto-enter top ENTRY ticket if flat (skip recent losers / illiquid / too-rich)
         if auto_enter and len(self.open_trades()) < max_open:
             if self.consecutive_losses() >= int(max_consecutive_losses):
                 return {
                     "entered": entered,
                     "exited": exited,
                     "holds": holds,
+                    "open_evals": holds,
                     "cash": round(self.book.cash, 2),
                     "equity": self.book.equity,
                     "paused": True,
                     "pause_reason": f"{max_consecutive_losses}+ consecutive losses — auto-enter paused",
+                    "book": self.book.to_dict(),
                 }
             blocked = self.recent_loss_symbols(cooldown_days=loss_cooldown_days) | self.lifetime_loss_symbols(
                 min_losses=2
             )
-            # Prefer CALL + CORE MEGA ENTRY tickets when compounding toward $1M
+            frac = min(1.0, max(0.05, float(max_cash_frac or 0.25)))
+            max_cost = float(self.book.cash) * frac
+            # Prefer CALL + CORE MEGA ENTRY tickets when compounding toward $500k/$1M
             ordered = list(tickets)
-            if prefer_calls:
-                ordered = sorted(
-                    ordered,
-                    key=lambda tk: (
-                        0 if str(tk.get("right") or "C").upper() == "C" else 1,
-                        0 if str(tk.get("symbol") or "").upper() in CORE_MEGAS else 1,
-                        0 if str(tk.get("action") or "") in {"ENTRY", "BUY_RIP", "BUY_NOW"} else 1,
-                        -float(tk.get("ensemble_score") or tk.get("strength") or 0),
-                    ),
-                )
+            ordered = sorted(
+                ordered,
+                key=lambda tk: (
+                    0 if str(tk.get("right") or "C").upper() == "C" else 1 if prefer_calls else 0,
+                    0
+                    if (
+                        str(tk.get("symbol") or "").upper() in CORE_MEGAS
+                        or str(tk.get("action") or "") == "BUY_RIP"
+                        or tk.get("from_rip")
+                    )
+                    else (0 if not prefer_core_megas else 1),
+                    0 if str(tk.get("action") or "") in {"ENTRY", "BUY_RIP", "BUY_NOW"} else 1,
+                    -float(tk.get("ensemble_score") or tk.get("strength") or 0),
+                ),
+            )
             for tk in ordered:
                 act = str(tk.get("action") or "")
                 if act not in {"ENTRY", "BUY_NOW", "BUY_RIP"}:
@@ -927,6 +963,7 @@ class ChallengeTracker:
                 if act == "BUY_RIP":
                     tk = dict(tk)
                     tk["action"] = "ENTRY"
+                    tk["from_rip"] = True
                     tk.setdefault("hold_style", "sprint")
                     tk.setdefault("horizon", "sprint")
                     tk.setdefault("hold_min_days", 0)
@@ -935,7 +972,18 @@ class ChallengeTracker:
                     tk.setdefault("target_premium_mult", 1.5)
                 if not tk.get("contract") or tk.get("ask") in (None, 0):
                     continue
+                ask = float(tk.get("ask") or 0)
+                if float(min_ask or 0) > 0 and ask < float(min_ask):
+                    skipped.append({"symbol": tk.get("symbol"), "reason": "ask_below_min"})
+                    continue
+                if max_ask is not None and float(max_ask) > 0 and ask > float(max_ask):
+                    skipped.append({"symbol": tk.get("symbol"), "reason": "ask_above_max"})
+                    continue
+                if ask * 100.0 > max_cost + 1e-9:
+                    skipped.append({"symbol": tk.get("symbol"), "reason": "over_cash_frac"})
+                    continue
                 if str(tk.get("symbol") or "").upper() in blocked:
+                    skipped.append({"symbol": tk.get("symbol"), "reason": "loss_cooldown"})
                     continue
                 tr = self.enter(
                     tk,
@@ -944,7 +992,11 @@ class ChallengeTracker:
                     max_cash_frac=max_cash_frac,
                     max_contracts=max_contracts,
                     prefer_calls=prefer_calls,
+                    prefer_core_megas=prefer_core_megas,
                     min_ensemble=min_ensemble,
+                    mega_min_ensemble=mega_min_ensemble,
+                    min_ask=min_ask,
+                    max_ask=max_ask,
                     max_consecutive_losses=max_consecutive_losses,
                 )
                 if tr:
@@ -956,5 +1008,10 @@ class ChallengeTracker:
             "entered": entered,
             "exited": exited,
             "open_evals": holds,
+            "holds": holds,
+            "skipped": skipped[:12],
             "book": self.book.to_dict(),
+            "cash": round(self.book.cash, 2),
+            "equity": self.book.equity,
+            "paused": False,
         }
