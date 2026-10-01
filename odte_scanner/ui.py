@@ -562,7 +562,7 @@ PAGE = r"""
     <section class="tabpane" id="tab-challenge">
       <h2>$1,000 → $1,000,000 challenge</h2>
       <p class="lede">
-        Goal: <strong>$1k → $500k first</strong> (stretch <strong>$1M by Oct 31, 2026</strong>) via sprint flips (~1d, bank <strong>+40–100%</strong>) on liquid mega short-dated tickets — and <strong>Beauty 1mo</strong> for AMD/META/MU/SNDK-class monthly melts. Paper sleeve starts at <strong>$1,000 real cash</strong> (no fake equity). Lottery / penny names blocked; loss-cooldown survives epoch rebuilds; megas can still rip-buy on fresh contracts.
+        Goal: <strong>$1k → $500k first</strong> (stretch <strong>$1M by Oct 31, 2026</strong>) via <strong>index sniper</strong> flips on <strong>SPY / QQQ</strong> (SPX→SPY) 0–1 DTE wings — quick in/out, bank <strong>+25%</strong> — plus mega RIP and <strong>Beauty 1mo</strong>. Paper sleeve starts at <strong>$1,000 real cash</strong>. Lottery names blocked; loss-cooldown survives epoch rebuilds.
         Sure-shot hist filter (prefer <strong>100% hist win</strong>, else ≥80% n≥5).
         Status: <strong>ENTRY · HOLD · EXIT</strong>. After each Paper ENTER/EXIT the sleeve
         <strong>cash &amp; equity balance</strong> updates so you know where you are.
@@ -5051,15 +5051,15 @@ def create_app(config_path: str | None = None) -> Flask:
             # Refresh marks again right before EXIT sync (board may have open bid)
             if fetch_ch_contracts and tracker.open_trades():
                 ch_live_marks = {**ch_live_marks, **tracker.refresh_open_marks(aliases=aliases)}
-            # Feed RIP megas into challenge auto-enter (sprint sleeve needs movers)
+            # Feed RIP megas + index RADAR HOT (SPY/QQQ sniper) into challenge auto-enter
             ch_tickets = list(challenge.get("tickets") or [])
+            seen_occ = {
+                str(t.get("contract") or "")
+                for t in ch_tickets
+                if t.get("contract")
+            }
             try:
                 rip_buys = list((rip_radar or {}).get("buy_rip") or (rip_radar or {}).get("buy_now") or [])
-                seen_occ = {
-                    str(t.get("contract") or "")
-                    for t in ch_tickets
-                    if t.get("contract")
-                }
                 for r in rip_buys[:6]:
                     occ = str(r.get("contract") or "")
                     if not occ or occ in seen_occ or not r.get("ask"):
@@ -5082,6 +5082,69 @@ def create_app(config_path: str | None = None) -> Flask:
                     )
             except Exception as exc:  # noqa: BLE001
                 logger.debug("rip→challenge bridge skipped: %s", exc)
+            # Index sniper: RADAR HOT SPY/QQQ/IWM wings → challenge (SPX via SPY)
+            if bool(actions_cfg.get("challenge_sniper_enabled", True)):
+                try:
+                    sniper_syms = {
+                        str(s).upper()
+                        for s in (
+                            actions_cfg.get("challenge_sniper_symbols")
+                            or ["SPY", "QQQ", "IWM"]
+                        )
+                    }
+                    sniper_syms |= {"SPY", "QQQ", "IWM"}  # always keep core trio
+                    hot = list((radar or {}).get("hot") or [])
+                    # Prefer cheapest liquid wing per symbol
+                    by_sym: dict[str, dict] = {}
+                    for r in hot:
+                        sym = str(r.get("symbol") or "").upper()
+                        if sym == "SPX":
+                            sym = "SPY"
+                        if sym not in sniper_syms:
+                            continue
+                        occ = str(r.get("contract") or "")
+                        ask = r.get("ask")
+                        if not occ or ask in (None, 0) or occ in seen_occ:
+                            continue
+                        prev = by_sym.get(sym)
+                        if prev is None or float(ask) < float(prev.get("ask") or 1e9):
+                            by_sym[sym] = dict(r, symbol=sym)
+                    for sym in ("SPY", "QQQ", "IWM"):
+                        r = by_sym.get(sym)
+                        if not r:
+                            continue
+                        occ = str(r.get("contract") or "")
+                        seen_occ.add(occ)
+                        right = str(r.get("right") or "").upper()
+                        if right not in {"C", "P"}:
+                            right = occ[-9] if len(occ) >= 15 and occ[-9] in {"C", "P"} else "C"
+                        ch_tickets.insert(
+                            0,
+                            {
+                                **r,
+                                "symbol": sym,
+                                "action": "RADAR_HOT",
+                                "right": right,
+                                "sniper": True,
+                                "from_radar": True,
+                                "hold_style": "sprint",
+                                "horizon": "sprint",
+                                "hold_min_days": 0,
+                                "hold_max_days": 1,
+                                "hold_ideal_days": 0,
+                                "target_premium_mult": float(
+                                    actions_cfg.get("challenge_sniper_target_mult", 1.4)
+                                ),
+                                "stop_loss_pct": float(
+                                    actions_cfg.get("challenge_sniper_stop_pct", 25)
+                                ),
+                                "thesis": r.get("detail")
+                                or r.get("headline")
+                                or f"INDEX SNIPER {sym} RADAR HOT → challenge",
+                            },
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("radar→challenge sniper bridge skipped: %s", exc)
             sync = tracker.sync_from_tickets(
                 ch_tickets,
                 quotes=quotes,
@@ -5166,6 +5229,49 @@ def create_app(config_path: str | None = None) -> Flask:
             )
             if isinstance(beauty_monthly, dict):
                 beauty_monthly["oct_end_pace"] = challenge["oct_end_pace"]
+            # Keep index sniper / RIP bridge tickets visible on the board after rebuild
+            try:
+                board_tickets = list(challenge.get("tickets") or [])
+                board_occ = {str(t.get("contract") or "") for t in board_tickets if t.get("contract")}
+                sniper_extra = [
+                    t
+                    for t in ch_tickets
+                    if t.get("from_radar") or t.get("sniper") or str(t.get("action") or "") == "RADAR_HOT"
+                ]
+                for t in sniper_extra:
+                    occ = str(t.get("contract") or "")
+                    if not occ or occ in board_occ:
+                        continue
+                    board_occ.add(occ)
+                    board_tickets.insert(
+                        0,
+                        {
+                            **t,
+                            "action": "ENTRY",
+                            "pace_style": "sprint",
+                            "certainty_tier": "sniper",
+                            "recommend_reason": t.get("thesis") or "INDEX SNIPER RADAR HOT",
+                        },
+                    )
+                challenge["tickets"] = board_tickets
+                challenge["entry"] = [t for t in board_tickets if t.get("action") == "ENTRY"]
+                if board_tickets and (
+                    not challenge.get("primary")
+                    or str((challenge.get("primary") or {}).get("action")) == "WAIT"
+                ):
+                    challenge["primary"] = next(
+                        (t for t in board_tickets if t.get("action") == "ENTRY"),
+                        board_tickets[0],
+                    )
+                counts = dict(challenge.get("counts") or {})
+                counts["entry"] = sum(1 for t in board_tickets if t.get("action") == "ENTRY")
+                counts["tickets"] = len(board_tickets)
+                counts["sniper"] = sum(
+                    1 for t in board_tickets if t.get("sniper") or t.get("certainty_tier") == "sniper"
+                )
+                challenge["counts"] = counts
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("sniper board merge skipped: %s", exc)
             for t in challenge.get("tickets") or []:
                 prev = live_contracts.get((str(t.get("symbol")), str(t.get("right") or "C")))
                 if not prev:

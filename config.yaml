@@ -393,9 +393,9 @@ actions:
   challenge_rebuild_reason: "$500k sprint — archive LUNR/QUBT/GOOGL death spiral; mega quality flips only"
   # Sprint desk: short-dated liquid flips (not multi-month LEAPs)
   challenge_sprint_desk: true
-  challenge_min_dte: 1
-  challenge_max_dte: 3
-  challenge_prefer_dte: 1
+  challenge_min_dte: 0          # allow 0DTE index sniper wings
+  challenge_max_dte: 2
+  challenge_prefer_dte: 0
   challenge_target_premium_min: 1.4   # +40% bank early
   challenge_target_premium_max: 2.0   # +100% stretch
   # Deadline: try $500k first, stretch $1M by end of October 2026
@@ -406,6 +406,11 @@ actions:
   # Prefer CALLS for compound; puts need dump_confirm
   challenge_prefer_calls: true
   challenge_prefer_core_megas: true
+  # Index sniper — SPY/QQQ/IWM (SPX→SPY) quick in/out from RADAR HOT wings
+  challenge_sniper_enabled: true
+  challenge_sniper_symbols: ["SPY", "QQQ", "IWM"]
+  challenge_sniper_target_mult: 1.4   # bank ~+40% stretch; early bank +25% in tracker
+  challenge_sniper_stop_pct: 25
   challenge_min_ensemble: 60
   challenge_mega_min_ensemble: 55   # soft floor for CORE_MEGAS / BUY_RIP
   challenge_min_ask: 0.20           # skip lottery pennies

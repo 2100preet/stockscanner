@@ -37,6 +37,12 @@ CORE_MEGAS: frozenset[str] = frozenset(
     {"SPY", "QQQ", "IWM", "NVDA", "TSLA", "AMD", "META", "MU", "AAPL", "MSFT", "AMZN", "GOOGL"}
 )
 
+# Index sniper sleeve — quick in/out on liquid ETF options (SPX traded via SPY)
+INDEX_SNIPERS: frozenset[str] = frozenset({"SPY", "QQQ", "IWM"})
+SNIPER_BANK_PCT = 25.0
+SNIPER_STOP_PCT = 25.0
+SNIPER_EARLY_CUT_PCT = 15.0
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -400,10 +406,23 @@ class ChallengeTracker:
         prefer_core_megas: bool = False,
         max_consecutive_losses: int = 3,
     ) -> ChallengeTrade | None:
-        if ticket.get("action") not in {"ENTRY", "BUY_NOW", "BUY_RIP"}:
+        if ticket.get("action") not in {"ENTRY", "BUY_NOW", "BUY_RIP", "RADAR_HOT", "SNIPER"}:
             return None
-        symbol = str(ticket.get("symbol") or "")
+        symbol = str(ticket.get("symbol") or "").upper()
+        # SPX index options aren't Yahoo-chain friendly — snipe SPY as the proxy
+        if symbol == "SPX":
+            symbol = "SPY"
+            ticket = dict(ticket)
+            ticket["symbol"] = "SPY"
+            ticket.setdefault("thesis", "SPX→SPY sniper proxy")
         right = str(ticket.get("right") or "C").upper()
+        if right not in {"C", "P"}:
+            # Infer from OCC when radar leaves right blank
+            occ = str(ticket.get("contract") or "")
+            if len(occ) >= 15 and occ[-9] in {"C", "P"}:
+                right = occ[-9]
+            else:
+                right = "C"
         ask = float(ticket.get("ask") or 0)
         contract = str(ticket.get("contract") or "")
         if not symbol or ask <= 0 or not contract or contract.endswith("_SYN"):
@@ -423,9 +442,14 @@ class ChallengeTracker:
             return None
         if symbol.upper() in self.lifetime_loss_symbols(min_losses=2):
             return None
-        is_mega = symbol.upper() in CORE_MEGAS
+        is_sniper = (
+            symbol in INDEX_SNIPERS
+            or str(ticket.get("action") or "") in {"RADAR_HOT", "SNIPER"}
+            or bool(ticket.get("from_radar") or ticket.get("sniper"))
+        )
+        is_mega = symbol in CORE_MEGAS or is_sniper
         if prefer_core_megas and not is_mega and str(ticket.get("action") or "") != "BUY_RIP":
-            # Non-mega ENTRY still allowed, but RIP/mega path is preferred upstream
+            # Non-mega ENTRY still allowed, but RIP/mega/sniper path is preferred upstream
             pass
         if prefer_calls and right == "P":
             # Puts only when ticket explicitly dump-confirmed
@@ -433,7 +457,10 @@ class ChallengeTracker:
                 return None
         ens = ticket.get("ensemble_score")
         ens_floor = float(min_ensemble)
-        if is_mega or str(ticket.get("action") or "") == "BUY_RIP" or ticket.get("from_rip"):
+        if is_sniper:
+            # Radar/index snipers are tape+liquidity gated, not hist/ensemble gated
+            ens_floor = 0.0
+        elif is_mega or str(ticket.get("action") or "") == "BUY_RIP" or ticket.get("from_rip"):
             soft = mega_min_ensemble if mega_min_ensemble is not None else min(ens_floor, 55.0)
             ens_floor = float(soft)
         if ens is not None and float(ens) < float(ens_floor):
@@ -447,6 +474,8 @@ class ChallengeTracker:
             return None
 
         style = ticket.get("hold_style") or ticket.get("pace_style") or ticket.get("horizon")
+        if is_sniper:
+            style = "sprint"
         hp = hold_period_for(style, ticket.get("dte"))
         # Ticket board may already pin sprint hold days — prefer those
         if ticket.get("hold_min_days") is not None:
@@ -456,6 +485,15 @@ class ChallengeTracker:
                 "max_days": int(ticket.get("hold_max_days") or hp["max_days"]),
                 "ideal_days": int(ticket.get("hold_ideal_days") or hp["ideal_days"]),
                 "label": ticket.get("hold_period_label") or hp["label"],
+            }
+        if is_sniper:
+            hp = {
+                **hp,
+                "style": "sprint",
+                "min_days": 0,
+                "max_days": 1,
+                "ideal_days": 0,
+                "label": "sniper 0–1d (bank +25%)",
             }
         contracts = int(ticket.get("contracts_for_bankroll") or 1)
         contracts = max(1, min(int(max_contracts), contracts))
@@ -481,23 +519,28 @@ class ChallengeTracker:
             if contracts < 1 or cost <= 0 or cost > self.book.cash:
                 return None
 
-        mult = float(ticket.get("target_premium_mult") or 1.75)
-        # Clamp to ~50–100% premium target for the challenge desk
-        mult = max(1.5, min(2.0, mult))
+        mult = float(ticket.get("target_premium_mult") or (1.40 if is_sniper else 1.75))
+        # Clamp to ~40–100% premium target for the challenge desk
+        mult = max(1.4, min(2.0, mult))
         target_pct = round((mult - 1.0) * 100.0, 1)
         target_ask = ticket.get("target_ask")
         if target_ask is None:
             target_ask = round(ask * mult, 2)
-        # Sprint flips: cut losers faster so one dog cannot erase a month of compounding
-        stop_pct = float(ticket.get("stop_loss_pct") or (35.0 if hp.get("style") == "sprint" else 45.0))
+        # Snipers cut faster; sprint otherwise
+        if is_sniper:
+            stop_pct = float(ticket.get("stop_loss_pct") or SNIPER_STOP_PCT)
+        else:
+            stop_pct = float(ticket.get("stop_loss_pct") or (35.0 if hp.get("style") == "sprint" else 45.0))
         side = "CALL" if right == "C" else "PUT"
+        lane = "SNIPER" if is_sniper else "CHALLENGE"
         enter_plan = ticket.get("enter_plan") or (
-            f"ENTER {side} now @ ≤${ask:.2f} · {ticket.get('expiry') or '?'} · "
+            f"ENTER {lane} {side} now @ ≤${ask:.2f} · {ticket.get('expiry') or '?'} · "
             f"K{ticket.get('strike')} · hold {hp['label']}"
         )
         exit_plan = ticket.get("exit_plan") or (
-            f"EXIT when premium ≥${float(target_ask):.2f} (+{target_pct:.0f}%), "
-            f"or stop −{stop_pct:.0f}%, or max hold {hp['max_days']}d"
+            f"EXIT when premium ≥${float(target_ask):.2f} (+{target_pct:.0f}%)"
+            + (f" or bank +{SNIPER_BANK_PCT:.0f}%" if is_sniper else "")
+            + f", or stop −{stop_pct:.0f}%, or max hold {hp['max_days']}d"
         )
         cash_before = round(self.book.cash, 2)
         trade = ChallengeTrade(
@@ -507,12 +550,14 @@ class ChallengeTracker:
             contract=contract,
             expiry=ticket.get("expiry"),
             strike=ticket.get("strike"),
-            horizon=str(ticket.get("horizon") or hp.get("style") or "sprint"),
+            horizon="sprint" if is_sniper else str(ticket.get("horizon") or hp.get("style") or "sprint"),
             dte_at_entry=ticket.get("dte"),
             entered_at=_now(),
             entry_ask=ask,
             entry_spot=finite_float(ticket.get("spot") or ticket.get("live_last")),
-            entry_reason=ticket.get("thesis") or ticket.get("detail") or "CHALLENGE ENTRY",
+            entry_reason=ticket.get("thesis")
+            or ticket.get("detail")
+            or ("INDEX SNIPER ENTRY" if is_sniper else "CHALLENGE ENTRY"),
             hold_min_days=int(hp["min_days"]),
             hold_max_days=int(hp["max_days"]),
             hold_ideal_days=int(hp["ideal_days"]),
@@ -522,7 +567,7 @@ class ChallengeTracker:
             cost=cost,
             mark=ask,
             last_action="ENTRY",
-            last_action_detail=f"Entered {side} @ ${ask:.2f} · target +{target_pct:.0f}%",
+            last_action_detail=f"Entered {lane} {side} @ ${ask:.2f} · target +{target_pct:.0f}%",
             hist_win_pct=ticket.get("hist_win_pct"),
             hist_samples=ticket.get("hist_samples"),
             hit_1pct=ticket.get("hit_1pct"),
@@ -533,9 +578,9 @@ class ChallengeTracker:
             exit_plan=str(exit_plan),
             hold_approx_label=str(
                 ticket.get("hold_approx_label")
-                or f"≈{hp['ideal_days']}d ({hp['min_days']}–{hp['max_days']}d)"
+                or (hp["label"] if is_sniper else f"≈{hp['ideal_days']}d ({hp['min_days']}–{hp['max_days']}d)")
             ),
-            certainty_tier=ticket.get("certainty_tier"),
+            certainty_tier=ticket.get("certainty_tier") or ("sniper" if is_sniper else None),
             cash_before=cash_before,
         )
         # Soft wall EXIT on underlying (copied from board walls)
@@ -555,7 +600,7 @@ class ChallengeTracker:
             f"(was ${cash_before:,.2f})"
         )
         trade.last_action_detail = (
-            f"Entered {side} @ ${ask:.2f} · target +{target_pct:.0f}% · "
+            f"Entered {lane} {side} @ ${ask:.2f} · target +{target_pct:.0f}% · "
             f"cash ${cash_before:,.2f}→${cash_after:,.2f}"
         )
         self.book.trades.append(trade)
@@ -609,6 +654,11 @@ class ChallengeTracker:
 
         reasons: list[str] = []
         action = "HOLD"
+        is_sniper = (
+            str(trade.symbol or "").upper() in INDEX_SNIPERS
+            or str(trade.certainty_tier or "").lower() == "sniper"
+            or "SNIPER" in str(trade.entry_reason or "").upper()
+        )
 
         # Retire long-dated / multi-week opens so the sleeve can flip 1–3d tickets
         dte_entry = int(trade.dte_at_entry) if trade.dte_at_entry is not None else None
@@ -624,6 +674,15 @@ class ChallengeTracker:
         if unreal is not None and unreal >= target_pct:
             action = "EXIT"
             reasons.append(f"hit challenge target +{unreal:.0f}% (≥{target_pct:.0f}%)")
+        # Index sniper: bank +25% fast (same-session / 0–1d flips)
+        elif (
+            is_sniper
+            and unreal is not None
+            and unreal >= SNIPER_BANK_PCT
+            and days >= 0.01
+        ):
+            action = "EXIT"
+            reasons.append(f"bank sniper +{unreal:.0f}% (≥{SNIPER_BANK_PCT:.0f}%) — next index flip")
         # 1-month sprint: bank +40% as soon as a scrap of hold clears (2 flips/day path)
         elif (
             unreal is not None
@@ -635,6 +694,15 @@ class ChallengeTracker:
         if unreal is not None and unreal <= -trade.stop_loss_pct:
             action = "EXIT"
             reasons.append(f"stop −{abs(unreal):.0f}%")
+        # Sniper early cut — don't wait for full stop if already −15% after ~1h
+        elif (
+            is_sniper
+            and unreal is not None
+            and unreal <= -SNIPER_EARLY_CUT_PCT
+            and days >= 0.04
+        ):
+            action = "EXIT"
+            reasons.append(f"sniper early cut −{abs(unreal):.0f}%")
         # Early sprint cut — don't wait for full −35/−45 if already −25% after min hold
         elif (
             unreal is not None
@@ -644,6 +712,16 @@ class ChallengeTracker:
         ):
             action = "EXIT"
             reasons.append(f"early sprint cut −{abs(unreal):.0f}%")
+        # 0DTE sniper: flatten after ~6h if still open (same-session book)
+        if (
+            is_sniper
+            and action == "HOLD"
+            and dte_entry is not None
+            and int(dte_entry) <= 0
+            and days >= 0.25
+        ):
+            action = "EXIT"
+            reasons.append("0DTE sniper session flatten (~6h)")
         if days >= trade.hold_max_days:
             action = "EXIT"
             reasons.append(f"max hold {trade.hold_max_days}d reached ({days:.1f}d)")
@@ -938,11 +1016,22 @@ class ChallengeTracker:
             )
             frac = min(1.0, max(0.05, float(max_cash_frac or 0.25)))
             max_cost = float(self.book.cash) * frac
-            # Prefer CALL + CORE MEGA ENTRY tickets when compounding toward $500k/$1M
             ordered = list(tickets)
+
+            def _is_sniper_tk(tk: dict[str, Any]) -> bool:
+                return bool(
+                    str(tk.get("symbol") or "").upper() in INDEX_SNIPERS
+                    or str(tk.get("action") or "") in {"RADAR_HOT", "SNIPER"}
+                    or tk.get("from_radar")
+                    or tk.get("sniper")
+                )
+
             ordered = sorted(
                 ordered,
                 key=lambda tk: (
+                    0 if _is_sniper_tk(tk) else 1,
+                    # Among snipers: cheapest liquid wing first (SPY $0.34 before QQQ $0.71)
+                    float(tk.get("ask") or 99.0) if _is_sniper_tk(tk) else 0.0,
                     0 if str(tk.get("right") or "C").upper() == "C" else 1 if prefer_calls else 0,
                     0
                     if (
@@ -951,25 +1040,37 @@ class ChallengeTracker:
                         or tk.get("from_rip")
                     )
                     else (0 if not prefer_core_megas else 1),
-                    0 if str(tk.get("action") or "") in {"ENTRY", "BUY_RIP", "BUY_NOW"} else 1,
-                    -float(tk.get("ensemble_score") or tk.get("strength") or 0),
+                    0
+                    if str(tk.get("action") or "") in {"ENTRY", "BUY_RIP", "BUY_NOW", "RADAR_HOT", "SNIPER"}
+                    else 1,
+                    -float(tk.get("volume") or tk.get("ensemble_score") or tk.get("strength") or 0),
                 ),
             )
             for tk in ordered:
                 act = str(tk.get("action") or "")
-                if act not in {"ENTRY", "BUY_NOW", "BUY_RIP"}:
+                if act not in {"ENTRY", "BUY_NOW", "BUY_RIP", "RADAR_HOT", "SNIPER"}:
                     continue
-                # Normalize rip tickets into ENTRY for the paper sleeve
-                if act == "BUY_RIP":
+                # Normalize rip / radar into ENTRY for the paper sleeve
+                if act in {"BUY_RIP", "RADAR_HOT", "SNIPER"}:
                     tk = dict(tk)
+                    if act == "BUY_RIP":
+                        tk["from_rip"] = True
+                    if act in {"RADAR_HOT", "SNIPER"}:
+                        tk["from_radar"] = True
+                        tk["sniper"] = True
                     tk["action"] = "ENTRY"
-                    tk["from_rip"] = True
                     tk.setdefault("hold_style", "sprint")
                     tk.setdefault("horizon", "sprint")
                     tk.setdefault("hold_min_days", 0)
                     tk.setdefault("hold_max_days", 1)
-                    tk.setdefault("hold_ideal_days", 1)
-                    tk.setdefault("target_premium_mult", 1.5)
+                    tk.setdefault("hold_ideal_days", 0 if act in {"RADAR_HOT", "SNIPER"} else 1)
+                    tk.setdefault(
+                        "target_premium_mult",
+                        1.4 if act in {"RADAR_HOT", "SNIPER"} else 1.5,
+                    )
+                    if not tk.get("right"):
+                        occ = str(tk.get("contract") or "")
+                        tk["right"] = occ[-9] if len(occ) >= 15 and occ[-9] in {"C", "P"} else "C"
                 if not tk.get("contract") or tk.get("ask") in (None, 0):
                     continue
                 ask = float(tk.get("ask") or 0)
