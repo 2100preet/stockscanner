@@ -72,7 +72,14 @@ def decide_chase_entry(
     contract = str(ticket.get("contract") or "")
     ask = float(ticket.get("ask") or 0)
     bid = float(ticket.get("bid") or 0)
-    dte = int(ticket.get("dte") if ticket.get("dte") is not None else 99)
+    dte_raw = ticket.get("dte")
+    try:
+        dte_f = float(dte_raw) if dte_raw is not None else 99.0
+        if dte_f != dte_f:  # NaN
+            dte_f = 99.0
+        dte = int(dte_f)
+    except (TypeError, ValueError):
+        dte = 99
     strike = ticket.get("strike")
     spot = float(ticket.get("spot") or ticket.get("live_spot") or 0)
     if quote and quote.get("last"):
@@ -81,19 +88,41 @@ def decide_chase_entry(
     if mny is None and spot > 0 and strike is not None:
         mny = (float(strike) - spot) / spot * 100.0
     mny = float(mny or 0)
+    if mny != mny:  # NaN
+        mny = 0.0
     ens = float(
         ensemble_score
         if ensemble_score is not None
         else ticket.get("score") or ticket.get("ensemble_score") or 0
     )
+    if ens != ens:
+        ens = 0.0
     lottery_score = float(ticket.get("lottery_score") or 0)
+    if lottery_score != lottery_score:
+        lottery_score = 0.0
     mult1 = float(ticket.get("mult_at_1pct") or 0)
     mult2 = float(ticket.get("mult_at_2pct") or 0)
     mult3 = float(ticket.get("mult_at_3pct") or 0)
     mult5 = float(ticket.get("mult_at_5pct") or 0)
+    if mult1 != mult1:
+        mult1 = 0.0
+    if mult2 != mult2:
+        mult2 = 0.0
+    if mult3 != mult3:
+        mult3 = 0.0
+    if mult5 != mult5:
+        mult5 = 0.0
     best_mult = float(ticket.get("best_mult") or max(mult1, mult2, mult3, mult5, 0))
-    vol = int(ticket.get("volume") or 0)
-    oi = int(ticket.get("open_interest") or 0)
+    if best_mult != best_mult:
+        best_mult = 0.0
+    try:
+        vol = int(float(ticket.get("volume") or 0))
+    except (TypeError, ValueError):
+        vol = 0
+    try:
+        oi = int(float(ticket.get("open_interest") or 0))
+    except (TypeError, ValueError):
+        oi = 0
 
     live = _live_pct(quote)
     if live is None and ticket.get("live_change_pct") is not None:

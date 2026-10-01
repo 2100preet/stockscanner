@@ -116,7 +116,9 @@ def export_pages(
     from odte_scanner.json_util import dumps_strict, sanitize_for_json
 
     snap_text = dumps_strict(payload, indent=2, default=str)
-    if re.search(r"\b(?:NaN|-?Infinity)\b", snap_text):
+    # Only reject JSON *literals* NaN/Infinity — not the substring inside error strings
+    # (e.g. chase radar "cannot convert float NaN to integer").
+    if re.search(r"(?<=[\[:,])\s*(?:NaN|-?Infinity)\b", snap_text):
         raise RuntimeError("snapshot.json would contain NaN/Infinity — refusing export")
     (data_dir / "snapshot.json").write_text(snap_text)
     scan_src = ROOT / "outputs" / "latest_scan.json"
