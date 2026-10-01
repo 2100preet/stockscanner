@@ -355,7 +355,8 @@ def test_tracker_enter_hold_exit_call_and_put(tmp_path):
         "contracts_for_bankroll": 1,
         "thesis": "test call",
     }
-    entered = tr.enter(call_ticket)
+    # Explicit frac: $400 ticket needs room; sprint desk hard-skips over-frac by default
+    entered = tr.enter(call_ticket, max_cash_frac=0.50)
     assert entered is not None
     assert entered.right == "C"
     assert entered.hold_max_days == 90  # LEAP by DTE
@@ -755,3 +756,247 @@ def test_epoch_rebuild_reseeds_honest_1k(tmp_path):
         ledger, starting_cash=1000, epoch="2026-09-29-1k-fastflips", rebuild_seed_usd=1000
     )
     assert tr2.book.cash == 1000
+
+
+def test_skip_over_cash_frac_and_ask_band(tmp_path):
+    """$500k sprint: never force a 1ct that blows the cash-frac / ask band."""
+    ledger = tmp_path / "ch.json"
+    tr = ChallengeTracker(ledger, starting_cash=1000)
+    rich = {
+        "action": "ENTRY",
+        "symbol": "MDB",
+        "right": "C",
+        "ask": 4.0,  # $400 > 30% of $1k
+        "contract": "MDB261002C00360000",
+        "expiry": "2026-10-02",
+        "strike": 360,
+        "horizon": "sprint",
+        "hold_style": "sprint",
+        "dte": 1,
+        "spot": 355,
+        "target_premium_mult": 1.5,
+        "ensemble_score": 70,
+        "volume": 500,
+    }
+    assert tr.enter(rich, max_cash_frac=0.30, max_ask=2.50) is None
+    assert tr.enter(rich, max_cash_frac=0.50, max_ask=2.50) is None  # ask band
+    penny = {**rich, "symbol": "LUNR", "ask": 0.05, "contract": "LUNR261002C00015000", "strike": 15}
+    assert tr.enter(penny, min_ask=0.20, max_ask=2.50, max_cash_frac=0.30) is None
+    ok = {
+        **rich,
+        "symbol": "NVDA",
+        "ask": 1.50,
+        "contract": "NVDA261002C00190000",
+        "strike": 190,
+        "spot": 188,
+    }
+    entered = tr.enter(ok, max_cash_frac=0.30, min_ask=0.20, max_ask=2.50, min_ensemble=60)
+    assert entered is not None
+    assert entered.cost == 150.0
+    assert entered.contracts == 1
+
+
+def test_500k_epoch_unpauses_after_three_losses(tmp_path):
+    """Death-spiral pause clears on epoch bump; archived losers stay on cooldown."""
+    ledger = tmp_path / "ch.json"
+    tr = ChallengeTracker(
+        ledger,
+        starting_cash=1000,
+        epoch="2026-09-29-1k-fastflips",
+        rebuild_seed_usd=1000,
+    )
+    for i, sym in enumerate(["LUNR", "QUBT", "GOOGL"]):
+        t = tr.enter(
+            {
+                "action": "ENTRY",
+                "symbol": sym,
+                "right": "C",
+                "ask": 0.50,
+                "contract": f"{sym}261002C00100000",
+                "expiry": "2026-10-02",
+                "strike": 100,
+                "horizon": "sprint",
+                "hold_style": "sprint",
+                "dte": 1,
+                "spot": 100,
+                "target_premium_mult": 1.5,
+                "ensemble_score": 70,
+                "volume": 200,
+            },
+            max_consecutive_losses=3,
+            max_cash_frac=0.30,
+            min_ask=0.20,
+            max_ask=2.50,
+        )
+        assert t is not None, sym
+        out = tr.exit_trade(t.id, exit_bid=0.10, reason="stop")
+        assert out is not None and out.pnl_usd < 0
+    assert tr.consecutive_losses() == 3
+    sync = tr.sync_from_tickets(
+        [
+            {
+                "action": "ENTRY",
+                "symbol": "NVDA",
+                "right": "C",
+                "ask": 1.2,
+                "contract": "NVDA261002C00190000",
+                "expiry": "2026-10-02",
+                "strike": 190,
+                "ensemble_score": 70,
+                "volume": 500,
+            }
+        ],
+        max_consecutive_losses=3,
+        max_cash_frac=0.30,
+        min_ask=0.20,
+        max_ask=2.50,
+    )
+    assert sync.get("paused") is True
+    assert sync.get("entered") == []
+
+    tr2 = ChallengeTracker(
+        ledger,
+        starting_cash=1000,
+        epoch="2026-10-01-500k-sprint",
+        rebuild_seed_usd=1000,
+        rebuild_reason="$500k sprint",
+    )
+    assert tr2.book.cash == 1000
+    assert tr2.book.losses == 0
+    assert tr2.consecutive_losses() == 0
+    for sym in ("LUNR", "QUBT", "GOOGL"):
+        assert sym in tr2.recent_loss_symbols(cooldown_days=7)
+    sync2 = tr2.sync_from_tickets(
+        [
+            {
+                "action": "BUY_RIP",
+                "symbol": "NVDA",
+                "right": "C",
+                "ask": 1.2,
+                "contract": "NVDA261002C00190000",
+                "expiry": "2026-10-02",
+                "strike": 190,
+                "ensemble_score": 58,
+                "volume": 800,
+            }
+        ],
+        max_consecutive_losses=3,
+        max_cash_frac=0.30,
+        min_ask=0.20,
+        max_ask=2.50,
+        prefer_core_megas=True,
+        min_ensemble=60,
+        mega_min_ensemble=55,
+    )
+    assert sync2.get("paused") is not True
+    assert sync2.get("entered")
+    assert tr2.open_trades()[0].symbol == "NVDA"
+
+
+def test_time_boxed_path_1mo_500k_sprint():
+    pace = time_boxed_path(
+        start_usd=1000,
+        milestone_usd=500_000,
+        target_usd=1_000_000,
+        months=1.0,
+        ideal_hold_days=1,
+    )
+    assert pace["flips_in_window"] >= 25
+    assert pace["milestone"]["pct_per_flip"] < 50  # ~+40%/flip path is feasible
+    assert pace["feasible"] is True
+    assert pace["schedule"][-1]["hit_milestone"] is True
+
+
+def test_index_sniper_radar_hot_spy_quick_inout(tmp_path):
+    """SPY/QQQ RADAR HOT should sniper-enter and bank +25% fast (not hist midcaps)."""
+    ledger = tmp_path / "ch.json"
+    tr = ChallengeTracker(
+        ledger,
+        starting_cash=1000,
+        epoch="2026-10-01-500k-sprint",
+        rebuild_seed_usd=1000,
+    )
+    hot = {
+        "action": "RADAR_HOT",
+        "symbol": "SPY",
+        "right": None,  # radar often leaves blank — infer from OCC
+        "ask": 0.34,
+        "bid": 0.33,
+        "contract": "SPY261001C00763000",
+        "expiry": "2026-10-01",
+        "strike": 763,
+        "dte": 0,
+        "volume": 211681,
+        "spot": 760.36,
+        "detail": "RADAR HOT SPY wing",
+    }
+    sync = tr.sync_from_tickets(
+        [hot],
+        max_cash_frac=0.30,
+        min_ask=0.20,
+        max_ask=2.50,
+        prefer_core_megas=True,
+        min_ensemble=60,
+        mega_min_ensemble=55,
+    )
+    assert sync.get("paused") is not True
+    assert sync.get("entered")
+    open_t = tr.open_trades()[0]
+    assert open_t.symbol == "SPY"
+    assert open_t.right == "C"
+    assert open_t.certainty_tier == "sniper"
+    assert open_t.cost == 34.0
+    # Bank +25% sniper exit
+    open_t.entered_at = (datetime.now(timezone.utc) - timedelta(minutes=45)).isoformat()
+    tr.save()
+    ev = tr.evaluate_open(open_t, mark=0.43, quote={}, sprint_desk=True)  # +26.5%
+    assert ev["action"] == "EXIT"
+    assert "sniper" in ev["detail"].lower()
+
+
+def test_spx_maps_to_spy_sniper(tmp_path):
+    tr = ChallengeTracker(tmp_path / "ch.json", starting_cash=1000)
+    entered = tr.enter(
+        {
+            "action": "SNIPER",
+            "symbol": "SPX",
+            "right": "C",
+            "ask": 0.55,
+            "contract": "SPY261001C00762000",
+            "expiry": "2026-10-01",
+            "strike": 762,
+            "dte": 0,
+            "volume": 1000,
+            "spot": 760,
+        },
+        max_cash_frac=0.30,
+        min_ask=0.20,
+        max_ask=2.50,
+    )
+    assert entered is not None
+    assert entered.symbol == "SPY"
+
+
+def test_challenge_board_force_includes_index_snipers():
+    board = build_challenge_board(
+        win_table={"symbols": {}},
+        scores=[
+            {"symbol": "SPY", "horizon": "0dte", "ensemble_score": 44, "quality": False, "last_price": 760},
+            {"symbol": "QQQ", "horizon": "0dte", "ensemble_score": 55, "quality": False, "last_price": 738},
+        ],
+        quotes={
+            "SPY": {"last": 760, "session_change_pct": -0.4},
+            "QQQ": {"last": 738, "session_change_pct": -0.5},
+        },
+        fetch_contracts=False,
+        fetch_earnings=False,
+        sprint_desk=True,
+        max_tickets=8,
+        flips=30,
+        pace_months=1.0,
+        pace_milestone_usd=500_000,
+    )
+    syms = [t["symbol"] for t in board["tickets"]]
+    assert "SPY" in syms
+    assert "QQQ" in syms
+    assert any("sniper" in (r or "").lower() for r in (board.get("rules") or []))

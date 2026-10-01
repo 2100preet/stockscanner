@@ -562,7 +562,7 @@ PAGE = r"""
     <section class="tabpane" id="tab-challenge">
       <h2>$1,000 → $1,000,000 challenge</h2>
       <p class="lede">
-        Goal: <strong>$1k → $1M by Oct 31, 2026</strong> via sprint flips (~2d, target <strong>+50–100%</strong>) on liquid short-dated tickets — and <strong>Beauty 1mo</strong> for AMD/META/MU/SNDK-class monthly melts. Paper sleeve starts at <strong>$1,000 real cash</strong> (no fake equity). Loss-cooldown blocks same OCC losers; megas can still rip-buy on fresh contracts.
+        Goal: <strong>$1k → $500k first</strong> (stretch <strong>$1M by Oct 31, 2026</strong>) via <strong>index sniper</strong> flips on <strong>SPY / QQQ</strong> (SPX→SPY) 0–1 DTE wings — quick in/out, bank <strong>+25%</strong> — plus mega RIP and <strong>Beauty 1mo</strong>. Paper sleeve starts at <strong>$1,000 real cash</strong>. Lottery names blocked; loss-cooldown survives epoch rebuilds.
         Sure-shot hist filter (prefer <strong>100% hist win</strong>, else ≥80% n≥5).
         Status: <strong>ENTRY · HOLD · EXIT</strong>. After each Paper ENTER/EXIT the sleeve
         <strong>cash &amp; equity balance</strong> updates so you know where you are.
@@ -1933,7 +1933,8 @@ PAGE = r"""
       if (metrics) metrics.innerHTML = [
         m("Sleeve cash", book.cash!=null?`$${Number(book.cash).toLocaleString(undefined,{maximumFractionDigits:0})}`:"—"),
         m("Sleeve equity", book.equity!=null?`$${Number(book.equity).toLocaleString(undefined,{maximumFractionDigits:0})}`:`$${(ch.start_usd||1000).toLocaleString()}`),
-        m("→ $1M", book.progress_pct!=null?`${fmt(book.progress_pct,3)}%`:"—", "up"),
+        m("→ $500k", book.milestone_500k_pct!=null?`${fmt(book.milestone_500k_pct,3)}%`:"—", "up"),
+        m("→ $1M", book.progress_pct!=null?`${fmt(book.progress_pct,3)}%`:"—"),
         m("Days to Oct-end", (ch.oct_end_pace&&ch.oct_end_pace.days_left)!=null?ch.oct_end_pace.days_left:(pace.days!=null?Math.round(pace.days):"—"), "up"),
         m("1mo/Oct need / flip", (ch.oct_end_pace&&ch.oct_end_pace.pct_per_flip)!=null?`+${fmt(ch.oct_end_pace.pct_per_flip,0)}%`:(paceM.pct_per_flip==null?"—":`+${fmt(paceM.pct_per_flip,0)}%`), "up"),
         m("Classic need / flip", path.pct_per_flip==null?"—":`+${fmt(path.pct_per_flip,0)}%`),
@@ -5033,9 +5034,10 @@ def create_app(config_path: str | None = None) -> Flask:
                 min_option_volume=int(actions_cfg.get("challenge_min_option_volume", 100)),
                 min_option_oi=int(actions_cfg.get("challenge_min_option_oi", 200)),
                 allow_zero_volume_if_oi=int(actions_cfg.get("challenge_allow_zero_volume_if_oi", 0)),
+                max_ask=float(actions_cfg.get("challenge_max_ask", 2.50)),
                 loss_cooldown_symbols=loss_cooldown_syms,
                 pace_months=pace_months,
-                pace_milestone_usd=float(actions_cfg.get("challenge_pace_milestone_usd", 1_000_000)),
+                pace_milestone_usd=float(actions_cfg.get("challenge_pace_milestone_usd", 500_000)),
                 prefer_weekly_pace=bool(actions_cfg.get("challenge_prefer_weekly_pace", True)),
                 current_equity=float(tracker.book.equity or tracker.book.cash or 1000),
                 uw_flow=uw_flow,
@@ -5049,15 +5051,15 @@ def create_app(config_path: str | None = None) -> Flask:
             # Refresh marks again right before EXIT sync (board may have open bid)
             if fetch_ch_contracts and tracker.open_trades():
                 ch_live_marks = {**ch_live_marks, **tracker.refresh_open_marks(aliases=aliases)}
-            # Feed RIP megas into challenge auto-enter (sprint sleeve needs movers)
+            # Feed RIP megas + index RADAR HOT (SPY/QQQ sniper) into challenge auto-enter
             ch_tickets = list(challenge.get("tickets") or [])
+            seen_occ = {
+                str(t.get("contract") or "")
+                for t in ch_tickets
+                if t.get("contract")
+            }
             try:
                 rip_buys = list((rip_radar or {}).get("buy_rip") or (rip_radar or {}).get("buy_now") or [])
-                seen_occ = {
-                    str(t.get("contract") or "")
-                    for t in ch_tickets
-                    if t.get("contract")
-                }
                 for r in rip_buys[:6]:
                     occ = str(r.get("contract") or "")
                     if not occ or occ in seen_occ or not r.get("ask"):
@@ -5080,6 +5082,69 @@ def create_app(config_path: str | None = None) -> Flask:
                     )
             except Exception as exc:  # noqa: BLE001
                 logger.debug("rip→challenge bridge skipped: %s", exc)
+            # Index sniper: RADAR HOT SPY/QQQ/IWM wings → challenge (SPX via SPY)
+            if bool(actions_cfg.get("challenge_sniper_enabled", True)):
+                try:
+                    sniper_syms = {
+                        str(s).upper()
+                        for s in (
+                            actions_cfg.get("challenge_sniper_symbols")
+                            or ["SPY", "QQQ", "IWM"]
+                        )
+                    }
+                    sniper_syms |= {"SPY", "QQQ", "IWM"}  # always keep core trio
+                    hot = list((radar or {}).get("hot") or [])
+                    # Prefer cheapest liquid wing per symbol
+                    by_sym: dict[str, dict] = {}
+                    for r in hot:
+                        sym = str(r.get("symbol") or "").upper()
+                        if sym == "SPX":
+                            sym = "SPY"
+                        if sym not in sniper_syms:
+                            continue
+                        occ = str(r.get("contract") or "")
+                        ask = r.get("ask")
+                        if not occ or ask in (None, 0) or occ in seen_occ:
+                            continue
+                        prev = by_sym.get(sym)
+                        if prev is None or float(ask) < float(prev.get("ask") or 1e9):
+                            by_sym[sym] = dict(r, symbol=sym)
+                    for sym in ("SPY", "QQQ", "IWM"):
+                        r = by_sym.get(sym)
+                        if not r:
+                            continue
+                        occ = str(r.get("contract") or "")
+                        seen_occ.add(occ)
+                        right = str(r.get("right") or "").upper()
+                        if right not in {"C", "P"}:
+                            right = occ[-9] if len(occ) >= 15 and occ[-9] in {"C", "P"} else "C"
+                        ch_tickets.insert(
+                            0,
+                            {
+                                **r,
+                                "symbol": sym,
+                                "action": "RADAR_HOT",
+                                "right": right,
+                                "sniper": True,
+                                "from_radar": True,
+                                "hold_style": "sprint",
+                                "horizon": "sprint",
+                                "hold_min_days": 0,
+                                "hold_max_days": 1,
+                                "hold_ideal_days": 0,
+                                "target_premium_mult": float(
+                                    actions_cfg.get("challenge_sniper_target_mult", 1.4)
+                                ),
+                                "stop_loss_pct": float(
+                                    actions_cfg.get("challenge_sniper_stop_pct", 25)
+                                ),
+                                "thesis": r.get("detail")
+                                or r.get("headline")
+                                or f"INDEX SNIPER {sym} RADAR HOT → challenge",
+                            },
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("radar→challenge sniper bridge skipped: %s", exc)
             sync = tracker.sync_from_tickets(
                 ch_tickets,
                 quotes=quotes,
@@ -5088,11 +5153,23 @@ def create_app(config_path: str | None = None) -> Flask:
                 max_open=int(actions_cfg.get("challenge_max_open", 1)),
                 sprint_desk=bool(actions_cfg.get("challenge_sprint_desk", True)),
                 live_marks=ch_live_marks,
-                loss_cooldown_days=int(actions_cfg.get("challenge_loss_cooldown_days", 2)),
-                max_cash_frac=float(actions_cfg.get("challenge_max_cash_frac", 0.25)),
+                loss_cooldown_days=int(actions_cfg.get("challenge_loss_cooldown_days", 7)),
+                max_cash_frac=float(actions_cfg.get("challenge_max_cash_frac", 0.30)),
                 max_contracts=int(actions_cfg.get("challenge_max_contracts", 2)),
                 prefer_calls=bool(actions_cfg.get("challenge_prefer_calls", True)),
-                min_ensemble=float(actions_cfg.get("challenge_min_ensemble", 58)),
+                prefer_core_megas=bool(actions_cfg.get("challenge_prefer_core_megas", True)),
+                min_ensemble=float(actions_cfg.get("challenge_min_ensemble", 60)),
+                mega_min_ensemble=(
+                    float(actions_cfg["challenge_mega_min_ensemble"])
+                    if actions_cfg.get("challenge_mega_min_ensemble") is not None
+                    else 55.0
+                ),
+                min_ask=float(actions_cfg.get("challenge_min_ask", 0.20)),
+                max_ask=(
+                    float(actions_cfg["challenge_max_ask"])
+                    if actions_cfg.get("challenge_max_ask") is not None
+                    else 2.50
+                ),
                 max_consecutive_losses=int(actions_cfg.get("challenge_max_consecutive_losses", 3)),
             )
             challenge["sync"] = sync
@@ -5100,8 +5177,9 @@ def create_app(config_path: str | None = None) -> Flask:
             challenge["deadline"] = deadline
             challenge["oct_end_pace"] = oct_end_pace_note(
                 equity=float(tracker.book.equity or tracker.book.cash or 1000),
-                target_usd=float(actions_cfg.get("challenge_target_usd", 1_000_000)),
+                target_usd=float(actions_cfg.get("challenge_pace_milestone_usd", 500_000)),
                 deadline=deadline,
+                ideal_hold_days=1.0,
             )
             if isinstance(beauty_monthly, dict):
                 beauty_monthly["oct_end_pace"] = challenge["oct_end_pace"]
@@ -5131,9 +5209,10 @@ def create_app(config_path: str | None = None) -> Flask:
                 min_option_volume=int(actions_cfg.get("challenge_min_option_volume", 100)),
                 min_option_oi=int(actions_cfg.get("challenge_min_option_oi", 200)),
                 allow_zero_volume_if_oi=int(actions_cfg.get("challenge_allow_zero_volume_if_oi", 0)),
+                max_ask=float(actions_cfg.get("challenge_max_ask", 2.50)),
                 loss_cooldown_symbols=loss_cooldown_syms,
                 pace_months=pace_months,
-                pace_milestone_usd=float(actions_cfg.get("challenge_pace_milestone_usd", 1_000_000)),
+                pace_milestone_usd=float(actions_cfg.get("challenge_pace_milestone_usd", 500_000)),
                 prefer_weekly_pace=bool(actions_cfg.get("challenge_prefer_weekly_pace", True)),
                 current_equity=float(tracker.book.equity or tracker.book.cash or 1000),
                 uw_flow=uw_flow,
@@ -5144,11 +5223,55 @@ def create_app(config_path: str | None = None) -> Flask:
             challenge["deadline"] = deadline
             challenge["oct_end_pace"] = oct_end_pace_note(
                 equity=float(tracker.book.equity or tracker.book.cash or 1000),
-                target_usd=float(actions_cfg.get("challenge_target_usd", 1_000_000)),
+                target_usd=float(actions_cfg.get("challenge_pace_milestone_usd", 500_000)),
                 deadline=deadline,
+                ideal_hold_days=1.0,
             )
             if isinstance(beauty_monthly, dict):
                 beauty_monthly["oct_end_pace"] = challenge["oct_end_pace"]
+            # Keep index sniper / RIP bridge tickets visible on the board after rebuild
+            try:
+                board_tickets = list(challenge.get("tickets") or [])
+                board_occ = {str(t.get("contract") or "") for t in board_tickets if t.get("contract")}
+                sniper_extra = [
+                    t
+                    for t in ch_tickets
+                    if t.get("from_radar") or t.get("sniper") or str(t.get("action") or "") == "RADAR_HOT"
+                ]
+                for t in sniper_extra:
+                    occ = str(t.get("contract") or "")
+                    if not occ or occ in board_occ:
+                        continue
+                    board_occ.add(occ)
+                    board_tickets.insert(
+                        0,
+                        {
+                            **t,
+                            "action": "ENTRY",
+                            "pace_style": "sprint",
+                            "certainty_tier": "sniper",
+                            "recommend_reason": t.get("thesis") or "INDEX SNIPER RADAR HOT",
+                        },
+                    )
+                challenge["tickets"] = board_tickets
+                challenge["entry"] = [t for t in board_tickets if t.get("action") == "ENTRY"]
+                if board_tickets and (
+                    not challenge.get("primary")
+                    or str((challenge.get("primary") or {}).get("action")) == "WAIT"
+                ):
+                    challenge["primary"] = next(
+                        (t for t in board_tickets if t.get("action") == "ENTRY"),
+                        board_tickets[0],
+                    )
+                counts = dict(challenge.get("counts") or {})
+                counts["entry"] = sum(1 for t in board_tickets if t.get("action") == "ENTRY")
+                counts["tickets"] = len(board_tickets)
+                counts["sniper"] = sum(
+                    1 for t in board_tickets if t.get("sniper") or t.get("certainty_tier") == "sniper"
+                )
+                challenge["counts"] = counts
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("sniper board merge skipped: %s", exc)
             for t in challenge.get("tickets") or []:
                 prev = live_contracts.get((str(t.get("symbol")), str(t.get("right") or "C")))
                 if not prev:
@@ -5998,7 +6121,8 @@ def create_app(config_path: str | None = None) -> Flask:
                 cooldown_days=int(actions_cfg.get("challenge_loss_cooldown_days", 5))
             ),
             pace_months=float(actions_cfg.get("challenge_pace_months", 1)),
-            pace_milestone_usd=float(actions_cfg.get("challenge_pace_milestone_usd", 1_000_000)),
+            pace_milestone_usd=float(actions_cfg.get("challenge_pace_milestone_usd", 500_000)),
+            max_ask=float(actions_cfg.get("challenge_max_ask", 2.50)),
         )
         ticket = next(
             (
@@ -6030,8 +6154,24 @@ def create_app(config_path: str | None = None) -> Flask:
         trade = tracker.enter(
             ticket,
             max_open=int(actions_cfg.get("challenge_max_open", 1)),
-            loss_cooldown_days=int(actions_cfg.get("challenge_loss_cooldown_days", 5)),
-            max_cash_frac=float(actions_cfg.get("challenge_max_cash_frac", 0.35)),
+            loss_cooldown_days=int(actions_cfg.get("challenge_loss_cooldown_days", 7)),
+            max_cash_frac=float(actions_cfg.get("challenge_max_cash_frac", 0.30)),
+            max_contracts=int(actions_cfg.get("challenge_max_contracts", 2)),
+            prefer_calls=bool(actions_cfg.get("challenge_prefer_calls", True)),
+            prefer_core_megas=bool(actions_cfg.get("challenge_prefer_core_megas", True)),
+            min_ensemble=float(actions_cfg.get("challenge_min_ensemble", 60)),
+            mega_min_ensemble=(
+                float(actions_cfg["challenge_mega_min_ensemble"])
+                if actions_cfg.get("challenge_mega_min_ensemble") is not None
+                else 55.0
+            ),
+            min_ask=float(actions_cfg.get("challenge_min_ask", 0.20)),
+            max_ask=(
+                float(actions_cfg["challenge_max_ask"])
+                if actions_cfg.get("challenge_max_ask") is not None
+                else 2.50
+            ),
+            max_consecutive_losses=int(actions_cfg.get("challenge_max_consecutive_losses", 3)),
         )
         if not trade:
             return jsonify({"ok": False, "error": "enter rejected (cash/contract/open limit/cooldown)"}), 409

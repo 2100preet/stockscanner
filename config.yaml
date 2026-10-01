@@ -381,31 +381,40 @@ actions:
   chase_enrich_live: true    # live chain sweep on top ripping names (capped)
   chase_max_live_symbols: 8
   chase_feed_journal: false  # never auto paper-enter risky chase tickets
-  # $1k → $1M challenge — 1-MONTH sprint compound (≈15 flips @ ~2d / +50–100%)
+  # $1k → $1M challenge — Oct sprint; first milestone $500k via quality mega flips
   # Honest path only: no fake equity. Earn every dollar from $1,000 paper cash.
   challenge_start_usd: 1000
   challenge_target_usd: 1000000
   challenge_flips: 30
   challenge_max_tickets: 12
-  # Epoch: honest $1k + fast-flip desk (1d holds / bank +40% / rip→challenge)
-  challenge_epoch: "2026-09-29-1k-fastflips"
+  # Epoch: archive 0W/3L lottery spiral; reseed $1k for $500k mega-flip sprint
+  challenge_epoch: "2026-10-01-500k-sprint"
   challenge_rebuild_seed_usd: 1000
-  challenge_rebuild_reason: "honest $1k restart + 1d sprint flips toward Oct 31 $1M"
+  challenge_rebuild_reason: "$500k sprint — archive LUNR/QUBT/GOOGL death spiral; mega quality flips only"
   # Sprint desk: short-dated liquid flips (not multi-month LEAPs)
   challenge_sprint_desk: true
-  challenge_min_dte: 1
-  challenge_max_dte: 3
-  challenge_prefer_dte: 1
+  challenge_min_dte: 0          # allow 0DTE index sniper wings
+  challenge_max_dte: 2
+  challenge_prefer_dte: 0
   challenge_target_premium_min: 1.4   # +40% bank early
   challenge_target_premium_max: 2.0   # +100% stretch
-  # Deadline: $1M by end of October 2026 (~1 month)
+  # Deadline: try $500k first, stretch $1M by end of October 2026
   challenge_deadline: "2026-10-31"
   challenge_pace_months: 1.0
-  challenge_pace_milestone_usd: 1000000
+  challenge_pace_milestone_usd: 500000
   challenge_prefer_weekly_pace: true
   # Prefer CALLS for compound; puts need dump_confirm
   challenge_prefer_calls: true
-  challenge_min_ensemble: 58
+  challenge_prefer_core_megas: true
+  # Index sniper — SPY/QQQ/IWM (SPX→SPY) quick in/out from RADAR HOT wings
+  challenge_sniper_enabled: true
+  challenge_sniper_symbols: ["SPY", "QQQ", "IWM"]
+  challenge_sniper_target_mult: 1.4   # bank ~+40% stretch; early bank +25% in tracker
+  challenge_sniper_stop_pct: 25
+  challenge_min_ensemble: 60
+  challenge_mega_min_ensemble: 55   # soft floor for CORE_MEGAS / BUY_RIP
+  challenge_min_ask: 0.20           # skip lottery pennies
+  challenge_max_ask: 2.50           # 1ct ≤ $250 fits ~25–30% cash frac at $1k
   challenge_max_contracts: 2
   challenge_max_consecutive_losses: 3
   # Same-symbol cooldown after a losing flip (survives epoch archive)
@@ -422,8 +431,8 @@ actions:
   # Options BUY NOW: block symbols after a losing flip; block same OCC longer
   buy_now_loss_cooldown_days: 5
   buy_now_contract_cooldown_days: 45
-  # Cap each ENTRY to this fraction of cash (avoid all-in lottery)
-  challenge_max_cash_frac: 0.25
+  # Cap each ENTRY to this fraction of cash (hard skip if 1ct exceeds)
+  challenge_max_cash_frac: 0.30
   challenge_fetch_contracts: true
   challenge_fetch_earnings: true
   # Prefetch earnings across liquid universe (cached ~18h; warms ~N/refresh)
