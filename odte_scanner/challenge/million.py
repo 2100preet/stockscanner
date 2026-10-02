@@ -1,4 +1,4 @@
-"""$500 → $100,000 challenge path via same-day index sniper flips.
+"""$1,000 → $100,000 challenge path via same-day index sniper flips.
 
 Primary path: SPY/QQQ/IWM 0–1 DTE wings — bank ~+20% and flatten same session.
 Default desk style: same-day / next-session liquid near-dated calls/puts —
@@ -1564,10 +1564,10 @@ def build_challenge_board(
             ),
         },
             "rules": [
-            "$500→$100k by Oct 31: INDEX SNIPER on SPY/QQQ/IWM (SPX→SPY) 0–1 DTE wings — same-day buy→sell, bank +20%.",
+            "$1k→$100k by Oct 31: INDEX SNIPER on SPY/QQQ/IWM (SPX→SPY) 0–1 DTE wings — same-day buy→sell, bank +20%.",
             "Hist-win filter still ranks midcaps, but SPY/QQQ/IWM are force-fed onto the board for tape snipes.",
             "Auto paper ENTER when RADAR HOT / ENTRY / BUY_RIP has a live listed ask in the $0.20–$1.50 band and fits ≤30% cash.",
-            "Skip lottery pennies / rich asks that blow the cash-frac — 1ct must fit the $500 risk budget.",
+            "Skip lottery pennies / rich asks that blow the cash-frac — 1ct must fit the $1k risk budget.",
             "Universe priority: SPY/QQQ sniper → CORE megas + RIP → hist mid/small only when they clear quality.",
             "Earnings watch: today / this week / next week / post-print across challenge + DRAM sleeve.",
             "Earnings: boost post-print continuation; WAIT into/through the print on the sprint desk (no LEAP force).",

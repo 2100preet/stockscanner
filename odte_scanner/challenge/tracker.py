@@ -1,6 +1,6 @@
 """Challenge paper ledger — ENTRY / HOLD / EXIT with hold-period rules.
 
-Tracks the $500→$100k same-day sniper sleeve separately from the main signal journal.
+Tracks the $1k→$100k same-day sniper sleeve separately from the main signal journal.
 Supports long calls and long puts.
 """
 from __future__ import annotations
@@ -140,8 +140,8 @@ class ChallengeTrade:
 
 @dataclass
 class ChallengeBook:
-    starting_cash: float = 500.0
-    cash: float = 500.0
+    starting_cash: float = 1000.0
+    cash: float = 1000.0
     target_usd: float = 100_000.0
     flips_closed: int = 0
     wins: int = 0
@@ -191,7 +191,7 @@ class ChallengeTracker:
         self,
         path: str | Path | None = None,
         *,
-        starting_cash: float = 500.0,
+        starting_cash: float = 1000.0,
         epoch: str | None = None,
         rebuild_seed_usd: float | None = None,
         rebuild_reason: str | None = None,
@@ -704,7 +704,7 @@ class ChallengeTracker:
         if unreal is not None and unreal >= target_pct:
             action = "EXIT"
             reasons.append(f"hit challenge target +{unreal:.0f}% (≥{target_pct:.0f}%)")
-        # Index sniper: bank +20% same day (ideal flip path $500→$100k)
+        # Index sniper: bank +20% same day (ideal flip path $1k→$100k)
         elif (
             is_sniper
             and unreal is not None
