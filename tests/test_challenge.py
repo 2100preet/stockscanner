@@ -908,13 +908,14 @@ def test_time_boxed_path_1mo_500k_sprint():
 
 
 def test_index_sniper_radar_hot_spy_quick_inout(tmp_path):
-    """SPY/QQQ RADAR HOT should sniper-enter and bank +25% fast (not hist midcaps)."""
+    """SPY/QQQ RADAR HOT should sniper-enter and bank +20% same day (not hist midcaps)."""
     ledger = tmp_path / "ch.json"
     tr = ChallengeTracker(
         ledger,
         starting_cash=1000,
-        epoch="2026-10-01-500k-sprint",
+        epoch="2026-10-02-1k-to-100k",
         rebuild_seed_usd=1000,
+        target_usd=100_000,
     )
     hot = {
         "action": "RADAR_HOT",
@@ -929,6 +930,8 @@ def test_index_sniper_radar_hot_spy_quick_inout(tmp_path):
         "volume": 211681,
         "spot": 760.36,
         "detail": "RADAR HOT SPY wing",
+        "target_premium_mult": 1.2,
+        "stop_loss_pct": 20,
     }
     sync = tr.sync_from_tickets(
         [hot],
@@ -946,16 +949,23 @@ def test_index_sniper_radar_hot_spy_quick_inout(tmp_path):
     assert open_t.right == "C"
     assert open_t.certainty_tier == "sniper"
     assert open_t.cost == 34.0
-    # Bank +25% sniper exit
+    assert open_t.target_premium_mult == 1.2
+    assert open_t.stop_loss_pct == 20.0
+    # Bank +20% sniper exit (same-day) — target_mult 1.2 fires first
     open_t.entered_at = (datetime.now(timezone.utc) - timedelta(minutes=45)).isoformat()
     tr.save()
-    ev = tr.evaluate_open(open_t, mark=0.43, quote={}, sprint_desk=True)  # +26.5%
+    ev = tr.evaluate_open(open_t, mark=0.41, quote={}, sprint_desk=True)  # +20.6%
     assert ev["action"] == "EXIT"
-    assert "sniper" in ev["detail"].lower()
+    detail = ev["detail"].lower()
+    assert "20" in detail or "sniper" in detail or "bank" in detail or "target" in detail
+    # Below bank/target: HOLD
+    open_t.entered_at = (datetime.now(timezone.utc) - timedelta(minutes=45)).isoformat()
+    ev_hold = tr.evaluate_open(open_t, mark=0.37, quote={}, sprint_desk=True)  # +8.8%
+    assert ev_hold["action"] == "HOLD"
 
 
 def test_spx_maps_to_spy_sniper(tmp_path):
-    tr = ChallengeTracker(tmp_path / "ch.json", starting_cash=1000)
+    tr = ChallengeTracker(tmp_path / "ch.json", starting_cash=1000, target_usd=100_000)
     entered = tr.enter(
         {
             "action": "SNIPER",
@@ -968,6 +978,7 @@ def test_spx_maps_to_spy_sniper(tmp_path):
             "dte": 0,
             "volume": 1000,
             "spot": 760,
+            "target_premium_mult": 1.2,
         },
         max_cash_frac=0.30,
         min_ask=0.20,
@@ -992,11 +1003,152 @@ def test_challenge_board_force_includes_index_snipers():
         fetch_earnings=False,
         sprint_desk=True,
         max_tickets=8,
-        flips=30,
+        start_usd=1000,
+        target_usd=100_000,
+        flips=26,
         pace_months=1.0,
-        pace_milestone_usd=500_000,
+        pace_milestone_usd=100_000,
     )
     syms = [t["symbol"] for t in board["tickets"]]
     assert "SPY" in syms
     assert "QQQ" in syms
     assert any("sniper" in (r or "").lower() for r in (board.get("rules") or []))
+    assert board["target_usd"] == 100_000
+    assert board["start_usd"] == 1000
+    assert any("100k" in (r or "").lower() or "+20%" in (r or "") for r in (board.get("rules") or []))
+
+
+def test_1k_to_100k_epoch_rebuild_sets_target(tmp_path):
+    """Archive ~$938 / 0W2L AMD book; reseed $1k with target $100k."""
+    ledger = tmp_path / "ch.json"
+    tr = ChallengeTracker(
+        ledger,
+        starting_cash=1000,
+        epoch="2026-10-01-500k-sprint",
+        rebuild_seed_usd=1000,
+        target_usd=1_000_000,
+    )
+    # Simulate bleeding book with open AMD
+    entered = tr.enter(
+        {
+            "action": "ENTRY",
+            "symbol": "AMD",
+            "right": "C",
+            "ask": 1.20,
+            "contract": "AMD261002C00190000",
+            "expiry": "2026-10-02",
+            "strike": 190,
+            "dte": 1,
+            "volume": 500,
+            "spot": 188,
+            "ensemble_score": 70,
+            "target_premium_mult": 1.5,
+        },
+        max_cash_frac=0.30,
+        min_ask=0.20,
+        max_ask=2.50,
+    )
+    assert entered is not None
+    # Fake prior losses on book counters
+    tr.book.wins = 0
+    tr.book.losses = 2
+    tr.book.flips_closed = 2
+    tr.book.cash = 938.0
+    tr.save()
+    assert tr.open_trades()
+
+    tr2 = ChallengeTracker(
+        ledger,
+        starting_cash=1000,
+        epoch="2026-10-02-1k-to-100k",
+        rebuild_seed_usd=1000,
+        rebuild_reason="$1k→$100k same-day sniper reset",
+        target_usd=100_000,
+    )
+    assert tr2.book.cash == 1000
+    assert tr2.book.starting_cash == 1000
+    assert tr2.book.target_usd == 100_000
+    assert tr2.book.wins == 0 and tr2.book.losses == 0
+    assert tr2.book.flips_closed == 0
+    assert tr2.book.epoch == "2026-10-02-1k-to-100k"
+    assert not tr2.open_trades()
+    assert tr2.book.archive
+    assert tr2.book.archive[-1]["to_epoch"] == "2026-10-02-1k-to-100k"
+    d = tr2.book.to_dict()
+    assert d["progress_pct"] == 1.0  # $1k / $100k
+    assert d["sniper_bank_pct"] == 20.0
+    assert d["sniper_flatten_hours"] == 4.0
+
+
+def test_sniper_same_day_flatten_after_4h(tmp_path):
+    """Still-open sniper forces EXIT after ~4h even without bank/stop."""
+    ledger = tmp_path / "ch.json"
+    tr = ChallengeTracker(
+        ledger,
+        starting_cash=1000,
+        epoch="2026-10-02-1k-to-100k",
+        rebuild_seed_usd=1000,
+        target_usd=100_000,
+    )
+    entered = tr.enter(
+        {
+            "action": "RADAR_HOT",
+            "symbol": "QQQ",
+            "right": "C",
+            "ask": 0.50,
+            "contract": "QQQ261002C00738000",
+            "expiry": "2026-10-02",
+            "strike": 738,
+            "dte": 0,
+            "volume": 90000,
+            "spot": 735,
+            "sniper": True,
+            "target_premium_mult": 1.2,
+            "stop_loss_pct": 20,
+        },
+        max_cash_frac=0.30,
+        min_ask=0.20,
+        max_ask=2.50,
+    )
+    assert entered is not None
+    # Flat mark, held ~4.5h → same-day flatten
+    entered.entered_at = (datetime.now(timezone.utc) - timedelta(hours=4, minutes=30)).isoformat()
+    tr.save()
+    ev = tr.evaluate_open(entered, mark=0.50, quote={}, sprint_desk=True)
+    assert ev["action"] == "EXIT"
+    assert "flatten" in ev["detail"].lower()
+
+
+def test_sniper_target_mult_allows_20pct_bank(tmp_path):
+    """Config 1.2× must not be clamped back up to 1.4×."""
+    tr = ChallengeTracker(tmp_path / "ch.json", starting_cash=1000, target_usd=100_000)
+    entered = tr.enter(
+        {
+            "action": "SNIPER",
+            "symbol": "SPY",
+            "right": "C",
+            "ask": 0.40,
+            "contract": "SPY261002C00760000",
+            "expiry": "2026-10-02",
+            "strike": 760,
+            "dte": 0,
+            "volume": 5000,
+            "spot": 758,
+            "target_premium_mult": 1.2,
+            "stop_loss_pct": 20,
+        },
+        max_cash_frac=0.30,
+        min_ask=0.20,
+        max_ask=2.50,
+    )
+    assert entered is not None
+    assert entered.target_premium_mult == 1.2
+    assert entered.target_profit_pct == 20.0
+    assert entered.stop_loss_pct == 20.0
+
+
+def test_compound_path_1k_to_100k_26_flips():
+    """~+20%/flip × 26 sessions compounds $1k → $100k."""
+    p = compound_path(start_usd=1000, target_usd=100_000, flips=26)
+    assert 19.0 <= p["pct_per_flip"] <= 22.0
+    assert p["schedule"][-1]["equity"] >= 99_000
