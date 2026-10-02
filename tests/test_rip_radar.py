@@ -180,6 +180,81 @@ def test_rip_board_includes_baba_watch_without_chain():
         scores=[{"symbol": "BABA", "ensemble_score": 68}],
         quotes={"BABA": {"last": 120, "session_change_pct": 1.8, "mom_5m_pct": 0.2}},
         now=_MORNING,
+        signal_times_path=None,
     )
     syms = [r["symbol"] for r in (board.get("watch") or []) + (board.get("buy_rip") or [])]
     assert "BABA" in syms or any(r.get("symbol") == "BABA" for r in board.get("all") or [])
+
+
+def test_rip_buy_stamps_asked_time(tmp_path):
+    """Regression: AMD-style BUY RIP on Buy/Sell NOW must carry asked CST time."""
+    store = tmp_path / "rip_times.json"
+    board = build_rip_board(
+        candidates=[
+            {
+                "symbol": "AMD",
+                "ask": 2.2,
+                "bid": 2.1,
+                "strike": 630,
+                "expiry": "2026-10-02",
+                "contract": "AMD261002C00630000",
+                "dte": 1,
+                "dte_bucket": "0dte",
+                "moneyness_pct": 0.5,
+                "volume": 1200,
+                "open_interest": 4000,
+                "score": 70,
+                "right": "C",
+            }
+        ],
+        scores=[{"symbol": "AMD", "ensemble_score": 72}],
+        quotes={
+            "AMD": {
+                "last": 635.0,
+                "session_change_pct": 2.4,
+                "mom_5m_pct": 0.2,
+                "mom_15m_pct": 0.4,
+            }
+        },
+        now=_MORNING,
+        signal_times_path=str(store),
+    )
+    buys = board.get("buy_rip") or []
+    assert buys, "expected AMD BUY_RIP"
+    row = buys[0]
+    assert row["symbol"] == "AMD"
+    assert row.get("signaled_at")
+    assert row.get("signaled_at_cst")
+    assert "CST" in row["signaled_at_cst"] or "CDT" in row["signaled_at_cst"]
+    # Sticky across rebuild
+    board2 = build_rip_board(
+        candidates=[
+            {
+                "symbol": "AMD",
+                "ask": 2.3,
+                "bid": 2.2,
+                "strike": 630,
+                "expiry": "2026-10-02",
+                "contract": "AMD261002C00630000",
+                "dte": 1,
+                "dte_bucket": "0dte",
+                "moneyness_pct": 0.5,
+                "volume": 1200,
+                "open_interest": 4000,
+                "score": 70,
+                "right": "C",
+            }
+        ],
+        scores=[{"symbol": "AMD", "ensemble_score": 72}],
+        quotes={
+            "AMD": {
+                "last": 636.0,
+                "session_change_pct": 2.5,
+                "mom_5m_pct": 0.22,
+                "mom_15m_pct": 0.45,
+            }
+        },
+        now=_MORNING,
+        signal_times_path=str(store),
+    )
+    assert (board2.get("buy_rip") or [])[0]["signaled_at"] == row["signaled_at"]

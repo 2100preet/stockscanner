@@ -806,6 +806,52 @@ PAGE = r"""
         return d.toISOString();
       }
     }
+    /** Asked / entry / exit time for BUY·SELL NOW cards (CST). */
+    function rowAskedAt(r) {
+      if (!r) return "—";
+      const cst = r.signaled_at_cst || r.entered_at_cst || r.exited_at_cst || r.recommended_at_cst;
+      if (cst) return cst;
+      return fmtCST(r.signaled_at || r.entered_at || r.recommended_at || r.exited_at || r.closed_at);
+    }
+    /** Attach open-position entry times onto matching desk rows (contract first). */
+    function openPositionTimeIndex() {
+      const byOcc = {};
+      const bySym = {};
+      const push = (t) => {
+        if (!t || !t.symbol) return;
+        const st = String(t.status || "open").toLowerCase();
+        if (st === "closed") return;
+        const entered = t.entered_at || t.recommended_at;
+        if (!entered) return;
+        const row = {
+          entered_at: entered,
+          entered_at_cst: t.entered_at_cst || null,
+        };
+        const occ = String(t.contract || "");
+        if (occ) byOcc[occ] = row;
+        const key = String(t.symbol).toUpperCase() + "|" + String(t.right || "C").toUpperCase();
+        if (!bySym[key]) bySym[key] = row;
+      };
+      const chBook = ((DATA.challenge || {}).book || {}).trades || [];
+      chBook.forEach(push);
+      ((DATA.insights || {}).open_positions || []).forEach(push);
+      ((DATA.daily_pnl || {}).open || []).forEach(push);
+      const jBook = ((DATA.ledger || {}).trades || []);
+      jBook.forEach(push);
+      return { byOcc, bySym };
+    }
+    function withOpenEntryTime(row, idx) {
+      if (!row) return row;
+      if (row.entered_at || row.entered_at_cst) return row;
+      const occ = String(row.contract || "");
+      const hit = (occ && idx.byOcc[occ])
+        || idx.bySym[String(row.symbol || "").toUpperCase() + "|" + String(row.right || "C").toUpperCase()];
+      if (!hit) return row;
+      return Object.assign({}, row, {
+        entered_at: hit.entered_at,
+        entered_at_cst: hit.entered_at_cst,
+      });
+    }
 
     document.querySelectorAll("#tabs button").forEach(btn => {
       btn.onclick = () => {
@@ -971,8 +1017,10 @@ PAGE = r"""
       const waits = [];
       const setups = [];
       const seen = new Set();
+      const openIdx = openPositionTimeIndex();
       const add = (row, side, desk) => {
         if (!row || !row.symbol) return;
+        row = withOpenEntryTime(row, openIdx);
         const key = [
           side,
           desk,
@@ -1058,7 +1106,9 @@ PAGE = r"""
         : (setup ? "SETUP · not BUY" : (wait ? "WAIT" : "SELL NOW"));
       const strike = r.strike == null ? "—" : `${fmt(r.strike, Number(r.strike) % 1 ? 2 : 0)}${right === "PUT" ? "p" : "c"}`;
       const px = buy ? (r.ask ?? r.entry_ask) : (r.bid ?? r.mark ?? r.ask ?? r.exit_bid);
-      const when = r.signaled_at_cst || fmtCST(r.signaled_at || r.recommended_at);
+      const when = rowAskedAt(r);
+      const entryWhen = r.entered_at_cst || (r.entered_at ? fmtCST(r.entered_at) : "");
+      const showEntry = entryWhen && entryWhen !== "—" && entryWhen !== when;
       const w = winLookup(r.symbol, r.dte_bucket || r.horizon || "0dte");
       const sr = w.hit1 == null ? "—" : `${fmt(w.hit1,0)}% ≥1%` + (w.hit2 == null ? "" : ` / ${fmt(w.hit2,0)}% ≥2%`);
       return `<article class="action-card ${cls}">
@@ -1066,7 +1116,7 @@ PAGE = r"""
           <div class="ac-sym">${r.symbol} <span class="tag">${r._desk}</span>${r.hold_style ? ` <span class="tag">${r.hold_style}</span>` : ""} <span class="tag">${right}</span></div>
           <div class="ac-dir ${buy && gated ? "" : (buy ? "long" : (wait || setup ? "wait" : "short"))}">${label}</div>
         </div>
-        <div class="ac-conf">${r._desk} · ${when && when !== "—" ? when : "time —"}</div>
+        <div class="ac-conf">${r._desk} · ${when && when !== "—" ? when : "time —"}${showEntry ? ` · entered ${entryWhen}` : ""}</div>
         <div class="ac-meta">
           <div>Strike / expiry<strong>${strike} · ${r.expiry || "—"}${r.dte != null ? ` (${r.dte}DTE)` : ""}</strong></div>
           <div>${buy ? "Ask" : "Bid"}<strong>${px == null ? "—" : "$" + fmt(px, 2)}</strong></div>
@@ -1152,7 +1202,7 @@ PAGE = r"""
             <td><span class="badge ${badge}">${side}</span></td>
             <td><span class="tag">${r._desk}</span></td>
             <td><strong>${r.symbol}</strong></td>
-            <td class="mono">${r.signaled_at_cst || fmtCST(r.signaled_at || r.recommended_at)}</td>
+            <td class="mono">${rowAskedAt(r)}</td>
             <td class="mono">${r.strike == null ? "—" : fmt(r.strike, 2) + right} ${r.expiry || ""}</td>
             <td class="mono">${px == null ? "—" : "$" + fmt(px, 2)}</td>
             <td class="mono">${win == null ? "—" : fmt(win, 0) + "%"}</td>
@@ -1582,11 +1632,12 @@ PAGE = r"""
       const buy = act.includes("BUY");
       const cls = buy ? "long" : "wait";
       const label = buy ? "BUY RIP" : (act.includes("WATCH") ? "WATCH RIP" : "RIP COOL");
+      const when = rowAskedAt(r);
       return `<div class="action-card ${cls}">
         <div class="ac-top"><span class="badge ${buy?"buy":"wait"}">${label}</span>
           <strong>${r.symbol}</strong> <span class="tag">${r.dte_bucket||"—"}</span>
           ${r.cooldown_waived?`<span class="tag">cooldown waived</span>`:""}</div>
-        <div class="ac-conf">${r.headline||""}</div>
+        <div class="ac-conf">${r.headline||""}${when && when !== "—" ? ` · ${when}` : ""}</div>
         <div class="ac-meta">
           <div>Ask<strong>${r.ask==null?"—":"$"+fmt(r.ask,2)}</strong></div>
           <div>Session<strong class="${pctClass(r.live_change_pct)}">${r.live_change_pct==null?"—":fmt(r.live_change_pct,2)+"%"}</strong></div>

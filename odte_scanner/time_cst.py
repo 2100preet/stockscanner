@@ -126,7 +126,44 @@ def append_asked_cst(detail: str | None, *, action: str, signaled_at_cst: str | 
         return base
     if "CST" in base or "CDT" in base:
         return base
-    verb = "asked to buy" if str(action).upper() == "BUY_NOW" else "asked to sell"
+    u = str(action or "").upper()
+    if u.startswith("BUY") or u in {"PUT_NOW", "CALL_NOW", "ENTRY", "RADAR_HOT", "SNIPER"}:
+        verb = "asked to buy"
+    elif u.startswith("SELL") or u in {"EXIT"}:
+        verb = "asked to sell"
+    else:
+        verb = "signaled"
     if not base:
         return f"{verb} {signaled_at_cst}"
     return f"{base} · {verb} {signaled_at_cst}"
+
+
+def stamp_buy_sell_times(
+    row: dict[str, Any],
+    store: dict[str, Any],
+    *,
+    sticky_actions: set[str] | frozenset[str] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Attach sticky signaled_at / signaled_at_cst for actionable BUY/SELL-style rows."""
+    action = str(row.get("action") or "").upper()
+    sticky = sticky_actions or {
+        "BUY_NOW",
+        "SELL_NOW",
+        "BUY_RIP",
+        "BUY_BEAUTY",
+        "BUY_LEVEL",
+        "PUT_NOW",
+        "CALL_NOW",
+        "EXIT",
+    }
+    if action not in sticky:
+        return row, store
+    sym = str(row.get("symbol") or "").upper()
+    if not sym:
+        return row, store
+    utc, cst, store = resolve_first_signal_time(store, symbol=sym, action=action)
+    out = dict(row)
+    out["signaled_at"] = utc
+    out["signaled_at_cst"] = cst
+    out["detail"] = append_asked_cst(out.get("detail"), action=action, signaled_at_cst=cst)
+    return out, store

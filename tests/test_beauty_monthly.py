@@ -95,11 +95,15 @@ def test_beauty_board_lists_sndk():
         scores=[{"symbol": "SNDK", "ensemble_score": 68}],
         quotes={"SNDK": {"last": 1760, "session_change_pct": 0.5, "month_change_pct": 12.0}},
         now=_NOW,
+        signal_times_path=None,
     )
     buys = board.get("buy_beauty") or []
     assert any(r["symbol"] == "SNDK" for r in buys) or any(
         r["symbol"] == "SNDK" for r in (board.get("watch") or [])
     )
+    for r in buys:
+        assert r.get("signaled_at")
+        assert r.get("signaled_at_cst")
 
 
 def test_tracker_equity_accessible(tmp_path):
