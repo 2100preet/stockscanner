@@ -220,7 +220,7 @@ PAGE = r"""
       <button data-tab="swing">Swing 1–3M</button>
       <button data-tab="ml6">ML6 Neocloud</button>
       <button data-tab="echo">Flow Desk</button>
-      <button data-tab="challenge">$500→$100k</button>
+      <button data-tab="challenge">$1k→$100k</button>
       <button data-tab="screener">Screener</button>
       <button data-tab="pnl">P&amp;L</button>
       <button data-tab="journal">Journal</button>
@@ -322,7 +322,7 @@ PAGE = r"""
     <section class="tabpane" id="tab-odte1k">
       <h2>0DTE $1K Challenge — IN / OUT · Green Friday ORB15 puts</h2>
       <p class="lede">
-        Separate from the swing <strong>$500→$100k</strong> path. Paper sleeve starts at <strong>$1,000</strong>,
+        Separate from the swing <strong>$1k→$100k</strong> path. Paper sleeve starts at <strong>$1,000</strong>,
         sizes ~<strong>$850</strong> (~85%), max <strong>2 trades/day</strong>.
         Full focus sleeve: <strong>SPY · QQQ · IWM · TSLA · NVDA · NBIS · AAPL · SLV · SPCX · NOW</strong> + the rest of the focus list.
         Playbook: Green Friday + <strong>break/hold ORB15 Low</strong> (or retest) →
@@ -560,12 +560,12 @@ PAGE = r"""
     </section>
 
     <section class="tabpane" id="tab-challenge">
-      <h2>$500 → $100,000 challenge</h2>
+      <h2>$1,000 → $100,000 challenge</h2>
       <p class="lede">
-        Goal: <strong>$500 → $100k by Oct 31, 2026</strong> via <strong>same-day index sniper</strong> flips on
+        Goal: <strong>$1k → $100k by Oct 31, 2026</strong> via <strong>same-day index sniper</strong> flips on
         <strong>SPY / QQQ / IWM</strong> (SPX→SPY) 0–1 DTE wings — buy &amp; sell same session, bank
         <strong>+20%</strong>, flatten by ~<strong>4h / EOD</strong>. Paper sleeve starts at
-        <strong>$500 real cash</strong>. Path math: ~+20%/flip × ~29 trading days. Lottery midcaps blocked;
+        <strong>$1,000 real cash</strong>. Path math: ~+20%/flip × ~26 sessions (100×). Lottery midcaps blocked;
         loss-cooldown survives epoch rebuilds.
         Sure-shot hist filter (prefer <strong>100% hist win</strong>, else ≥80% n≥5).
         Status: <strong>ENTRY · HOLD · EXIT</strong>. After each Paper ENTER/EXIT the sleeve
@@ -1936,7 +1936,7 @@ PAGE = r"""
       };
       if (metrics) {
         const tgt = book.target_usd!=null?book.target_usd:(ch.target_usd||100000);
-        const startCash = book.starting_cash!=null?book.starting_cash:(ch.start_usd||500);
+        const startCash = book.starting_cash!=null?book.starting_cash:(ch.start_usd||1000);
         const closedFlips = (book.trades||[]).filter(t=>t.status==="closed");
         const lastClosed = closedFlips.length?closedFlips[closedFlips.length-1]:null;
         const bankPct = book.sniper_bank_pct!=null?book.sniper_bank_pct:20;
@@ -2072,13 +2072,13 @@ PAGE = r"""
       if (bookEl) {
         const open=(book.trades||[]).filter(t=>t.status==="open");
         const closed=(book.trades||[]).filter(t=>t.status==="closed").slice(-8).reverse();
-        const cash = book.cash!=null?book.cash:(ch.start_usd||500);
+        const cash = book.cash!=null?book.cash:(ch.start_usd||1000);
         const equity = book.equity!=null?book.equity:cash;
         const syncNote = (sync.entered&&sync.entered.length)?` · paper entered ${sync.entered.join(", ")}`:"";
         const syncExit = (sync.exited&&sync.exited.length)?` · paper exited ${sync.exited.join(", ")}`:"";
         bookEl.innerHTML = `
           <div class="ac-meta" style="margin-bottom:.5rem">
-            <div>Start<strong>$${Number(book.starting_cash!=null?book.starting_cash:(ch.start_usd||500)).toLocaleString(undefined,{maximumFractionDigits:0})}</strong></div>
+            <div>Start<strong>$${Number(book.starting_cash!=null?book.starting_cash:(ch.start_usd||1000)).toLocaleString(undefined,{maximumFractionDigits:0})}</strong></div>
             <div>Target<strong>$${Number(book.target_usd!=null?book.target_usd:(ch.target_usd||100000)).toLocaleString(undefined,{maximumFractionDigits:0})}</strong></div>
             <div>Cash<strong>$${Number(cash).toLocaleString(undefined,{maximumFractionDigits:0})}</strong></div>
             <div>Equity<strong>$${Number(equity).toLocaleString(undefined,{maximumFractionDigits:0})}</strong></div>
@@ -2188,7 +2188,7 @@ PAGE = r"""
         const sched = pace.schedule || path.schedule || [];
         const balLog = book.balance_log || [];
         pathEl.innerHTML = `
-          <p class="lede" style="margin-top:0"><strong>$500 → $100k by Oct 31 (same-day sniper):</strong> ${pace.note||"—"}</p>
+          <p class="lede" style="margin-top:0"><strong>$1k → $100k by Oct 31 (same-day sniper):</strong> ${pace.note||"—"}</p>
           <p class="lede" style="margin-top:.35rem">${path.note||""}</p>
           <div class="playbook" style="margin-bottom:.55rem">
             ${["sprint","weekly","swing","leap"].map(k=>{
@@ -4965,7 +4965,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 ch_path = ROOT / ch_path
             tracker = ChallengeTracker(
                 ch_path,
-                starting_cash=float(actions_cfg.get("challenge_start_usd", 500)),
+                starting_cash=float(actions_cfg.get("challenge_start_usd", 1000)),
                 epoch=str(actions_cfg.get("challenge_epoch") or ""),
                 rebuild_seed_usd=(
                     float(actions_cfg["challenge_rebuild_seed_usd"])
@@ -5016,7 +5016,7 @@ def create_app(config_path: str | None = None) -> Flask:
             except Exception:  # noqa: BLE001
                 echo_walls = {}
 
-            # $500→$100k sleeve needs listed asks to flip ENTRY; Pages was stuck
+            # $1k→$100k sleeve needs listed asks to flip ENTRY; Pages was stuck
             # because fetch_contracts was hard-disabled and auto_enter was false.
             loss_cd_days = int(actions_cfg.get("challenge_loss_cooldown_days", 5))
             loss_cooldown_syms = tracker.recent_loss_symbols(cooldown_days=loss_cd_days)
@@ -5034,7 +5034,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 quotes=quotes,
                 aliases=aliases,
                 open_trades=[t.to_dict() for t in tracker.book.trades],
-                start_usd=float(actions_cfg.get("challenge_start_usd", 500)),
+                start_usd=float(actions_cfg.get("challenge_start_usd", 1000)),
                 target_usd=float(actions_cfg.get("challenge_target_usd", 100_000)),
                 flips=int(actions_cfg.get("challenge_flips", 15)),
                 max_tickets=int(actions_cfg.get("challenge_max_tickets", 10)),
@@ -5209,7 +5209,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 quotes=quotes,
                 aliases=aliases,
                 open_trades=[t.to_dict() for t in tracker.book.trades],
-                start_usd=float(actions_cfg.get("challenge_start_usd", 500)),
+                start_usd=float(actions_cfg.get("challenge_start_usd", 1000)),
                 target_usd=float(actions_cfg.get("challenge_target_usd", 100_000)),
                 flips=int(actions_cfg.get("challenge_flips", 15)),
                 max_tickets=int(actions_cfg.get("challenge_max_tickets", 10)),
@@ -6086,7 +6086,7 @@ def create_app(config_path: str | None = None) -> Flask:
             ch_path = ROOT / ch_path
         return ChallengeTracker(
             ch_path,
-            starting_cash=float(actions_cfg.get("challenge_start_usd", 500)),
+            starting_cash=float(actions_cfg.get("challenge_start_usd", 1000)),
             epoch=str(actions_cfg.get("challenge_epoch") or ""),
             rebuild_seed_usd=(
                 float(actions_cfg["challenge_rebuild_seed_usd"])
@@ -6125,7 +6125,7 @@ def create_app(config_path: str | None = None) -> Flask:
             quotes=quotes,
             aliases={symbol: alias},
             open_trades=[t.to_dict() for t in tracker.book.trades],
-            start_usd=float(actions_cfg.get("challenge_start_usd", 500)),
+            start_usd=float(actions_cfg.get("challenge_start_usd", 1000)),
             target_usd=float(actions_cfg.get("challenge_target_usd", 100_000)),
             flips=int(actions_cfg.get("challenge_flips", 15)),
             max_tickets=int(actions_cfg.get("challenge_max_tickets", 10)),

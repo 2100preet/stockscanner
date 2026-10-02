@@ -912,9 +912,9 @@ def test_index_sniper_radar_hot_spy_quick_inout(tmp_path):
     ledger = tmp_path / "ch.json"
     tr = ChallengeTracker(
         ledger,
-        starting_cash=500,
-        epoch="2026-10-02-500-to-100k",
-        rebuild_seed_usd=500,
+        starting_cash=1000,
+        epoch="2026-10-02-1k-to-100k",
+        rebuild_seed_usd=1000,
         target_usd=100_000,
     )
     hot = {
@@ -937,7 +937,7 @@ def test_index_sniper_radar_hot_spy_quick_inout(tmp_path):
         [hot],
         max_cash_frac=0.30,
         min_ask=0.20,
-        max_ask=1.50,
+        max_ask=2.50,
         prefer_core_megas=True,
         min_ensemble=60,
         mega_min_ensemble=55,
@@ -965,7 +965,7 @@ def test_index_sniper_radar_hot_spy_quick_inout(tmp_path):
 
 
 def test_spx_maps_to_spy_sniper(tmp_path):
-    tr = ChallengeTracker(tmp_path / "ch.json", starting_cash=500, target_usd=100_000)
+    tr = ChallengeTracker(tmp_path / "ch.json", starting_cash=1000, target_usd=100_000)
     entered = tr.enter(
         {
             "action": "SNIPER",
@@ -982,7 +982,7 @@ def test_spx_maps_to_spy_sniper(tmp_path):
         },
         max_cash_frac=0.30,
         min_ask=0.20,
-        max_ask=1.50,
+        max_ask=2.50,
     )
     assert entered is not None
     assert entered.symbol == "SPY"
@@ -1003,9 +1003,9 @@ def test_challenge_board_force_includes_index_snipers():
         fetch_earnings=False,
         sprint_desk=True,
         max_tickets=8,
-        start_usd=500,
+        start_usd=1000,
         target_usd=100_000,
-        flips=29,
+        flips=26,
         pace_months=1.0,
         pace_milestone_usd=100_000,
     )
@@ -1014,12 +1014,12 @@ def test_challenge_board_force_includes_index_snipers():
     assert "QQQ" in syms
     assert any("sniper" in (r or "").lower() for r in (board.get("rules") or []))
     assert board["target_usd"] == 100_000
-    assert board["start_usd"] == 500
+    assert board["start_usd"] == 1000
     assert any("100k" in (r or "").lower() or "+20%" in (r or "") for r in (board.get("rules") or []))
 
 
-def test_500_to_100k_epoch_rebuild_sets_target(tmp_path):
-    """Archive ~$938 / 0W2L AMD book; reseed $500 with target $100k."""
+def test_1k_to_100k_epoch_rebuild_sets_target(tmp_path):
+    """Archive ~$938 / 0W2L AMD book; reseed $1k with target $100k."""
     ledger = tmp_path / "ch.json"
     tr = ChallengeTracker(
         ledger,
@@ -1059,23 +1059,23 @@ def test_500_to_100k_epoch_rebuild_sets_target(tmp_path):
 
     tr2 = ChallengeTracker(
         ledger,
-        starting_cash=500,
-        epoch="2026-10-02-500-to-100k",
-        rebuild_seed_usd=500,
-        rebuild_reason="$500→$100k same-day sniper reset",
+        starting_cash=1000,
+        epoch="2026-10-02-1k-to-100k",
+        rebuild_seed_usd=1000,
+        rebuild_reason="$1k→$100k same-day sniper reset",
         target_usd=100_000,
     )
-    assert tr2.book.cash == 500
-    assert tr2.book.starting_cash == 500
+    assert tr2.book.cash == 1000
+    assert tr2.book.starting_cash == 1000
     assert tr2.book.target_usd == 100_000
     assert tr2.book.wins == 0 and tr2.book.losses == 0
     assert tr2.book.flips_closed == 0
-    assert tr2.book.epoch == "2026-10-02-500-to-100k"
+    assert tr2.book.epoch == "2026-10-02-1k-to-100k"
     assert not tr2.open_trades()
     assert tr2.book.archive
-    assert tr2.book.archive[-1]["to_epoch"] == "2026-10-02-500-to-100k"
+    assert tr2.book.archive[-1]["to_epoch"] == "2026-10-02-1k-to-100k"
     d = tr2.book.to_dict()
-    assert d["progress_pct"] == 0.5  # $500 / $100k
+    assert d["progress_pct"] == 1.0  # $1k / $100k
     assert d["sniper_bank_pct"] == 20.0
     assert d["sniper_flatten_hours"] == 4.0
 
@@ -1085,9 +1085,9 @@ def test_sniper_same_day_flatten_after_4h(tmp_path):
     ledger = tmp_path / "ch.json"
     tr = ChallengeTracker(
         ledger,
-        starting_cash=500,
-        epoch="2026-10-02-500-to-100k",
-        rebuild_seed_usd=500,
+        starting_cash=1000,
+        epoch="2026-10-02-1k-to-100k",
+        rebuild_seed_usd=1000,
         target_usd=100_000,
     )
     entered = tr.enter(
@@ -1108,7 +1108,7 @@ def test_sniper_same_day_flatten_after_4h(tmp_path):
         },
         max_cash_frac=0.30,
         min_ask=0.20,
-        max_ask=1.50,
+        max_ask=2.50,
     )
     assert entered is not None
     # Flat mark, held ~4.5h → same-day flatten
@@ -1121,7 +1121,7 @@ def test_sniper_same_day_flatten_after_4h(tmp_path):
 
 def test_sniper_target_mult_allows_20pct_bank(tmp_path):
     """Config 1.2× must not be clamped back up to 1.4×."""
-    tr = ChallengeTracker(tmp_path / "ch.json", starting_cash=500, target_usd=100_000)
+    tr = ChallengeTracker(tmp_path / "ch.json", starting_cash=1000, target_usd=100_000)
     entered = tr.enter(
         {
             "action": "SNIPER",
@@ -1139,7 +1139,7 @@ def test_sniper_target_mult_allows_20pct_bank(tmp_path):
         },
         max_cash_frac=0.30,
         min_ask=0.20,
-        max_ask=1.50,
+        max_ask=2.50,
     )
     assert entered is not None
     assert entered.target_premium_mult == 1.2
@@ -1147,8 +1147,8 @@ def test_sniper_target_mult_allows_20pct_bank(tmp_path):
     assert entered.stop_loss_pct == 20.0
 
 
-def test_compound_path_500_to_100k_29_flips():
-    """~+20%/flip × 29 days compounds $500 → $100k."""
-    p = compound_path(start_usd=500, target_usd=100_000, flips=29)
+def test_compound_path_1k_to_100k_26_flips():
+    """~+20%/flip × 26 sessions compounds $1k → $100k."""
+    p = compound_path(start_usd=1000, target_usd=100_000, flips=26)
     assert 19.0 <= p["pct_per_flip"] <= 22.0
     assert p["schedule"][-1]["equity"] >= 99_000

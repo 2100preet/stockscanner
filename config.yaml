@@ -381,16 +381,16 @@ actions:
   chase_enrich_live: true    # live chain sweep on top ripping names (capped)
   chase_max_live_symbols: 8
   chase_feed_journal: false  # never auto paper-enter risky chase tickets
-  # $500 → $100k challenge — same-day index sniper compound to Oct 31
-  # Honest path only: no fake equity. Earn every dollar from $500 paper cash.
-  challenge_start_usd: 500
+  # $1k → $100k challenge — same-day index sniper compound to Oct 31
+  # Honest path only: no fake equity. Earn every dollar from $1,000 paper cash.
+  challenge_start_usd: 1000
   challenge_target_usd: 100000
-  challenge_flips: 29          # ~1 same-day flip / session through Oct 31
+  challenge_flips: 26          # ~+20%/flip × ~26 sessions → ~100× ($1k→$100k)
   challenge_max_tickets: 12
-  # Epoch: archive 0W/2L sniper stops; reseed $500 for $100k same-day path
-  challenge_epoch: "2026-10-02-500-to-100k"
-  challenge_rebuild_seed_usd: 500
-  challenge_rebuild_reason: "$500→$100k same-day sniper reset — bank +20%/flip by Oct 31"
+  # Epoch: archive prior $500/$938 books; reseed $1k for $100k same-day path
+  challenge_epoch: "2026-10-02-1k-to-100k"
+  challenge_rebuild_seed_usd: 1000
+  challenge_rebuild_reason: "$1k→$100k same-day sniper reset — bank +20%/flip by Oct 31"
   # Sprint desk: 0DTE / 1DTE liquid flips only (same-day in/out)
   challenge_sprint_desk: true
   challenge_min_dte: 0
@@ -417,7 +417,7 @@ actions:
   challenge_min_ensemble: 60
   challenge_mega_min_ensemble: 55
   challenge_min_ask: 0.20
-  challenge_max_ask: 1.50             # 1ct ≤ $150 fits 30% of $500
+  challenge_max_ask: 2.50             # 1ct ≤ $250 fits 25–30% of $1k
   challenge_max_contracts: 2
   challenge_max_consecutive_losses: 3
   challenge_loss_cooldown_days: 7
