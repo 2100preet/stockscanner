@@ -1,6 +1,6 @@
 """Challenge paper ledger — ENTRY / HOLD / EXIT with hold-period rules.
 
-Tracks the $1k→$1M sleeve separately from the main signal journal.
+Tracks the $500→$100k same-day sniper sleeve separately from the main signal journal.
 Supports long calls and long puts.
 """
 from __future__ import annotations
@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PATH = ROOT / "outputs" / "challenge_ledger.json"
 
 # Hold windows (calendar days) by horizon / style
-# sprint = challenge desk default: aim for ~40–100% premium in ~1 day (2 flips/day possible)
+# sprint = challenge desk default: same-day / next-session flips
 HOLD_PERIODS: dict[str, dict[str, int]] = {
     "sprint": {"min_days": 0, "max_days": 1, "ideal_days": 1},
     "weekly": {"min_days": 5, "max_days": 14, "ideal_days": 8},
@@ -32,16 +32,19 @@ HOLD_PERIODS: dict[str, dict[str, int]] = {
 SPRINT_RETIRE_MAX_HOLD_DAYS = 2
 SPRINT_RETIRE_MAX_DTE = 7
 
-# Core megas for $1k→$1M sprint — highest liquidity / mover density
+# Core megas for challenge sprint — highest liquidity / mover density
 CORE_MEGAS: frozenset[str] = frozenset(
     {"SPY", "QQQ", "IWM", "NVDA", "TSLA", "AMD", "META", "MU", "AAPL", "MSFT", "AMZN", "GOOGL"}
 )
 
-# Index sniper sleeve — quick in/out on liquid ETF options (SPX traded via SPY)
+# Index sniper sleeve — same-day buy→sell on liquid ETF options (SPX traded via SPY)
+# Aligned with config challenge_sniper_* (+20% bank / −20% stop / 4h flatten)
 INDEX_SNIPERS: frozenset[str] = frozenset({"SPY", "QQQ", "IWM"})
-SNIPER_BANK_PCT = 25.0
-SNIPER_STOP_PCT = 25.0
-SNIPER_EARLY_CUT_PCT = 15.0
+SNIPER_BANK_PCT = 20.0
+SNIPER_STOP_PCT = 20.0
+SNIPER_EARLY_CUT_PCT = 12.0
+SNIPER_FLATTEN_HOURS = 4.0
+SNIPER_TARGET_MULT = 1.20
 
 
 def _now() -> str:
@@ -137,9 +140,9 @@ class ChallengeTrade:
 
 @dataclass
 class ChallengeBook:
-    starting_cash: float = 1000.0
-    cash: float = 1000.0
-    target_usd: float = 1_000_000.0
+    starting_cash: float = 500.0
+    cash: float = 500.0
+    target_usd: float = 100_000.0
     flips_closed: int = 0
     wins: int = 0
     losses: int = 0
@@ -166,7 +169,9 @@ class ChallengeBook:
             "equity": equity,
             "target_usd": self.target_usd,
             "progress_pct": round((equity / self.target_usd) * 100.0, 4) if self.target_usd else 0,
+            # Legacy alias (older UI); primary progress is vs target_usd ($100k)
             "milestone_500k_pct": round((equity / 500_000.0) * 100.0, 4) if equity else 0,
+            "milestone_100k_pct": round((equity / 100_000.0) * 100.0, 4) if equity else 0,
             "flips_closed": self.flips_closed,
             "wins": self.wins,
             "losses": self.losses,
@@ -175,6 +180,9 @@ class ChallengeBook:
             "balance_log": list(self.balance_log[-40:]),
             "epoch": self.epoch,
             "archive": list(self.archive[-5:]),
+            "sniper_bank_pct": SNIPER_BANK_PCT,
+            "sniper_stop_pct": SNIPER_STOP_PCT,
+            "sniper_flatten_hours": SNIPER_FLATTEN_HOURS,
         }
 
 
@@ -183,16 +191,23 @@ class ChallengeTracker:
         self,
         path: str | Path | None = None,
         *,
-        starting_cash: float = 1000.0,
+        starting_cash: float = 500.0,
         epoch: str | None = None,
         rebuild_seed_usd: float | None = None,
         rebuild_reason: str | None = None,
+        target_usd: float | None = None,
     ):
         self.path = Path(path) if path else DEFAULT_PATH
         self.epoch = str(epoch or "").strip()
         self.rebuild_seed_usd = rebuild_seed_usd
         self.rebuild_reason = rebuild_reason
-        self.book = ChallengeBook(starting_cash=starting_cash, cash=starting_cash, epoch=self.epoch)
+        self.target_usd = float(target_usd) if target_usd is not None else 100_000.0
+        self.book = ChallengeBook(
+            starting_cash=starting_cash,
+            cash=starting_cash,
+            target_usd=self.target_usd,
+            epoch=self.epoch,
+        )
         self.load()
         self._apply_epoch_rebuild(starting_cash=starting_cash)
 
@@ -217,7 +232,9 @@ class ChallengeTracker:
             self.book = ChallengeBook(
                 starting_cash=start,
                 cash=cash,
-                target_usd=float(raw["target_usd"]) if raw.get("target_usd") is not None else 1_000_000.0,
+                target_usd=float(raw["target_usd"])
+                if raw.get("target_usd") is not None
+                else float(self.target_usd),
                 flips_closed=int(raw.get("flips_closed") or 0),
                 wins=int(raw.get("wins") or 0),
                 losses=int(raw.get("losses") or 0),
@@ -254,10 +271,11 @@ class ChallengeTracker:
         }
         archive = list(self.book.archive or [])
         archive.append(prior_note)
+        target = float(self.target_usd or prior.get("target_usd") or 100_000.0)
         self.book = ChallengeBook(
             starting_cash=seed,
             cash=seed,
-            target_usd=float(prior.get("target_usd") or 1_000_000.0),
+            target_usd=target,
             flips_closed=0,
             wins=0,
             losses=0,
@@ -283,9 +301,10 @@ class ChallengeTracker:
         )
         self.save()
         logger.warning(
-            "challenge sleeve rebuilt epoch=%s seed=$%.2f (was $%s / %sW-%sL)",
+            "challenge sleeve rebuilt epoch=%s seed=$%.2f target=$%.0f (was $%s / %sW-%sL)",
             self.epoch,
             seed,
+            target,
             prior.get("cash"),
             prior.get("wins"),
             prior.get("losses"),
@@ -493,7 +512,7 @@ class ChallengeTracker:
                 "min_days": 0,
                 "max_days": 1,
                 "ideal_days": 0,
-                "label": "sniper 0–1d (bank +25%)",
+                "label": f"sniper same-day (bank +{SNIPER_BANK_PCT:.0f}% / {SNIPER_FLATTEN_HOURS:.0f}h flat)",
             }
         contracts = int(ticket.get("contracts_for_bankroll") or 1)
         contracts = max(1, min(int(max_contracts), contracts))
@@ -519,9 +538,15 @@ class ChallengeTracker:
             if contracts < 1 or cost <= 0 or cost > self.book.cash:
                 return None
 
-        mult = float(ticket.get("target_premium_mult") or (1.40 if is_sniper else 1.75))
-        # Clamp to ~40–100% premium target for the challenge desk
-        mult = max(1.4, min(2.0, mult))
+        mult = float(
+            ticket.get("target_premium_mult")
+            or (SNIPER_TARGET_MULT if is_sniper else 1.75)
+        )
+        # Snipers bank ~+20% same day; other sprint tickets still aim ~40–100%
+        if is_sniper:
+            mult = max(1.15, min(1.60, mult))
+        else:
+            mult = max(1.4, min(2.0, mult))
         target_pct = round((mult - 1.0) * 100.0, 1)
         target_ask = ticket.get("target_ask")
         if target_ask is None:
@@ -539,8 +564,13 @@ class ChallengeTracker:
         )
         exit_plan = ticket.get("exit_plan") or (
             f"EXIT when premium ≥${float(target_ask):.2f} (+{target_pct:.0f}%)"
-            + (f" or bank +{SNIPER_BANK_PCT:.0f}%" if is_sniper else "")
-            + f", or stop −{stop_pct:.0f}%, or max hold {hp['max_days']}d"
+            + (f" or bank +{SNIPER_BANK_PCT:.0f}% same day" if is_sniper else "")
+            + f", or stop −{stop_pct:.0f}%"
+            + (
+                f", or flatten ~{SNIPER_FLATTEN_HOURS:.0f}h / EOD"
+                if is_sniper
+                else f", or max hold {hp['max_days']}d"
+            )
         )
         cash_before = round(self.book.cash, 2)
         trade = ChallengeTrade(
@@ -674,7 +704,7 @@ class ChallengeTracker:
         if unreal is not None and unreal >= target_pct:
             action = "EXIT"
             reasons.append(f"hit challenge target +{unreal:.0f}% (≥{target_pct:.0f}%)")
-        # Index sniper: bank +25% fast (same-session / 0–1d flips)
+        # Index sniper: bank +20% same day (ideal flip path $500→$100k)
         elif (
             is_sniper
             and unreal is not None
@@ -682,8 +712,10 @@ class ChallengeTracker:
             and days >= 0.01
         ):
             action = "EXIT"
-            reasons.append(f"bank sniper +{unreal:.0f}% (≥{SNIPER_BANK_PCT:.0f}%) — next index flip")
-        # 1-month sprint: bank +40% as soon as a scrap of hold clears (2 flips/day path)
+            reasons.append(
+                f"bank sniper +{unreal:.0f}% (≥{SNIPER_BANK_PCT:.0f}%) same day — next index flip"
+            )
+        # Other sprint: bank +40% to free capital for next flip
         elif (
             unreal is not None
             and unreal >= 40.0
@@ -694,7 +726,7 @@ class ChallengeTracker:
         if unreal is not None and unreal <= -trade.stop_loss_pct:
             action = "EXIT"
             reasons.append(f"stop −{abs(unreal):.0f}%")
-        # Sniper early cut — don't wait for full stop if already −15% after ~1h
+        # Sniper early cut — don't wait for full stop if already −12% after ~1h
         elif (
             is_sniper
             and unreal is not None
@@ -712,16 +744,16 @@ class ChallengeTracker:
         ):
             action = "EXIT"
             reasons.append(f"early sprint cut −{abs(unreal):.0f}%")
-        # 0DTE sniper: flatten after ~6h if still open (same-session book)
+        # Same-day sniper: force flat after ~4h (0–1 DTE wings)
+        flatten_days = float(SNIPER_FLATTEN_HOURS) / 24.0
         if (
             is_sniper
             and action == "HOLD"
-            and dte_entry is not None
-            and int(dte_entry) <= 0
-            and days >= 0.25
+            and days >= flatten_days
+            and (dte_entry is None or int(dte_entry) <= 1)
         ):
             action = "EXIT"
-            reasons.append("0DTE sniper session flatten (~6h)")
+            reasons.append(f"same-day sniper flatten (~{SNIPER_FLATTEN_HOURS:.0f}h)")
         if days >= trade.hold_max_days:
             action = "EXIT"
             reasons.append(f"max hold {trade.hold_max_days}d reached ({days:.1f}d)")

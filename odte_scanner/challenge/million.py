@@ -1,7 +1,8 @@
-"""$1,000 → $1,000,000 challenge path via short-dated sprint flips.
+"""$500 → $100,000 challenge path via same-day index sniper flips.
 
-Default desk style: hold ~1–3 days and target ~50–100% option premium
-(1.5×–2.0×), using liquid near-dated calls/puts — not multi-month LEAPs.
+Primary path: SPY/QQQ/IWM 0–1 DTE wings — bank ~+20% and flatten same session.
+Default desk style: same-day / next-session liquid near-dated calls/puts —
+not multi-month LEAPs.
 
 Selects high hist-win names, recommends strike + expiry, hold period, and
 ENTRY / HOLD / EXIT status for both calls and puts.
@@ -1562,20 +1563,20 @@ def build_challenge_board(
                 "the hist-win gate; earnings calendar still lists near-term prints without hist."
             ),
         },
-        "rules": [
-            "Oct $500k sprint first (stretch $1M): INDEX SNIPER on SPY/QQQ (SPX→SPY) 0–1 DTE wings — quick in/out, bank +25%.",
+            "rules": [
+            "$500→$100k by Oct 31: INDEX SNIPER on SPY/QQQ/IWM (SPX→SPY) 0–1 DTE wings — same-day buy→sell, bank +20%.",
             "Hist-win filter still ranks midcaps, but SPY/QQQ/IWM are force-fed onto the board for tape snipes.",
-            "Auto paper ENTER when RADAR HOT / ENTRY / BUY_RIP has a live listed ask in the $0.20–$2.50 band and fits ≤30% cash.",
-            "Skip lottery pennies / rich asks that blow the cash-frac — 1ct must fit the risk budget.",
+            "Auto paper ENTER when RADAR HOT / ENTRY / BUY_RIP has a live listed ask in the $0.20–$1.50 band and fits ≤30% cash.",
+            "Skip lottery pennies / rich asks that blow the cash-frac — 1ct must fit the $500 risk budget.",
             "Universe priority: SPY/QQQ sniper → CORE megas + RIP → hist mid/small only when they clear quality.",
             "Earnings watch: today / this week / next week / post-print across challenge + DRAM sleeve.",
             "Earnings: boost post-print continuation; WAIT into/through the print on the sprint desk (no LEAP force).",
             f"OI walls: soft EXIT ${wall_buffer_usd:.2f} before call wall (long calls) or put wall (long puts).",
-            "Hold periods: sniper/sprint 0–1d · weekly 5–14d · swing 20–60d · LEAP 30–90d — EXIT at target, stop, or max hold.",
-            f"Each flip targets ~25–100% option premium (sniper banks +25%; path math ~{primary_path['pct_per_flip']:.0f}%); then EXIT and roll.",
-            "Long-dated opens are auto-retired so cash can re-enter 0–1d sniper tickets.",
-            "After a losing flip, that symbol is blocked ~7d (incl. archived epochs) — no LUNR/QUBT/JPM re-chase loops.",
-            "Bank +25% early on SPY/QQQ snipers; +40% on other sprint tickets; hard-skip ENTRY when 1 contract exceeds ~30% of cash.",
+            "Hold periods: sniper same-day (≤4h flatten) · sprint 0–1d · weekly 5–14d · swing 20–60d — EXIT at target, stop, or flatten.",
+            f"Each flip targets ~+20% option premium on snipers (path math ~{primary_path['pct_per_flip']:.0f}%/flip × ~29 days); then EXIT and roll.",
+            "Long-dated opens are auto-retired so cash can re-enter same-day sniper tickets.",
+            "After a losing flip, that symbol is blocked ~7d (incl. archived epochs) — no midcap bleed re-chase loops.",
+            "Bank +20% same day on SPY/QQQ snipers; flatten ~4h / EOD if still open; hard-skip ENTRY when 1 contract exceeds ~30% of cash.",
             "Puts need a clear dump confirmation; weak bearish scores default to calls.",
             "Status updates: ENTRY (new), HOLD (open inside window), EXIT (target/stop/time).",
             "Max 1 open challenge flip at a time. 3 consecutive losses pauses auto-enter until next quality epoch. Research / paper only.",
