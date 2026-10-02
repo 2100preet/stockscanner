@@ -814,6 +814,48 @@ PAGE = r"""
       return fmtCST(r.signaled_at || r.entered_at || r.recommended_at || r.exited_at || r.closed_at);
     }
     /** Attach open-position entry times onto matching desk rows (contract first). */
+    /** Contracts closed in rec-log/journal — hide from BUY NOW (not from SELL). */
+    function settledBuyContractSet() {
+      const journalOpen = new Set();
+      const journalClosed = new Set();
+      const recOpen = new Set();
+      const recClosed = new Set();
+      const pushJournal = (t) => {
+        if (!t) return;
+        const occ = String(t.contract || "").toUpperCase();
+        if (!occ) return;
+        const st = String(t.status || "open").toLowerCase();
+        if (st === "closed" || st === "lapsed") journalClosed.add(occ);
+        else journalOpen.add(occ);
+      };
+      ((DATA.insights || {}).open_positions || []).forEach(pushJournal);
+      ((DATA.insights || {}).closed_trades || []).forEach(pushJournal);
+      ((DATA.daily_pnl || {}).open || []).forEach(pushJournal);
+      ((DATA.daily_pnl || {}).closed || []).forEach(pushJournal);
+      const markRec = (rows, openSet, closedSet) => {
+        (rows || []).forEach(r => {
+          const occ = String((r && r.contract) || "").toUpperCase();
+          if (!occ) return;
+          const st = String((r && r.status) || "open").toLowerCase();
+          if (st === "closed" || st === "lapsed") closedSet.add(occ);
+          else if (st === "open") openSet.add(occ);
+        });
+      };
+      const rec = DATA.rec_log || {};
+      markRec(rec.open_recs, recOpen, recClosed);
+      markRec(rec.closed_recs, recOpen, recClosed);
+      Object.values(rec.by_section || {}).forEach(sec => {
+        if (!sec) return;
+        markRec(sec.open_recs, recOpen, recClosed);
+        markRec(sec.closed_recs, recOpen, recClosed);
+      });
+      const settled = new Set();
+      // Options-tab CLOSED wins for BUY even if a stale journal open remains
+      recClosed.forEach(c => { if (!recOpen.has(c)) settled.add(c); });
+      journalClosed.forEach(c => { if (!journalOpen.has(c)) settled.add(c); });
+      return settled;
+    }
+
     function openPositionTimeIndex() {
       const byOcc = {};
       const bySym = {};
@@ -1018,8 +1060,13 @@ PAGE = r"""
       const setups = [];
       const seen = new Set();
       const openIdx = openPositionTimeIndex();
+      const settledBuys = settledBuyContractSet();
       const add = (row, side, desk) => {
         if (!row || !row.symbol) return;
+        if (side === "BUY") {
+          const occ = String(row.contract || "").toUpperCase();
+          if (occ && settledBuys.has(occ)) return;
+        }
         row = withOpenEntryTime(row, openIdx);
         const key = [
           side,
@@ -5782,6 +5829,34 @@ def create_app(config_path: str | None = None) -> Flask:
             logger.warning("recommendation log unavailable: %s", exc)
             rec_log_payload = {"error": str(exc), "open_recs": [], "closed_recs": [], "by_section": {}}
 
+        # BUY/SELL NOW board: hide BUY rows for contracts already CLOSED in rec-log/journal
+        # (Lottery/RIP lanes can still fire after an exit in the same snapshot cycle.)
+        try:
+            from odte_scanner.signals.now_board_filter import (
+                apply_settled_contract_filter,
+                settled_buy_contracts,
+            )
+
+            settled = settled_buy_contracts(journal=journal, rec_log=rec_log_payload)
+            if settled:
+                apply_settled_contract_filter(
+                    settled=settled,
+                    actions=actions if isinstance(actions, dict) else None,
+                    lottery=lottery if isinstance(lottery, dict) else None,
+                    rip_radar=rip_radar if isinstance(rip_radar, dict) else None,
+                    beauty_monthly=beauty_monthly if isinstance(beauty_monthly, dict) else None,
+                    level_watch=level_watch if isinstance(level_watch, dict) else None,
+                    challenge=challenge if isinstance(challenge, dict) else None,
+                    odte_1k=odte_1k if isinstance(odte_1k, dict) else None,
+                )
+                if journal is not None and isinstance(actions, dict):
+                    from odte_scanner.trading.insights import build_insights as _insights_after_filter
+
+                    insights = _insights_after_filter(
+                        journal=journal, actions=actions, win_rates=win_table
+                    )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("settled-contract BUY filter skipped: %s", exc)
 
         ml6 = scan.get("ml6")
         if not ml6:
