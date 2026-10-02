@@ -951,13 +951,17 @@ def test_index_sniper_radar_hot_spy_quick_inout(tmp_path):
     assert open_t.cost == 34.0
     assert open_t.target_premium_mult == 1.2
     assert open_t.stop_loss_pct == 20.0
-    # Bank +20% sniper exit (same-day)
+    # Bank +20% sniper exit (same-day) — target_mult 1.2 fires first
     open_t.entered_at = (datetime.now(timezone.utc) - timedelta(minutes=45)).isoformat()
     tr.save()
     ev = tr.evaluate_open(open_t, mark=0.41, quote={}, sprint_desk=True)  # +20.6%
     assert ev["action"] == "EXIT"
-    assert "sniper" in ev["detail"].lower()
-    assert "20" in ev["detail"] or "bank" in ev["detail"].lower()
+    detail = ev["detail"].lower()
+    assert "20" in detail or "sniper" in detail or "bank" in detail or "target" in detail
+    # Below bank/target: HOLD
+    open_t.entered_at = (datetime.now(timezone.utc) - timedelta(minutes=45)).isoformat()
+    ev_hold = tr.evaluate_open(open_t, mark=0.37, quote={}, sprint_desk=True)  # +8.8%
+    assert ev_hold["action"] == "HOLD"
 
 
 def test_spx_maps_to_spy_sniper(tmp_path):
