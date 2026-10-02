@@ -58,3 +58,28 @@ def test_append_asked_cst_once():
     assert "asked to buy" in d1 and "CDT" in d1
     d2 = append_asked_cst(d1, action="BUY_NOW", signaled_at_cst="Aug 13, 2026, 11:00:00 AM CDT")
     assert d2 == d1
+
+
+def test_append_asked_cst_buy_rip_verb():
+    d = append_asked_cst("mega rip", action="BUY_RIP", signaled_at_cst="Oct 1, 2026, 6:18:24 PM CDT")
+    assert "asked to buy" in d
+    assert "asked to sell" not in d
+
+
+def test_stamp_buy_sell_times_sticky():
+    from odte_scanner.time_cst import stamp_buy_sell_times
+
+    store: dict = {}
+    row1, store = stamp_buy_sell_times(
+        {"symbol": "AMD", "action": "BUY_RIP", "detail": "rip"},
+        store,
+    )
+    row2, store2 = stamp_buy_sell_times(
+        {"symbol": "AMD", "action": "BUY_RIP", "detail": "rip again"},
+        store,
+    )
+    assert row1["signaled_at"]
+    assert row1["signaled_at_cst"]
+    assert "asked to buy" in row1["detail"]
+    assert row2["signaled_at"] == row1["signaled_at"]
+    assert store2["AMD:BUY_RIP"]["signaled_at"] == row1["signaled_at"]

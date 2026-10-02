@@ -42,11 +42,15 @@ def test_build_level_board_counts():
             "CAT": {"last": 700.0, "session_change_pct": -1.0},
         },
         scores=[{"symbol": "AMD", "ensemble_score": 72}],
+        signal_times_path=None,
     )
     assert board["counts"]["buy_level"] >= 1
     assert any(r["symbol"] == "AMD" for r in board["buy_level"])
     assert any(r["symbol"] == "FPS" for r in board["watch"])
     assert any(r["symbol"] == "CAT" for r in board["cool"])
+    amd = next(r for r in board["buy_level"] if r["symbol"] == "AMD")
+    assert amd.get("signaled_at")
+    assert amd.get("signaled_at_cst")
 
 
 def test_focus_includes_level_watch_names():

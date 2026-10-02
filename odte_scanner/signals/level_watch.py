@@ -9,6 +9,14 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from odte_scanner.time_cst import (
+    append_asked_cst,
+    load_signal_store,
+    resolve_first_signal_time,
+    save_signal_store,
+    signal_timestamps,
+)
+
 # Sticky setups from desk notes (support / breakout / upside ladder).
 LEVEL_SETUPS: dict[str, dict[str, Any]] = {
     "ALAB": {
@@ -89,9 +97,27 @@ class LevelAction:
     right: str = "C"
     dte_bucket: str = "swing"
     hold_style: str = "level-watch"
+    signaled_at: str | None = None
+    signaled_at_cst: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        d = asdict(self)
+        if self.action == "BUY_LEVEL" and not d.get("signaled_at"):
+            d.update(signal_timestamps())
+        return d
+
+
+def _apply_persisted_level(
+    sig: "LevelAction",
+    store: dict[str, Any],
+) -> tuple["LevelAction", dict[str, Any]]:
+    if sig.action != "BUY_LEVEL":
+        return sig, store
+    utc, cst, store = resolve_first_signal_time(store, symbol=sig.symbol, action=sig.action)
+    sig.signaled_at = utc
+    sig.signaled_at_cst = cst
+    sig.detail = append_asked_cst(sig.detail, action=sig.action, signaled_at_cst=cst)
+    return sig, store
 
 
 def level_symbols() -> list[str]:
@@ -277,9 +303,11 @@ def build_level_board(
     scores: list[dict[str, Any]] | None = None,
     candidates: list[dict[str, Any]] | None = None,
     near_breakout_pct: float = 1.5,
+    signal_times_path: str | None = "outputs/level_signal_times.json",
 ) -> dict[str, Any]:
     """Build BUY_LEVEL / WATCH_LEVEL / LEVEL_COOL board for sticky TA names."""
     quotes = quotes or {}
+    store = load_signal_store(signal_times_path)
     score_by = {
         str(r.get("symbol") or "").upper(): float(r.get("ensemble_score") or r.get("score") or 0)
         for r in (scores or [])
@@ -308,6 +336,8 @@ def build_level_board(
         )
         if act is None:
             continue
+        if act.action == "BUY_LEVEL":
+            act, store = _apply_persisted_level(act, store)
         row = act.to_dict()
         all_rows.append(row)
         if act.action == "BUY_LEVEL":
@@ -320,6 +350,7 @@ def build_level_board(
     buy.sort(key=lambda r: float(r.get("strength") or 0), reverse=True)
     watch.sort(key=lambda r: float(r.get("strength") or 0), reverse=True)
     cool.sort(key=lambda r: float(r.get("strength") or 0), reverse=True)
+    save_signal_store(signal_times_path, store)
 
     return {
         "label": "Level Watch",
@@ -334,6 +365,7 @@ def build_level_board(
         "cool": cool,
         "all": all_rows,
         "level_symbols": level_symbols(),
+        "signal_times": store,
         "counts": {
             "buy_level": len(buy),
             "buy_now": len(buy),

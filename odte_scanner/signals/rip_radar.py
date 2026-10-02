@@ -14,6 +14,14 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from odte_scanner.time_cst import (
+    append_asked_cst,
+    load_signal_store,
+    resolve_first_signal_time,
+    save_signal_store,
+    signal_timestamps,
+)
+
 ET = ZoneInfo("America/New_York")
 
 # Liquid megas / China ADRs / semis the desk wants on RIP alerts
@@ -54,9 +62,27 @@ class RipAction:
     win_samples: int | None = None
     cooldown_waived: bool = False
     right: str = "C"
+    signaled_at: str | None = None
+    signaled_at_cst: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        d = asdict(self)
+        if self.action == "BUY_RIP" and not d.get("signaled_at"):
+            d.update(signal_timestamps())
+        return d
+
+
+def _apply_persisted_rip(
+    sig: "RipAction",
+    store: dict[str, Any],
+) -> tuple["RipAction", dict[str, Any]]:
+    if sig.action != "BUY_RIP":
+        return sig, store
+    utc, cst, store = resolve_first_signal_time(store, symbol=sig.symbol, action=sig.action)
+    sig.signaled_at = utc
+    sig.signaled_at_cst = cst
+    sig.detail = append_asked_cst(sig.detail, action=sig.action, signaled_at_cst=cst)
+    return sig, store
 
 
 def _live_pct(quote: dict[str, Any] | None, candidate: dict[str, Any] | None = None) -> float | None:
@@ -374,8 +400,10 @@ def build_rip_board(
     min_mom5: float = 0.05,
     max_tickets: int = 12,
     now: datetime | None = None,
+    signal_times_path: str | None = "outputs/rip_signal_times.json",
 ) -> dict[str, Any]:
     quotes = quotes or {}
+    store = load_signal_store(signal_times_path)
     score_map = {
         str(s.get("symbol") or "").upper(): float(s.get("ensemble_score") or 0)
         for s in (scores or [])
@@ -421,6 +449,7 @@ def build_rip_board(
             now=now,
         )
         if act.action == "BUY_RIP":
+            act, store = _apply_persisted_rip(act, store)
             buys.append(act)
         elif act.action == "WATCH_RIP":
             watches.append(act)
@@ -429,6 +458,7 @@ def build_rip_board(
 
     buys.sort(key=lambda a: a.strength, reverse=True)
     watches.sort(key=lambda a: a.strength, reverse=True)
+    save_signal_store(signal_times_path, store)
     primary = buys[0] if buys else (watches[0] if watches else None)
     return {
         "label": "RIP / CONTINUATION",
@@ -450,6 +480,7 @@ def build_rip_board(
             "cool": len(cool),
         },
         "mega_symbols": sorted(MEGA_RIP_SYMBOLS),
+        "signal_times": store,
         "rules": [
             "Need session ≥~1% OR ≥1.2% reclaim off the day low (TSLA 347→351 style).",
             "Prefer ATM–near OTM (≤4%) liquid calls on focus megas.",

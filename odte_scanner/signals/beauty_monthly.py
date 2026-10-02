@@ -14,6 +14,14 @@ from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from odte_scanner.time_cst import (
+    append_asked_cst,
+    load_signal_store,
+    resolve_first_signal_time,
+    save_signal_store,
+    signal_timestamps,
+)
+
 ET = ZoneInfo("America/New_York")
 
 # Sep beauty set + peers that print the same monthly melt pattern
@@ -53,9 +61,27 @@ class BeautyAction:
     open_interest: int | None = None
     target_premium_mult: float = 3.0  # aim ~+200% (stretch 5× / +400%)
     right: str = "C"
+    signaled_at: str | None = None
+    signaled_at_cst: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        d = asdict(self)
+        if self.action == "BUY_BEAUTY" and not d.get("signaled_at"):
+            d.update(signal_timestamps())
+        return d
+
+
+def _apply_persisted_beauty(
+    sig: "BeautyAction",
+    store: dict[str, Any],
+) -> tuple["BeautyAction", dict[str, Any]]:
+    if sig.action != "BUY_BEAUTY":
+        return sig, store
+    utc, cst, store = resolve_first_signal_time(store, symbol=sig.symbol, action=sig.action)
+    sig.signaled_at = utc
+    sig.signaled_at_cst = cst
+    sig.detail = append_asked_cst(sig.detail, action=sig.action, signaled_at_cst=cst)
+    return sig, store
 
 
 def is_beauty_symbol(symbol: str) -> bool:
@@ -376,8 +402,10 @@ def build_beauty_board(
     min_month_pct: float = 5.0,
     max_tickets: int = 12,
     now: datetime | None = None,
+    signal_times_path: str | None = "outputs/beauty_signal_times.json",
 ) -> dict[str, Any]:
     quotes = quotes or {}
+    store = load_signal_store(signal_times_path)
     score_map = {
         str(s.get("symbol") or "").upper(): float(s.get("ensemble_score") or 0)
         for s in (scores or [])
@@ -416,6 +444,7 @@ def build_beauty_board(
             now=now,
         )
         if act.action == "BUY_BEAUTY":
+            act, store = _apply_persisted_beauty(act, store)
             buys.append(act)
         elif act.action == "WATCH_BEAUTY":
             watches.append(act)
@@ -424,6 +453,7 @@ def build_beauty_board(
 
     buys.sort(key=lambda a: a.strength, reverse=True)
     watches.sort(key=lambda a: a.strength, reverse=True)
+    save_signal_store(signal_times_path, store)
     primary = buys[0] if buys else (watches[0] if watches else None)
     pace = oct_end_pace_note(now=now)
     return {
@@ -451,6 +481,7 @@ def build_beauty_board(
         "beauty_symbols": sorted(BEAUTY_SYMBOLS),
         "dte_band": {"min": min_dte, "max": max_dte, "prefer": prefer_dte},
         "oct_end_pace": pace,
+        "signal_times": store,
         "rules": [
             f"Prefer DTE {min_dte}–{max_dte} (target ~{prefer_dte}d) — skip pure 0DTE on this lane",
             "Names: AMD META MU SNDK + liquid mega/semi peers",
