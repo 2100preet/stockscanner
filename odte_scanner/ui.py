@@ -215,6 +215,7 @@ PAGE = r"""
       <button data-tab="powerhour">Power Hour</button>
       <button data-tab="explosive">Explosive</button>
       <button data-tab="rip">RIP / META</button>
+      <button data-tab="patterns">Patterns</button>
       <button data-tab="beauty">Beauty 1mo</button>
       <button data-tab="weekly">1 Week</button>
       <button data-tab="swing">Swing 1–3M</button>
@@ -228,7 +229,7 @@ PAGE = r"""
 
     <section class="tabpane active" id="tab-nowboard">
       <h2>BUY NOW / SELL NOW — all desks</h2>
-      <p class="lede">Live option BUY NOW / SELL NOW across 0DTE, weeklies, swing, Explosive, <strong>RIP/META</strong>, <strong>Levels</strong>, ML6, Challenge, and 0DTE $1K IN/OUT. Hist win ≥80% (n≥5) gates Options BUY NOW. Same losing OCC stays blocked; mega names can still BUY when tape is ripping (see RIP tab). SETUP rows are quality tape without a contract yet — not a buy.</p>
+      <p class="lede">Live option BUY NOW / SELL NOW across 0DTE, weeklies, swing, Explosive, <strong>RIP/META</strong>, <strong>Patterns</strong> (double bottom/top · golden triangle), <strong>Levels</strong>, ML6, Challenge, and 0DTE $1K IN/OUT. Hist win ≥80% (n≥5) gates Options BUY NOW. Same losing OCC stays blocked; mega names can still BUY when tape is ripping (see RIP tab). SETUP rows are quality tape without a contract yet — not a buy.</p>
       <div class="metric-row" id="nowBoardMetrics"></div>
       <p class="lede" id="nowBoardNote" style="margin-top:0;font-size:.76rem"></p>
       <h2>BUY NOW</h2>
@@ -469,6 +470,32 @@ PAGE = r"""
         <div id="ripWatch" class="empty">—</div>
       </div>
       <p class="lede" id="ripRules" style="font-size:.72rem"></p>
+    </section>
+
+    <section class="tabpane" id="tab-patterns">
+      <h2>CHART PATTERNS — double bottom / top · golden triangle</h2>
+      <p class="lede">
+        Daily OHLC pattern scan on liquid stocks:
+        <strong>double bottom</strong> / <strong>double top</strong>,
+        <strong>ascending (golden) triangle</strong>, descending triangle, symmetrical triangle.
+        <strong>BUY</strong> on bullish neckline/resist break · <strong>SHORT</strong> on bearish support break ·
+        <strong>WATCH</strong> while forming. Board-only Patterns desk (not hist-gated Options BUY NOW).
+      </p>
+      <div class="metric-row" id="patternMetrics"></div>
+      <div class="cards" id="patternPrimary"></div>
+      <div class="panel">
+        <h2>BUY PATTERN</h2>
+        <div id="patternBuy" class="empty">No BUY PATTERN — waiting for double bottom / golden triangle breakout.</div>
+      </div>
+      <div class="panel">
+        <h2>SHORT PATTERN</h2>
+        <div id="patternShort" class="empty">No SHORT PATTERN — waiting for double top / descending triangle breakdown.</div>
+      </div>
+      <div class="panel">
+        <h2>WATCH / COOL</h2>
+        <div id="patternWatch" class="empty">—</div>
+      </div>
+      <p class="lede" id="patternRules" style="font-size:.72rem"></p>
     </section>
 
     <section class="tabpane" id="tab-beauty">
@@ -995,7 +1022,7 @@ PAGE = r"""
       <p class="pc-why"><strong>EXIT:</strong> ${t.planOut}</p>`;
     }
 
-    const NOW_DESK_ORDER = ["0DTE", "1 Week", "Swing 1–3M", "Levels", "Explosive", "ML6", "Challenge", "0DTE $1K", "Options"];
+    const NOW_DESK_ORDER = ["0DTE", "1 Week", "Swing 1–3M", "Patterns", "Levels", "Explosive", "ML6", "Challenge", "0DTE $1K", "Options"];
 
     function horizonDesk(row, fallback) {
       const b = String(row.dte_bucket || row.horizon || row.hold_style || row.style || "").toLowerCase();
@@ -1056,6 +1083,11 @@ PAGE = r"""
       (levels.buy_level || levels.buy_now || []).forEach(r => add(Object.assign({}, r, { action: r.action || "BUY_LEVEL" }), "BUY", "Levels"));
       (levels.watch || []).slice(0, 12).forEach(r => add(Object.assign({}, r, { action: r.action || "WAIT" }), "WAIT", "Levels"));
       (levels.cool || []).slice(0, 4).forEach(r => add(Object.assign({}, r, { action: r.action || "SETUP" }), "SETUP", "Levels"));
+      const patterns = DATA.chart_patterns || DATA.patterns || {};
+      (patterns.buy_pattern || patterns.buy_now || []).forEach(r => add(Object.assign({}, r, { action: r.action || "BUY_PATTERN" }), "BUY", "Patterns"));
+      (patterns.short_pattern || patterns.sell_now || []).forEach(r => add(Object.assign({}, r, { action: r.action || "SHORT_PATTERN" }), "SELL", "Patterns"));
+      (patterns.watch || []).slice(0, 12).forEach(r => add(Object.assign({}, r, { action: r.action || "WAIT" }), "WAIT", "Patterns"));
+      (patterns.cool || []).slice(0, 4).forEach(r => add(Object.assign({}, r, { action: r.action || "SETUP" }), "SETUP", "Patterns"));
       const ml = (DATA.ml6 && DATA.ml6.actions) || {};
       (ml.buy_now || []).forEach(r => add(r, "BUY", "ML6"));
       (ml.sell_now || []).forEach(r => add(r, "SELL", "ML6"));
@@ -1686,6 +1718,84 @@ PAGE = r"""
       if (rulesEl) {
         const rules = ch.rules || [];
         rulesEl.innerHTML = rules.length ? `<strong>Rules:</strong> ${rules.join(" · ")}` : "";
+      }
+    }
+
+    function patternCard(r) {
+      const act = String(r.action || "");
+      const buy = act.includes("BUY");
+      const short = act.includes("SHORT");
+      const cool = act.includes("COOL");
+      const cls = buy ? "long" : (short || cool ? "short" : "wait");
+      const label = buy ? "BUY PATTERN" : (short ? "SHORT PATTERN" : (cool ? "PATTERN COOL" : "WATCH PATTERN"));
+      const pat = String(r.pattern || "").replace(/_/g, " ");
+      return `<div class="action-card ${cls}">
+        <div class="ac-top"><span class="badge ${buy?"buy":(short||cool?"sell":"wait")}">${label}</span>
+          <strong>${r.symbol}</strong>
+          <span class="tag">${pat||"—"}</span>
+          ${r.golden?`<span class="tag">golden</span>`:""}
+          <span class="tag">${r.right==="P"?"PUT bias":"CALL bias"}</span></div>
+        <div class="ac-conf">${r.headline||""}</div>
+        <div class="ac-meta">
+          <div>Spot<strong>${r.spot==null?"—":"$"+fmt(r.spot,2)}</strong></div>
+          <div>Neck/break<strong>${r.neckline==null?"—":"$"+fmt(r.neckline,2)}</strong></div>
+          <div>Target<strong>${r.target==null?"—":"$"+fmt(r.target,2)}</strong></div>
+          <div>Stop<strong>${r.stop==null?"—":"$"+fmt(r.stop,2)}</strong></div>
+          <div>Strength<strong>${r.strength==null?"—":fmt(r.strength,0)}</strong></div>
+          <div>Day<strong class="${pctClass(r.live_change_pct)}">${r.live_change_pct==null?"—":fmt(r.live_change_pct,2)+"%"}</strong></div>
+        </div>
+        <div class="why">${r.detail||""}</div>
+      </div>`;
+    }
+
+    function renderChartPatterns(board) {
+      const metrics = document.getElementById("patternMetrics");
+      const buyEl = document.getElementById("patternBuy");
+      const shortEl = document.getElementById("patternShort");
+      const watchEl = document.getElementById("patternWatch");
+      const primaryEl = document.getElementById("patternPrimary");
+      const rulesEl = document.getElementById("patternRules");
+      const ch = board || {};
+      const c = ch.counts || {};
+      const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
+      if (metrics) {
+        metrics.innerHTML = [
+          m("BUY", c.buy_pattern||0, (c.buy_pattern||0)>0?"up":""),
+          m("SHORT", c.short_pattern||0, (c.short_pattern||0)>0?"down":""),
+          m("WATCH", c.watch||0),
+          m("Scanned", c.scanned||0),
+          m("Hits", c.hits||0),
+        ].join("");
+      }
+      if (primaryEl) {
+        const p = ch.primary;
+        primaryEl.innerHTML = p
+          ? `<div class="cards">${patternCard(p)}</div><p class="lede" style="margin-top:.4rem;font-size:.76rem">${ch.purpose||""}</p>`
+          : `<div class="empty">No primary pattern — scanning daily bars for double bottom/top &amp; triangles.</div>`;
+      }
+      if (buyEl) {
+        const rows = ch.buy_pattern || ch.buy_now || [];
+        buyEl.innerHTML = rows.length
+          ? `<div class="cards">${rows.map(patternCard).join("")}</div>`
+          : `<div class="empty">No BUY PATTERN — waiting for double bottom / golden triangle breakout.</div>`;
+      }
+      if (shortEl) {
+        const rows = ch.short_pattern || ch.sell_now || [];
+        shortEl.innerHTML = rows.length
+          ? `<div class="cards">${rows.map(patternCard).join("")}</div>`
+          : `<div class="empty">No SHORT PATTERN — waiting for double top / descending triangle breakdown.</div>`;
+      }
+      if (watchEl) {
+        const gated = [...(ch.watch||[]), ...(ch.cool||[]).slice(0,8)];
+        watchEl.innerHTML = gated.length
+          ? `<div class="cards">${gated.map(patternCard).join("")}</div>`
+          : `<div class="empty">Pattern lane idle.</div>`;
+      }
+      if (rulesEl) {
+        const rules = ch.rules || [];
+        rulesEl.innerHTML = rules.length
+          ? `<strong>Rules:</strong> ${rules.join(" · ")} <span class="status">${ch.disclaimer||""}</span>`
+          : "";
       }
     }
 
@@ -3500,6 +3610,7 @@ PAGE = r"""
       renderRadar(DATA.radar || {});
       renderChaseRadar(DATA.chase_radar || DATA.convex_risk || {});
       renderRipRadar(DATA.rip_radar || DATA.rip || {});
+      renderChartPatterns(DATA.chart_patterns || DATA.patterns || {});
       renderBeautyMonthly(DATA.beauty_monthly || DATA.beauty || {});
       renderEcho(DATA.echo || {});
       renderDarkpoolMini(DATA.echo || {});
@@ -4920,6 +5031,66 @@ def create_app(config_path: str | None = None) -> Flask:
                     "note": "Level watch temporarily unavailable.",
                 }
 
+        # Classic chart patterns — double bottom/top + golden/asc/desc/sym triangles
+        chart_patterns: dict = {
+            "buy_pattern": [],
+            "buy_now": [],
+            "short_pattern": [],
+            "sell_now": [],
+            "watch": [],
+            "cool": [],
+            "counts": {},
+        }
+        if actions_cfg.get("chart_patterns_enabled", True):
+            try:
+                from odte_scanner.signals.chart_patterns import build_pattern_board
+
+                # Prefer focus / scored names; fall back to quote keys
+                pat_syms = []
+                seen_pat: set[str] = set()
+                for src in (
+                    scan.get("tickers") or [],
+                    [r.get("symbol") for r in (scan.get("scores") or [])],
+                    list(quotes.keys()),
+                ):
+                    for s in src:
+                        sym = str(s or "").upper()
+                        if not sym or sym in seen_pat:
+                            continue
+                        seen_pat.add(sym)
+                        pat_syms.append(sym)
+                chart_patterns = build_pattern_board(
+                    symbols=pat_syms,
+                    quotes=quotes,
+                    scores=scan.get("scores") or [],
+                    aliases=aliases,
+                    fetch_bars=bool(actions_cfg.get("chart_patterns_fetch_bars", True))
+                    and ((not offline) or bool(actions_cfg.get("chart_patterns_fetch_bars_offline", True))),
+                    max_symbols=int(actions_cfg.get("chart_patterns_max_symbols", 36)),
+                    period=str(actions_cfg.get("chart_patterns_period") or "6mo"),
+                    near_break_pct=float(actions_cfg.get("chart_patterns_near_break_pct", 1.0)),
+                    double_tol_pct=float(actions_cfg.get("chart_patterns_double_tol_pct", 1.8)),
+                )
+                chart_patterns = _uw_annotate_board(
+                    chart_patterns,
+                    keys=("buy_pattern", "buy_now", "short_pattern", "sell_now", "watch"),
+                    hard_block=False,
+                )
+                chart_patterns["generated_at"] = datetime.now(timezone.utc).isoformat()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("chart patterns unavailable: %s", exc)
+                chart_patterns = {
+                    "error": str(exc),
+                    "buy_pattern": [],
+                    "buy_now": [],
+                    "short_pattern": [],
+                    "sell_now": [],
+                    "watch": [],
+                    "cool": [],
+                    "counts": {},
+                    "note": "Chart patterns temporarily unavailable.",
+                }
+
         from odte_scanner.challenge import build_challenge_board
         from odte_scanner.data.universe import liquid_universe
         from odte_scanner.echo import build_echo_board
@@ -5882,6 +6053,7 @@ def create_app(config_path: str | None = None) -> Flask:
                     "rip",
                     "beauty",
                     "level_watch",
+                    "chart_patterns",
                     "odte_1k",
                     "challenge_ENTRY",
                 ],
@@ -6017,6 +6189,7 @@ def create_app(config_path: str | None = None) -> Flask:
                         "rip_radar": rip_radar,
                         "beauty_monthly": beauty_monthly,
                         "level_watch": level_watch,
+                        "chart_patterns": chart_patterns,
                     },
                     indent=2,
                     default=str,
@@ -6087,6 +6260,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 "rip_radar": rip_radar,
                 "beauty_monthly": beauty_monthly,
                 "level_watch": level_watch,
+                "chart_patterns": chart_patterns,
                 "echo": echo,
                 "challenge": challenge,
                 "tradier": tradier_status,

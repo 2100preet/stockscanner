@@ -381,6 +381,16 @@ actions:
   chase_enrich_live: true    # live chain sweep on top ripping names (capped)
   chase_max_live_symbols: 8
   chase_feed_journal: false  # never auto paper-enter risky chase tickets
+  # Classic chart patterns — double bottom/top + golden/ascending/descending/sym triangles
+  chart_patterns_enabled: true
+  chart_patterns_max_symbols: 36
+  chart_patterns_period: "6mo"
+  chart_patterns_near_break_pct: 1.0
+  chart_patterns_double_tol_pct: 1.8
+  chart_patterns_fetch_bars: true
+  # Sticky TA level-watch (manual support/breakout setups)
+  level_watch_enabled: true
+  level_near_breakout_pct: 1.5
   # $1k → $1M challenge — Oct sprint; first milestone $500k via quality mega flips
   # Honest path only: no fake equity. Earn every dollar from $1,000 paper cash.
   challenge_start_usd: 1000
