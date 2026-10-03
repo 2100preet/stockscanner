@@ -3,6 +3,14 @@
 Env: ``UNUSUAL_WHALES_API_KEY`` — never commit the key; set as a GitHub
 Actions secret and pass it into the Pages workflow.
 
+Endpoints used:
+  - ``/api/option-trades/flow-alerts`` — call/put flow leaders
+  - ``/api/market/market-tide`` — whole-market tide
+  - ``/api/darkpool/recent`` — ATS prints
+  - ``/api/stock/{ticker}/greek-exposure/expiry`` — GEX by expiry
+  - ``/api/stock/{ticker}/flow-per-expiry`` — premium by expiry
+  - ``/api/option-contract/{id}/intraday`` — 1m contract ticks
+
 Docs: https://api.unusualwhales.com/docs
 Skill: https://unusualwhales.com/skill.md
 """
@@ -22,6 +30,9 @@ FLOW_ALERTS = f"{BASE_URL}/api/option-trades/flow-alerts"
 MARKET_TIDE = f"{BASE_URL}/api/market/market-tide"
 DARKPOOL_RECENT = f"{BASE_URL}/api/darkpool/recent"
 NET_PREM_TMPL = f"{BASE_URL}/api/stock/{{ticker}}/net-prem-ticks"
+GREEK_EXPOSURE_EXPIRY_TMPL = f"{BASE_URL}/api/stock/{{ticker}}/greek-exposure/expiry"
+FLOW_PER_EXPIRY_TMPL = f"{BASE_URL}/api/stock/{{ticker}}/flow-per-expiry"
+OPTION_CONTRACT_INTRADAY_TMPL = f"{BASE_URL}/api/option-contract/{{id}}/intraday"
 CLIENT_API_ID = "100001"
 
 
@@ -409,14 +420,403 @@ def fetch_darkpool_recent(
         }
 
 
+def _not_configured() -> dict[str, Any]:
+    return {
+        "ok": False,
+        "configured": False,
+        "skipped": True,
+        "source": "unusual_whales",
+        "data": [],
+        "error": "UNUSUAL_WHALES_API_KEY not set",
+    }
+
+
+def fetch_greek_exposure_by_expiry(
+    ticker: str,
+    *,
+    api_key: str | None = None,
+    date: str | None = None,
+    timeout: float = 15.0,
+) -> dict[str, Any]:
+    """GET /api/stock/{ticker}/greek-exposure/expiry — GEX/delta/vanna by expiry."""
+    key = api_key if api_key is not None else api_key_from_env()
+    if not key:
+        return _not_configured()
+    sym = _normalize_ticker(ticker)
+    if not sym:
+        return {
+            "ok": False,
+            "configured": True,
+            "source": "unusual_whales",
+            "data": [],
+            "error": "ticker required",
+        }
+    params: dict[str, Any] = {}
+    if date:
+        params["date"] = str(date)[:10]
+    try:
+        r = requests.get(
+            GREEK_EXPOSURE_EXPIRY_TMPL.format(ticker=sym),
+            headers=_headers(key),
+            params=params or None,
+            timeout=timeout,
+        )
+        if r.status_code == 401:
+            return {
+                "ok": False,
+                "configured": True,
+                "source": "unusual_whales",
+                "ticker": sym,
+                "data": [],
+                "error": "unauthorized (check API key)",
+                "status_code": 401,
+            }
+        r.raise_for_status()
+        payload = r.json() if r.content else {}
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, list):
+            data = []
+        return {
+            "ok": True,
+            "configured": True,
+            "source": "unusual_whales",
+            "ticker": sym,
+            "data": data,
+            "status_code": r.status_code,
+            "summary": summarize_greek_by_expiry(data, ticker=sym),
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("unusual_whales greek-exposure/expiry %s failed: %s", sym, exc)
+        return {
+            "ok": False,
+            "configured": True,
+            "source": "unusual_whales",
+            "ticker": sym,
+            "data": [],
+            "error": str(exc),
+        }
+
+
+def fetch_flow_per_expiry(
+    ticker: str,
+    *,
+    api_key: str | None = None,
+    timeout: float = 15.0,
+) -> dict[str, Any]:
+    """GET /api/stock/{ticker}/flow-per-expiry — call/put premium by expiry."""
+    key = api_key if api_key is not None else api_key_from_env()
+    if not key:
+        return _not_configured()
+    sym = _normalize_ticker(ticker)
+    if not sym:
+        return {
+            "ok": False,
+            "configured": True,
+            "source": "unusual_whales",
+            "data": [],
+            "error": "ticker required",
+        }
+    try:
+        r = requests.get(
+            FLOW_PER_EXPIRY_TMPL.format(ticker=sym),
+            headers=_headers(key),
+            timeout=timeout,
+        )
+        if r.status_code == 401:
+            return {
+                "ok": False,
+                "configured": True,
+                "source": "unusual_whales",
+                "ticker": sym,
+                "data": [],
+                "error": "unauthorized (check API key)",
+                "status_code": 401,
+            }
+        r.raise_for_status()
+        payload = r.json() if r.content else {}
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, list):
+            data = []
+        asof = payload.get("date") if isinstance(payload, dict) else None
+        return {
+            "ok": True,
+            "configured": True,
+            "source": "unusual_whales",
+            "ticker": sym,
+            "data": data,
+            "asof": asof,
+            "status_code": r.status_code,
+            "summary": summarize_flow_per_expiry(data, ticker=sym),
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("unusual_whales flow-per-expiry %s failed: %s", sym, exc)
+        return {
+            "ok": False,
+            "configured": True,
+            "source": "unusual_whales",
+            "ticker": sym,
+            "data": [],
+            "error": str(exc),
+        }
+
+
+def fetch_option_contract_intraday(
+    contract_id: str,
+    *,
+    api_key: str | None = None,
+    date: str | None = None,
+    timeout: float = 15.0,
+) -> dict[str, Any]:
+    """GET /api/option-contract/{id}/intraday — 1m bid/ask/mid volume ticks."""
+    key = api_key if api_key is not None else api_key_from_env()
+    if not key:
+        return _not_configured()
+    cid = str(contract_id or "").upper().strip()
+    if not cid:
+        return {
+            "ok": False,
+            "configured": True,
+            "source": "unusual_whales",
+            "data": [],
+            "error": "contract id required",
+        }
+    params: dict[str, Any] = {}
+    if date:
+        params["date"] = str(date)[:10]
+    try:
+        r = requests.get(
+            OPTION_CONTRACT_INTRADAY_TMPL.format(id=cid),
+            headers=_headers(key),
+            params=params or None,
+            timeout=timeout,
+        )
+        if r.status_code == 401:
+            return {
+                "ok": False,
+                "configured": True,
+                "source": "unusual_whales",
+                "contract": cid,
+                "data": [],
+                "error": "unauthorized (check API key)",
+                "status_code": 401,
+            }
+        r.raise_for_status()
+        payload = r.json() if r.content else {}
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, list):
+            data = []
+        return {
+            "ok": True,
+            "configured": True,
+            "source": "unusual_whales",
+            "contract": cid,
+            "data": data,
+            "status_code": r.status_code,
+            "summary": summarize_contract_intraday(data, contract=cid),
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("unusual_whales option-contract intraday %s failed: %s", cid, exc)
+        return {
+            "ok": False,
+            "configured": True,
+            "source": "unusual_whales",
+            "contract": cid,
+            "data": [],
+            "error": str(exc),
+        }
+
+
+def summarize_greek_by_expiry(
+    rows: list[Any] | None,
+    *,
+    ticker: str | None = None,
+) -> dict[str, Any]:
+    """Compact desk summary from greek-exposure/expiry rows."""
+    items: list[dict[str, Any]] = []
+    net_gex = 0.0
+    net_delta = 0.0
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        call_gex = _as_float(row.get("call_gex"))
+        put_gex = _as_float(row.get("put_gex"))
+        call_delta = _as_float(row.get("call_delta"))
+        put_delta = _as_float(row.get("put_delta"))
+        gex = call_gex + put_gex
+        delta = call_delta + put_delta
+        net_gex += gex
+        net_delta += delta
+        exp = str(row.get("expiry") or "")[:10]
+        items.append(
+            {
+                "expiry": exp,
+                "dte": row.get("dte"),
+                "call_gex": round(call_gex, 0),
+                "put_gex": round(put_gex, 0),
+                "net_gex": round(gex, 0),
+                "net_delta": round(delta, 0),
+            }
+        )
+    items.sort(key=lambda r: abs(float(r.get("net_gex") or 0)), reverse=True)
+    top = items[:6]
+    bias = "call_gex" if net_gex > 0 else ("put_gex" if net_gex < 0 else "neutral")
+    return {
+        "ticker": _normalize_ticker(ticker) if ticker else None,
+        "expiries_n": len(items),
+        "net_gex": round(net_gex, 0),
+        "net_delta": round(net_delta, 0),
+        "bias": bias,
+        "top_expiries": top,
+        "headline": (
+            f"{_normalize_ticker(ticker) or '—'} GEX by expiry "
+            f"net {net_gex/1e6:+.1f}M · {len(items)} expiries"
+            if items
+            else f"{_normalize_ticker(ticker) or '—'} GEX by expiry — empty"
+        ),
+    }
+
+
+def summarize_flow_per_expiry(
+    rows: list[Any] | None,
+    *,
+    ticker: str | None = None,
+) -> dict[str, Any]:
+    """Compact desk summary from flow-per-expiry rows."""
+    items: list[dict[str, Any]] = []
+    call_prem = 0.0
+    put_prem = 0.0
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        c = _as_float(row.get("call_premium"))
+        p = _as_float(row.get("put_premium"))
+        call_prem += c
+        put_prem += p
+        exp = str(row.get("expiry") or "")[:10]
+        items.append(
+            {
+                "expiry": exp,
+                "call_premium": round(c, 0),
+                "put_premium": round(p, 0),
+                "net_premium": round(c - p, 0),
+                "call_volume": int(_as_float(row.get("call_volume"))),
+                "put_volume": int(_as_float(row.get("put_volume"))),
+            }
+        )
+    items.sort(key=lambda r: abs(float(r.get("net_premium") or 0)), reverse=True)
+    net = call_prem - put_prem
+    if call_prem > put_prem * 1.15:
+        sentiment = "bullish"
+    elif put_prem > call_prem * 1.15:
+        sentiment = "bearish"
+    else:
+        sentiment = "neutral"
+    return {
+        "ticker": _normalize_ticker(ticker) if ticker else None,
+        "expiries_n": len(items),
+        "call_premium": round(call_prem, 0),
+        "put_premium": round(put_prem, 0),
+        "net_premium": round(net, 0),
+        "sentiment": sentiment,
+        "top_expiries": items[:6],
+        "headline": (
+            f"{_normalize_ticker(ticker) or '—'} flow/expiry "
+            f"{sentiment} net ${net/1000:,.0f}k · {len(items)} expiries"
+            if items
+            else f"{_normalize_ticker(ticker) or '—'} flow/expiry — empty"
+        ),
+    }
+
+
+def summarize_contract_intraday(
+    rows: list[Any] | None,
+    *,
+    contract: str | None = None,
+) -> dict[str, Any]:
+    """Compact desk summary from option-contract intraday minute ticks."""
+    ask_vol = bid_vol = mid_vol = 0.0
+    ask_prem = bid_prem = 0.0
+    last_close = None
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        ask_vol += _as_float(row.get("volume_ask_side"))
+        bid_vol += _as_float(row.get("volume_bid_side"))
+        mid_vol += _as_float(row.get("volume_mid_side"))
+        ask_prem += _as_float(row.get("premium_ask_side"))
+        bid_prem += _as_float(row.get("premium_bid_side"))
+        if row.get("close") is not None:
+            last_close = _as_float(row.get("close"))
+    total = ask_vol + bid_vol + mid_vol
+    if ask_vol > bid_vol * 1.15:
+        side = "ask"
+    elif bid_vol > ask_vol * 1.15:
+        side = "bid"
+    else:
+        side = "mixed"
+    return {
+        "contract": str(contract or "").upper() or None,
+        "bars_n": len([r for r in (rows or []) if isinstance(r, dict)]),
+        "volume_ask": int(ask_vol),
+        "volume_bid": int(bid_vol),
+        "volume_mid": int(mid_vol),
+        "premium_ask": round(ask_prem, 0),
+        "premium_bid": round(bid_prem, 0),
+        "last_close": last_close,
+        "dominant_side": side,
+        "headline": (
+            f"{str(contract or '').upper() or '—'} intraday "
+            f"{side}-led vol ask {int(ask_vol)}/bid {int(bid_vol)}"
+            + (f" · last ${last_close:.2f}" if last_close is not None else "")
+            if total > 0
+            else f"{str(contract or '').upper() or '—'} intraday — empty"
+        ),
+    }
+
+
+def build_uw_expiry_pack(
+    ticker: str,
+    *,
+    api_key: str | None = None,
+    date: str | None = None,
+    timeout: float = 15.0,
+    include_raw: bool = False,
+) -> dict[str, Any]:
+    """Focused helper: greek-by-expiry + flow-per-expiry for one ticker."""
+    greeks = fetch_greek_exposure_by_expiry(
+        ticker, api_key=api_key, date=date, timeout=timeout
+    )
+    flow = fetch_flow_per_expiry(ticker, api_key=api_key, timeout=timeout)
+    sym = _normalize_ticker(ticker)
+    out: dict[str, Any] = {
+        "ok": bool(greeks.get("ok") or flow.get("ok")),
+        "configured": bool(greeks.get("configured") or flow.get("configured")),
+        "source": "unusual_whales",
+        "ticker": sym,
+        "greek_by_expiry": greeks.get("summary") or {},
+        "flow_per_expiry": flow.get("summary") or {},
+        "greeks_ok": bool(greeks.get("ok")),
+        "flow_ok": bool(flow.get("ok")),
+        "error": greeks.get("error") or flow.get("error"),
+    }
+    if include_raw:
+        out["greek_by_expiry_raw"] = greeks.get("data") or []
+        out["flow_per_expiry_raw"] = flow.get("data") or []
+    return out
+
+
 def build_uw_desk_context(
     *,
     api_key: str | None = None,
     flow_limit: int = 100,
     min_premium: float = 50_000.0,
     timeout: float = 18.0,
+    focus_tickers: list[str] | None = None,
+    focus_contracts: list[str] | None = None,
+    max_focus_tickers: int = 4,
+    max_focus_contracts: int = 2,
 ) -> dict[str, Any]:
-    """Full desk pack: flow leaders + market tide + dark-pool leaders."""
+    """Full desk pack: flow leaders + market tide + dark-pool + optional expiry/intraday."""
     flow = build_uw_flow_board(
         api_key=api_key,
         limit=flow_limit,
@@ -425,6 +825,50 @@ def build_uw_desk_context(
     )
     tide = fetch_market_tide(api_key=api_key, timeout=min(timeout, 15.0))
     dark = fetch_darkpool_recent(api_key=api_key, limit=40, timeout=min(timeout, 15.0))
+
+    # Optional per-ticker expiry pack + contract intraday (capped — Pages budget)
+    by_ticker: dict[str, dict[str, Any]] = {}
+    tickers: list[str] = []
+    for raw in focus_tickers or []:
+        sym = _normalize_ticker(raw)
+        if sym and sym not in tickers:
+            tickers.append(sym)
+        if len(tickers) >= max(0, int(max_focus_tickers)):
+            break
+    for sym in tickers:
+        pack = build_uw_expiry_pack(
+            sym, api_key=api_key, timeout=min(timeout, 12.0), include_raw=False
+        )
+        by_ticker[sym] = pack
+
+    contracts_out: dict[str, dict[str, Any]] = {}
+    cids: list[str] = []
+    for raw in focus_contracts or []:
+        cid = str(raw or "").upper().strip()
+        if cid and cid not in cids:
+            cids.append(cid)
+        if len(cids) >= max(0, int(max_focus_contracts)):
+            break
+    for cid in cids:
+        intra = fetch_option_contract_intraday(
+            cid, api_key=api_key, timeout=min(timeout, 12.0)
+        )
+        contracts_out[cid] = {
+            "ok": bool(intra.get("ok")),
+            "contract": cid,
+            "summary": intra.get("summary") or {},
+            "error": intra.get("error"),
+            "bars_n": len(intra.get("data") or []),
+        }
+
+    expiry_headlines = [
+        (by_ticker[s].get("flow_per_expiry") or {}).get("headline")
+        or (by_ticker[s].get("greek_by_expiry") or {}).get("headline")
+        for s in tickers
+        if by_ticker.get(s, {}).get("ok")
+    ]
+    expiry_headlines = [h for h in expiry_headlines if h]
+
     return {
         "ok": bool(flow.get("ok")),
         "configured": bool(flow.get("configured") or tide.get("configured") or dark.get("configured")),
@@ -432,6 +876,9 @@ def build_uw_desk_context(
         "flow": flow,
         "market_tide": tide,
         "darkpool": dark,
+        "greek_flow_by_ticker": by_ticker,
+        "contract_intraday": contracts_out,
+        "expiry_headlines": expiry_headlines[:8],
         # Flatten common fields so existing challenge/actions code keeps working
         "alerts_n": flow.get("alerts_n"),
         "leaders": flow.get("leaders") or [],
