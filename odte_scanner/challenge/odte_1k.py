@@ -144,9 +144,67 @@ def _desk_action_for(action: str, right: str = "P") -> str:
 
 
 def _zone_put_premium(spot: float) -> float:
-    """Synthetic ATM 0DTE put ask so paper IN works when chain is dark."""
+    """Synthetic ATM put ask so paper IN works when chain is dark."""
     # ~0.25% of spot, floored for cheap names / capped for SPX-class
     return round(min(8.0, max(0.35, float(spot) * 0.0025)), 2)
+
+
+def _dte_bucket_for(dte: int | None) -> str:
+    try:
+        n = int(dte) if dte is not None else 0
+    except (TypeError, ValueError):
+        n = 0
+    if n <= 1:
+        return "0dte"
+    if n <= 10:
+        return "weekly"
+    return "month"
+
+
+def _nearest_listed_expiry(
+    symbol: str | None,
+    *,
+    max_dte: int = 14,
+    asof: datetime | None = None,
+) -> tuple[str, int] | None:
+    """Soonest listed expiry on/after today within ``max_dte`` (Tradier, then Yahoo)."""
+    sym = str(symbol or "").upper().strip()
+    if not sym:
+        return None
+    today = (asof.astimezone(ET).date() if asof and asof.tzinfo else (asof.date() if asof else datetime.now(ET).date()))
+
+    dates: list[str] = []
+    try:
+        from odte_scanner.data.tradier import access_token_from_env, fetch_expirations
+
+        if access_token_from_env():
+            exp = fetch_expirations(sym)
+            if exp.get("ok"):
+                dates = [str(d)[:10] for d in (exp.get("dates") or [])]
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("nearest expiry tradier %s: %s", sym, exc)
+
+    if not dates:
+        try:
+            import yfinance as yf
+
+            dates = [str(d)[:10] for d in (yf.Ticker(sym).options or [])]
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("nearest expiry yahoo %s: %s", sym, exc)
+
+    best: tuple[str, int] | None = None
+    for raw in dates:
+        try:
+            from datetime import date as _date
+
+            ed = _date.fromisoformat(raw)
+        except ValueError:
+            continue
+        dte = (ed - today).days
+        if 0 <= dte <= int(max_dte):
+            if best is None or dte < best[1]:
+                best = (raw, dte)
+    return best
 
 
 @dataclass
@@ -239,91 +297,155 @@ def _call_safe_zone(red_flag: dict[str, Any] | None, actions: dict[str, Any] | N
     return conflict, " · ".join(notes[:3])
 
 
-def _suggest_put_zone(spot: float) -> dict[str, Any]:
-    """ATM-ish put zone when live chain unavailable (Pages / offline)."""
-    strike = round(spot)  # SPY often $1 strikes
-    today = datetime.now(ET).date()
+def _suggest_put_zone(
+    spot: float,
+    *,
+    symbol: str | None = None,
+    yahoo_symbol: str | None = None,
+    asof: datetime | None = None,
+) -> dict[str, Any]:
+    """ATM-ish put zone when live chain quotes unavailable.
+
+    Keeps a paper-tradeable ask, but stamps the **nearest listed expiry**
+    (e.g. NBIS → 2026-10-09) when the name has no same-day options.
+    """
+    strike = round(float(spot))  # SPY often $1 strikes
+    today = (
+        asof.astimezone(ET).date()
+        if asof and asof.tzinfo
+        else (asof.date() if asof else datetime.now(ET).date())
+    )
     ask = _zone_put_premium(spot)
+    nearest = _nearest_listed_expiry(yahoo_symbol or symbol, max_dte=14, asof=asof)
+    if nearest:
+        expiry, dte = nearest
+        note = (
+            f"No same-day chain — suggest nearest listed put {expiry} (DTE {dte})"
+            if dte > 1
+            else f"Zone mark on listed expiry {expiry}"
+        )
+    else:
+        expiry, dte = today.isoformat(), 0
+        note = "Zone put (no listed expiry found — stamped session date)"
     return {
         "strike": float(strike),
-        "expiry": today.isoformat(),
-        "dte": 0,
+        "expiry": expiry,
+        "dte": int(dte),
         "ask": ask,
         "bid": round(ask * 0.85, 2),
         "contract": None,
         "mark_source": "zone",
+        "nearest_listed": bool(nearest and int(dte) > 1),
+        "note": note,
     }
 
 
-def _pick_0dte_put(symbol: str, spot: float, *, yahoo_symbol: str | None = None) -> dict[str, Any] | None:
+def _pick_0dte_put(
+    symbol: str,
+    spot: float,
+    *,
+    yahoo_symbol: str | None = None,
+    max_weekly_dte: int = 14,
+) -> dict[str, Any] | None:
+    """Pick a liquid put: prefer 0–1 DTE, else nearest listed weekly ≤ max_weekly_dte."""
+    sym = yahoo_symbol or symbol
     # Prefer Tradier when token set — Pages offline Yahoo chains often empty
     try:
         from odte_scanner.data.tradier import access_token_from_env, pick_option_contract
 
         if access_token_from_env() and float(spot or 0) > 0:
-            picked = pick_option_contract(
-                yahoo_symbol or symbol,
-                float(spot),
-                right="P",
-                min_dte=0,
-                max_dte=1,
-                prefer_dte=0,
-                otm_pct_max=1.5,
-                itm_pct_max=0.5,
-                min_volume=50,
-                min_oi=100,
-                require_bid=True,
-            )
-            if picked and picked.get("ask"):
-                ask = float(picked.get("ask") or 0)
-                if 0 < ask <= 12.0:
-                    return {
-                        "strike": picked.get("strike"),
-                        "expiry": picked.get("expiry"),
-                        "dte": picked.get("dte") if picked.get("dte") is not None else 0,
-                        "ask": picked.get("ask"),
-                        "bid": picked.get("bid"),
-                        "contract": picked.get("contract"),
-                        "mark_source": picked.get("mark_source") or "ask",
-                        "source": "tradier",
-                    }
+            for min_dte, max_dte, prefer in (
+                (0, 1, 0),
+                (0, int(max_weekly_dte), 0),
+            ):
+                picked = pick_option_contract(
+                    sym,
+                    float(spot),
+                    right="P",
+                    min_dte=min_dte,
+                    max_dte=max_dte,
+                    prefer_dte=prefer,
+                    otm_pct_max=1.5,
+                    itm_pct_max=0.5,
+                    min_volume=50 if max_dte <= 1 else 25,
+                    min_oi=100 if max_dte <= 1 else 50,
+                    require_bid=True,
+                )
+                if picked and picked.get("ask"):
+                    ask = float(picked.get("ask") or 0)
+                    if 0 < ask <= 12.0:
+                        dte = int(picked.get("dte") if picked.get("dte") is not None else 0)
+                        out = {
+                            "strike": picked.get("strike"),
+                            "expiry": picked.get("expiry"),
+                            "dte": dte,
+                            "ask": picked.get("ask"),
+                            "bid": picked.get("bid"),
+                            "contract": picked.get("contract"),
+                            "mark_source": picked.get("mark_source") or "ask",
+                            "source": "tradier",
+                        }
+                        if dte > 1:
+                            out["nearest_listed"] = True
+                            out["note"] = (
+                                f"No same-day chain — nearest listed put "
+                                f"{out.get('expiry')} (DTE {dte})"
+                            )
+                        return out
     except Exception as exc:  # noqa: BLE001
         logger.debug("0dte put tradier pick %s: %s", symbol, exc)
 
     try:
         from odte_scanner.options.selector import select_puts
 
-        puts = select_puts(
-            symbol,
-            spot,
-            score=70.0,
-            reasons=["0DTE 1K ORB15 put"],
-            max_dte=1,
-            odte_max_dte=1,
-            otm_pct_max=1.5,
-            itm_pct_max=0.5,
-            max_ask=12.0,
-            min_open_interest=100,
-            min_volume=50,
-            yahoo_symbol=yahoo_symbol,
-            per_bucket=1,
-        )
-        if not puts:
-            return None
-        p = puts[0]
-        d = p.to_dict() if hasattr(p, "to_dict") else dict(p)
-        return {
-            "strike": d.get("strike"),
-            "expiry": d.get("expiry"),
-            "dte": d.get("dte") if d.get("dte") is not None else 0,
-            "ask": d.get("ask"),
-            "bid": d.get("bid"),
-            "contract": d.get("contract"),
-            "mark_source": "ask",
-        }
+        for max_dte, odte_max in ((1, 1), (int(max_weekly_dte), 1)):
+            puts = select_puts(
+                symbol,
+                spot,
+                score=70.0,
+                reasons=["0DTE 1K ORB15 put"],
+                max_dte=max_dte,
+                odte_max_dte=odte_max,
+                otm_pct_max=1.5,
+                itm_pct_max=0.5,
+                max_ask=12.0,
+                min_open_interest=100 if max_dte <= 1 else 50,
+                min_volume=50 if max_dte <= 1 else 25,
+                yahoo_symbol=yahoo_symbol,
+                per_bucket=1,
+            )
+            if not puts:
+                continue
+            # Prefer true 0DTE bucket first; else soonest weekly
+            ranked = sorted(
+                puts,
+                key=lambda p: (
+                    0 if int(getattr(p, "dte", 99) if not isinstance(p, dict) else p.get("dte") or 99) <= 1 else 1,
+                    int(getattr(p, "dte", 99) if not isinstance(p, dict) else p.get("dte") or 99),
+                ),
+            )
+            p = ranked[0]
+            d = p.to_dict() if hasattr(p, "to_dict") else dict(p)
+            dte = int(d.get("dte") if d.get("dte") is not None else 0)
+            out = {
+                "strike": d.get("strike"),
+                "expiry": d.get("expiry"),
+                "dte": dte,
+                "ask": d.get("ask"),
+                "bid": d.get("bid"),
+                "contract": d.get("contract"),
+                "mark_source": "ask",
+            }
+            if dte > 1:
+                out["nearest_listed"] = True
+                out["note"] = (
+                    f"No same-day chain — nearest listed put {out.get('expiry')} (DTE {dte})"
+                )
+            return out
     except Exception as exc:  # noqa: BLE001
         logger.debug("0dte put pick %s: %s", symbol, exc)
         return None
+    return None
 
 
 def _contracts_for_size(ask: float | None, size_usd: float, cash: float) -> int:
@@ -638,7 +760,13 @@ def decide_odte_1k_entry(
     if fetch_contract and last_f:
         contract = _pick_0dte_put(symbol, last_f, yahoo_symbol=yahoo_symbol)
     if contract is None and last_f:
-        contract = _suggest_put_zone(last_f)
+        # Keep zone premium, but stamp nearest listed expiry (NBIS → next weekly)
+        contract = _suggest_put_zone(
+            last_f,
+            symbol=symbol,
+            yahoo_symbol=yahoo_symbol,
+            asof=now_et,
+        )
 
     ask = float(contract["ask"]) if contract and contract.get("ask") is not None else None
     bid = float(contract["bid"]) if contract and contract.get("bid") is not None else None
@@ -653,6 +781,13 @@ def decide_odte_1k_entry(
         detail_bits.append(f"Invalidation: reclaim > ORB Low ${orb.low:.2f} + $0.35")
     detail_bits.append(f"Size ~${position_size_usd:.0f} · max {max_trades_per_day} trades/day")
     detail_bits.append("IN = BUY PUT · OUT = SELL PUT on reclaim / target / flatten")
+    note = str((contract or {}).get("note") or "").strip()
+    if note:
+        detail_bits.append(note)
+    dte_n = int((contract or {}).get("dte") or 0)
+    exp = (contract or {}).get("expiry")
+    if exp and dte_n > 1:
+        detail_bits.append(f"Suggested put expiry {exp} (DTE {dte_n})")
 
     ts = signal_timestamps()
     return _stamp(
@@ -673,11 +808,12 @@ def decide_odte_1k_entry(
             retest_orb_low=retest,
             call_safe_zone_conflict=conflict,
             strike=(contract or {}).get("strike"),
-            expiry=(contract or {}).get("expiry"),
+            expiry=exp,
             ask=ask,
             bid=bid,
             contract=(contract or {}).get("contract"),
-            dte=int((contract or {}).get("dte") or 0),
+            dte=dte_n,
+            dte_bucket=_dte_bucket_for(dte_n),
             position_size_usd=position_size_usd,
             contracts=n_ct,
             signaled_at=ts["signaled_at"],
@@ -860,14 +996,34 @@ def build_odte_1k_board(
             contract = _pick_0dte_put(sig.symbol, float(last), yahoo_symbol=aliases.get(sig.symbol))
             contract_fetches += 1
             if not contract:
-                continue
+                # Keep zone ask; still stamp nearest listed expiry when possible
+                contract = _suggest_put_zone(
+                    float(last),
+                    symbol=sig.symbol,
+                    yahoo_symbol=aliases.get(sig.symbol),
+                    asof=now,
+                )
             sig.strike = contract.get("strike")
             sig.expiry = contract.get("expiry")
             sig.dte = int(contract.get("dte") or 0)
-            sig.ask = float(contract["ask"]) if contract.get("ask") is not None else sig.ask
-            sig.bid = float(contract["bid"]) if contract.get("bid") is not None else sig.bid
-            sig.contract = contract.get("contract")
-            sig.mark_source = str(contract.get("mark_source") or "ask")
+            sig.dte_bucket = _dte_bucket_for(sig.dte)
+            if contract.get("ask") is not None and (
+                sig.mark_source != "zone" or contract.get("mark_source") == "ask"
+            ):
+                sig.ask = float(contract["ask"])
+                sig.bid = float(contract["bid"]) if contract.get("bid") is not None else sig.bid
+            elif sig.ask is None and contract.get("ask") is not None:
+                sig.ask = float(contract["ask"])
+                sig.bid = float(contract["bid"]) if contract.get("bid") is not None else sig.bid
+            if contract.get("contract"):
+                sig.contract = contract.get("contract")
+            if contract.get("mark_source") == "ask":
+                sig.mark_source = "ask"
+            note = str(contract.get("note") or "").strip()
+            if note and note not in (sig.detail or ""):
+                sig.detail = f"{sig.detail} · {note}" if sig.detail else note
+                if note not in (sig.reasons or []):
+                    sig.reasons = list(sig.reasons or []) + [note]
             if sig.ask:
                 sig.contracts = _contracts_for_size(sig.ask, size, cash) or None
 
