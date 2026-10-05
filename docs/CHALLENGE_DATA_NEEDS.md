@@ -68,6 +68,18 @@ Cloud Agents cannot write GitHub secrets (403). Do **not** commit the key.
    - Why: fills + live greeks instead of Yahoo snapshots on Pages cron
    - Already partially stubbed under live_trading / webull
 
+7. **WhatsApp BUY/SELL alerts** (Twilio sandbox or Meta Cloud API)
+   - Why: phone push when Pages cron posts a new BUY NOW / SELL NOW / RIP / Challenge pulse
+   - Wire as GitHub Actions secrets (Cloud Agents cannot write secrets):
+     - **Twilio (easiest):** `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`,
+       `TWILIO_WHATSAPP_FROM` (e.g. `whatsapp:+14155238886`),
+       `WHATSAPP_TO` (e.g. `+1XXXXXXXXXX`)
+     - **Meta Cloud API:** `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_TO`
+     - Optional: `WHATSAPP_ALERTS_ENABLED=0` to pause
+   - Client: `odte_scanner/alerts/whatsapp.py` + `dispatcher.py` (runs on `export-pages`)
+   - Dedup file: `outputs/whatsapp_alert_seen.json` (persisted in Pages ledger cache)
+   - First export after secrets are set **seeds** the board (no spam); later *new* pulses WhatsApp
+
 ## Not worth it for this sleeve
 
 - Full tick L2 equity books (costly; options mark quality matters more)
