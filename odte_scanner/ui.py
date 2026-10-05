@@ -220,7 +220,7 @@ PAGE = r"""
       <button data-tab="swing">Swing 1–3M</button>
       <button data-tab="ml6">ML6 Neocloud</button>
       <button data-tab="echo">Flow Desk</button>
-      <button data-tab="challenge">$1k→$1M</button>
+      <button data-tab="challenge">$1k→$100k</button>
       <button data-tab="screener">Screener</button>
       <button data-tab="pnl">P&amp;L</button>
       <button data-tab="journal">Journal</button>
@@ -322,7 +322,7 @@ PAGE = r"""
     <section class="tabpane" id="tab-odte1k">
       <h2>0DTE $1K Challenge — IN / OUT · Green Friday ORB15 puts</h2>
       <p class="lede">
-        Separate from the swing <strong>$1k→$1M</strong> path. Paper sleeve starts at <strong>$1,000</strong>,
+        Separate from the swing <strong>$1k→$100k</strong> path. Paper sleeve starts at <strong>$1,000</strong>,
         sizes ~<strong>$850</strong> (~85%), max <strong>2 trades/day</strong>.
         Full focus sleeve: <strong>SPY · QQQ · IWM · TSLA · NVDA · NBIS · AAPL · SLV · SPCX · NOW</strong> + the rest of the focus list.
         Playbook: Green Friday + <strong>break/hold ORB15 Low</strong> (or retest) →
@@ -560,9 +560,13 @@ PAGE = r"""
     </section>
 
     <section class="tabpane" id="tab-challenge">
-      <h2>$1,000 → $1,000,000 challenge</h2>
+      <h2>$1,000 → $100,000 challenge</h2>
       <p class="lede">
-        Goal: <strong>$1k → $500k first</strong> (stretch <strong>$1M by Oct 31, 2026</strong>) via <strong>index sniper</strong> flips on <strong>SPY / QQQ</strong> (SPX→SPY) 0–1 DTE wings — quick in/out, bank <strong>+25%</strong> — plus mega RIP and <strong>Beauty 1mo</strong>. Paper sleeve starts at <strong>$1,000 real cash</strong>. Lottery names blocked; loss-cooldown survives epoch rebuilds.
+        Goal: <strong>$1k → $100k by Oct 31, 2026</strong> via <strong>same-day index sniper</strong> flips on
+        <strong>SPY / QQQ / IWM</strong> (SPX→SPY) 0–1 DTE wings — buy &amp; sell same session, bank
+        <strong>+20%</strong>, flatten by ~<strong>4h / EOD</strong>. Paper sleeve starts at
+        <strong>$1,000 real cash</strong>. Path math: ~+20%/flip × ~26 sessions (100×). Lottery midcaps blocked;
+        loss-cooldown survives epoch rebuilds.
         Sure-shot hist filter (prefer <strong>100% hist win</strong>, else ≥80% n≥5).
         Status: <strong>ENTRY · HOLD · EXIT</strong>. After each Paper ENTER/EXIT the sleeve
         <strong>cash &amp; equity balance</strong> updates so you know where you are.
@@ -2035,19 +2039,30 @@ PAGE = r"""
         if (src==="scan") return `<span class="badge skip">SCAN</span>`;
         return `<span class="badge sell">NO SPOT</span>`;
       };
-      if (metrics) metrics.innerHTML = [
-        m("Sleeve cash", book.cash!=null?`$${Number(book.cash).toLocaleString(undefined,{maximumFractionDigits:0})}`:"—"),
-        m("Sleeve equity", book.equity!=null?`$${Number(book.equity).toLocaleString(undefined,{maximumFractionDigits:0})}`:`$${(ch.start_usd||1000).toLocaleString()}`),
-        m("→ $500k", book.milestone_500k_pct!=null?`${fmt(book.milestone_500k_pct,3)}%`:"—", "up"),
-        m("→ $1M", book.progress_pct!=null?`${fmt(book.progress_pct,3)}%`:"—"),
-        m("Days to Oct-end", (ch.oct_end_pace&&ch.oct_end_pace.days_left)!=null?ch.oct_end_pace.days_left:(pace.days!=null?Math.round(pace.days):"—"), "up"),
-        m("1mo/Oct need / flip", (ch.oct_end_pace&&ch.oct_end_pace.pct_per_flip)!=null?`+${fmt(ch.oct_end_pace.pct_per_flip,0)}%`:(paceM.pct_per_flip==null?"—":`+${fmt(paceM.pct_per_flip,0)}%`), "up"),
-        m("Classic need / flip", path.pct_per_flip==null?"—":`+${fmt(path.pct_per_flip,0)}%`),
-        m("Sprint fits", `${c.fits_4mo_500k||0} / weekly ${c.weekly_pace||0}`),
-        m("ENTRY / HOLD / EXIT", `${c.entry||0} / ${c.hold||0} / ${c.exit||0}`),
-        m("Closed flips", `${book.flips_closed||0} (W${book.wins||0}/L${book.losses||0})`),
-        m("Earn today / week", `${c.earn_today||0} / ${c.earn_this_week||0}`),
-      ].join("");
+      if (metrics) {
+        const tgt = book.target_usd!=null?book.target_usd:(ch.target_usd||100000);
+        const startCash = book.starting_cash!=null?book.starting_cash:(ch.start_usd||1000);
+        const closedFlips = (book.trades||[]).filter(t=>t.status==="closed");
+        const lastClosed = closedFlips.length?closedFlips[closedFlips.length-1]:null;
+        const bankPct = book.sniper_bank_pct!=null?book.sniper_bank_pct:20;
+        const flatH = book.sniper_flatten_hours!=null?book.sniper_flatten_hours:4;
+        const daysLeft = (ch.oct_end_pace&&ch.oct_end_pace.days_left)!=null
+          ? ch.oct_end_pace.days_left
+          : ((ch.deadline||pace.days)!=null?(pace.days!=null?Math.round(pace.days):"—"):"—");
+        metrics.innerHTML = [
+          m("Start → target", `$${Number(startCash).toLocaleString(undefined,{maximumFractionDigits:0})} → $${Number(tgt).toLocaleString(undefined,{maximumFractionDigits:0})}`),
+          m("Sleeve cash", book.cash!=null?`$${Number(book.cash).toLocaleString(undefined,{maximumFractionDigits:0})}`:"—"),
+          m("Sleeve equity", book.equity!=null?`$${Number(book.equity).toLocaleString(undefined,{maximumFractionDigits:0})}`:`$${Number(startCash).toLocaleString()}`),
+          m("→ $100k", book.progress_pct!=null?`${fmt(book.progress_pct,3)}%`:(book.milestone_100k_pct!=null?`${fmt(book.milestone_100k_pct,3)}%`:"—"), "up"),
+          m("Days to Oct 31", daysLeft, "up"),
+          m("Same-day bank", `+${fmt(bankPct,0)}% / ${fmt(flatH,0)}h flat`, "up"),
+          m("Last flip P&L", lastClosed?(lastClosed.pnl_usd==null?"—":`$${fmt(lastClosed.pnl_usd,2)} (${lastClosed.profit_pct==null?"—":fmt(lastClosed.profit_pct,1)+"%"})`):"—", lastClosed&&(lastClosed.pnl_usd||0)>=0?"up":""),
+          m("Need / flip", (ch.oct_end_pace&&ch.oct_end_pace.pct_per_flip)!=null?`+${fmt(ch.oct_end_pace.pct_per_flip,0)}%`:(paceM.pct_per_flip==null?(path.pct_per_flip==null?"—":`+${fmt(path.pct_per_flip,0)}%`):`+${fmt(paceM.pct_per_flip,0)}%`), "up"),
+          m("ENTRY / HOLD / EXIT", `${c.entry||0} / ${c.hold||0} / ${c.exit||0}`),
+          m("Closed flips", `${book.flips_closed||0} (W${book.wins||0}/L${book.losses||0})`),
+          m("Epoch", book.epoch||ch.epoch||"—"),
+        ].join("");
+      }
 
       const earnBadge = (t) => {
         const w = t.earnings_window||t.window||"none";
@@ -2108,7 +2123,7 @@ PAGE = r"""
           const kind = act==="EXIT"?"short":(act==="ENTRY"||act==="HOLD"?"long":"wait");
           primaryEl.innerHTML = `<article class="action-card ${kind}">
             <div class="ac-top">
-              <div class="ac-sym">${t0.symbol} <span class="tag">${t0.right==="P"?"PUT":"CALL"}</span> <span class="tag">${(t0.market_cap_tier||"").replace("_","/")}</span> ${earnBadge(t0)} ${spotBadge(t0)}${t0.fits_4mo_500k?` <span class="badge buy">1MO $1M</span>`:""}</div>
+              <div class="ac-sym">${t0.symbol} <span class="tag">${t0.right==="P"?"PUT":"CALL"}</span> <span class="tag">${(t0.market_cap_tier||"").replace("_","/")}</span> ${earnBadge(t0)} ${spotBadge(t0)}${t0.fits_4mo_500k?` <span class="badge buy">OCT $100k</span>`:""}${t0.sniper||t0.certainty_tier==="sniper"?` <span class="badge buy">SAME-DAY</span>`:""}</div>
               <div class="ac-dir ${kind}">${act} · ${tier.toUpperCase()}</div>
             </div>
             <div class="ac-conf">Hist win ${fmt(t0.hist_win_pct,0)}% · n=${t0.hist_samples} · <strong>approx hold ${holdLbl(t0)}</strong></div>
@@ -2168,13 +2183,16 @@ PAGE = r"""
         const syncExit = (sync.exited&&sync.exited.length)?` · paper exited ${sync.exited.join(", ")}`:"";
         bookEl.innerHTML = `
           <div class="ac-meta" style="margin-bottom:.5rem">
+            <div>Start<strong>$${Number(book.starting_cash!=null?book.starting_cash:(ch.start_usd||1000)).toLocaleString(undefined,{maximumFractionDigits:0})}</strong></div>
+            <div>Target<strong>$${Number(book.target_usd!=null?book.target_usd:(ch.target_usd||100000)).toLocaleString(undefined,{maximumFractionDigits:0})}</strong></div>
             <div>Cash<strong>$${Number(cash).toLocaleString(undefined,{maximumFractionDigits:0})}</strong></div>
             <div>Equity<strong>$${Number(equity).toLocaleString(undefined,{maximumFractionDigits:0})}</strong></div>
             <div>Open flips<strong>${book.open_trades!=null?book.open_trades:open.length}</strong></div>
             <div>Closed flips<strong>${book.flips_closed||0}</strong></div>
             <div>Win/Loss<strong>${book.wins||0}/${book.losses||0}</strong></div>
+            <div>Same-day bank<strong>+${fmt(book.sniper_bank_pct!=null?book.sniper_bank_pct:20,0)}% / ${fmt(book.sniper_flatten_hours!=null?book.sniper_flatten_hours:4,0)}h</strong></div>
           </div>
-          <p class="why" style="margin:.2rem 0 .55rem">Sleeve ledger${syncNote}${syncExit || " · refresh after Paper ENTER"}</p>
+          <p class="why" style="margin:.2rem 0 .55rem">Sleeve ledger · epoch ${book.epoch||"—"} · deadline ${ch.deadline||"2026-10-31"}${syncNote}${syncExit || " · refresh after Paper ENTER"}</p>
           ${open.length?open.map(t=>{
             const tgtPct = t.target_profit_pct!=null?t.target_profit_pct:(t.target_premium_mult!=null?((t.target_premium_mult-1)*100):null);
             const tgtAsk = t.target_ask!=null?t.target_ask:(t.entry_ask!=null&&t.target_premium_mult!=null?t.entry_ask*t.target_premium_mult:null);
@@ -2275,22 +2293,22 @@ PAGE = r"""
         const sched = pace.schedule || path.schedule || [];
         const balLog = book.balance_log || [];
         pathEl.innerHTML = `
-          <p class="lede" style="margin-top:0"><strong>1-month → $1M pace:</strong> ${pace.note||"—"}</p>
+          <p class="lede" style="margin-top:0"><strong>$1k → $100k by Oct 31 (same-day sniper):</strong> ${pace.note||"—"}</p>
           <p class="lede" style="margin-top:.35rem">${path.note||""}</p>
           <div class="playbook" style="margin-bottom:.55rem">
             ${["sprint","weekly","swing","leap"].map(k=>{
               const h=hp[k]||{};
               return `<span class="tag">${k}: ${h.label||"—"}</span>`;
             }).join("")}
-            <span class="tag">Prefer sprint 1–3d / 50–100%</span>
+            <span class="tag">Prefer same-day sniper +20% / 4h flatten</span>
           </div>
-          <div class="status" style="margin:.2rem 0 .4rem">1mo compound schedule (sprint ~${pace.ideal_hold_days||2}d holds)</div>
+          <div class="status" style="margin:.2rem 0 .4rem">Oct compound schedule (same-day ~${pace.ideal_hold_days||1}d holds)</div>
           <table><thead><tr><th>Flip</th><th>Days</th><th>Equity</th><th>Milestone</th></tr></thead>
           <tbody>${(sched.slice(0,16)).map(s=>`<tr>
             <td class="mono">${s.flip}</td>
             <td class="mono">${s.months_elapsed==null?"—":fmt((s.months_elapsed||0)*30,0)}</td>
             <td class="mono up"><strong>$${Number(s.equity||0).toLocaleString()}</strong></td>
-            <td class="why">${s.hit_target||s.hit_milestone?"$1M":"—"}</td>
+            <td class="why">${s.hit_target||s.hit_milestone?"$100k":"—"}</td>
           </tr>`).join("")||`<tr><td colspan="4" class="empty">No pace schedule</td></tr>`}</tbody></table>
           <div class="status" style="margin:.75rem 0 .4rem">Classic path flip counts</div>
           <table><thead><tr><th>Flips</th><th>Need / flip</th><th>Multiple / flip</th></tr></thead>
@@ -2331,7 +2349,7 @@ PAGE = r"""
           return `<tr>
           <td><span class="badge ${cls}">${a}</span></td>
           <td class="mono">${t.right==="P"?"PUT":"CALL"}</td>
-          <td><strong>${t.symbol}</strong> ${spotBadge(t)} ${earnBadge(t)}${t.fits_4mo_500k?` <span class="badge buy">1MO $1M</span>`:""}${t.pace_style==="sprint"||t.pace_style==="weekly"?` <span class="tag">${t.pace_style} pace</span>`:""}<div class="why">spot ${t.spot==null?"—":"$"+fmt(t.spot,2)}</div></td>
+          <td><strong>${t.symbol}</strong> ${spotBadge(t)} ${earnBadge(t)}${t.fits_4mo_500k?` <span class="badge buy">OCT $100k</span>`:""}${t.sniper||t.certainty_tier==="sniper"?` <span class="badge buy">SAME-DAY</span>`:""}${t.pace_style==="sprint"||t.pace_style==="weekly"?` <span class="tag">${t.pace_style} pace</span>`:""}<div class="why">spot ${t.spot==null?"—":"$"+fmt(t.spot,2)}</div></td>
           <td class="mono"><strong>${t.strike==null?"—":fmt(t.strike,2)}</strong><div class="why">${t.expiry||"—"} · ${t.dte==null?"":t.dte+"d"}</div></td>
           <td class="mono"><span class="up">${t.call_wall==null?"—":fmt(t.call_wall,2)}</span> / <span class="down">${t.put_wall==null?"—":fmt(t.put_wall,2)}</span></td>
           <td class="mono up"><strong>${t.soft_exit==null?"—":"$"+fmt(t.soft_exit,2)}</strong><div class="why">${t.wall_exit_hint||""}</div></td>
@@ -4976,7 +4994,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 )
                 beauty_monthly["oct_end_pace"] = oct_end_pace_note(
                     equity=1000.0,
-                    target_usd=float(actions_cfg.get("challenge_target_usd", 1_000_000)),
+                    target_usd=float(actions_cfg.get("challenge_target_usd", 100_000)),
                     deadline=str(actions_cfg.get("challenge_deadline") or "2026-10-31"),
                 )
             except Exception as exc:  # noqa: BLE001
@@ -5112,6 +5130,7 @@ def create_app(config_path: str | None = None) -> Flask:
                     else None
                 ),
                 rebuild_reason=str(actions_cfg.get("challenge_rebuild_reason") or "") or None,
+                target_usd=float(actions_cfg.get("challenge_target_usd", 100_000)),
             )
             # Live option marks BEFORE evaluate/EXIT — otherwise exits book at entry ($0 P&L)
             fetch_ch_contracts = bool(actions_cfg.get("challenge_fetch_contracts", True)) and (
@@ -5154,7 +5173,7 @@ def create_app(config_path: str | None = None) -> Flask:
             except Exception:  # noqa: BLE001
                 echo_walls = {}
 
-            # $1k→$1M sleeve needs listed asks to flip ENTRY; Pages was stuck at $1k
+            # $1k→$100k sleeve needs listed asks to flip ENTRY; Pages was stuck
             # because fetch_contracts was hard-disabled and auto_enter was false.
             loss_cd_days = int(actions_cfg.get("challenge_loss_cooldown_days", 5))
             loss_cooldown_syms = tracker.recent_loss_symbols(cooldown_days=loss_cd_days)
@@ -5173,7 +5192,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 aliases=aliases,
                 open_trades=[t.to_dict() for t in tracker.book.trades],
                 start_usd=float(actions_cfg.get("challenge_start_usd", 1000)),
-                target_usd=float(actions_cfg.get("challenge_target_usd", 1_000_000)),
+                target_usd=float(actions_cfg.get("challenge_target_usd", 100_000)),
                 flips=int(actions_cfg.get("challenge_flips", 15)),
                 max_tickets=int(actions_cfg.get("challenge_max_tickets", 10)),
                 fetch_contracts=fetch_ch_contracts,
@@ -5194,7 +5213,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 max_ask=float(actions_cfg.get("challenge_max_ask", 2.50)),
                 loss_cooldown_symbols=loss_cooldown_syms,
                 pace_months=pace_months,
-                pace_milestone_usd=float(actions_cfg.get("challenge_pace_milestone_usd", 500_000)),
+                pace_milestone_usd=float(actions_cfg.get("challenge_pace_milestone_usd", 100_000)),
                 prefer_weekly_pace=bool(actions_cfg.get("challenge_prefer_weekly_pace", True)),
                 current_equity=float(tracker.book.equity or tracker.book.cash or 1000),
                 uw_flow=uw_flow,
@@ -5290,14 +5309,14 @@ def create_app(config_path: str | None = None) -> Flask:
                                 "hold_max_days": 1,
                                 "hold_ideal_days": 0,
                                 "target_premium_mult": float(
-                                    actions_cfg.get("challenge_sniper_target_mult", 1.4)
+                                    actions_cfg.get("challenge_sniper_target_mult", 1.2)
                                 ),
                                 "stop_loss_pct": float(
-                                    actions_cfg.get("challenge_sniper_stop_pct", 25)
+                                    actions_cfg.get("challenge_sniper_stop_pct", 20)
                                 ),
                                 "thesis": r.get("detail")
                                 or r.get("headline")
-                                or f"INDEX SNIPER {sym} RADAR HOT → challenge",
+                                or f"INDEX SNIPER {sym} RADAR HOT same-day → challenge",
                             },
                         )
                 except Exception as exc:  # noqa: BLE001
@@ -5334,7 +5353,7 @@ def create_app(config_path: str | None = None) -> Flask:
             challenge["deadline"] = deadline
             challenge["oct_end_pace"] = oct_end_pace_note(
                 equity=float(tracker.book.equity or tracker.book.cash or 1000),
-                target_usd=float(actions_cfg.get("challenge_pace_milestone_usd", 500_000)),
+                target_usd=float(actions_cfg.get("challenge_pace_milestone_usd", 100_000)),
                 deadline=deadline,
                 ideal_hold_days=1.0,
             )
@@ -5348,7 +5367,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 aliases=aliases,
                 open_trades=[t.to_dict() for t in tracker.book.trades],
                 start_usd=float(actions_cfg.get("challenge_start_usd", 1000)),
-                target_usd=float(actions_cfg.get("challenge_target_usd", 1_000_000)),
+                target_usd=float(actions_cfg.get("challenge_target_usd", 100_000)),
                 flips=int(actions_cfg.get("challenge_flips", 15)),
                 max_tickets=int(actions_cfg.get("challenge_max_tickets", 10)),
                 fetch_contracts=False,
@@ -5369,7 +5388,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 max_ask=float(actions_cfg.get("challenge_max_ask", 2.50)),
                 loss_cooldown_symbols=loss_cooldown_syms,
                 pace_months=pace_months,
-                pace_milestone_usd=float(actions_cfg.get("challenge_pace_milestone_usd", 500_000)),
+                pace_milestone_usd=float(actions_cfg.get("challenge_pace_milestone_usd", 100_000)),
                 prefer_weekly_pace=bool(actions_cfg.get("challenge_prefer_weekly_pace", True)),
                 current_equity=float(tracker.book.equity or tracker.book.cash or 1000),
                 uw_flow=uw_flow,
@@ -5380,7 +5399,7 @@ def create_app(config_path: str | None = None) -> Flask:
             challenge["deadline"] = deadline
             challenge["oct_end_pace"] = oct_end_pace_note(
                 equity=float(tracker.book.equity or tracker.book.cash or 1000),
-                target_usd=float(actions_cfg.get("challenge_pace_milestone_usd", 500_000)),
+                target_usd=float(actions_cfg.get("challenge_pace_milestone_usd", 100_000)),
                 deadline=deadline,
                 ideal_hold_days=1.0,
             )
@@ -6282,6 +6301,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 else None
             ),
             rebuild_reason=str(actions_cfg.get("challenge_rebuild_reason") or "") or None,
+            target_usd=float(actions_cfg.get("challenge_target_usd", 100_000)),
         )
 
     @app.post("/api/challenge/enter")
@@ -6313,7 +6333,7 @@ def create_app(config_path: str | None = None) -> Flask:
             aliases={symbol: alias},
             open_trades=[t.to_dict() for t in tracker.book.trades],
             start_usd=float(actions_cfg.get("challenge_start_usd", 1000)),
-            target_usd=float(actions_cfg.get("challenge_target_usd", 1_000_000)),
+            target_usd=float(actions_cfg.get("challenge_target_usd", 100_000)),
             flips=int(actions_cfg.get("challenge_flips", 15)),
             max_tickets=int(actions_cfg.get("challenge_max_tickets", 10)),
             fetch_contracts=True,
@@ -6328,7 +6348,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 cooldown_days=int(actions_cfg.get("challenge_loss_cooldown_days", 5))
             ),
             pace_months=float(actions_cfg.get("challenge_pace_months", 1)),
-            pace_milestone_usd=float(actions_cfg.get("challenge_pace_milestone_usd", 500_000)),
+            pace_milestone_usd=float(actions_cfg.get("challenge_pace_milestone_usd", 100_000)),
             max_ask=float(actions_cfg.get("challenge_max_ask", 2.50)),
         )
         ticket = next(
