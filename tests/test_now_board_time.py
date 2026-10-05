@@ -10,6 +10,7 @@ UI_SRC = (ROOT / "odte_scanner" / "ui.py").read_text()
 
 def test_now_board_uses_row_asked_at_helper():
     assert "function rowAskedAt(r)" in UI_SRC
+    assert "function settledBuyContractSet()" in UI_SRC
     assert "function openPositionTimeIndex()" in UI_SRC
     assert "withOpenEntryTime(row, openIdx)" in UI_SRC
     # Card + table should prefer the shared helper (not signaled_at-only).

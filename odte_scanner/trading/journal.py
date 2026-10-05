@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from odte_scanner.time_cst import to_cst_label
 from odte_scanner.json_util import finite_float
@@ -16,6 +17,27 @@ logger = logging.getLogger(__name__)
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _dedupe_journal_trades(trades: list[Any]) -> list[Any]:
+    """One row per trade id — closed wins over stale open (same-second re-entry bug)."""
+    by_id: dict[str, Any] = {}
+    for t in trades:
+        tid = str(getattr(t, "id", "") or "")
+        if not tid:
+            by_id[f"__anon_{id(t)}"] = t
+            continue
+        prev = by_id.get(tid)
+        if prev is None:
+            by_id[tid] = t
+            continue
+        if getattr(prev, "status", "") == "open" and getattr(t, "status", "") == "closed":
+            by_id[tid] = t
+        elif getattr(prev, "status", "") == "closed" and getattr(t, "status", "") == "open":
+            continue
+        else:
+            by_id[tid] = t
+    return list(by_id.values())
 
 
 _LIVE_ASK_RE = re.compile(
@@ -135,12 +157,20 @@ class SignalJournal:
                     trades.append(JournalTrade(**payload))
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("skip bad journal trade: %s", exc)
+            n_raw = len(trades)
+            trades = _dedupe_journal_trades(trades)
             self.book = TradeJournal(
                 starting_cash=float(raw.get("starting_cash", starting_cash)),
                 cash=float(raw.get("cash", starting_cash)),
                 trades=trades,
                 balance_log=list(raw.get("balance_log") or []),
             )
+            # Rewrite once when stale open+closed clones shared an id
+            if len(trades) < n_raw:
+                try:
+                    self.save()
+                except Exception:  # noqa: BLE001
+                    pass
         else:
             self.book = TradeJournal(starting_cash=starting_cash, cash=starting_cash)
 
@@ -184,6 +214,10 @@ class SignalJournal:
             return None
         if symbol in self.open_symbols():
             return None  # one open call per symbol
+        if any(
+            t.status == "open" and str(t.contract or "") == contract for t in self.book.trades
+        ):
+            return None
 
         today = datetime.now(timezone.utc).date().isoformat()
         opened_today = sum(1 for t in self.book.trades if t.entered_at.startswith(today))
@@ -204,7 +238,7 @@ class SignalJournal:
             right = "C"
         entered = signal.get("signaled_at") or _now()
         trade = JournalTrade(
-            id=f"{symbol}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
+            id=f"{symbol}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{uuid4().hex[:6]}",
             symbol=symbol,
             contract=contract,
             expiry=signal.get("expiry"),
@@ -523,8 +557,9 @@ class SignalJournal:
             self.save()
 
     def performance(self) -> dict[str, Any]:
-        closed = [t for t in self.book.trades if t.status == "closed"]
-        open_t = [t for t in self.book.trades if t.status == "open"]
+        trades = _dedupe_journal_trades(list(self.book.trades))
+        closed = [t for t in trades if t.status == "closed"]
+        open_t = [t for t in trades if t.status == "open"]
         wins = [t for t in closed if (t.profit_pct or 0) > 0]
         losses = [t for t in closed if (t.profit_pct or 0) <= 0]
         win_rate = (len(wins) / len(closed) * 100) if closed else None
