@@ -11,11 +11,16 @@ UI_SRC = (ROOT / "odte_scanner" / "ui.py").read_text()
 def test_now_board_uses_row_asked_at_helper():
     assert "function rowAskedAt(r)" in UI_SRC
     assert "function settledBuyContractSet()" in UI_SRC
+    assert "function closedAtByContract()" in UI_SRC
+    assert "function isStaleSettledBuy(" in UI_SRC
     assert "function openPositionTimeIndex()" in UI_SRC
     assert "withOpenEntryTime(row, openIdx)" in UI_SRC
     # Card + table should prefer the shared helper (not signaled_at-only).
     assert "rowAskedAt(r)" in UI_SRC
     assert "entered ${entryWhen}" in UI_SRC
+    # Exit/re-enter: stale closed BUYs filtered; fresh signaled_at after close allowed.
+    assert "isStaleSettledBuy(row, closedAt, openOccs)" in UI_SRC
+    assert "String(sig) > String(closed)" in UI_SRC
 
 
 def test_ui_page_embeds_entered_fallback_keys():

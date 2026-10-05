@@ -14,8 +14,10 @@ from odte_scanner.signals.hold_rules import (
 from odte_scanner.time_cst import (
     append_asked_cst,
     load_signal_store,
+    prune_signal_store_to_active,
     resolve_first_signal_time,
     save_signal_store,
+    signal_store_key,
     signal_timestamps,
 )
 
@@ -58,9 +60,20 @@ def _apply_persisted_action(
     sig: ActionSignal,
     store: dict[str, Any],
 ) -> tuple[ActionSignal, dict[str, Any]]:
+    from odte_scanner.time_cst import clear_buy_stamps_on_sell
+
     if sig.action not in {"BUY_NOW", "SELL_NOW"}:
         return sig, store
-    utc, cst, store = resolve_first_signal_time(store, symbol=sig.symbol, action=sig.action)
+    if sig.action == "SELL_NOW":
+        store = clear_buy_stamps_on_sell(
+            store, symbol=sig.symbol, contract=getattr(sig, "contract", None)
+        )
+    utc, cst, store = resolve_first_signal_time(
+        store,
+        symbol=sig.symbol,
+        action=sig.action,
+        contract=getattr(sig, "contract", None),
+    )
     sig.signaled_at = utc
     sig.signaled_at_cst = cst
     sig.detail = append_asked_cst(sig.detail, action=sig.action, signaled_at_cst=cst)
@@ -954,6 +967,11 @@ def build_action_board(
             boosted_holds.append(sig2)
     holds = boosted_holds
 
+    active_keys = {
+        signal_store_key(s.symbol, s.action, getattr(s, "contract", None))
+        for s in (*buys, *sells)
+    }
+    store = prune_signal_store_to_active(store, active_keys)
     save_signal_store(signal_times_path, store)
 
     # Rank buys: UW-confirmed first, then hist win%, then strength

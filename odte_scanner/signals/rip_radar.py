@@ -17,8 +17,10 @@ from zoneinfo import ZoneInfo
 from odte_scanner.time_cst import (
     append_asked_cst,
     load_signal_store,
+    prune_signal_store_to_active,
     resolve_first_signal_time,
     save_signal_store,
+    signal_store_key,
     signal_timestamps,
 )
 
@@ -78,7 +80,12 @@ def _apply_persisted_rip(
 ) -> tuple["RipAction", dict[str, Any]]:
     if sig.action != "BUY_RIP":
         return sig, store
-    utc, cst, store = resolve_first_signal_time(store, symbol=sig.symbol, action=sig.action)
+    utc, cst, store = resolve_first_signal_time(
+        store,
+        symbol=sig.symbol,
+        action=sig.action,
+        contract=getattr(sig, "contract", None),
+    )
     sig.signaled_at = utc
     sig.signaled_at_cst = cst
     sig.detail = append_asked_cst(sig.detail, action=sig.action, signaled_at_cst=cst)
@@ -458,6 +465,11 @@ def build_rip_board(
 
     buys.sort(key=lambda a: a.strength, reverse=True)
     watches.sort(key=lambda a: a.strength, reverse=True)
+    active_keys = {
+        signal_store_key(a.symbol, a.action, getattr(a, "contract", None))
+        for a in buys
+    }
+    store = prune_signal_store_to_active(store, active_keys)
     save_signal_store(signal_times_path, store)
     primary = buys[0] if buys else (watches[0] if watches else None)
     return {
