@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+from odte_scanner.challenge import odte_1k as o1k
 from odte_scanner.challenge.odte_1k import (
     build_odte_1k_board,
     decide_odte_1k_entry,
@@ -327,6 +328,98 @@ def test_board_builds_with_injected_orb():
     assert board["orb"]["SPY"]["low"] == 777.66
     assert board["green_friday"] is True
     assert board["put_now"][0]["ask"] is not None
+
+
+def test_zone_put_stamps_nearest_listed_expiry(monkeypatch):
+    """NBIS-style: no same-day options → zone keep ask but suggest next weekly put."""
+    monkeypatch.setattr(
+        o1k,
+        "_nearest_listed_expiry",
+        lambda symbol, max_dte=14, asof=None: ("2026-10-09", 4),
+    )
+    z = o1k._suggest_put_zone(
+        236.6,
+        symbol="NBIS",
+        asof=datetime(2026, 10, 5, 10, 0, tzinfo=ET),
+    )
+    assert z["expiry"] == "2026-10-09"
+    assert z["dte"] == 4
+    assert z["mark_source"] == "zone"
+    assert z["ask"] and z["ask"] > 0
+    assert z["nearest_listed"] is True
+    assert "2026-10-09" in z["note"]
+
+
+def test_put_now_detail_suggests_nearest_expiry(monkeypatch):
+    monkeypatch.setattr(
+        o1k,
+        "_nearest_listed_expiry",
+        lambda symbol, max_dte=14, asof=None: ("2026-10-09", 4),
+    )
+    orb = Orb15Levels(
+        symbol="NBIS",
+        session_date="2026-10-05",
+        high=238.0,
+        low=237.32,
+        status="ready",
+        bars=15,
+    )
+    now = datetime(2026, 10, 5, 10, 20, tzinfo=ET)
+    sig = decide_odte_1k_entry(
+        orb=orb,
+        quote={"last": 236.6, "session_change_pct": 0.4, "mom_5m_pct": -0.2, "mom_15m_pct": -0.1},
+        symbol="NBIS",
+        fetch_contract=False,
+        now=now,
+    )
+    assert sig.action == "PUT_NOW"
+    assert sig.expiry == "2026-10-09"
+    assert sig.dte == 4
+    assert sig.dte_bucket == "weekly"
+    assert "2026-10-09" in sig.detail
+
+
+def test_pick_falls_back_to_nearest_weekly_put(monkeypatch):
+    class _P:
+        def __init__(self, dte, expiry):
+            self._d = {
+                "strike": 237.0,
+                "expiry": expiry,
+                "dte": dte,
+                "ask": 2.1,
+                "bid": 1.9,
+                "contract": "NBIS261009P00237000",
+            }
+
+        def to_dict(self):
+            return dict(self._d)
+
+        @property
+        def dte(self):
+            return self._d["dte"]
+
+    calls: list[int] = []
+
+    def fake_select_puts(*args, max_dte=7, **kwargs):
+        calls.append(int(max_dte))
+        if max_dte <= 1:
+            return []
+        return [_P(4, "2026-10-09")]
+
+    monkeypatch.setattr(
+        "odte_scanner.options.selector.select_puts",
+        fake_select_puts,
+    )
+    # Force tradier path off
+    import odte_scanner.data.tradier as tr
+
+    monkeypatch.setattr(tr, "access_token_from_env", lambda: None)
+    picked = o1k._pick_0dte_put("NBIS", 236.6)
+    assert picked is not None
+    assert picked["expiry"] == "2026-10-09"
+    assert picked["dte"] == 4
+    assert picked.get("nearest_listed") is True
+    assert 1 in calls and any(c > 1 for c in calls)
 
 
 def test_tracker_two_trade_day_cap(tmp_path):
