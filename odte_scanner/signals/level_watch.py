@@ -12,8 +12,10 @@ from typing import Any
 from odte_scanner.time_cst import (
     append_asked_cst,
     load_signal_store,
+    prune_signal_store_to_active,
     resolve_first_signal_time,
     save_signal_store,
+    signal_store_key,
     signal_timestamps,
 )
 
@@ -113,7 +115,12 @@ def _apply_persisted_level(
 ) -> tuple["LevelAction", dict[str, Any]]:
     if sig.action != "BUY_LEVEL":
         return sig, store
-    utc, cst, store = resolve_first_signal_time(store, symbol=sig.symbol, action=sig.action)
+    utc, cst, store = resolve_first_signal_time(
+        store,
+        symbol=sig.symbol,
+        action=sig.action,
+        contract=getattr(sig, "contract", None),
+    )
     sig.signaled_at = utc
     sig.signaled_at_cst = cst
     sig.detail = append_asked_cst(sig.detail, action=sig.action, signaled_at_cst=cst)
@@ -350,6 +357,11 @@ def build_level_board(
     buy.sort(key=lambda r: float(r.get("strength") or 0), reverse=True)
     watch.sort(key=lambda r: float(r.get("strength") or 0), reverse=True)
     cool.sort(key=lambda r: float(r.get("strength") or 0), reverse=True)
+    active_keys = {
+        signal_store_key(r.get("symbol"), r.get("action"), r.get("contract"))
+        for r in buy
+    }
+    store = prune_signal_store_to_active(store, active_keys)
     save_signal_store(signal_times_path, store)
 
     return {

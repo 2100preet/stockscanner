@@ -10,6 +10,35 @@ from zoneinfo import ZoneInfo
 
 CT = ZoneInfo("America/Chicago")
 
+# Actions that keep a sticky "asked" time while continuously on the board.
+STICKY_ACTIONS = frozenset(
+    {
+        "BUY_NOW",
+        "SELL_NOW",
+        "BUY_RIP",
+        "BUY_BEAUTY",
+        "BUY_LEVEL",
+        "PUT_NOW",
+        "CALL_NOW",
+        "EXIT",
+    }
+)
+
+# BUY-side stamps cleared when the same OCC flips to SELL / EXIT.
+_BUY_ACTIONS_FOR_OCC = frozenset(
+    {
+        "BUY_NOW",
+        "BUY_RIP",
+        "BUY_BEAUTY",
+        "BUY_LEVEL",
+        "PUT_NOW",
+        "CALL_NOW",
+        "ENTRY",
+        "RADAR_HOT",
+        "SNIPER",
+    }
+)
+
 
 def now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -47,6 +76,16 @@ def signal_timestamps() -> dict[str, str]:
     }
 
 
+def signal_store_key(symbol: str, action: str, contract: str | None = None) -> str:
+    """Sticky key: SYMBOL:ACTION[:OCC] so exit/re-enter of the same OCC gets a fresh time."""
+    sym = str(symbol or "").upper()
+    act = str(action or "").upper()
+    occ = str(contract or "").strip().upper()
+    if occ:
+        return f"{sym}:{act}:{occ}"
+    return f"{sym}:{act}"
+
+
 def merge_first_signal_time(
     store: dict[str, Any],
     *,
@@ -54,20 +93,25 @@ def merge_first_signal_time(
     action: str,
     signaled_at: str,
     signaled_at_cst: str,
+    contract: str | None = None,
 ) -> dict[str, Any]:
-    """Keep the first BUY NOW / SELL NOW time per symbol+action (don't reset on refresh)."""
+    """Keep the first BUY NOW / SELL NOW time per symbol+action[+OCC] (don't reset on refresh)."""
     out = dict(store or {})
-    key = f"{str(symbol).upper()}:{str(action).upper()}"
+    key = signal_store_key(symbol, action, contract)
     existing = out.get(key)
     if existing and existing.get("signaled_at"):
         return out
-    out[key] = {
+    entry: dict[str, Any] = {
         "symbol": str(symbol).upper(),
         "action": str(action).upper(),
         "signaled_at": signaled_at,
         "signaled_at_cst": signaled_at_cst,
         "first_seen_at": signaled_at,
     }
+    occ = str(contract or "").strip().upper()
+    if occ:
+        entry["contract"] = occ
+    out[key] = entry
     return out
 
 
@@ -100,9 +144,14 @@ def resolve_first_signal_time(
     *,
     symbol: str,
     action: str,
+    contract: str | None = None,
 ) -> tuple[str, str, dict[str, Any]]:
-    """Return first-pulse UTC + CST for symbol/action, creating them if needed."""
-    key = f"{str(symbol).upper()}:{str(action).upper()}"
+    """Return first-pulse UTC + CST for symbol/action[/OCC], creating them if needed.
+
+    OCC-scoped keys do **not** inherit legacy SYMBOL:ACTION stamps — after an exit
+    clears the OCC key, a re-enter must get a fresh asked time.
+    """
+    key = signal_store_key(symbol, action, contract)
     prior = (store or {}).get(key) or {}
     if prior.get("signaled_at"):
         utc = str(prior["signaled_at"])
@@ -115,8 +164,100 @@ def resolve_first_signal_time(
         action=action,
         signaled_at=ts["signaled_at"],
         signaled_at_cst=ts["signaled_at_cst"],
+        contract=contract,
     )
     return ts["signaled_at"], ts["signaled_at_cst"], updated
+
+
+def clear_signal_time(
+    store: dict[str, Any],
+    *,
+    symbol: str,
+    action: str,
+    contract: str | None = None,
+) -> dict[str, Any]:
+    """Drop a sticky stamp so the next pulse gets a fresh asked time."""
+    out = dict(store or {})
+    key = signal_store_key(symbol, action, contract)
+    out.pop(key, None)
+    # Also drop legacy symbol-only key when clearing an OCC-scoped exit.
+    if contract:
+        legacy = signal_store_key(symbol, action, None)
+        out.pop(legacy, None)
+    return out
+
+
+def clear_signal_times_for_contracts(
+    store: dict[str, Any],
+    contracts: set[str] | frozenset[str] | list[str],
+    *,
+    actions: set[str] | frozenset[str] | None = None,
+) -> dict[str, Any]:
+    """Clear sticky stamps for closed/exited OCCs (any matching action unless restricted)."""
+    wanted = {str(c).strip().upper() for c in (contracts or []) if c}
+    if not wanted:
+        return dict(store or {})
+    act_filter = {str(a).upper() for a in actions} if actions is not None else None
+    out: dict[str, Any] = {}
+    for key, val in (store or {}).items():
+        if not isinstance(val, dict):
+            out[key] = val
+            continue
+        occ = str(val.get("contract") or "").strip().upper()
+        if not occ and isinstance(key, str) and key.count(":") >= 2:
+            # SYMBOL:ACTION:OCC
+            occ = key.rsplit(":", 1)[-1].upper()
+        act = str(val.get("action") or "").upper()
+        if not act and isinstance(key, str) and ":" in key:
+            parts = key.split(":")
+            if len(parts) >= 2:
+                act = parts[1].upper()
+        if occ and occ in wanted and (act_filter is None or act in act_filter):
+            continue
+        out[key] = val
+    return out
+
+
+def prune_signal_store_to_active(
+    store: dict[str, Any],
+    active_keys: set[str] | frozenset[str],
+    *,
+    sticky_actions: set[str] | frozenset[str] | None = None,
+) -> dict[str, Any]:
+    """Keep sticky entries only while the pulse is still on the board.
+
+    When a row exits / leaves BUY or SELL NOW, its stamp is dropped so a later
+    re-enter of the same OCC gets a new ``signaled_at``.
+    """
+    sticky = {str(a).upper() for a in (sticky_actions or STICKY_ACTIONS)}
+    active = {str(k) for k in (active_keys or set())}
+    out: dict[str, Any] = {}
+    for key, val in (store or {}).items():
+        if not isinstance(val, dict):
+            out[key] = val
+            continue
+        act = str(val.get("action") or "").upper()
+        if not act and isinstance(key, str) and ":" in key:
+            parts = str(key).split(":")
+            if len(parts) >= 2:
+                act = parts[1].upper()
+        if act in sticky and str(key) not in active:
+            continue
+        out[key] = val
+    return out
+
+
+def clear_buy_stamps_on_sell(
+    store: dict[str, Any],
+    *,
+    symbol: str,
+    contract: str | None = None,
+) -> dict[str, Any]:
+    """When an OCC flips to SELL/EXIT, clear BUY-side sticky stamps for re-entry."""
+    out = dict(store or {})
+    for act in _BUY_ACTIONS_FOR_OCC:
+        out = clear_signal_time(out, symbol=symbol, action=act, contract=contract)
+    return out
 
 
 def append_asked_cst(detail: str | None, *, action: str, signaled_at_cst: str | None) -> str:
@@ -146,22 +287,16 @@ def stamp_buy_sell_times(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Attach sticky signaled_at / signaled_at_cst for actionable BUY/SELL-style rows."""
     action = str(row.get("action") or "").upper()
-    sticky = sticky_actions or {
-        "BUY_NOW",
-        "SELL_NOW",
-        "BUY_RIP",
-        "BUY_BEAUTY",
-        "BUY_LEVEL",
-        "PUT_NOW",
-        "CALL_NOW",
-        "EXIT",
-    }
+    sticky = sticky_actions or STICKY_ACTIONS
     if action not in sticky:
         return row, store
     sym = str(row.get("symbol") or "").upper()
     if not sym:
         return row, store
-    utc, cst, store = resolve_first_signal_time(store, symbol=sym, action=action)
+    contract = row.get("contract")
+    utc, cst, store = resolve_first_signal_time(
+        store, symbol=sym, action=action, contract=contract
+    )
     out = dict(row)
     out["signaled_at"] = utc
     out["signaled_at_cst"] = cst

@@ -13,9 +13,12 @@ from typing import Any
 from odte_scanner.ml6.watchlist import ML6_WATCHLIST, STATUS_BUY_IF, STATUS_WAIT, STATUS_WATCH
 from odte_scanner.time_cst import (
     append_asked_cst,
+    clear_buy_stamps_on_sell,
     load_signal_store,
+    prune_signal_store_to_active,
     resolve_first_signal_time,
     save_signal_store,
+    signal_store_key,
     signal_timestamps,
 )
 
@@ -388,7 +391,16 @@ def build_ml6_action_board(
         nonlocal store
         if sig.action not in {"BUY_NOW", "SELL_NOW"}:
             return sig
-        utc, cst, store = resolve_first_signal_time(store, symbol=sig.symbol, action=sig.action)
+        if sig.action == "SELL_NOW":
+            store = clear_buy_stamps_on_sell(
+                store, symbol=sig.symbol, contract=getattr(sig, "contract", None)
+            )
+        utc, cst, store = resolve_first_signal_time(
+            store,
+            symbol=sig.symbol,
+            action=sig.action,
+            contract=getattr(sig, "contract", None),
+        )
         sig.signaled_at = utc
         sig.signaled_at_cst = cst
         sig.detail = append_asked_cst(sig.detail, action=sig.action, signaled_at_cst=cst)
@@ -423,6 +435,11 @@ def build_ml6_action_board(
     buys.sort(key=lambda s: s.strength, reverse=True)
     sells.sort(key=lambda s: s.strength, reverse=True)
 
+    active_keys = {
+        signal_store_key(s.symbol, s.action, getattr(s, "contract", None))
+        for s in (*buys, *sells)
+    }
+    store = prune_signal_store_to_active(store, active_keys)
     save_signal_store(path, store)
 
     primary = None

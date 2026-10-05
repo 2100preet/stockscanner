@@ -1,9 +1,10 @@
-"""BUY NOW must not repeat contracts already CLOSED in rec-log/journal."""
+"""BUY NOW must not repeat stale closed contracts; fresh re-entry is allowed."""
 
 from __future__ import annotations
 
 from odte_scanner.signals.now_board_filter import (
     apply_settled_contract_filter,
+    buy_row_is_stale_after_close,
     settled_buy_contracts,
 )
 from odte_scanner.trading.journal import JournalTrade, SignalJournal, TradeJournal
@@ -77,6 +78,66 @@ def test_apply_filter_strips_lottery_and_rip_buys():
     assert lottery["counts"]["buy_now"] == 1
     assert rip["buy_rip"] == []
     assert rip["counts"]["buy_rip"] == 0
+
+
+def test_stale_buy_after_exit_removed_fresh_reenter_kept():
+    occ = "META261005C00750000"
+    rec = {
+        "closed_recs": [
+            {
+                "symbol": "META",
+                "contract": occ,
+                "status": "closed",
+                "closed_at": "2026-10-05T14:00:00+00:00",
+            }
+        ],
+        "open_recs": [],
+    }
+    lottery = {
+        "buy_now": [
+            {
+                "symbol": "META",
+                "contract": occ,
+                "action": "BUY_NOW",
+                # Stale: asked before the close
+                "signaled_at": "2026-10-05T13:00:00+00:00",
+            },
+            {
+                "symbol": "META",
+                "contract": occ,
+                "action": "BUY_NOW",
+                # Fresh re-enter after close
+                "signaled_at": "2026-10-05T15:00:00+00:00",
+            },
+        ],
+        "counts": {"buy_now": 2},
+    }
+    # Simulate two rows — filter keeps only the fresh one (we'll pass one board with both)
+    apply_settled_contract_filter(journal=None, rec_log=rec, lottery=lottery)
+    assert len(lottery["buy_now"]) == 1
+    assert lottery["buy_now"][0]["signaled_at"] == "2026-10-05T15:00:00+00:00"
+    assert lottery["counts"]["buy_now"] == 1
+
+
+def test_buy_row_is_stale_helper():
+    occ = "TSLA261005C00380000"
+    closed = {occ: "2026-10-05T12:00:00+00:00"}
+    open_occs: set[str] = set()
+    assert buy_row_is_stale_after_close(
+        {"contract": occ, "signaled_at": "2026-10-05T11:00:00+00:00"},
+        open_occs=open_occs,
+        closed_at=closed,
+    )
+    assert not buy_row_is_stale_after_close(
+        {"contract": occ, "signaled_at": "2026-10-05T13:00:00+00:00"},
+        open_occs=open_occs,
+        closed_at=closed,
+    )
+    assert not buy_row_is_stale_after_close(
+        {"contract": occ, "signaled_at": "2026-10-05T11:00:00+00:00"},
+        open_occs={occ},
+        closed_at=closed,
+    )
 
 
 def test_journal_dedupe_closed_wins_over_open_same_id(tmp_path):
