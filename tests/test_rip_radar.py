@@ -8,6 +8,7 @@ from odte_scanner.signals.rip_radar import (
     decide_rip_entry,
     is_mega_rip_symbol,
     mega_rip_tape_ok,
+    pick_rip_continuation_call,
 )
 
 _MORNING = datetime(2026, 9, 18, 11, 0, tzinfo=ZoneInfo("America/New_York"))
@@ -258,3 +259,166 @@ def test_rip_buy_stamps_asked_time(tmp_path):
         signal_times_path=str(store),
     )
     assert (board2.get("buy_rip") or [])[0]["signaled_at"] == row["signaled_at"]
+
+
+def test_avgo_thin_0dte_ask_falls_back_to_weekly_buy_rip(monkeypatch):
+    """Oct 5 AVGO miss: tape hot + no liquid 0DTE ask → nearest weekly → BUY_RIP."""
+
+    def fake_pick(symbol, spot, **kwargs):
+        assert symbol == "AVGO"
+        assert spot > 0
+        return {
+            "symbol": "AVGO",
+            "strike": 365.0,
+            "expiry": "2026-10-10",
+            "dte": 5,
+            "dte_bucket": "weekly",
+            "ask": 4.20,
+            "bid": 4.00,
+            "contract": "AVGO261010C00365000",
+            "volume": 900,
+            "open_interest": 2500,
+            "moneyness_pct": 0.7,
+            "right": "C",
+            "weekly_fallback": True,
+            "nearest_listed": True,
+            "note": "0–1 DTE ask thin/missing — nearest liquid weekly 2026-10-10 (DTE 5)",
+            "source": "tradier",
+        }
+
+    monkeypatch.setattr(
+        "odte_scanner.signals.rip_radar.pick_rip_continuation_call",
+        fake_pick,
+    )
+    board = build_rip_board(
+        candidates=[
+            {
+                "symbol": "AVGO",
+                "ask": 0.0,  # thin / missing 0DTE ask on snapshot
+                "bid": 0.0,
+                "strike": 365,
+                "expiry": "2026-10-05",
+                "contract": "AVGO261005C00365000",
+                "dte": 0,
+                "dte_bucket": "0dte",
+                "moneyness_pct": 0.7,
+                "volume": 0,
+                "open_interest": 0,
+                "score": 62,
+                "right": "C",
+                "live_change_pct": 1.27,
+            }
+        ],
+        scores=[{"symbol": "AVGO", "ensemble_score": 62}],
+        quotes={
+            "AVGO": {
+                "last": 362.35,
+                "session_change_pct": 1.27,
+                "mom_5m_pct": None,
+                "mom_15m_pct": None,
+                "day_low": 356.15,
+                "day_high": 364.0,
+            }
+        },
+        now=_MORNING,
+        signal_times_path=None,
+    )
+    buys = board.get("buy_rip") or []
+    assert buys, "expected AVGO BUY_RIP via weekly fallback"
+    row = buys[0]
+    assert row["symbol"] == "AVGO"
+    assert row["action"] == "BUY_RIP"
+    assert row["dte"] == 5
+    assert row["dte_bucket"] == "weekly"
+    assert row["contract"] == "AVGO261010C00365000"
+    assert row["ask"] == 4.20
+    assert "weekly fallback" in row["detail"].lower()
+
+
+def test_avgo_still_watch_when_weekly_fallback_empty(monkeypatch):
+    """If weekly chain also has no liquid call, stay WATCH_RIP and note the attempt."""
+
+    monkeypatch.setattr(
+        "odte_scanner.signals.rip_radar.pick_rip_continuation_call",
+        lambda *a, **k: None,
+    )
+    board = build_rip_board(
+        candidates=[
+            {
+                "symbol": "AVGO",
+                "ask": 0.19,  # below rip min_ask 0.25
+                "bid": 0.15,
+                "strike": 365,
+                "expiry": "2026-10-05",
+                "contract": "AVGO261005C00365000",
+                "dte": 0,
+                "dte_bucket": "0dte",
+                "score": 55,
+                "right": "C",
+                "live_change_pct": 1.27,
+            }
+        ],
+        scores=[{"symbol": "AVGO", "ensemble_score": 55}],
+        quotes={
+            "AVGO": {
+                "last": 362.35,
+                "session_change_pct": 1.27,
+                "day_low": 356.15,
+            }
+        },
+        now=_MORNING,
+        signal_times_path=None,
+    )
+    assert not (board.get("buy_rip") or [])
+    watches = board.get("watch") or []
+    assert watches
+    row = watches[0]
+    assert row["symbol"] == "AVGO"
+    assert row["action"] == "WATCH_RIP"
+    assert "weekly fallback" in row["detail"].lower()
+
+
+def test_pick_rip_falls_back_to_nearest_weekly_call(monkeypatch):
+    class _C:
+        def __init__(self, dte, expiry):
+            self._d = {
+                "strike": 365.0,
+                "expiry": expiry,
+                "dte": dte,
+                "ask": 3.8,
+                "bid": 3.6,
+                "contract": "AVGO261010C00365000",
+                "volume": 700,
+                "open_interest": 1800,
+                "moneyness_pct": 0.8,
+            }
+
+        def to_dict(self):
+            return dict(self._d)
+
+        @property
+        def dte(self):
+            return self._d["dte"]
+
+    calls: list[int] = []
+
+    def fake_select_calls(*args, max_dte=7, **kwargs):
+        calls.append(int(max_dte))
+        if max_dte <= 1:
+            return []
+        return [_C(5, "2026-10-10")]
+
+    monkeypatch.setattr(
+        "odte_scanner.options.selector.select_calls",
+        fake_select_calls,
+    )
+    import odte_scanner.data.tradier as tr
+
+    monkeypatch.setattr(tr, "access_token_from_env", lambda: None)
+    picked = pick_rip_continuation_call("AVGO", 362.35)
+    assert picked is not None
+    assert picked["expiry"] == "2026-10-10"
+    assert picked["dte"] == 5
+    assert picked.get("weekly_fallback") is True
+    assert picked.get("nearest_listed") is True
+    assert 1 in calls and any(c > 1 for c in calls)
