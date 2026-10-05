@@ -131,6 +131,31 @@ LIQUID_UNIVERSE: list[str] = [
     *EARNINGS_DARLINGS_UNIVERSE,
 ]
 
+# New listings / thin walk-forward hist — BUY NOW hist gate + chase weekly wings.
+# These names fail "hist win ≥80% n≥5" until enough quality signals exist (SPCX IPO lesson).
+THIN_HIST_IPO_SYMBOLS: frozenset[str] = frozenset(
+    {
+        "SPCX",  # SpaceX — null hist blocked Friday 10/9 weekly BUY NOW
+        "FLY",   # Firefly Aerospace
+        "CBRS",  # Cerebras
+        "FIGR",  # Figure
+        "GEMI",  # Gemini
+        "BETA",  # Beta Technologies
+        "XE",    # X-Energy
+        "CRCL",  # Circle
+        "CRWV",  # CoreWeave — still thin on some horizons
+        "NBIS",  # Nebius
+    }
+)
+
+
+def is_thin_hist_ipo(symbol: str | None) -> bool:
+    """True for recent IPO / darling names that often lack hist-win samples."""
+    if not symbol:
+        return False
+    return str(symbol).replace(".", "-").upper() in THIN_HIST_IPO_SYMBOLS
+
+
 # ML6 earnings-catalyst neocloud sleeve (also listed in LIQUID_UNIVERSE)
 ML6_UNIVERSE: list[str] = [
     "FRMI",  # Fermi — Aug 13 BMO

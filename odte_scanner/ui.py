@@ -4547,6 +4547,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 else 50.0
             ),
             mega_rip_live_pct=float(actions_cfg.get("mega_rip_live_pct", 1.0)),
+            ipo_thin_hist_live_pct=float(actions_cfg.get("ipo_thin_hist_live_pct", 1.5)),
             weekly_max_hold_days=int(actions_cfg.get("weekly_max_hold_days", 7)),
             odte_flatten_et=str(actions_cfg.get("odte_flatten_et") or "15:45"),
             # Pages offline has no live tape — still allow gated BUY so journal/exits can run
@@ -4600,6 +4601,7 @@ def create_app(config_path: str | None = None) -> Flask:
                         else 50.0
                     ),
                     mega_rip_live_pct=float(actions_cfg.get("mega_rip_live_pct", 1.0)),
+                    ipo_thin_hist_live_pct=float(actions_cfg.get("ipo_thin_hist_live_pct", 1.5)),
                     weekly_max_hold_days=int(actions_cfg.get("weekly_max_hold_days", 7)),
                     odte_flatten_et=str(actions_cfg.get("odte_flatten_et") or "15:45"),
                     require_live_confirm=not offline,
@@ -4776,6 +4778,9 @@ def create_app(config_path: str | None = None) -> Flask:
                     min_ask=float(actions_cfg.get("chase_min_ask", 0.20)),
                     max_ask=float(actions_cfg.get("chase_max_ask", 12.0)),
                     otm_pct_max=float(actions_cfg.get("chase_otm_pct_max", 8.0)),
+                    ipo_otm_pct_max=float(actions_cfg.get("chase_ipo_otm_pct_max", 10.0)),
+                    max_dte=1,
+                    ipo_max_dte=int(actions_cfg.get("chase_ipo_max_dte", 7)),
                     enrich_live=bool(actions_cfg.get("chase_enrich_live", True)),
                     max_live_symbols=int(actions_cfg.get("chase_max_live_symbols", 8)),
                     per_symbol=2,
@@ -4788,8 +4793,11 @@ def create_app(config_path: str | None = None) -> Flask:
                     min_ask=float(actions_cfg.get("chase_min_ask", 0.20)),
                     max_ask=float(actions_cfg.get("chase_max_ask", 12.0)),
                     max_otm_pct=float(actions_cfg.get("chase_otm_pct_max", 8.0)),
+                    ipo_max_otm_pct=float(actions_cfg.get("chase_ipo_otm_pct_max", 10.0)),
                     min_mult_at_3pct=float(actions_cfg.get("chase_min_mult_at_3pct", 3.5)),
                     min_mom_5m=float(actions_cfg.get("chase_min_mom_5m", 0.08)),
+                    max_dte=1,
+                    ipo_max_dte=int(actions_cfg.get("chase_ipo_max_dte", 7)),
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("chase radar unavailable: %s", exc)
@@ -5098,6 +5106,7 @@ def create_app(config_path: str | None = None) -> Flask:
                         else 50.0
                     ),
                     mega_rip_live_pct=float(actions_cfg.get("mega_rip_live_pct", 1.0)),
+                    ipo_thin_hist_live_pct=float(actions_cfg.get("ipo_thin_hist_live_pct", 1.5)),
                     weekly_max_hold_days=int(actions_cfg.get("weekly_max_hold_days", 7)),
                     odte_flatten_et=str(actions_cfg.get("odte_flatten_et") or "15:45"),
                     require_live_confirm=not offline,

@@ -709,6 +709,7 @@ def apply_hist_win_gate(
     require_hist_win: bool = True,
     mega_min_hist_win_pct: float | None = None,
     mega_rip_live_pct: float = 1.0,
+    ipo_thin_hist_live_pct: float = 1.5,
 ) -> ActionSignal:
     """Demote BUY NOW → WAIT unless walk-forward hist win clears the bar.
 
@@ -718,18 +719,46 @@ def apply_hist_win_gate(
     Liquid megas (AAPL/GOOGL/MSFT/INTC/…) use a softer hist floor when configured,
     and can clear on a live session rip even when hist sits ~50% — otherwise the
     desk never alerts megas that the tape is actually moving.
+
+    Recent IPO / thin-hist names (SPCX…) have null hist samples forever until
+    walk-forward fills — allow BUY NOW on a live session rip so Friday weeklies
+    are not stuck on WAIT while the tape is ripping (SPCX 10/9 call lesson).
     """
     if not require_hist_win or sig.action != "BUY_NOW":
         return sig
     is_put = str(sig.right or "C").upper() == "P"
     n = int(sig.win_samples or 0)
     win = sig.win_pct
+    from odte_scanner.data.universe import is_thin_hist_ipo
     from odte_scanner.signals.rip_radar import is_mega_rip_symbol, mega_rip_tape_ok
 
     is_mega = is_mega_rip_symbol(sig.symbol)
+    is_ipo = is_thin_hist_ipo(sig.symbol)
     target = float(min_hist_win_pct)
     if is_mega and mega_min_hist_win_pct is not None:
         target = min(target, float(mega_min_hist_win_pct))
+
+    thin_hist = win is None or n < int(min_hist_win_samples)
+    if thin_hist and is_ipo and not is_put:
+        if mega_rip_tape_ok(
+            live=sig.live_change_pct,
+            mom5=None,
+            mom15=None,
+            min_live_pct=float(ipo_thin_hist_live_pct),
+        ):
+            live = float(sig.live_change_pct or 0)
+            why = (
+                "no hist sample yet"
+                if win is None
+                else f"hist n={n} < {min_hist_win_samples}"
+            )
+            sig.detail = (
+                f"{sig.detail} · IPO thin-hist tape override: session "
+                f"{live:+.2f}% clears ({why} — new listing)"
+            )
+            if "MEGA RIP" not in (sig.headline or "") and "IPO TAPE" not in (sig.headline or ""):
+                sig.headline = sig.headline.replace("BUY NOW", "BUY NOW · IPO TAPE", 1)
+            return sig
 
     if win is None:
         sig.action = "WAIT"
@@ -826,6 +855,7 @@ def build_action_board(
     require_hist_win: bool = True,
     mega_min_hist_win_pct: float | None = 50.0,
     mega_rip_live_pct: float = 1.0,
+    ipo_thin_hist_live_pct: float = 1.5,
     journal_opens: list[dict[str, Any]] | None = None,
     weekly_max_hold_days: int = 7,
     odte_flatten_et: str = "15:45",
@@ -906,6 +936,7 @@ def build_action_board(
             require_hist_win=require_hist_win,
             mega_min_hist_win_pct=mega_min_hist_win_pct,
             mega_rip_live_pct=mega_rip_live_pct,
+            ipo_thin_hist_live_pct=ipo_thin_hist_live_pct,
         )
         from odte_scanner.signals.flow_gate import (
             apply_flow_gate,
