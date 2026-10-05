@@ -100,6 +100,7 @@ jobs:
           TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
           TWILIO_WHATSAPP_FROM: ${{ secrets.TWILIO_WHATSAPP_FROM }}
           WHATSAPP_TO: ${{ secrets.WHATSAPP_TO }}
+          CALLMEBOT_APIKEY: ${{ secrets.CALLMEBOT_APIKEY }}
           WHATSAPP_TOKEN: ${{ secrets.WHATSAPP_TOKEN }}
           WHATSAPP_PHONE_NUMBER_ID: ${{ secrets.WHATSAPP_PHONE_NUMBER_ID }}
           WHATSAPP_ALERTS_ENABLED: ${{ secrets.WHATSAPP_ALERTS_ENABLED }}
@@ -117,6 +118,7 @@ jobs:
           TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
           TWILIO_WHATSAPP_FROM: ${{ secrets.TWILIO_WHATSAPP_FROM }}
           WHATSAPP_TO: ${{ secrets.WHATSAPP_TO }}
+          CALLMEBOT_APIKEY: ${{ secrets.CALLMEBOT_APIKEY }}
           WHATSAPP_TOKEN: ${{ secrets.WHATSAPP_TOKEN }}
           WHATSAPP_PHONE_NUMBER_ID: ${{ secrets.WHATSAPP_PHONE_NUMBER_ID }}
           WHATSAPP_ALERTS_ENABLED: ${{ secrets.WHATSAPP_ALERTS_ENABLED }}
@@ -137,12 +139,14 @@ jobs:
           else
             echo "POLYGON_API_KEY configured=NO — add repo secret POLYGON_API_KEY (Massive key OK)"
           fi
-          if [ -n "${TWILIO_ACCOUNT_SID:-}" ] && [ -n "${WHATSAPP_TO:-}" ]; then
+          if [ -n "${CALLMEBOT_APIKEY:-}" ] && [ -n "${WHATSAPP_TO:-}" ]; then
+            echo "WHATSAPP (CallMeBot) configured=yes"
+          elif [ -n "${TWILIO_ACCOUNT_SID:-}" ] && [ -n "${WHATSAPP_TO:-}" ]; then
             echo "WHATSAPP (Twilio) configured=yes"
           elif [ -n "${WHATSAPP_TOKEN:-}" ] && [ -n "${WHATSAPP_PHONE_NUMBER_ID:-}" ]; then
             echo "WHATSAPP (Meta Cloud) configured=yes"
           else
-            echo "WHATSAPP configured=NO — add TWILIO_* + WHATSAPP_TO (or WHATSAPP_TOKEN + PHONE_NUMBER_ID) secrets"
+            echo "WHATSAPP configured=NO — add CALLMEBOT_APIKEY + WHATSAPP_TO (easiest) or TWILIO_* / Meta secrets"
           fi
           python -m odte_scanner export-pages --out site
           test -f site/index.html

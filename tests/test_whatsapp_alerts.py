@@ -72,6 +72,8 @@ def test_collect_trade_alerts_from_snapshot():
 
 
 def test_dispatch_primes_then_sends(tmp_path, monkeypatch):
+    monkeypatch.delenv("CALLMEBOT_APIKEY", raising=False)
+    monkeypatch.delenv("CALLMEBOT_API_KEY", raising=False)
     monkeypatch.setenv("TWILIO_ACCOUNT_SID", "ACxxx")
     monkeypatch.setenv("TWILIO_AUTH_TOKEN", "token")
     monkeypatch.setenv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")
@@ -136,7 +138,33 @@ def test_dispatch_primes_then_sends(tmp_path, monkeypatch):
     assert "NVDA" in sent[0]
 
 
+def test_callmebot_send(monkeypatch):
+    monkeypatch.setenv("WHATSAPP_TO", "15551234567")
+    monkeypatch.setenv("CALLMEBOT_APIKEY", "123456")
+    for k in ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_WHATSAPP_FROM", "WHATSAPP_TOKEN", "WHATSAPP_PHONE_NUMBER_ID"):
+        monkeypatch.delenv(k, raising=False)
+
+    class FakeResp:
+        status_code = 200
+        text = "OK"
+
+    calls = {}
+
+    def fake_get(url, timeout=None):
+        calls["url"] = url
+        return FakeResp()
+
+    monkeypatch.setattr(wa.requests, "get", fake_get)
+    res = wa.send_whatsapp_text("BUY TSLA")
+    assert res["ok"] is True
+    assert res["provider"] == "callmebot"
+    assert "15551234567" in calls["url"]
+    assert "apikey=123456" in calls["url"]
+
+
 def test_twilio_send_posts(monkeypatch):
+    monkeypatch.delenv("CALLMEBOT_APIKEY", raising=False)
+    monkeypatch.delenv("CALLMEBOT_API_KEY", raising=False)
     monkeypatch.setenv("TWILIO_ACCOUNT_SID", "ACxxx")
     monkeypatch.setenv("TWILIO_AUTH_TOKEN", "token")
     monkeypatch.setenv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")

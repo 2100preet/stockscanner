@@ -237,7 +237,11 @@ def dispatch_snapshot_alerts(
             "primed": True,
             "seeded": len(alerts),
             "sent": 0,
-            "provider": "twilio" if cfg.get("twilio") else ("meta" if cfg.get("meta") else None),
+            "provider": (
+                "callmebot"
+                if cfg.get("callmebot")
+                else ("twilio" if cfg.get("twilio") else ("meta" if cfg.get("meta") else None))
+            ),
             "note": "Seeded current board — next new BUY/SELL will WhatsApp",
         }
 
@@ -297,5 +301,9 @@ def dispatch_snapshot_alerts(
         "results": sent,
         "fresh": len(fresh),
         "errors": errors[:5],
-        "provider": "twilio" if cfg.get("twilio") else "meta",
+        "provider": (
+            "callmebot"
+            if cfg.get("callmebot")
+            else ("twilio" if cfg.get("twilio") else "meta")
+        ),
     }

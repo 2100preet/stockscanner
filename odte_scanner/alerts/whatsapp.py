@@ -1,12 +1,17 @@
-"""WhatsApp outbound alerts (Twilio or Meta Cloud API).
+"""WhatsApp outbound alerts (CallMeBot, Twilio, or Meta Cloud API).
 
-Env (Twilio — preferred for personal sandbox):
+Env (CallMeBot — easiest personal WhatsApp, free):
+  WHATSAPP_TO            phone with country code, e.g. 15551234567
+  CALLMEBOT_APIKEY       from https://www.callmebot.com/blog/free-api-whatsapp-messages/
+  (Text the bot once to get your apikey)
+
+Env (Twilio sandbox / business):
   TWILIO_ACCOUNT_SID
   TWILIO_AUTH_TOKEN
   TWILIO_WHATSAPP_FROM   e.g. whatsapp:+14155238886
   WHATSAPP_TO            e.g. whatsapp:+15551234567  (or +15551234567)
 
-Env (Meta Cloud API alternative):
+Env (Meta Cloud / WhatsApp Business API):
   WHATSAPP_TOKEN
   WHATSAPP_PHONE_NUMBER_ID
   WHATSAPP_TO            E.164 phone, e.g. 15551234567
@@ -19,6 +24,7 @@ from __future__ import annotations
 import logging
 import os
 from typing import Any
+from urllib.parse import quote
 
 import requests
 
@@ -38,10 +44,9 @@ def _normalize_to(raw: str | None) -> str | None:
         return None
     s = raw.strip()
     if s.lower().startswith("whatsapp:"):
-        return s if s.lower().startswith("whatsapp:") else f"whatsapp:{s}"
+        return s
     if s.startswith("+"):
         return f"whatsapp:{s}"
-    # bare digits → assume E.164 without +
     digits = "".join(ch for ch in s if ch.isdigit())
     if digits:
         return f"whatsapp:+{digits}"
@@ -49,7 +54,7 @@ def _normalize_to(raw: str | None) -> str | None:
 
 
 def _normalize_to_meta(raw: str | None) -> str | None:
-    """Meta wants digits only (country code + number, no +)."""
+    """Meta / CallMeBot want digits (country code + number, no +)."""
     if not raw:
         return None
     s = raw.strip()
@@ -61,6 +66,10 @@ def _normalize_to_meta(raw: str | None) -> str | None:
 
 def configured() -> dict[str, Any]:
     """Return which WhatsApp backend is ready (no network)."""
+    callmebot = bool(
+        _normalize_to_meta(_env("WHATSAPP_TO"))
+        and _env("CALLMEBOT_APIKEY", "CALLMEBOT_API_KEY")
+    )
     twilio = bool(
         _env("TWILIO_ACCOUNT_SID")
         and _env("TWILIO_AUTH_TOKEN")
@@ -73,7 +82,8 @@ def configured() -> dict[str, Any]:
         and _normalize_to_meta(_env("WHATSAPP_TO"))
     )
     return {
-        "ok": twilio or meta,
+        "ok": callmebot or twilio or meta,
+        "callmebot": callmebot,
         "twilio": twilio,
         "meta": meta,
         "to_set": bool(_env("WHATSAPP_TO", "TWILIO_WHATSAPP_TO")),
@@ -85,7 +95,7 @@ def send_whatsapp_text(
     *,
     timeout: float = 20.0,
 ) -> dict[str, Any]:
-    """Send a plain text WhatsApp message. Prefers Twilio, else Meta Cloud."""
+    """Send a plain text WhatsApp message. Prefers CallMeBot → Twilio → Meta."""
     text = (body or "").strip()
     if not text:
         return {"ok": False, "skipped": True, "error": "empty body"}
@@ -96,12 +106,50 @@ def send_whatsapp_text(
             "ok": False,
             "configured": False,
             "skipped": True,
-            "error": "WhatsApp not configured (set TWILIO_* or WHATSAPP_TOKEN secrets)",
+            "error": (
+                "WhatsApp not configured "
+                "(set CALLMEBOT_APIKEY+WHATSAPP_TO, or TWILIO_*, or WHATSAPP_TOKEN)"
+            ),
         }
 
+    if cfg["callmebot"]:
+        return _send_callmebot(text, timeout=timeout)
     if cfg["twilio"]:
         return _send_twilio(text, timeout=timeout)
     return _send_meta(text, timeout=timeout)
+
+
+def _send_callmebot(body: str, *, timeout: float) -> dict[str, Any]:
+    phone = _normalize_to_meta(_env("WHATSAPP_TO"))
+    apikey = _env("CALLMEBOT_APIKEY", "CALLMEBOT_API_KEY")
+    if not (phone and apikey):
+        return {"ok": False, "configured": False, "skipped": True, "error": "callmebot env incomplete"}
+    url = (
+        "https://api.callmebot.com/whatsapp.php"
+        f"?phone={quote(phone)}&text={quote(body[:1500])}&apikey={quote(apikey)}"
+    )
+    try:
+        r = requests.get(url, timeout=timeout)
+        text = (r.text or "")
+        ok = r.status_code < 400 and "error" not in text.lower()[:120]
+        if not ok:
+            logger.warning("callmebot failed %s: %s", r.status_code, text[:300])
+            return {
+                "ok": False,
+                "configured": True,
+                "provider": "callmebot",
+                "status_code": r.status_code,
+                "error": text[:400],
+            }
+        return {
+            "ok": True,
+            "configured": True,
+            "provider": "callmebot",
+            "status_code": r.status_code,
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("callmebot exception: %s", exc)
+        return {"ok": False, "configured": True, "provider": "callmebot", "error": str(exc)}
 
 
 def _send_twilio(body: str, *, timeout: float) -> dict[str, Any]:
