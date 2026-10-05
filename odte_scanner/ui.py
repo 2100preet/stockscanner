@@ -628,6 +628,13 @@ PAGE = r"""
         <div id="flowLeaders" class="empty">—</div>
       </div>
       <div class="panel">
+        <h2>UW expiry — greek + flow</h2>
+        <p class="lede" style="margin:0;font-size:.76rem">
+          Unusual Whales <code>greek-exposure/expiry</code> + <code>flow-per-expiry</code> (focus names). Optional contract <code>intraday</code> when configured.
+        </p>
+        <div id="uwExpiryDesk" class="empty">—</div>
+      </div>
+      <div class="panel">
         <h2>Cortex briefing</h2>
         <p class="lede" id="echoCortex" style="margin:0">—</p>
       </div>
@@ -2739,6 +2746,40 @@ PAGE = r"""
         }
       }
 
+      const uwExpEl = document.getElementById("uwExpiryDesk");
+      if (uwExpEl) {
+        const uw = echo.uw_flow || (DATA.actions && DATA.actions.uw_flow) || {};
+        const byT = uw.greek_flow_by_ticker || {};
+        const heads = uw.expiry_headlines || [];
+        const intra = uw.contract_intraday || {};
+        const rows = Object.keys(byT).map(sym => {
+          const p = byT[sym] || {};
+          const g = p.greek || {};
+          const f = p.flow || {};
+          return `<tr>
+            <td><strong>${sym}</strong></td>
+            <td><span class="badge ${f.sentiment==="bullish"?"buy":(f.sentiment==="bearish"?"sell":"wait")}">${f.sentiment||"—"}</span></td>
+            <td class="mono ${(f.net_premium||0)>=0?"up":"down"}">${f.net_premium==null?"—":("$"+fmt(f.net_premium/1000,0)+"k")}</td>
+            <td class="mono ${(g.net_gex||0)>=0?"up":"down"}">${g.net_gex==null?"—":fmt(g.net_gex/1e6,1)+"M"}</td>
+            <td class="mono">${f.expiries_n??g.expiries_n??"—"}</td>
+          </tr>`;
+        });
+        const intraBits = Object.keys(intra).slice(0,4).map(cid => {
+          const s = (intra[cid] && intra[cid].summary) || {};
+          return `<span class="status">${s.headline || cid}</span>`;
+        });
+        if (!rows.length && !heads.length) {
+          uwExpEl.innerHTML = `<div class="empty">UW expiry pack idle — set UNUSUAL_WHALES_API_KEY (focus AMAT/TSM/…).</div>`;
+        } else {
+          uwExpEl.innerHTML =
+            (heads.length ? `<p class="lede" style="margin:0 0 .45rem;font-size:.76rem">${heads.slice(0,3).join(" · ")}</p>` : "")
+            + (rows.length
+              ? `<table><thead><tr><th>Sym</th><th>Flow</th><th>Net prem</th><th>Net GEX</th><th>Expiries</th></tr></thead><tbody>${rows.join("")}</tbody></table>`
+              : "")
+            + (intraBits.length ? `<p class="lede" style="margin:.45rem 0 0;font-size:.74rem">Intraday: ${intraBits.join(" · ")}</p>` : "");
+        }
+      }
+
       const cx = echo.cortex || {};
       if (cortexEl) {
         cortexEl.innerHTML = `<strong style="color:var(--ink)">${cx.headline||"Flow briefing"}</strong><br/>`
@@ -4307,10 +4348,28 @@ def create_app(config_path: str | None = None) -> Flask:
         darkpool_symbols: list[str] = []
         try:
             if api_key_from_env():
+                # Cap expiry/intraday enrich — greek-by-expiry + flow-per-expiry per ticker
+                uw_focus = [
+                    str(s).upper()
+                    for s in (actions_cfg.get("uw_focus_tickers") or [])
+                    if s
+                ]
+                if not uw_focus:
+                    # Prefer sticky level-watch + a few mega RIP names for desk context
+                    uw_focus = ["AMAT", "AMD", "TSM", "NVDA"]
+                uw_contracts = [
+                    str(c).upper()
+                    for c in (actions_cfg.get("uw_focus_contracts") or [])
+                    if c
+                ]
                 uw_flow = build_uw_desk_context(
                     flow_limit=int(actions_cfg.get("uw_flow_limit", 100)),
                     min_premium=float(actions_cfg.get("uw_min_premium", 50_000)),
                     timeout=float(actions_cfg.get("uw_timeout_sec", 18)),
+                    focus_tickers=uw_focus[: int(actions_cfg.get("uw_max_focus_tickers", 4))],
+                    focus_contracts=uw_contracts[: int(actions_cfg.get("uw_max_focus_contracts", 2))],
+                    max_focus_tickers=int(actions_cfg.get("uw_max_focus_tickers", 4)),
+                    max_focus_contracts=int(actions_cfg.get("uw_max_focus_contracts", 2)),
                 )
                 market_tide = uw_flow.get("market_tide") or {}
                 darkpool_symbols = list((uw_flow.get("darkpool") or {}).get("symbols") or [])
@@ -5938,6 +5997,25 @@ def create_app(config_path: str | None = None) -> Flask:
 
         # Persist boards so /api/webull/sync + auto_sync see the same ENTER/EXIT set
         if isinstance(actions, dict):
+            # Compact expiry / intraday pack for Echo desk (no raw minute ticks)
+            greek_flow_sum: dict = {}
+            for sym, pack in ((uw_flow or {}).get("greek_flow_by_ticker") or {}).items():
+                if not isinstance(pack, dict):
+                    continue
+                greek_flow_sum[str(sym).upper()] = {
+                    "ok": bool(pack.get("ok")),
+                    "greek": pack.get("greek_by_expiry") or {},
+                    "flow": pack.get("flow_per_expiry") or {},
+                }
+            contract_intra_sum: dict = {}
+            for cid, pack in ((uw_flow or {}).get("contract_intraday") or {}).items():
+                if not isinstance(pack, dict):
+                    continue
+                contract_intra_sum[str(cid).upper()] = {
+                    "ok": bool(pack.get("ok")),
+                    "summary": pack.get("summary") or {},
+                    "bars_n": pack.get("bars_n"),
+                }
             uw_summary = {
                 "ok": bool((uw_flow or {}).get("ok")),
                 "configured": bool((uw_flow or {}).get("configured")),
@@ -5950,6 +6028,9 @@ def create_app(config_path: str | None = None) -> Flask:
                 "darkpool_leaders": list(
                     ((uw_flow or {}).get("darkpool") or {}).get("leaders") or []
                 )[:12],
+                "greek_flow_by_ticker": greek_flow_sum,
+                "contract_intraday": contract_intra_sum,
+                "expiry_headlines": list((uw_flow or {}).get("expiry_headlines") or [])[:8],
                 "drives": [
                     "BUY_NOW",
                     "SELL_NOW",

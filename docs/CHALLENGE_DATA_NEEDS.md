@@ -20,6 +20,12 @@ Cloud Agents cannot write GitHub secrets (403). Do **not** commit the key.
    - Use: gate challenge ENTRY to symbols with bullish call flow that session
    - Env: `UNUSUAL_WHALES_API_KEY` or `FLOWALGO_USER` / `FLOWALGO_PASS`
    - Client: `odte_scanner/signals/unusual_whales.py` (flow-alerts → challenge board)
+   - Also wired (desk enrich, focus tickers):
+     - `GET /api/stock/{ticker}/greek-exposure/expiry` — GEX/delta by expiry
+     - `GET /api/stock/{ticker}/flow-per-expiry` — call/put premium by expiry
+     - `GET /api/option-contract/{id}/intraday` — 1m bid/ask/mid volume ticks
+   - Config (optional): `actions.uw_focus_tickers`, `uw_focus_contracts`,
+     `uw_max_focus_tickers` (default 4), `uw_max_focus_contracts` (default 2)
 
 2. **Tradier** (broker + options marks) — preferred next
    - Why: live bid/ask for ENTRY/EXIT + sandbox/paper orders in one API
