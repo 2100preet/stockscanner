@@ -1,0 +1,56 @@
+name: Telegram Test Ping
+
+# One-shot: send a test message with TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID.
+# Does not touch Pages. Run manually from Actions → Telegram Test Ping → Run workflow.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -e .
+
+      - name: Send Telegram test ping
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python - <<'PY'
+          import json
+          from odte_scanner.alerts.telegram import configured, send_telegram_text
+
+          cfg = configured()
+          print("configured:", json.dumps({k: cfg[k] for k in ("ok", "token_set", "chat_set", "enabled")}))
+          if not cfg["ok"]:
+              raise SystemExit("Telegram secrets missing — set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID")
+
+          res = send_telegram_text(
+              "Signal Desk test ping ✅\n"
+              "If you see this, BUY/SELL alerts will reach this chat."
+          )
+          print("send_result:", json.dumps(res, default=str))
+          if not res.get("ok"):
+              err = str(res.get("error") or res)
+              print("HINT: Open your bot in Telegram (t.me/<bot_username>), tap Start, then re-run this workflow.")
+              raise SystemExit(f"Telegram send failed: {err}")
+          print("OK — check Telegram for the test message.")
+          PY
