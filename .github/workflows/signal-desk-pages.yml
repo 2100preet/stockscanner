@@ -127,6 +127,8 @@ jobs:
           WHATSAPP_TOKEN: ${{ secrets.WHATSAPP_TOKEN }}
           WHATSAPP_PHONE_NUMBER_ID: ${{ secrets.WHATSAPP_PHONE_NUMBER_ID }}
           WHATSAPP_ALERTS_ENABLED: ${{ secrets.WHATSAPP_ALERTS_ENABLED }}
+          # Fast Signal Desk Alerts loop owns Telegram; avoid duplicate pings.
+          SKIP_DESK_ALERTS: "1"
         run: |
           mkdir -p outputs
           if [ -n "${UNUSUAL_WHALES_API_KEY:-}" ]; then
@@ -145,7 +147,7 @@ jobs:
             echo "POLYGON_API_KEY configured=NO — add repo secret POLYGON_API_KEY (Massive key OK)"
           fi
           if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
-            echo "TELEGRAM configured=yes"
+            echo "TELEGRAM configured=yes (Alerts loop owns delivery; SKIP_DESK_ALERTS=1)"
           else
             echo "TELEGRAM configured=NO — add TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID (easiest alert path)"
           fi

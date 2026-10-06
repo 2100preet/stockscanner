@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -66,7 +65,7 @@ def _static_html(page: str) -> str:
         "          const b = document.createElement('div');\n"
         "          b.id = 'pagesHostBadge';\n"
         "          b.style.cssText = 'color:var(--accent);font-size:.85rem;margin:.2rem 0 .6rem;';\n"
-        "          b.textContent = 'Hosted on GitHub Pages · auto-scan via Actions · read-only snapshot';\n"
+        "          b.textContent = 'Hosted on GitHub Pages · site ~30m · Telegram alerts via fast Actions loop';\n"
         "          lede.insertAdjacentElement('afterend', b);\n"
         "        }\n"
         "      }\n"
@@ -93,7 +92,8 @@ def export_pages(
     config_path: str | None = None,
 ) -> Path:
     """Build site/index.html + site/data/snapshot.json from disk scan (offline)."""
-    from odte_scanner.ui import PAGE, create_app
+    from odte_scanner.alert_pulse import build_offline_snapshot, pulse_desk_alerts
+    from odte_scanner.ui import PAGE
 
     out = Path(out_dir)
     if not out.is_absolute():
@@ -101,15 +101,7 @@ def export_pages(
     data_dir = out / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
 
-    os.environ["SIGNAL_DESK_OFFLINE"] = "1"
-    app = create_app(config_path)
-    with app.test_client() as client:
-        res = client.get("/api/snapshot?offline=1")
-        if res.status_code != 200:
-            raise RuntimeError(f"snapshot export failed: HTTP {res.status_code} {res.data[:500]!r}")
-        payload = res.get_json()
-        if not isinstance(payload, dict):
-            raise RuntimeError("snapshot export returned non-JSON object")
+    payload = build_offline_snapshot(config_path)
 
     import re
 
@@ -168,12 +160,11 @@ def export_pages(
     (out / "index.html").write_text(_static_html(PAGE))
     (out / ".nojekyll").write_text("")
 
-    # Telegram / WhatsApp BUY/SELL alerts (no-op unless secrets set)
+    # Telegram / WhatsApp — skipped on Pages when fast alert loop owns delivery
+    # (set SKIP_DESK_ALERTS=1 on Signal Desk Pages to avoid duplicate pings).
     alert_meta: dict = {"ok": False, "skipped": True}
     try:
-        from odte_scanner.alerts import dispatch_snapshot_alerts
-
-        alert_meta = dispatch_snapshot_alerts(payload) or {"ok": False}
+        alert_meta = pulse_desk_alerts(config_path) or {"ok": False}
     except Exception as exc:  # noqa: BLE001
         alert_meta = {"ok": False, "error": str(exc)}
 

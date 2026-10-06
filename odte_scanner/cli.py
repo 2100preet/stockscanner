@@ -285,6 +285,35 @@ def cmd_export_pages(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_alert_pulse(args: argparse.Namespace) -> int:
+    from odte_scanner.alert_pulse import pulse_desk_alerts
+
+    meta = pulse_desk_alerts(args.config)
+    console.print(f"[green]Alert pulse[/green] → {json.dumps(meta, default=str)}")
+    if meta.get("skipped") and not meta.get("configured", True):
+        return 0
+    if meta.get("ok") is False and meta.get("error"):
+        return 1
+    return 0
+
+
+def cmd_alert_loop(args: argparse.Namespace) -> int:
+    from odte_scanner.alert_pulse import run_alert_loop
+
+    console.print(
+        "[cyan]Fast Telegram alert loop[/cyan] — focus scan + pulse until RTH end (UTC)"
+    )
+    n = run_alert_loop(
+        config_path=args.config,
+        end_hour_utc=args.end_hour_utc,
+        end_minute_utc=args.end_minute_utc,
+        pause_sec=args.pause,
+        max_cycles=args.cycles,
+    )
+    console.print(f"[green]Alert loop finished[/green] cycles={n}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="odte-scanner",
@@ -345,6 +374,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ep.add_argument("--out", default="site", help="Output directory (default: site)")
     ep.set_defaults(func=cmd_export_pages)
+
+    ap = sub.add_parser(
+        "alert-pulse",
+        help="Push Telegram BUY/SELL for new pulses from latest scan (no Pages deploy)",
+    )
+    ap.set_defaults(func=cmd_alert_pulse)
+
+    al = sub.add_parser(
+        "alert-loop",
+        help="Continuous focus scan + Telegram pulse until RTH end (for Actions)",
+    )
+    al.add_argument("--pause", type=float, default=20.0, help="Seconds between cycles after scan")
+    al.add_argument("--cycles", type=int, default=None, help="Stop after N cycles (default: until RTH end)")
+    al.add_argument("--end-hour-utc", type=int, default=20, help="Stop after this UTC hour")
+    al.add_argument("--end-minute-utc", type=int, default=5, help="Stop after this UTC minute")
+    al.set_defaults(func=cmd_alert_loop)
 
     b = sub.add_parser("backtest", help="Walk-forward backtest of ensemble signals")
     b.add_argument("--tickers", default=None, help="Comma-separated override list")
