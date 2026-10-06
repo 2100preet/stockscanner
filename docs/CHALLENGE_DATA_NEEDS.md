@@ -68,19 +68,17 @@ Cloud Agents cannot write GitHub secrets (403). Do **not** commit the key.
    - Why: fills + live greeks instead of Yahoo snapshots on Pages cron
    - Already partially stubbed under live_trading / webull
 
-7. **WhatsApp BUY/SELL alerts** (CallMeBot / Twilio / Meta Cloud)
+7. **Telegram / WhatsApp BUY/SELL alerts** (entry + exit pulses)
    - Why: phone push when Pages cron posts a new BUY NOW / SELL NOW / RIP / Challenge pulse
-   - **Easiest (CallMeBot, free personal WhatsApp):**
-     1. https://www.callmebot.com/blog/free-api-whatsapp-messages/
-     2. WhatsApp the bot the activation phrase → it replies with your **apikey**
-     3. GitHub secrets: `WHATSAPP_TO` (phone w/ country code, e.g. `15551234567`),
-        `CALLMEBOT_APIKEY`
-   - **Twilio / WhatsApp Business:** `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`,
-     `TWILIO_WHATSAPP_FROM`, `WHATSAPP_TO`
-   - **Meta Cloud API:** `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_TO`
-   - Optional: `WHATSAPP_ALERTS_ENABLED=0` to pause
-   - Client: `odte_scanner/alerts/` (runs on `export-pages`)
-   - First export after secrets are set **seeds** the board; later *new* pulses WhatsApp
+   - **Easiest — Telegram (recommended):**
+     1. In Telegram, open **@BotFather** → `/newbot` → copy the **bot token**
+     2. Message your new bot once (any text), then open  
+        `https://api.telegram.org/bot<TOKEN>/getUpdates` → find `"chat":{"id": ...}`
+        (or use @userinfobot for your user id)
+     3. GitHub secrets: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
+   - **WhatsApp (optional):** CallMeBot (`WHATSAPP_TO` + `CALLMEBOT_APIKEY`), Twilio, or Meta Cloud
+   - Client: `odte_scanner/alerts/` (runs on `export-pages`; Telegram + WhatsApp can both fire)
+   - First export after secrets are set **seeds** the board; later *new* pulses alert
 
 ## Not worth it for this sleeve
 

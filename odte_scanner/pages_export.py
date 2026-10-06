@@ -155,6 +155,7 @@ def export_pages(
         "webull_orders.json",
         "ui_snapshot_cache.json",
         "whatsapp_alert_seen.json",
+        "desk_alert_seen.json",
     ):
         src = ROOT / "outputs" / name
         if src.exists():
@@ -167,14 +168,14 @@ def export_pages(
     (out / "index.html").write_text(_static_html(PAGE))
     (out / ".nojekyll").write_text("")
 
-    # WhatsApp BUY/SELL alerts (no-op unless TWILIO_* / WHATSAPP_* secrets set)
-    wa_meta: dict = {"ok": False, "skipped": True}
+    # Telegram / WhatsApp BUY/SELL alerts (no-op unless secrets set)
+    alert_meta: dict = {"ok": False, "skipped": True}
     try:
         from odte_scanner.alerts import dispatch_snapshot_alerts
 
-        wa_meta = dispatch_snapshot_alerts(payload) or {"ok": False}
+        alert_meta = dispatch_snapshot_alerts(payload) or {"ok": False}
     except Exception as exc:  # noqa: BLE001
-        wa_meta = {"ok": False, "error": str(exc)}
+        alert_meta = {"ok": False, "error": str(exc)}
 
     insights = payload.get("insights") or {}
     acts = payload.get("actions") or {}
@@ -187,12 +188,20 @@ def export_pages(
         "buy_now_puts": (acts.get("counts") or {}).get("buy_now_puts"),
         "just_exited": len(acts.get("just_exited") or []),
         "closed_journal": len(insights.get("closed_trades") or []),
+        "desk_alerts": {
+            "configured": bool(alert_meta.get("configured")),
+            "sent": alert_meta.get("sent"),
+            "primed": alert_meta.get("primed"),
+            "note": alert_meta.get("note") or alert_meta.get("error"),
+            "providers": alert_meta.get("providers") or [],
+            "provider": alert_meta.get("provider"),
+        },
         "whatsapp_alerts": {
-            "configured": bool(wa_meta.get("configured")),
-            "sent": wa_meta.get("sent"),
-            "primed": wa_meta.get("primed"),
-            "note": wa_meta.get("note") or wa_meta.get("error"),
-            "provider": wa_meta.get("provider"),
+            "configured": bool(alert_meta.get("configured")),
+            "sent": alert_meta.get("sent"),
+            "primed": alert_meta.get("primed"),
+            "note": alert_meta.get("note") or alert_meta.get("error"),
+            "provider": alert_meta.get("provider"),
         },
         "url_hint": "https://2100preet.github.io/stockscanner/",
     }

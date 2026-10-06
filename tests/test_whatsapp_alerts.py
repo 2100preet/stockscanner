@@ -74,6 +74,8 @@ def test_collect_trade_alerts_from_snapshot():
 def test_dispatch_primes_then_sends(tmp_path, monkeypatch):
     monkeypatch.delenv("CALLMEBOT_APIKEY", raising=False)
     monkeypatch.delenv("CALLMEBOT_API_KEY", raising=False)
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
     monkeypatch.setenv("TWILIO_ACCOUNT_SID", "ACxxx")
     monkeypatch.setenv("TWILIO_AUTH_TOKEN", "token")
     monkeypatch.setenv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")
@@ -86,6 +88,11 @@ def test_dispatch_primes_then_sends(tmp_path, monkeypatch):
         return {"ok": True, "provider": "twilio", "configured": True}
 
     monkeypatch.setattr(disp, "send_whatsapp_text", fake_send)
+    monkeypatch.setattr(
+        disp,
+        "telegram_configured",
+        lambda: {"ok": False, "token_set": False, "chat_set": False, "enabled": True},
+    )
 
     snap = {
         "actions": {
