@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from odte_scanner import alert_pulse as ap
 
 
@@ -64,6 +66,7 @@ def test_pulse_dispatches(monkeypatch, tmp_path):
 def test_alert_loop_respects_max_cycles(monkeypatch):
     scans = {"n": 0}
     pulses = {"n": 0}
+    exports = {"n": 0}
 
     def fake_scan(*_a, **_k):
         scans["n"] += 1
@@ -73,11 +76,15 @@ def test_alert_loop_respects_max_cycles(monkeypatch):
         pulses["n"] += 1
         return {"ok": True, "sent": 0}
 
+    def fake_export(*_a, **_k):
+        exports["n"] += 1
+        return Path("/tmp/site")
+
     monkeypatch.setattr("odte_scanner.scanner.run_scan", fake_scan)
     monkeypatch.setattr(ap, "pulse_desk_alerts", fake_pulse)
+    monkeypatch.setattr("odte_scanner.pages_export.export_pages", fake_export)
     monkeypatch.setattr(ap.time, "sleep", lambda *_a, **_k: None)
 
-    # Force "during RTH" by patching datetime in the module
     class _Now:
         hour = 15
         minute = 0
@@ -96,3 +103,4 @@ def test_alert_loop_respects_max_cycles(monkeypatch):
     assert n == 2
     assert scans["n"] == 2
     assert pulses["n"] == 2
+    assert exports["n"] == 2

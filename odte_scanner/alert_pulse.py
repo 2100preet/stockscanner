@@ -102,6 +102,18 @@ def run_alert_loop(
         except Exception as exc:  # noqa: BLE001
             logger.exception("alert loop pulse failed: %s", exc)
 
+        # Refresh static site files each cycle (deploy is the Actions Live workflow).
+        try:
+            from odte_scanner.pages_export import export_pages
+
+            # SKIP_DESK_ALERTS if pulse already sent this cycle
+            os.environ["SKIP_DESK_ALERTS"] = "1"
+            export_pages(out_dir="site", config_path=config_path)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("alert loop export-pages failed: %s", exc)
+        finally:
+            os.environ.pop("SKIP_DESK_ALERTS", None)
+
         if max_cycles is not None and cycles >= max_cycles:
             break
         time.sleep(max(5.0, float(pause_sec)))

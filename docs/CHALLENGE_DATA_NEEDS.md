@@ -70,10 +70,12 @@ Cloud Agents cannot write GitHub secrets (403). Do **not** commit the key.
 
 7. **Telegram / WhatsApp BUY/SELL alerts** (entry + exit pulses)
    - Why: phone push on new BUY NOW / SELL NOW / RIP / Challenge pulses
-   - **Delivery:** workflow **Signal Desk Alerts** (`alert-loop`) runs back-to-back
-     focus scans during RTH and Telegram-pings as soon as each cycle finishes
-     (typically ~scan length, not the 30m Pages cron). Pages still deploys the
-     site on its own schedule with `SKIP_DESK_ALERTS=1` so you don't get dupes.
+   - **Delivery:** workflow **Signal Desk Live** runs about every **10 minutes** in
+     RTH: focus scan → export site → Telegram → Pages deploy. Same export runs
+     Webull `auto_sync` (stages orders; live submit needs keys +
+     `live_trading.enabled` + `dry_run: false`). Weekend / push deploys still
+     use **Signal Desk Pages**.
+   - Floor is still ~one focus-scan duration on GitHub Actions — not tick streaming.
    - **Easiest — Telegram (recommended):**
      1. In Telegram, open **@BotFather** → `/newbot` → copy the **bot token**
      2. Message your new bot once (any text), then open  
@@ -81,7 +83,9 @@ Cloud Agents cannot write GitHub secrets (403). Do **not** commit the key.
         (or use @userinfobot for your user id)
      3. GitHub secrets: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
    - **WhatsApp (optional):** CallMeBot (`WHATSAPP_TO` + `CALLMEBOT_APIKEY`), Twilio, or Meta Cloud
-   - Client: `odte_scanner/alerts/` + `odte_scanner/alert_pulse.py`
+   - **Webull:** secrets `WEBULL_APP_KEY`, `WEBULL_APP_SECRET`, `WEBULL_ACCOUNT_ID`
+     plus `live_trading.enabled: true` / `dry_run: false` in config for real submits
+   - Client: `odte_scanner/alerts/` + `odte_scanner/alert_pulse.py` + Pages export
    - First pulse after secrets are set **seeds** the board; later *new* pulses alert
 
 ## Not worth it for this sleeve

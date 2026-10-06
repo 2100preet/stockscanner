@@ -65,7 +65,7 @@ def _static_html(page: str) -> str:
         "          const b = document.createElement('div');\n"
         "          b.id = 'pagesHostBadge';\n"
         "          b.style.cssText = 'color:var(--accent);font-size:.85rem;margin:.2rem 0 .6rem;';\n"
-        "          b.textContent = 'Hosted on GitHub Pages · site ~30m · Telegram alerts via fast Actions loop';\n"
+        "          b.textContent = 'Hosted on GitHub Pages · Live desk ~every scan (~10m RTH) · Telegram + Webull sync on export';\n"
         "          lede.insertAdjacentElement('afterend', b);\n"
         "        }\n"
         "      }\n"
