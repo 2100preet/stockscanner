@@ -1,4 +1,4 @@
-"""Collect BUY/SELL pulses from a desk snapshot and push WhatsApp alerts."""
+"""Collect BUY/SELL pulses from a desk snapshot and push Telegram / WhatsApp alerts."""
 
 from __future__ import annotations
 
@@ -8,15 +8,17 @@ import os
 from pathlib import Path
 from typing import Any
 
+from odte_scanner.alerts.telegram import configured as telegram_configured
+from odte_scanner.alerts.telegram import send_telegram_text
 from odte_scanner.alerts.whatsapp import configured as whatsapp_configured
 from odte_scanner.alerts.whatsapp import send_whatsapp_text
 
 logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_SEEN = ROOT / "outputs" / "whatsapp_alert_seen.json"
+DEFAULT_SEEN = ROOT / "outputs" / "desk_alert_seen.json"
+LEGACY_SEEN = ROOT / "outputs" / "whatsapp_alert_seen.json"
 
-# Actions that should ping WhatsApp
 _BUY_ACTIONS = {
     "BUY_NOW",
     "BUY_RIP",
@@ -44,17 +46,22 @@ def _env_flag(name: str, default: bool = True) -> bool:
 
 
 def _load_seen(path: Path) -> set[str]:
-    if not path.exists():
-        return set()
-    try:
-        raw = json.loads(path.read_text())
-        if isinstance(raw, list):
-            return {str(x) for x in raw}
-        if isinstance(raw, dict):
-            keys = raw.get("keys") or raw.get("seen") or []
-            return {str(x) for x in keys}
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("whatsapp seen load failed: %s", exc)
+    # Only fall back to legacy when using the default desk seen path
+    candidates = [path]
+    if path.resolve() == DEFAULT_SEEN.resolve() and LEGACY_SEEN.exists():
+        candidates.append(LEGACY_SEEN)
+    for p in candidates:
+        if p is None or not p.exists():
+            continue
+        try:
+            raw = json.loads(p.read_text())
+            if isinstance(raw, list):
+                return {str(x) for x in raw}
+            if isinstance(raw, dict):
+                keys = raw.get("keys") or raw.get("seen") or []
+                return {str(x) for x in keys}
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("alert seen load failed %s: %s", p, exc)
     return set()
 
 
@@ -62,6 +69,12 @@ def _save_seen(path: Path, keys: set[str], *, keep: int = 400) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     ordered = sorted(keys)[-keep:]
     path.write_text(json.dumps({"keys": ordered}, indent=2))
+    # Keep legacy file in sync for older caches
+    try:
+        LEGACY_SEEN.parent.mkdir(parents=True, exist_ok=True)
+        LEGACY_SEEN.write_text(json.dumps({"keys": ordered}, indent=2))
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _row_key(row: dict[str, Any], side: str, desk: str) -> str:
@@ -120,7 +133,6 @@ def collect_trade_alerts(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             "ENTRY",
             "RADAR_HOT",
         }:
-            # still allow explicit BUY_* / PUT_NOW
             if not any(x in act for x in ("BUY", "PUT_NOW", "CALL_NOW", "ENTRY", "HOT")):
                 return
         if side == "SELL" and act not in _SELL_ACTIONS and "SELL" not in act and act != "EXIT":
@@ -203,6 +215,46 @@ def collect_trade_alerts(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+def _provider_labels(tg_ok: bool, wa_cfg: dict[str, Any]) -> list[str]:
+    labels: list[str] = []
+    if tg_ok:
+        labels.append("telegram")
+    if wa_cfg.get("ok"):
+        if wa_cfg.get("callmebot"):
+            labels.append("callmebot")
+        elif wa_cfg.get("twilio"):
+            labels.append("twilio")
+        elif wa_cfg.get("meta"):
+            labels.append("meta")
+        else:
+            labels.append("whatsapp")
+    return labels
+
+
+def _send_all_channels(message: str) -> tuple[list[str], list[str]]:
+    """Send to every configured channel. Returns (ok_providers, errors)."""
+    ok_providers: list[str] = []
+    errors: list[str] = []
+
+    tg = telegram_configured()
+    if tg.get("ok"):
+        res = send_telegram_text(message)
+        if res.get("ok"):
+            ok_providers.append("telegram")
+        else:
+            errors.append(f"telegram: {res.get('error') or res}")
+
+    wa = whatsapp_configured()
+    if wa.get("ok") and _env_flag("WHATSAPP_ALERTS_ENABLED", True):
+        res = send_whatsapp_text(message)
+        if res.get("ok"):
+            ok_providers.append(str(res.get("provider") or "whatsapp"))
+        else:
+            errors.append(f"whatsapp: {res.get('error') or res}")
+
+    return ok_providers, errors
+
+
 def dispatch_snapshot_alerts(
     snapshot: dict[str, Any],
     *,
@@ -210,75 +262,77 @@ def dispatch_snapshot_alerts(
     dry_run: bool = False,
     max_send: int = 8,
 ) -> dict[str, Any]:
-    """Send WhatsApp for *new* BUY/SELL pulses. No-op if not configured."""
-    if not _env_flag("WHATSAPP_ALERTS_ENABLED", True):
-        return {"ok": False, "skipped": True, "reason": "WHATSAPP_ALERTS_ENABLED=0"}
+    """Send Telegram/WhatsApp for *new* BUY/SELL pulses. No-op if none configured."""
+    # Global pause
+    if not _env_flag("DESK_ALERTS_ENABLED", True):
+        return {"ok": False, "skipped": True, "reason": "DESK_ALERTS_ENABLED=0"}
 
-    cfg = whatsapp_configured()
+    tg_cfg = telegram_configured()
+    wa_cfg = whatsapp_configured()
+    wa_enabled = _env_flag("WHATSAPP_ALERTS_ENABLED", True)
+    any_channel = bool(tg_cfg.get("ok") or (wa_cfg.get("ok") and wa_enabled))
+
     alerts = collect_trade_alerts(snapshot)
     path = Path(seen_path) if seen_path else DEFAULT_SEEN
     seen = _load_seen(path)
+    providers = _provider_labels(bool(tg_cfg.get("ok")), wa_cfg if wa_enabled else {})
 
     # First-ever run: seed without spamming the whole board
-    prime_only = (os.environ.get("WHATSAPP_ALERTS_PRIME") or "").strip().lower() in {
+    prime_only = (os.environ.get("DESK_ALERTS_PRIME") or os.environ.get("WHATSAPP_ALERTS_PRIME") or "").strip().lower() in {
         "1",
         "true",
         "yes",
         "on",
     }
     if not seen and not prime_only:
-        # Seed current keys so only *future* pulses alert
         for a in alerts:
             seen.add(a["key"])
         _save_seen(path, seen)
         return {
             "ok": True,
-            "configured": cfg["ok"],
+            "configured": any_channel,
             "primed": True,
             "seeded": len(alerts),
             "sent": 0,
-            "provider": (
-                "callmebot"
-                if cfg.get("callmebot")
-                else ("twilio" if cfg.get("twilio") else ("meta" if cfg.get("meta") else None))
-            ),
-            "note": "Seeded current board — next new BUY/SELL will WhatsApp",
+            "providers": providers,
+            "provider": providers[0] if providers else None,
+            "note": "Seeded current board — next new BUY/SELL will alert",
         }
 
     fresh = [a for a in alerts if a["key"] not in seen]
     if not fresh:
         return {
             "ok": True,
-            "configured": cfg["ok"],
+            "configured": any_channel,
             "sent": 0,
             "candidates": len(alerts),
+            "providers": providers,
             "note": "no new pulses",
         }
 
-    if not cfg["ok"] or dry_run:
-        for a in fresh:
-            seen.add(a["key"])
-        if not dry_run:
-            # Still don't persist as sent if not configured — leave unseen so they fire once secrets land
-            pass
-        else:
+    if not any_channel or dry_run:
+        if dry_run:
+            for a in fresh:
+                seen.add(a["key"])
             _save_seen(path, seen)
         return {
             "ok": bool(dry_run),
-            "configured": cfg["ok"],
+            "configured": any_channel,
             "dry_run": dry_run,
             "would_send": [a["message"] for a in fresh[:max_send]],
             "sent": 0,
             "fresh": len(fresh),
-            "skipped": not cfg["ok"],
-            "error": None if cfg["ok"] else "WhatsApp secrets not set",
+            "skipped": not any_channel,
+            "providers": providers,
+            "error": None if any_channel else "No alert channel secrets set (Telegram or WhatsApp)",
         }
 
     sent: list[dict[str, Any]] = []
     errors: list[str] = []
     for a in fresh[: max(1, int(max_send))]:
-        res = send_whatsapp_text(a["message"])
-        if res.get("ok"):
+        ok_providers, errs = _send_all_channels(a["message"])
+        errors.extend(errs)
+        if ok_providers:
             seen.add(a["key"])
             sent.append(
                 {
@@ -286,12 +340,11 @@ def dispatch_snapshot_alerts(
                     "symbol": a["symbol"],
                     "side": a["side"],
                     "desk": a["desk"],
-                    "provider": res.get("provider"),
+                    "providers": ok_providers,
+                    "provider": ok_providers[0],
                 }
             )
-        else:
-            errors.append(f"{a['symbol']}: {res.get('error') or res}")
-            # Don't mark seen on failure — retry next scan
+        # If every channel failed, leave unseen for retry
 
     _save_seen(path, seen)
     return {
@@ -300,10 +353,7 @@ def dispatch_snapshot_alerts(
         "sent": len(sent),
         "results": sent,
         "fresh": len(fresh),
-        "errors": errors[:5],
-        "provider": (
-            "callmebot"
-            if cfg.get("callmebot")
-            else ("twilio" if cfg.get("twilio") else "meta")
-        ),
+        "errors": errors[:8],
+        "providers": providers,
+        "provider": providers[0] if providers else None,
     }
