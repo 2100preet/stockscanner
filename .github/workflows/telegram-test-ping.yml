@@ -1,10 +1,14 @@
 name: Telegram Test Ping
 
-# One-shot: send a test message with TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID.
-# Does not touch Pages. Run manually from Actions → Telegram Test Ping → Run workflow.
+# Sends one message with TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID.
+# Triggers: manual Run workflow, or push of .github/trigger-telegram-ping.
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/trigger-telegram-ping"
 
 permissions:
   contents: read
@@ -50,7 +54,10 @@ jobs:
           print("send_result:", json.dumps(res, default=str))
           if not res.get("ok"):
               err = str(res.get("error") or res)
-              print("HINT: Open your bot in Telegram (t.me/<bot_username>), tap Start, then re-run this workflow.")
+              print(
+                  "HINT: In Telegram search your bot name from @BotFather, "
+                  "open the chat, tap Start / Restart, then re-run this workflow."
+              )
               raise SystemExit(f"Telegram send failed: {err}")
           print("OK — check Telegram for the test message.")
           PY
