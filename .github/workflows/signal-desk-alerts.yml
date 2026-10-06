@@ -1,0 +1,93 @@
+name: Signal Desk Alerts
+
+# Fast BUY/SELL Telegram loop during US cash hours.
+# Separate from Pages (site still refreshes ~30m). This job keeps scanning
+# back-to-back so new pulses hit Telegram as soon as a focus cycle finishes
+# (~scan duration, not waiting for the next half-hour cron).
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Start / restart the RTH loop (Mon–Fri). Overlap cancels the prior loop.
+    - cron: "25 13 * * 1-5"
+    - cron: "0 15 * * 1-5"
+    - cron: "0 17 * * 1-5"
+    - cron: "30 18 * * 1-5"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desk-alerts-loop
+  cancel-in-progress: true
+
+jobs:
+  alert-loop:
+    if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -e .
+
+      - name: Restore desk ledgers / alert seen
+        uses: actions/cache@v4
+        with:
+          path: |
+            outputs/signal_journal.json
+            outputs/recommendation_log.json
+            outputs/challenge_ledger.json
+            outputs/odte_1k_ledger.json
+            outputs/paper_ledger.json
+            outputs/webull_orders.json
+            outputs/ui_snapshot_cache.json
+            outputs/win_rates.json
+            outputs/echo_ladders
+            outputs/whatsapp_alert_seen.json
+            outputs/desk_alert_seen.json
+            outputs/desk_alerts_last.json
+          key: desk-ledgers-${{ github.run_id }}
+          restore-keys: |
+            desk-ledgers-
+
+      - name: Telegram alert loop (scan + pulse until RTH end)
+        env:
+          PYTHONUNBUFFERED: "1"
+          UNUSUAL_WHALES_API_KEY: ${{ secrets.UNUSUAL_WHALES_API_KEY }}
+          TRADIER_ACCESS_TOKEN: ${{ secrets.TRADIER_ACCESS_TOKEN }}
+          TRADIER_ACCOUNT_ID: ${{ secrets.TRADIER_ACCOUNT_ID }}
+          TRADIER_SANDBOX: ${{ secrets.TRADIER_SANDBOX }}
+          POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
+          MASSIVE_API_KEY: ${{ secrets.MASSIVE_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
+          TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
+          TWILIO_WHATSAPP_FROM: ${{ secrets.TWILIO_WHATSAPP_FROM }}
+          WHATSAPP_TO: ${{ secrets.WHATSAPP_TO }}
+          CALLMEBOT_APIKEY: ${{ secrets.CALLMEBOT_APIKEY }}
+          WHATSAPP_TOKEN: ${{ secrets.WHATSAPP_TOKEN }}
+          WHATSAPP_PHONE_NUMBER_ID: ${{ secrets.WHATSAPP_PHONE_NUMBER_ID }}
+          WHATSAPP_ALERTS_ENABLED: ${{ secrets.WHATSAPP_ALERTS_ENABLED }}
+        run: |
+          mkdir -p outputs
+          if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
+            echo "TELEGRAM configured=yes"
+          else
+            echo "TELEGRAM configured=NO — set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID"
+            exit 1
+          fi
+          # Back-to-back focus scans; pause only briefly between cycles.
+          python -m odte_scanner alert-loop --pause 20 --end-hour-utc 20 --end-minute-utc 5
