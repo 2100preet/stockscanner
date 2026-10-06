@@ -3950,8 +3950,9 @@ PAGE = r"""
       try { await _origLoad(); } finally { _loading = false; }
     };
     loadAll();
-    // Snapshot is expensive (Yahoo); refresh once a minute, never overlap
-    setInterval(loadAll, 60000);
+    // Live host: poll often so BUY/SELL updates as soon as the background scan finishes.
+    // Pages static: slower (file only changes on Actions deploy).
+    setInterval(loadAll, window.SIGNAL_DESK_STATIC ? 180000 : 15000);
   </script>
 </body>
 </html>
@@ -6572,18 +6573,22 @@ def create_app(config_path: str | None = None) -> Flask:
         return jsonify({"ok": True, "started": True, "mode": mode})
 
     def _webull_bundle():
+        from odte_scanner.live_desk import resolve_webull_live_flags
         from odte_scanner.trading.auto_trader import AutoTrader
         from odte_scanner.trading.webull import WebullBroker
 
         lt = cfg.get("live_trading") or {}
+        flags = resolve_webull_live_flags(lt)
         ledger = Path(lt.get("ledger_path", "outputs/webull_orders.json"))
         if not ledger.is_absolute():
             ledger = ROOT / ledger
         broker = WebullBroker(
-            enabled=bool(lt.get("enabled", False)),
-            dry_run=bool(lt.get("dry_run", True)),
+            enabled=bool(flags["enabled"]),
+            dry_run=bool(flags["dry_run"]),
             region=str(lt.get("region") or "us"),
-            sandbox=bool(lt.get("sandbox", True)),
+            sandbox=bool(lt.get("sandbox", True)) and not (
+                flags["webull_live_env"] and flags["keys_ok"]
+            ),
             account_id=lt.get("account_id"),
             app_key=lt.get("app_key"),
             app_secret=lt.get("app_secret"),
@@ -6723,6 +6728,17 @@ def create_app(config_path: str | None = None) -> Flask:
 
 
 def run_ui(host: str = "0.0.0.0", port: int = 8787, config_path: str | None = None) -> None:
+    # Background focus scan + Telegram + Webull — only on always-on hosts (not Pages).
+    try:
+        from odte_scanner.live_desk import start_live_desk_worker
+
+        if start_live_desk_worker(config_path):
+            logger.info(
+                "Live desk worker on — BUY/SELL board + Telegram + Webull refresh after each focus scan"
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("live desk worker not started: %s", exc)
+
     app = create_app(config_path)
-    logger.info("Signal Desk UI at http://%s:%s", host if host != "0.0.0.0" else "127.0.0.1", port)
+    logger.info("ZeroLoss Desk UI at http://%s:%s", host if host != "0.0.0.0" else "127.0.0.1", port)
     app.run(host=host, port=port, debug=False, use_reloader=False)

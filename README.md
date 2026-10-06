@@ -24,6 +24,18 @@ Quality gates (score + confirming algos) filter for **fewer, higher-conviction**
 6. Paper journal: enter on BUY NOW, exit on SELL NOW with profit%
 7. **ML6 board**: FRMI / TSSI / IREN (+ ORCL, APLD, CORZ, NBIS, CRWV) with earnings, theme, score, and WATCH / WAIT_FOR_CONFIRMATION / BUY_ONLY_IF_ACCEPTED statuses
 
+## Always-on ZeroLoss (near-instant board + Webull)
+
+GitHub Pages is a **static** snapshot (~10m Actions cycle). For BUY/SELL that update
+as soon as each focus scan finishes, deploy the Docker UI:
+
+1. [Railway](https://railway.app/new) or [Render](https://render.com/) → this repo  
+2. Set secrets: Tradier / UW / Telegram / Webull as needed  
+3. Optional: `WEBULL_LIVE=1` for real Webull submits (otherwise dry-run staging)  
+4. Open the service URL — background **live desk worker** scans continuously in RTH  
+
+See [`docs/HOW_SIGNALS_WORK.md`](docs/HOW_SIGNALS_WORK.md).
+
 ## Quick start
 
 ```bash
