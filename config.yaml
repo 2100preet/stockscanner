@@ -539,10 +539,10 @@ watch:
   output_dir: outputs/watch
 
 live_trading:
-  enabled: false          # master switch — keep false until Webull keys are set
+  enabled: false          # master switch — or set WEBULL_LIVE=1 with API keys for live submits
   broker: webull
-  dry_run: true           # log + deep-link only; no broker submit
-  sandbox: true           # Webull OpenAPI sandbox host when live
+  dry_run: true           # log + deep-link only; WEBULL_LIVE=1 forces dry_run false when keys set
+  sandbox: true           # Webull OpenAPI sandbox host when not WEBULL_LIVE
   # Stage BUY/SELL into webull_orders.json on each snapshot / watch (safe with dry_run)
   auto_sync: true
   region: us

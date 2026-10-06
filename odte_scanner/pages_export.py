@@ -47,11 +47,9 @@ def _static_html(page: str) -> str:
         "        return;\n"
         "      }\n",
     )
-    # Soften refresh cadence on static host (snapshot file only changes when Actions publishes)
-    html = html.replace(
-        "    setInterval(loadAll, 60000);",
-        "    setInterval(loadAll, window.SIGNAL_DESK_STATIC ? 180000 : 60000);",
-    )
+    # Live UI already uses 15s / Pages 180s via SIGNAL_DESK_STATIC in PAGE JS.
+    # (No rewrite needed here.)
+
     # Badge after lede via small DOM hook at start of paint/load
     html = html.replace(
         "    async function loadAll() {\n"

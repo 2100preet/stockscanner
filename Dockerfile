@@ -22,4 +22,6 @@ EXPOSE 8787
 RUN mkdir -p /app/outputs
 
 # Honor $PORT from Railway/Render/Fly (defaults to 8787)
+# LIVE_DESK_LOOP=1 (default): background focus scan → Telegram → Webull each cycle
+# WEBULL_LIVE=1 + WEBULL_APP_KEY/SECRET: real order submits (otherwise dry-run stage only)
 CMD ["sh", "-c", "python -m odte_scanner ui --host 0.0.0.0 --port ${PORT:-8787}"]
