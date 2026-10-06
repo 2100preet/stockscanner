@@ -1,31 +1,29 @@
-name: Signal Desk Alerts
+name: Signal Desk Live
 
-# Fast BUY/SELL Telegram loop during US cash hours.
-# Separate from Pages (site still refreshes ~30m). This job keeps scanning
-# back-to-back so new pulses hit Telegram as soon as a focus cycle finishes
-# (~scan duration, not waiting for the next half-hour cron).
+# Fast RTH cycle: focus scan → export site → Telegram → Pages deploy → Webull auto_sync.
+# Cadence ≈ one focus scan (~8–15m). Not tick-level; as fast as Actions + scan allow.
+# Shares pages-main with Signal Desk Pages so deploys don't stomp each other.
 
 on:
   workflow_dispatch:
   schedule:
-    # Start / restart the RTH loop (Mon–Fri). Overlap cancels the prior loop.
-    - cron: "25 13 * * 1-5"
-    - cron: "0 15 * * 1-5"
-    - cron: "0 17 * * 1-5"
-    - cron: "30 18 * * 1-5"
+    # Every 10m during US cash hours (UTC). Weekend site refresh stays on Pages.
+    - cron: "*/10 13-20 * * 1-5"
 
 permissions:
   contents: read
+  pages: write
+  id-token: write
 
 concurrency:
-  group: desk-alerts-loop
-  cancel-in-progress: true
+  group: pages-main
+  cancel-in-progress: false
 
 jobs:
-  alert-loop:
+  build:
     if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 40
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -42,7 +40,7 @@ jobs:
           pip install -r requirements.txt
           pip install -e .
 
-      - name: Restore desk ledgers / alert seen
+      - name: Restore desk ledgers
         uses: actions/cache@v4
         with:
           path: |
@@ -62,7 +60,28 @@ jobs:
           restore-keys: |
             desk-ledgers-
 
-      - name: Telegram alert loop (scan + pulse until RTH end)
+      - name: Focus scan
+        id: scan
+        continue-on-error: true
+        timeout-minutes: 25
+        env:
+          PYTHONUNBUFFERED: "1"
+          UNUSUAL_WHALES_API_KEY: ${{ secrets.UNUSUAL_WHALES_API_KEY }}
+          TRADIER_ACCESS_TOKEN: ${{ secrets.TRADIER_ACCESS_TOKEN }}
+          TRADIER_ACCOUNT_ID: ${{ secrets.TRADIER_ACCOUNT_ID }}
+          TRADIER_SANDBOX: ${{ secrets.TRADIER_SANDBOX }}
+          POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
+          MASSIVE_API_KEY: ${{ secrets.MASSIVE_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          WEBULL_APP_KEY: ${{ secrets.WEBULL_APP_KEY }}
+          WEBULL_APP_SECRET: ${{ secrets.WEBULL_APP_SECRET }}
+          WEBULL_ACCOUNT_ID: ${{ secrets.WEBULL_ACCOUNT_ID }}
+        run: |
+          mkdir -p outputs
+          python -m odte_scanner scan --universe focus --no-paper
+
+      - name: Export site + Telegram + Webull sync
         env:
           PYTHONUNBUFFERED: "1"
           UNUSUAL_WHALES_API_KEY: ${{ secrets.UNUSUAL_WHALES_API_KEY }}
@@ -81,13 +100,66 @@ jobs:
           WHATSAPP_TOKEN: ${{ secrets.WHATSAPP_TOKEN }}
           WHATSAPP_PHONE_NUMBER_ID: ${{ secrets.WHATSAPP_PHONE_NUMBER_ID }}
           WHATSAPP_ALERTS_ENABLED: ${{ secrets.WHATSAPP_ALERTS_ENABLED }}
+          WEBULL_APP_KEY: ${{ secrets.WEBULL_APP_KEY }}
+          WEBULL_APP_SECRET: ${{ secrets.WEBULL_APP_SECRET }}
+          WEBULL_ACCOUNT_ID: ${{ secrets.WEBULL_ACCOUNT_ID }}
         run: |
           mkdir -p outputs
           if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
             echo "TELEGRAM configured=yes"
           else
-            echo "TELEGRAM configured=NO — set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID"
-            exit 1
+            echo "TELEGRAM configured=NO"
           fi
-          # Back-to-back focus scans; pause only briefly between cycles.
-          python -m odte_scanner alert-loop --pause 20 --end-hour-utc 20 --end-minute-utc 5
+          if [ -n "${WEBULL_APP_KEY:-}" ] && [ -n "${WEBULL_APP_SECRET:-}" ]; then
+            echo "WEBULL keys configured=yes (live submit still needs live_trading.enabled + dry_run false)"
+          else
+            echo "WEBULL keys configured=NO — auto_sync still stages dry-run ledger on each export"
+          fi
+          python -m odte_scanner export-pages --out site
+          test -f site/index.html
+          test -f site/data/snapshot.json
+          mkdir -p site/data/ledgers
+          for f in signal_journal.json recommendation_log.json challenge_ledger.json odte_1k_ledger.json paper_ledger.json webull_orders.json ui_snapshot_cache.json desk_alerts_last.json; do
+            if [ -f "outputs/$f" ]; then cp "outputs/$f" "site/data/ledgers/$f"; fi
+          done
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          meta = json.loads(Path("site/meta.json").read_text())
+          da = meta.get("desk_alerts") or {}
+          print(
+              "export_ok scores=", meta.get("scores"),
+              "alerts_sent=", da.get("sent"),
+              "alerts_note=", da.get("note"),
+              "providers=", da.get("providers"),
+          )
+          wb = Path("outputs/webull_orders.json")
+          if wb.exists():
+              book = json.loads(wb.read_text())
+              orders = book.get("orders") if isinstance(book, dict) else book
+              print("webull_orders=", len(orders or []))
+          PY
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Upload site export (zeroloss mirror)
+        uses: actions/upload-artifact@v4
+        with:
+          name: site-export-live
+          path: site
+          retention-days: 2
+
+  deploy:
+    needs: build
+    if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
