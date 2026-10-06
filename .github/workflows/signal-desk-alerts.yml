@@ -9,6 +9,10 @@ on:
   schedule:
     # Every 10m during US cash hours (UTC). Weekend site refresh stays on Pages.
     - cron: "*/10 13-20 * * 1-5"
+  push:
+    branches: [main]
+    paths:
+      - ".github/trigger-live-deploy"
 
 permissions:
   contents: read
