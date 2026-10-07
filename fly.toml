@@ -1,6 +1,7 @@
 # ZeroLoss live desk on Fly.io
 # Deploy: fly deploy -a stockscanner
 # Scale:  fly scale memory 2048 -a stockscanner
+# redeploy-nudge: 2026-10-07T02:50Z
 
 app = "stockscanner"
 primary_region = "iad"
