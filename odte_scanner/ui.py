@@ -16,13 +16,84 @@ from odte_scanner.config import load_config
 from odte_scanner.json_util import dumps_strict, sanitize_for_json
 from odte_scanner.signals.actions import build_action_board
 from odte_scanner.backtest.win_rates import (
-    build_win_rate_table,
     ensure_challenge_win_table,
     load_win_rate_table,
 )
 
 logger = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parents[1]
+_challenge_win_warm_lock = threading.Lock()
+_challenge_win_warm_started = False
+
+
+def _schedule_challenge_win_warm(config_path: str | None = None) -> None:
+    """Fill challenge hist win rates in a daemon thread — never on the request path."""
+    global _challenge_win_warm_started
+    with _challenge_win_warm_lock:
+        if _challenge_win_warm_started:
+            return
+        _challenge_win_warm_started = True
+
+    def _job() -> None:
+        try:
+            # Let the first /api/snapshot paint from seed before Yahoo hist fan-out.
+            import time
+
+            time.sleep(45)
+            logger.info("warming challenge win_rates.json in background")
+            ensure_challenge_win_table(
+                load_win_rate_table(),
+                config_path=config_path,
+                max_age_hours=168.0,
+            )
+            logger.info("challenge win_rates warm complete")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("challenge win_rates warm failed: %s", exc)
+
+    threading.Thread(target=_job, name="challenge-win-warm", daemon=True).start()
+
+
+def seed_outputs_from_pages_if_empty() -> bool:
+    """Pull latest_scan.json from GitHub Pages when the live host has an empty outputs dir.
+
+    Fly/Docker disks start empty; without a seed /api/snapshot paints a blank board even
+    when Tradier/Polygon keys are valid. Set PAGES_SEED_URL to override the default.
+    """
+    out = ROOT / "outputs" / "latest_scan.json"
+    try:
+        if out.exists() and out.stat().st_size > 200:
+            return False
+    except OSError:
+        pass
+    url = (
+        os.environ.get("PAGES_SEED_URL")
+        or "https://2100preet.github.io/stockscanner/data/latest_scan.json"
+    ).strip()
+    if not url:
+        return False
+    try:
+        import urllib.request
+
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with urllib.request.urlopen(url, timeout=45) as resp:  # noqa: S310
+            raw = resp.read()
+        if not raw or len(raw) < 200:
+            logger.warning("pages seed too small from %s", url)
+            return False
+        # Validate JSON before replacing
+        payload = json.loads(raw.decode("utf-8"))
+        if not isinstance(payload, dict) or not payload.get("scores"):
+            logger.warning("pages seed missing scores from %s", url)
+            return False
+        out.write_bytes(raw)
+        logger.info(
+            "seeded outputs/latest_scan.json from Pages (%s scores)",
+            len(payload.get("scores") or []),
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("pages seed failed: %s", exc)
+        return False
 
 PAGE = r"""
 <!doctype html>
@@ -4104,20 +4175,9 @@ def create_app(config_path: str | None = None) -> Flask:
         syms = sorted(set(syms))
         aliases = {s: resolve_yahoo_symbol(s, cfg) for s in syms}
 
-        # Challenge needs hist rates across mid/small + darlings — not just focus scan names
-        try:
-            from odte_scanner.challenge.million import _eligible_rows
-
-            max_ch_tix = int(actions_cfg.get("challenge_max_tickets", 8))
-            eligible_n = len(_eligible_rows(win_table if isinstance(win_table, dict) else None))
-            if offline or eligible_n < max_ch_tix:
-                win_table = ensure_challenge_win_table(
-                    win_table if isinstance(win_table, dict) else None,
-                    config_path=config_path,
-                    max_age_hours=168.0 if offline else 24.0,
-                )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("challenge win table ensure failed: %s", exc)
+        # Challenge hist coverage is filled by live desk scans / boot warm — never here.
+        # ensure_challenge_win_table() rebuilds Yahoo hist and used to block this endpoint
+        # for minutes on cold Fly hosts (keys valid, board still blank).
 
         # Challenge-eligible + DRAM/memory sleeve need live/cache quotes (often outside focus)
         challenge_syms: list[str] = []
@@ -6728,6 +6788,12 @@ def create_app(config_path: str | None = None) -> Flask:
 
 
 def run_ui(host: str = "0.0.0.0", port: int = 8787, config_path: str | None = None) -> None:
+    # Cold hosts (Fly) often have empty outputs — seed from Pages so the board paints immediately.
+    try:
+        seed_outputs_from_pages_if_empty()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("boot seed skipped: %s", exc)
+
     # Background focus scan + Telegram + Webull — only on always-on hosts (not Pages).
     try:
         from odte_scanner.live_desk import start_live_desk_worker
@@ -6739,6 +6805,13 @@ def run_ui(host: str = "0.0.0.0", port: int = 8787, config_path: str | None = No
     except Exception as exc:  # noqa: BLE001
         logger.warning("live desk worker not started: %s", exc)
 
+    # Warm challenge win rates after listen starts (daemon) — never block first snapshot.
+    try:
+        _schedule_challenge_win_warm(config_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("challenge win warm not scheduled: %s", exc)
+
     app = create_app(config_path)
     logger.info("ZeroLoss Desk UI at http://%s:%s", host if host != "0.0.0.0" else "127.0.0.1", port)
-    app.run(host=host, port=port, debug=False, use_reloader=False)
+    # threaded=True so health checks / polling are not blocked while a scan or warm runs
+    app.run(host=host, port=port, debug=False, use_reloader=False, threaded=True)

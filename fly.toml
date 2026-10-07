@@ -1,10 +1,11 @@
 # ZeroLoss live desk on Fly.io
 # Deploy: fly deploy -a stockscanner
 # Scale:  fly scale memory 2048 -a stockscanner
-# redeploy-nudge: 2026-10-07T02:50Z
+# Volume: fly volumes create desk_outputs --region ord --size 1 -a stockscanner
+# redeploy-nudge: 2026-10-07T03:45Z
 
 app = "stockscanner"
-primary_region = "iad"
+primary_region = "ord"
 
 [build]
 
@@ -12,6 +13,7 @@ primary_region = "iad"
   PORT = "8787"
   LIVE_DESK_LOOP = "1"
   PYTHONUNBUFFERED = "1"
+  PAGES_SEED_URL = "https://2100preet.github.io/stockscanner/data/latest_scan.json"
 
 [http_service]
   internal_port = 8787
@@ -28,6 +30,10 @@ primary_region = "iad"
     grace_period = "180s"
     method = "GET"
     path = "/"
+
+[mounts]
+  source = "desk_outputs"
+  destination = "/app/outputs"
 
 [[vm]]
   size = "shared-cpu-2x"
