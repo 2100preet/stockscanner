@@ -190,6 +190,14 @@ PAGE = r"""
     .tag { display: inline-block; padding: .12rem .4rem; border-radius: .3rem; background: rgba(62,207,142,.1); color: #9BE7C0; font-size: .68rem; font-family: "JetBrains Mono", monospace; margin-right: .25rem; }
     h2 { font-family: "Instrument Serif", Georgia, serif; font-size: 1.25rem; font-weight: 400; margin: 0 0 .65rem; }
     .panel { margin-top: 1.1rem; }
+    .view-toggle { display: flex; flex-wrap: wrap; gap: .35rem; align-items: center; margin: 0 0 .85rem; }
+    .view-toggle button {
+      border: 1px solid var(--line); background: rgba(255,255,255,.03); color: var(--muted);
+      border-radius: .45rem; padding: .35rem .7rem; font-size: .78rem; cursor: pointer;
+      font-family: "DM Sans", system-ui, sans-serif;
+    }
+    .view-toggle button.active { color: var(--ink); background: rgba(62,207,142,.14); border-color: rgba(62,207,142,.35); }
+    .now-tiles[hidden], .now-table-wrap[hidden] { display: none !important; }
     footer { margin-top: 1.6rem; color: var(--muted); font-size: .72rem; line-height: 1.45; }
     .loading { color: var(--wait); font-family: "JetBrains Mono", monospace; font-size: .8rem; }
     .pulse-banner {
@@ -309,17 +317,25 @@ PAGE = r"""
       <p class="lede">Live option BUY NOW / SELL NOW across 0DTE, weeklies, swing, Explosive, <strong>RIP/META</strong>, <strong>Levels</strong>, ML6, Challenge, and 0DTE $1K IN/OUT. Hist win ≥80% (n≥5) gates Options BUY NOW. Same losing OCC stays blocked; mega names can still BUY when tape is ripping (see RIP tab). SETUP rows are quality tape without a contract yet — not a buy.</p>
       <div class="metric-row" id="nowBoardMetrics"></div>
       <p class="lede" id="nowBoardNote" style="margin-top:0;font-size:.76rem"></p>
-      <h2>BUY NOW</h2>
-      <div id="nowBoardBuy" class="empty">—</div>
-      <h2>SELL NOW</h2>
-      <div id="nowBoardSell" class="empty">—</div>
-      <h2>WAIT — chain on board, hist gate blocked</h2>
-      <div id="nowBoardWait" class="empty">—</div>
-      <h2>SETUP — hist-eligible quality, no option ticket yet</h2>
-      <p class="lede" style="margin-top:0;font-size:.76rem">These underlyings cleared quality + hist win. They are <strong>not</strong> BUY NOW until a call/put contract is on the snapshot.</p>
-      <div id="nowBoardSetup" class="empty">—</div>
-      <div class="panel">
-        <h2>All rows</h2>
+      <div class="view-toggle" id="nowBoardViewToggle" role="group" aria-label="Board view">
+        <button type="button" data-view="tiles">Tiles</button>
+        <button type="button" data-view="table" class="active">Table</button>
+        <button type="button" data-view="both">Tiles + Table</button>
+      </div>
+      <div class="now-tiles" id="nowBoardTiles">
+        <h2>BUY NOW</h2>
+        <div id="nowBoardBuy" class="empty">—</div>
+        <h2>SELL NOW</h2>
+        <div id="nowBoardSell" class="empty">—</div>
+        <h2>WAIT — chain on board, hist gate blocked</h2>
+        <div id="nowBoardWait" class="empty">—</div>
+        <h2>SETUP — hist-eligible quality, no option ticket yet</h2>
+        <p class="lede" style="margin-top:0;font-size:.76rem">These underlyings cleared quality + hist win. They are <strong>not</strong> BUY NOW until a call/put contract is on the snapshot.</p>
+        <div id="nowBoardSetup" class="empty">—</div>
+      </div>
+      <div class="panel now-table-wrap" id="nowBoardTableWrap">
+        <h2>Tabular board</h2>
+        <p class="lede" style="margin-top:0;font-size:.76rem">Buy ask → dollar EXIT (TP / SL). Soft EXIT is the underlying wall level when available — not a fixed label alone.</p>
         <div id="nowBoardTable" class="empty">—</div>
       </div>
     </section>
@@ -1248,6 +1264,29 @@ PAGE = r"""
       return { buys, sells, waits, setups };
     }
 
+    function rowExitDollars(r) {
+      const buyPx = Number(r.ask ?? r.entry_ask);
+      let tp = r.target_ask != null ? Number(r.target_ask) : null;
+      let sl = r.stop_ask != null ? Number(r.stop_ask) : null;
+      const tpPct = Number(r.take_profit_pct ?? r.target_profit_pct ?? ((r.target_premium_mult != null) ? (Number(r.target_premium_mult) - 1) * 100 : 80));
+      const slPct = Number(r.stop_loss_pct ?? 50);
+      if ((tp == null || Number.isNaN(tp)) && !Number.isNaN(buyPx) && buyPx > 0 && !Number.isNaN(tpPct)) {
+        tp = Math.round(buyPx * (1 + tpPct / 100) * 100) / 100;
+      }
+      if ((sl == null || Number.isNaN(sl)) && !Number.isNaN(buyPx) && buyPx > 0 && !Number.isNaN(slPct)) {
+        sl = Math.round(Math.max(0.01, buyPx * (1 - Math.abs(slPct) / 100)) * 100) / 100;
+      }
+      const soft = r.soft_exit != null ? Number(r.soft_exit) : (wallLookup(r.symbol).soft_exit);
+      return {
+        buyPx: Number.isNaN(buyPx) ? null : buyPx,
+        tp: (tp != null && !Number.isNaN(tp)) ? tp : null,
+        sl: (sl != null && !Number.isNaN(sl)) ? sl : null,
+        tpPct: Number.isNaN(tpPct) ? null : tpPct,
+        slPct: Number.isNaN(slPct) ? null : slPct,
+        soft: (soft != null && !Number.isNaN(Number(soft))) ? Number(soft) : null,
+      };
+    }
+
     function nowBoardCard(r) {
       const buy = r._side === "BUY";
       const wait = r._side === "WAIT";
@@ -1265,6 +1304,7 @@ PAGE = r"""
         : (setup ? "SETUP · not BUY" : (wait ? "WAIT" : "SELL NOW"));
       const strike = r.strike == null ? "—" : `${fmt(r.strike, Number(r.strike) % 1 ? 2 : 0)}${right === "PUT" ? "p" : "c"}`;
       const px = buy ? (r.ask ?? r.entry_ask) : (r.bid ?? r.mark ?? r.ask ?? r.exit_bid);
+      const ex = rowExitDollars(r);
       const when = rowAskedAt(r);
       const entryWhen = r.entered_at_cst || (r.entered_at ? fmtCST(r.entered_at) : "");
       const showEntry = entryWhen && entryWhen !== "—" && entryWhen !== when;
@@ -1278,12 +1318,14 @@ PAGE = r"""
         <div class="ac-conf">${r._desk} · ${when && when !== "—" ? when : "time —"}${showEntry ? ` · entered ${entryWhen}` : ""}</div>
         <div class="ac-meta">
           <div>Strike / expiry<strong>${strike} · ${r.expiry || "—"}${r.dte != null ? ` (${r.dte}DTE)` : ""}</strong></div>
-          <div>${buy ? "Ask" : "Bid"}<strong>${px == null ? "—" : "$" + fmt(px, 2)}</strong></div>
+          <div>${buy ? "Buy ask" : "Bid"}<strong>${px == null ? "—" : "$" + fmt(px, 2)}</strong></div>
+          <div>EXIT TP<strong class="up">${ex.tp == null ? "—" : "$" + fmt(ex.tp, 2)}${ex.tpPct != null ? ` (+${fmt(ex.tpPct, 0)}%)` : ""}</strong></div>
+          <div>EXIT SL<strong class="down">${ex.sl == null ? "—" : "$" + fmt(ex.sl, 2)}${ex.slPct != null ? ` (−${fmt(Math.abs(ex.slPct), 0)}%)` : ""}</strong></div>
           <div>Hist win<strong>${Number.isNaN(win) ? "—" : fmt(win, 0) + "%"}</strong></div>
           <div>Strike rate ≥1%<strong>${sr}</strong></div>
           ${levelsMeta(r)}
         </div>
-        <p class="why" style="margin:.45rem 0 0">${r.detail || r.headline || r.exit_plan || r.recommend_reason || ""}</p>
+        <p class="why" style="margin:.45rem 0 0">${r.exit_plan || r.detail || r.headline || r.recommend_reason || ""}</p>
         ${ticketHtml(r.symbol, r)}
       </article>`;
     }
@@ -1306,6 +1348,30 @@ PAGE = r"""
       `).join("");
     }
 
+    function applyNowBoardView(mode) {
+      const view = mode || localStorage.getItem("zlNowBoardView") || "table";
+      localStorage.setItem("zlNowBoardView", view);
+      const tiles = document.getElementById("nowBoardTiles");
+      const tableWrap = document.getElementById("nowBoardTableWrap");
+      if (tiles) tiles.hidden = view === "table";
+      if (tableWrap) tableWrap.hidden = view === "tiles";
+      document.querySelectorAll("#nowBoardViewToggle button").forEach(btn => {
+        btn.classList.toggle("active", btn.getAttribute("data-view") === view);
+      });
+    }
+
+    function bindNowBoardViewToggle() {
+      const root = document.getElementById("nowBoardViewToggle");
+      if (!root || root.dataset.bound) return;
+      root.dataset.bound = "1";
+      root.addEventListener("click", (ev) => {
+        const btn = ev.target.closest("button[data-view]");
+        if (!btn) return;
+        applyNowBoardView(btn.getAttribute("data-view"));
+      });
+      applyNowBoardView(localStorage.getItem("zlNowBoardView") || "table");
+    }
+
     function renderNowBoard() {
       let buys = [], sells = [], waits = [], setups = [];
       try {
@@ -1315,6 +1381,7 @@ PAGE = r"""
         if (note) note.textContent = "BUY/SELL board failed to render: " + (err && err.message ? err.message : err);
         return;
       }
+      bindNowBoardViewToggle();
       const m = (k, v, cls = "") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
       const metrics = document.getElementById("nowBoardMetrics");
       const byDesk = {};
@@ -1347,12 +1414,15 @@ PAGE = r"""
         const all = [...buys, ...sells, ...waits, ...setups];
         if (!all.length) table.innerHTML = `<div class="empty">Empty board — wait for the next Actions publish, or run a live Flask scan with option chains.</div>`;
         else table.innerHTML = `<table class="zl-tape"><thead><tr>
-          <th>Side</th><th>Desk</th><th>Symbol</th><th>Asked (CST)</th><th>Contract</th><th>Px</th><th>Hist win</th><th>Strike rate</th><th>Why</th>
+          <th>Side</th><th>Desk</th><th>Symbol</th><th>Asked (CST)</th><th>Contract</th>
+          <th>Buy</th><th>EXIT TP</th><th>EXIT SL</th><th>Soft EXIT</th>
+          <th>Hist win</th><th>Strike rate</th><th>EXIT plan</th>
         </tr></thead><tbody>${all.map(r => {
           const buy = r._side === "BUY";
           const side = r._side === "BUY" ? "BUY NOW" : (r._side === "SELL" ? "SELL NOW" : r._side);
           const badge = buy ? "buy" : (r._side === "SELL" ? "sell" : "wait");
           const right = String(r.right || "C").toUpperCase() === "P" ? "p" : "c";
+          const ex = rowExitDollars(r);
           const px = buy ? (r.ask ?? r.entry_ask) : (r.bid ?? r.mark ?? r.ask);
           const w = winLookup(r.symbol, r.dte_bucket || r.horizon || "0dte");
           const sr = w.hit1 == null ? "—" : `${fmt(w.hit1,0)}%`;
@@ -1364,12 +1434,16 @@ PAGE = r"""
             <td class="mono">${rowAskedAt(r)}</td>
             <td class="mono">${r.strike == null ? "—" : fmt(r.strike, 2) + right} ${r.expiry || ""}</td>
             <td class="mono">${px == null ? "—" : "$" + fmt(px, 2)}</td>
+            <td class="mono up">${ex.tp == null ? "—" : "$" + fmt(ex.tp, 2)}${ex.tpPct != null ? ` <span class="why">(+${fmt(ex.tpPct,0)}%)</span>` : ""}</td>
+            <td class="mono down">${ex.sl == null ? "—" : "$" + fmt(ex.sl, 2)}${ex.slPct != null ? ` <span class="why">(−${fmt(Math.abs(ex.slPct),0)}%)</span>` : ""}</td>
+            <td class="mono">${ex.soft == null ? "—" : "$" + fmt(ex.soft, 2)}</td>
             <td class="mono">${win == null ? "—" : fmt(win, 0) + "%"}</td>
             <td class="mono">${sr}</td>
-            <td class="why">${r.detail || r.headline || r.exit_plan || ""}</td>
+            <td class="why">${r.exit_plan || r.detail || r.headline || ""}</td>
           </tr>`;
         }).join("")}</tbody></table>`;
       }
+      applyNowBoardView(localStorage.getItem("zlNowBoardView") || "table");
     }
 
     function wallMeta(t) {
@@ -1420,7 +1494,8 @@ PAGE = r"""
       const el = document.getElementById(elId);
       if (!rows || !rows.length) { el.innerHTML = `<div class="empty">No listed calls in this bucket.</div>`; return; }
       el.innerHTML = `<table><thead><tr>
-        <th>Action</th><th>Symbol</th><th>Asked (CST)</th><th>Side</th><th>Strike</th><th>Expiry</th><th>Bid/Ask</th><th>Score</th><th>Hist win</th><th>n</th><th>Strike rate</th><th>Why / EXIT plan</th>
+        <th>Action</th><th>Symbol</th><th>Asked (CST)</th><th>Side</th><th>Strike</th><th>Expiry</th>
+        <th>Buy</th><th>EXIT TP</th><th>EXIT SL</th><th>Score</th><th>Hist win</th><th>n</th><th>Strike rate</th><th>EXIT plan</th>
       </tr></thead><tbody>${rows.map(r=>{
         const a=(r.action||"WAIT").replace("_"," ");
         const cls=(r.action||"WAIT").toLowerCase().split("_")[0];
@@ -1431,7 +1506,8 @@ PAGE = r"""
         const when = (r.action==="BUY_NOW"||r.action==="SELL_NOW")
           ? (r.signaled_at_cst || fmtCST(r.signaled_at) || "—")
           : "—";
-        const why=[r.detail||"", r.exit_plan||""].filter(Boolean).join(" · ");
+        const ex = rowExitDollars(r);
+        const why=r.exit_plan||r.detail||"";
         return `<tr>
           <td><span class="badge ${cls}">${a}</span></td>
           <td><strong>${r.symbol}</strong></td>
@@ -1439,7 +1515,9 @@ PAGE = r"""
           <td class="mono">${side}</td>
           <td class="mono">${r.strike==null?"—":fmt(r.strike,2)}${(r.right||"C")==="P"?"p":"c"}</td>
           <td class="mono">${r.expiry||"—"} <span class="status">DTE ${r.dte??"—"}</span></td>
-          <td class="mono">${fmt(r.bid,2)} / ${fmt(r.ask,2)}</td>
+          <td class="mono">${r.ask==null?"—":"$"+fmt(r.ask,2)}</td>
+          <td class="mono up">${ex.tp==null?"—":"$"+fmt(ex.tp,2)}</td>
+          <td class="mono down">${ex.sl==null?"—":"$"+fmt(ex.sl,2)}</td>
           <td class="mono">${fmt(r.score,0)}</td>
           <td class="mono">${win}</td>
           <td class="mono" title="Historical sample size">${n}</td>
@@ -5433,9 +5511,28 @@ def create_app(config_path: str | None = None) -> Flask:
                             right = str(r.get("right") or "").upper()
                             if right not in {"C", "P"}:
                                 right = occ[-9] if len(occ) >= 15 and occ[-9] in {"C", "P"} else "C"
-                            sniper_mult = float(
+                            # Dynamic bank target from wing convexity (not a flat +20% label).
+                            # Hot convex wings (high mult_at_1pct) can bank a bit more; slow wings stay near floor.
+                            floor_mult = float(
                                 actions_cfg.get("challenge_sniper_target_mult", 1.2)
                             )
+                            max_mult = float(
+                                actions_cfg.get("challenge_target_premium_max", 1.6)
+                            )
+                            convex = float(
+                                r.get("mult_at_1pct")
+                                or r.get("best_mult")
+                                or r.get("mult_at_2pct")
+                                or 0
+                            )
+                            if convex >= 10:
+                                sniper_mult = max(floor_mult, min(max_mult, 1.45))
+                            elif convex >= 5:
+                                sniper_mult = max(floor_mult, min(max_mult, 1.30))
+                            elif convex >= 3:
+                                sniper_mult = max(floor_mult, min(max_mult, 1.25))
+                            else:
+                                sniper_mult = floor_mult
                             sniper_ask = float(r.get("ask") or 0)
                             sniper_tgt = (
                                 round(sniper_ask * sniper_mult, 2) if sniper_ask > 0 else None

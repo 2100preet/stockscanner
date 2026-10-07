@@ -9,6 +9,7 @@ from odte_scanner.signals.hold_rules import (
     exit_plan_text,
     expiry_is_today,
     past_no_new_0dte_entries,
+    premium_exit_levels,
     time_stop_reason,
 )
 from odte_scanner.time_cst import (
@@ -42,6 +43,11 @@ class ActionSignal:
     bid: float | None = None
     right: str | None = "C"  # C | P
     exit_plan: str | None = None
+    target_ask: float | None = None  # dollar TP from live/scan ask
+    stop_ask: float | None = None  # dollar SL from live/scan ask
+    take_profit_pct: float | None = None
+    stop_loss_pct: float | None = None
+    soft_exit: float | None = None  # underlying soft wall EXIT
     win_pct: float | None = None
     win_samples: int | None = None
     hit_1pct: float | None = None
@@ -186,6 +192,16 @@ def decide_entry(
         else:
             moneyness = (float(strike) - float(last)) / float(last) * 100
 
+    soft_exit = candidate.get("soft_exit")
+    try:
+        soft_exit_f = float(soft_exit) if soft_exit is not None else None
+    except (TypeError, ValueError):
+        soft_exit_f = None
+    target_ask, stop_ask = premium_exit_levels(
+        float(ask) if ask is not None else None,
+        take_profit_pct=take_profit_pct,
+        stop_loss_pct=stop_loss_pct,
+    )
     plan = exit_plan_text(
         dte_bucket=str(dte_bucket),
         dte=int(dte) if dte is not None else None,
@@ -194,7 +210,10 @@ def decide_entry(
         stop_loss_pct=stop_loss_pct,
         weekly_max_days=weekly_max_hold_days,
         odte_flatten_et=odte_flatten_et,
-        soft_exit=candidate.get("soft_exit"),
+        soft_exit=soft_exit_f,
+        ask=float(ask) if ask is not None else None,
+        target_ask=target_ask,
+        stop_ask=stop_ask,
     )
 
     base_kwargs = dict(
@@ -211,6 +230,11 @@ def decide_entry(
         dte_bucket=dte_bucket,
         right=right,
         exit_plan=plan,
+        target_ask=target_ask,
+        stop_ask=stop_ask,
+        take_profit_pct=float(take_profit_pct),
+        stop_loss_pct=float(stop_loss_pct),
+        soft_exit=soft_exit_f,
     )
 
     def _wait(detail: str, strength: float | None = None) -> ActionSignal:
@@ -577,6 +601,20 @@ def decide_exit(
     if unreal is not None:
         detail_extra = f" · unreal {unreal:+.0f}% @ ${exit_px:.2f}" if exit_px else f" · unreal {unreal:+.0f}%"
 
+    entry_px = None
+    for k in ("entry_ask", "entry_price", "ask"):
+        if trade.get(k) is not None:
+            try:
+                entry_px = float(trade[k])
+                break
+            except (TypeError, ValueError):
+                pass
+    target_ask, stop_ask = premium_exit_levels(
+        entry_px,
+        take_profit_pct=take_profit_pct,
+        stop_loss_pct=stop_loss_pct,
+    )
+    soft_f = float(soft) if soft is not None else None
     plan = exit_plan_text(
         dte_bucket=str(trade.get("dte_bucket") or "0dte"),
         dte=int(trade["dte"]) if trade.get("dte") is not None else None,
@@ -585,7 +623,10 @@ def decide_exit(
         stop_loss_pct=stop_loss_pct,
         weekly_max_days=weekly_max_hold_days,
         odte_flatten_et=odte_flatten_et,
-        soft_exit=float(soft) if soft is not None else None,
+        soft_exit=soft_f,
+        ask=entry_px,
+        target_ask=target_ask,
+        stop_ask=stop_ask,
     )
 
     kwargs = dict(
@@ -601,6 +642,11 @@ def decide_exit(
         dte_bucket=trade.get("dte_bucket"),
         right=right,
         exit_plan=plan,
+        target_ask=target_ask,
+        stop_ask=stop_ask,
+        take_profit_pct=float(take_profit_pct),
+        stop_loss_pct=float(stop_loss_pct),
+        soft_exit=soft_f,
         # Critical: price the exit at mark/bid — never entry ask (that forced ~0% P&L)
         ask=exit_px,
         bid=exit_px,
