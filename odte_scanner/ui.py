@@ -1399,8 +1399,8 @@ PAGE = r"""
       if (note) {
         if (!buys.length && !sells.length) {
           note.textContent = waits.length
-            ? `No BUY NOW this snapshot (need hist ≥80% and score in the buy band). ${waits.length} WAIT ticket(s) with contracts are listed below.`
-            : "No option BUY NOW / SELL NOW on this snapshot. Pages only pulls a few quality chains. SETUP below is hist-eligible tape, not a buy ticket.";
+            ? `No BUY NOW yet (hist ≥80% + tape gate). ${waits.length} WAIT row(s) below — switch to Table if you only see empty BUY.`
+            : "No option BUY NOW / SELL NOW on this snapshot. SETUP below is hist-eligible tape, not a buy ticket.";
         } else {
           note.textContent = "";
         }
@@ -4198,28 +4198,39 @@ def create_app(config_path: str | None = None) -> Flask:
     def snapshot():
         import time
 
-        ttl = float(os.environ.get("SNAPSHOT_CACHE_SEC") or "30")
+        # Serve stale snapshot immediately when a rebuild is slow/locked — otherwise the
+        # UI paints blank while LIVE_DESK_LOOP + win-rate work holds the GIL for minutes.
+        ttl = float(os.environ.get("SNAPSHOT_CACHE_SEC") or "90")
+        soft_ttl = float(os.environ.get("SNAPSHOT_STALE_SEC") or "900")
         force = str(request.args.get("fresh") or "").strip().lower() in {"1", "true", "yes", "on"}
         cached = _snap_memo.get("body")
         cached_t = float(_snap_memo.get("t") or 0.0)
-        if (not force) and cached is not None and (time.time() - cached_t) < ttl:
-            return jsonify(cached)
-        if (not force) and cached is None:
+        if cached is None:
             disk = _read_json(ROOT / "outputs" / "last_api_snapshot.json")
-            if isinstance(disk, dict) and disk.get("scores"):
+            if isinstance(disk, dict) and (disk.get("scores") or disk.get("actions")):
+                cached = disk
+                cached_t = time.time()
                 _snap_memo["body"] = disk
-                _snap_memo["t"] = time.time()
-                return jsonify(disk)
+                _snap_memo["t"] = cached_t
+        age = (time.time() - cached_t) if cached is not None and cached_t else 1e9
+        if (not force) and cached is not None and age < ttl:
+            return jsonify(cached)
 
-        got_lock = _snap_gate.acquire(timeout=180)
+        got_lock = _snap_gate.acquire(blocking=False)
         if not got_lock:
-            if _snap_memo.get("body") is not None:
-                return jsonify(_snap_memo["body"])
-            return jsonify({"error": "snapshot busy", "scores": [], "actions": {}}), 503
+            # Never block the browser — return last good board (even if a bit stale)
+            if cached is not None and age < soft_ttl:
+                return jsonify(cached)
+            got_lock = _snap_gate.acquire(timeout=8)
+            if not got_lock:
+                if cached is not None:
+                    return jsonify(cached)
+                return jsonify({"error": "snapshot busy", "scores": [], "actions": {}}), 503
         try:
             cached = _snap_memo.get("body")
             cached_t = float(_snap_memo.get("t") or 0.0)
-            if (not force) and cached is not None and (time.time() - cached_t) < ttl:
+            age = (time.time() - cached_t) if cached is not None and cached_t else 1e9
+            if (not force) and cached is not None and age < ttl:
                 return jsonify(cached)
             from odte_scanner.calendars import resolve_yahoo_symbol
             from odte_scanner.data.live_quotes import fetch_live_quote
@@ -6129,6 +6140,51 @@ def create_app(config_path: str | None = None) -> Flask:
                         row["put_wall"] = w.get("put_wall")
                         row["soft_exit"] = w.get("soft_exit")
                         row["wall_exit_hint"] = w.get("exit_hint") or w.get("wall_exit_hint")
+                # Refresh Options desk EXIT plans with dollar TP/SL + soft wall after walls land
+                try:
+                    from odte_scanner.signals.hold_rules import exit_plan_text, premium_exit_levels
+
+                    tp_pct = float(risk.get("take_profit_pct", 80))
+                    sl_pct = float(risk.get("stop_loss_pct", 50))
+                    for key in ("buy_now", "sell_now", "wait", "hold", "all"):
+                        for row in (actions.get(key) or []):
+                            if not isinstance(row, dict):
+                                continue
+                            w = walls_by_symbol.get(str(row.get("symbol") or "").upper()) or {}
+                            if w.get("soft_exit") is not None and row.get("soft_exit") is None:
+                                row["soft_exit"] = w.get("soft_exit")
+                            if w.get("exit_hint") and not row.get("wall_exit_hint"):
+                                row["wall_exit_hint"] = w.get("exit_hint")
+                            ask = row.get("ask") if row.get("ask") is not None else row.get("entry_ask")
+                            tp, sl = premium_exit_levels(
+                                float(ask) if ask is not None else None,
+                                take_profit_pct=tp_pct,
+                                stop_loss_pct=sl_pct,
+                            )
+                            if tp is not None:
+                                row["target_ask"] = tp
+                                row["take_profit_pct"] = tp_pct
+                            if sl is not None:
+                                row["stop_ask"] = sl
+                                row["stop_loss_pct"] = sl_pct
+                            if ask is not None or row.get("soft_exit") is not None:
+                                row["exit_plan"] = exit_plan_text(
+                                    dte_bucket=str(row.get("dte_bucket") or "0dte"),
+                                    dte=int(row["dte"]) if row.get("dte") is not None else None,
+                                    right=str(row.get("right") or "C"),
+                                    take_profit_pct=tp_pct,
+                                    stop_loss_pct=sl_pct,
+                                    soft_exit=(
+                                        float(row["soft_exit"])
+                                        if row.get("soft_exit") is not None
+                                        else None
+                                    ),
+                                    ask=float(ask) if ask is not None else None,
+                                    target_ask=tp,
+                                    stop_ask=sl,
+                                )
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("action exit dollar enrich failed: %s", exc)
             except Exception as exc:  # noqa: BLE001
                 logger.debug("walls_by_symbol merge failed: %s", exc)
                 walls_by_symbol = {}
