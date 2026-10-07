@@ -6,9 +6,14 @@ Surfaces names like META/GOOGL/AMD/BABA when session + short-term momentum
 confirm a continuation. Still never rebuys the same losing OCC contract.
 Symbol loss-cooldown is waived here when the tape is ripping — that is what
 blocked META before yesterday's melt-up.
+
+When tape is hot but the snapshot's 0–1 DTE call ask is missing/thin/junk,
+fall back to the nearest liquid weekly call (≤14 DTE ATM–near OTM) from a
+real Tradier/Yahoo chain before staying on WATCH_RIP.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any
@@ -24,6 +29,7 @@ from odte_scanner.time_cst import (
     signal_timestamps,
 )
 
+logger = logging.getLogger(__name__)
 ET = ZoneInfo("America/New_York")
 
 # Liquid megas / China ADRs / semis the desk wants on RIP alerts
@@ -134,6 +140,176 @@ def bounce_from_day_low_pct(quote: dict[str, Any] | None, spot: float | None = N
     if low_f <= 0:
         return None
     return (last_f / low_f - 1.0) * 100.0
+
+
+def pick_rip_continuation_call(
+    symbol: str,
+    spot: float,
+    *,
+    yahoo_symbol: str | None = None,
+    max_weekly_dte: int = 14,
+    min_ask: float = 0.25,
+    max_ask: float = 25.0,
+    max_otm_pct: float = 4.0,
+    loss_cooldown_contracts: set[str] | None = None,
+) -> dict[str, Any] | None:
+    """Pick a liquid call for RIP: prefer 0–1 DTE, else nearest weekly ≤ max_weekly_dte.
+
+    Uses real chain quotes (Tradier when token set, else Yahoo via select_calls).
+    Never invents synthetic strikes or zone premiums.
+    """
+    sym = str(yahoo_symbol or symbol or "").upper()
+    if not sym or float(spot or 0) <= 0:
+        return None
+    blocked = {str(c).upper() for c in (loss_cooldown_contracts or set())}
+    min_a = float(min_ask)
+    max_a = float(max_ask)
+    otm_cap = float(max_otm_pct)
+    weekly_dte = int(max_weekly_dte)
+
+    def _accept(picked: dict[str, Any], *, weekly: bool) -> dict[str, Any] | None:
+        ask = float(picked.get("ask") or 0)
+        if ask < min_a or ask > max_a:
+            return None
+        contract = str(picked.get("contract") or "").upper()
+        if contract and contract in blocked:
+            return None
+        dte = int(picked.get("dte") if picked.get("dte") is not None else (99 if weekly else 0))
+        strike = picked.get("strike")
+        mny = picked.get("moneyness_pct")
+        if mny is None and spot and strike:
+            try:
+                mny = (float(strike) - float(spot)) / float(spot) * 100.0
+            except (TypeError, ValueError, ZeroDivisionError):
+                mny = None
+        if mny is not None and float(mny) > otm_cap:
+            return None
+        out = {
+            "symbol": str(symbol).upper(),
+            "strike": strike,
+            "expiry": picked.get("expiry"),
+            "dte": dte,
+            "dte_bucket": "0dte" if dte <= 1 else "weekly",
+            "ask": ask,
+            "bid": picked.get("bid"),
+            "contract": contract or None,
+            "volume": int(picked.get("volume") or 0),
+            "open_interest": int(
+                picked.get("open_interest") or picked.get("oi") or 0
+            ),
+            "moneyness_pct": float(mny) if mny is not None else None,
+            "right": "C",
+            "mark_source": picked.get("mark_source") or "ask",
+            "source": picked.get("source") or "chain",
+        }
+        if dte > 1 or weekly:
+            out["nearest_listed"] = True
+            out["weekly_fallback"] = True
+            out["note"] = (
+                f"0–1 DTE ask thin/missing — nearest liquid weekly "
+                f"{out.get('expiry')} (DTE {dte})"
+            )
+        return out
+
+    # Prefer Tradier when token set — Pages offline Yahoo chains often empty
+    try:
+        from odte_scanner.data.tradier import access_token_from_env, pick_option_contract
+
+        if access_token_from_env() and float(spot or 0) > 0:
+            for min_dte, max_dte, prefer in (
+                (0, 1, 0),
+                (2, weekly_dte, min(5, weekly_dte)),
+            ):
+                picked = pick_option_contract(
+                    sym,
+                    float(spot),
+                    right="C",
+                    min_dte=min_dte,
+                    max_dte=max_dte,
+                    prefer_dte=prefer,
+                    otm_pct_max=otm_cap,
+                    itm_pct_max=1.5,
+                    min_volume=50 if max_dte <= 1 else 25,
+                    min_oi=100 if max_dte <= 1 else 50,
+                    require_bid=True,
+                )
+                if not picked or not picked.get("ask"):
+                    continue
+                accepted = _accept(
+                    {
+                        **picked,
+                        "source": "tradier",
+                        "mark_source": picked.get("mark_source") or "ask",
+                    },
+                    weekly=max_dte > 1,
+                )
+                if accepted:
+                    return accepted
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("rip call tradier pick %s: %s", symbol, exc)
+
+    try:
+        from odte_scanner.options.selector import select_calls
+
+        for max_dte, odte_max in ((1, 1), (weekly_dte, 1)):
+            calls = select_calls(
+                symbol,
+                float(spot),
+                score=70.0,
+                reasons=["RIP mega continuation"],
+                max_dte=max_dte,
+                odte_max_dte=odte_max,
+                otm_pct_max=otm_cap,
+                itm_pct_max=1.5,
+                max_ask=max_a,
+                min_open_interest=100 if max_dte <= 1 else 50,
+                min_volume=50 if max_dte <= 1 else 25,
+                yahoo_symbol=yahoo_symbol,
+                per_bucket=1,
+            )
+            if not calls:
+                continue
+            ranked = sorted(
+                calls,
+                key=lambda p: (
+                    0
+                    if int(
+                        getattr(p, "dte", 99)
+                        if not isinstance(p, dict)
+                        else p.get("dte") or 99
+                    )
+                    <= 1
+                    else 1,
+                    int(
+                        getattr(p, "dte", 99)
+                        if not isinstance(p, dict)
+                        else p.get("dte") or 99
+                    ),
+                ),
+            )
+            # When scanning the weekly window, prefer soonest weekly over leftover 0DTE
+            if max_dte > 1:
+                weeklies = [
+                    c
+                    for c in ranked
+                    if int(
+                        getattr(c, "dte", 99)
+                        if not isinstance(c, dict)
+                        else c.get("dte") or 99
+                    )
+                    > 1
+                ]
+                if weeklies:
+                    ranked = weeklies
+            for cand in ranked:
+                d = cand.to_dict() if hasattr(cand, "to_dict") else dict(cand)
+                accepted = _accept(d, weekly=max_dte > 1)
+                if accepted:
+                    return accepted
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("rip call yahoo pick %s: %s", symbol, exc)
+        return None
+    return None
 
 
 def mega_rip_tape_ok(
@@ -282,13 +458,21 @@ def decide_rip_entry(
 
     if ask <= 0 or ask < min_ask or ask > max_ask:
         if _tape_ok():
+            if ticket.get("weekly_fallback_attempted"):
+                detail = (
+                    f"Mega reclaiming ({_tape_label()}) but no liquid call ask on this snapshot "
+                    f"— weekly fallback tried, no liquid ≤14 DTE call."
+                )
+            else:
+                detail = (
+                    f"Mega reclaiming ({_tape_label()}) but no liquid call ask on this snapshot "
+                    f"— pull a near-ATM weekly."
+                )
             return RipAction(
                 action="WATCH_RIP",
                 strength=min(70.0, 45 + (live or 0) * 6 + (bounce_low or 0) * 4),
                 headline=f"WATCH RIP {symbol}",
-                detail=(
-                    f"Mega reclaiming ({_tape_label()}) but no liquid call ask on this snapshot — pull a near-ATM weekly."
-                ),
+                detail=detail,
                 playbook=playbook,
                 risk_tag="continuation",
                 confirms=2,
@@ -351,6 +535,13 @@ def decide_rip_entry(
     )
 
     if ripping and confirms >= 3 and (vol >= min_volume or oi >= 100 or ask > 0):
+        weekly_fb = bool(ticket.get("weekly_fallback") or ticket.get("nearest_listed"))
+        fb_note = ""
+        if weekly_fb:
+            fb_note = (
+                f" · weekly fallback"
+                + (f" ({ticket.get('note')})" if ticket.get("note") else " (0–1 DTE ask thin/missing)")
+            )
         return RipAction(
             action="BUY_RIP",
             strength=strength,
@@ -360,6 +551,7 @@ def decide_rip_entry(
                 + (f", 5m {mom5:+.2f}%" if mom5 is not None else "")
                 + f" · {base['dte_bucket']} call @ ${ask:.2f}"
                 + (f" · {float(mny):.1f}% OTM" if mny is not None else "")
+                + fb_note
                 + " · META-class continuation (symbol cooldown waived; OCC still blocked)"
             ),
             playbook=playbook,
@@ -397,6 +589,14 @@ def decide_rip_entry(
     )
 
 
+def _needs_rip_weekly_fallback(act: RipAction) -> bool:
+    """True when tape is hot but the snapshot ask was missing/thin/junk."""
+    if act.action != "WATCH_RIP":
+        return False
+    detail = str(act.detail or "").lower()
+    return "no liquid call ask" in detail
+
+
 def build_rip_board(
     *,
     candidates: list[dict[str, Any]],
@@ -405,6 +605,11 @@ def build_rip_board(
     loss_cooldown_contracts: set[str] | list[str] | None = None,
     min_live_pct: float = 1.0,
     min_mom5: float = 0.05,
+    min_ask: float = 0.25,
+    max_ask: float = 25.0,
+    max_otm_pct: float = 4.0,
+    max_weekly_dte: int = 14,
+    allow_chain_fallback: bool = True,
     max_tickets: int = 12,
     now: datetime | None = None,
     signal_times_path: str | None = "outputs/rip_signal_times.json",
@@ -453,8 +658,79 @@ def build_rip_board(
             loss_cooldown_contracts=blocked,
             min_live_pct=min_live_pct,
             min_mom5=min_mom5,
+            min_ask=min_ask,
+            max_ask=max_ask,
+            max_otm_pct=max_otm_pct,
             now=now,
         )
+        # AVGO-class: tape OK but 0–1 DTE ask thin → real weekly chain fallback
+        if allow_chain_fallback and _needs_rip_weekly_fallback(act):
+            spot = float(
+                act.spot
+                or q.get("last")
+                or c.get("spot")
+                or c.get("live_spot")
+                or 0
+            )
+            picked = None
+            if spot > 0:
+                picked = pick_rip_continuation_call(
+                    sym,
+                    spot,
+                    max_weekly_dte=max_weekly_dte,
+                    min_ask=min_ask,
+                    max_ask=max_ask,
+                    max_otm_pct=max_otm_pct,
+                    loss_cooldown_contracts=blocked,
+                )
+            if picked and float(picked.get("ask") or 0) >= float(min_ask):
+                merged = {
+                    **c,
+                    **picked,
+                    "live_change_pct": c.get("live_change_pct") or act.live_change_pct,
+                    "score": c.get("score") or score_map.get(sym),
+                }
+                act2 = decide_rip_entry(
+                    merged,
+                    quote=q or None,
+                    ensemble_score=score_map.get(sym) or c.get("score"),
+                    loss_cooldown_contracts=blocked,
+                    min_live_pct=min_live_pct,
+                    min_mom5=min_mom5,
+                    min_ask=min_ask,
+                    max_ask=max_ask,
+                    max_otm_pct=max_otm_pct,
+                    now=now,
+                )
+                if act2.action in {"BUY_RIP", "WATCH_RIP"}:
+                    act = act2
+                else:
+                    # Keep original WATCH but note the weekly attempt
+                    act = decide_rip_entry(
+                        {**c, "weekly_fallback_attempted": True},
+                        quote=q or None,
+                        ensemble_score=score_map.get(sym) or c.get("score"),
+                        loss_cooldown_contracts=blocked,
+                        min_live_pct=min_live_pct,
+                        min_mom5=min_mom5,
+                        min_ask=min_ask,
+                        max_ask=max_ask,
+                        max_otm_pct=max_otm_pct,
+                        now=now,
+                    )
+            else:
+                act = decide_rip_entry(
+                    {**c, "weekly_fallback_attempted": True},
+                    quote=q or None,
+                    ensemble_score=score_map.get(sym) or c.get("score"),
+                    loss_cooldown_contracts=blocked,
+                    min_live_pct=min_live_pct,
+                    min_mom5=min_mom5,
+                    min_ask=min_ask,
+                    max_ask=max_ask,
+                    max_otm_pct=max_otm_pct,
+                    now=now,
+                )
         if act.action == "BUY_RIP":
             act, store = _apply_persisted_rip(act, store)
             buys.append(act)
@@ -477,7 +753,8 @@ def build_rip_board(
         "purpose": (
             "META-class liquid megas (META, GOOGL, AMD, BABA, NVDA, …) when session "
             "is ripping and tape confirms. Waives symbol loss-cooldown; never rebuys "
-            "the same losing OCC. Not hist-gated — size smaller than Options BUY NOW."
+            "the same losing OCC. Not hist-gated — size smaller than Options BUY NOW. "
+            "If 0–1 DTE ask is thin, falls back to nearest liquid weekly call."
         ),
         "primary": primary.to_dict() if primary else None,
         "buy_now": [a.to_dict() for a in buys[:max_tickets]],
@@ -496,6 +773,7 @@ def build_rip_board(
         "rules": [
             "Need session ≥~1% OR ≥1.2% reclaim off the day low (TSLA 347→351 style).",
             "Prefer ATM–near OTM (≤4%) liquid calls on focus megas.",
+            "If 0–1 DTE ask missing/thin, fall back to nearest liquid weekly (≤14 DTE).",
             "Same OCC after a loss stays blocked ~45d.",
             "Symbol cooldown waived on this lane when tape is ripping.",
             "Research / discretionary — not auto-journal gated BUY NOW.",
