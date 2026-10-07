@@ -4,6 +4,7 @@ from odte_scanner.challenge.million import (
     build_challenge_board,
     compound_path,
     path_table,
+    reconcile_target_ask,
     time_boxed_path,
     _side_from_tape,
 )
@@ -83,6 +84,68 @@ def test_hold_periods_sprint_and_short_dte():
     # Short-dated contracts map to sprint even if hist horizon was swing
     short = hold_period_for("swing", 5)
     assert short["style"] == "sprint" and short["max_days"] == 1
+
+
+def test_reconcile_target_ask_fixes_stale_cross_contract_merge():
+    """Radar/sniper ask refresh must not keep another contract's tiny target_ask."""
+    # Repro: IWM ask $0.63 with leftover target_ask $0.05 claiming +21%
+    bad = {
+        "symbol": "IWM",
+        "ask": 0.63,
+        "target_premium_mult": 1.2,
+        "target_ask": 0.05,
+        "exit_plan": "EXIT at ≥$0.05 (+21% premium), or stop −45%, or after 1d max hold.",
+    }
+    out = reconcile_target_ask(bad)
+    assert out["target_ask"] == 0.76  # 0.63 * 1.2
+    assert out["target_profit_pct"] == 20.0
+    assert "≥$0.76" in out["exit_plan"]
+    assert "+20% premium" in out["exit_plan"]
+    assert "$0.05" not in out["exit_plan"]
+
+    spy = reconcile_target_ask(
+        {
+            "symbol": "SPY",
+            "ask": 0.58,
+            "target_premium_mult": 1.2,
+            "target_ask": 0.45,
+            "exit_plan": "EXIT at ≥$0.45 (+21% premium), or stop −45%.",
+        }
+    )
+    assert spy["target_ask"] == 0.70
+    assert "≥$0.70" in spy["exit_plan"]
+
+    # Already consistent — leave alone
+    ok = reconcile_target_ask(
+        {"ask": 1.0, "target_premium_mult": 1.5, "target_ask": 1.5, "exit_plan": "EXIT at ≥$1.50 (+50% premium)"}
+    )
+    assert ok["target_ask"] == 1.5
+
+
+def test_challenge_enter_rejects_stale_target_ask(tmp_path):
+    ledger = tmp_path / "ch_stale.json"
+    tr = ChallengeTracker(ledger, starting_cash=1000)
+    entered = tr.enter(
+        {
+            "action": "ENTRY",
+            "symbol": "IWM",
+            "right": "C",
+            "ask": 0.63,
+            "contract": "IWM251007C00282000",
+            "expiry": "2026-10-07",
+            "strike": 282,
+            "horizon": "sprint",
+            "dte": 0,
+            "target_premium_mult": 1.2,
+            "target_ask": 0.05,  # stale from another contract
+            "sniper": True,
+            "spot": 281.3,
+        }
+    )
+    assert entered is not None
+    assert entered.target_ask == 0.76
+    assert entered.entry_ask == 0.63
+    assert entered.target_ask > entered.entry_ask
 
 
 def test_side_from_tape_calls_and_puts():

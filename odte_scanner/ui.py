@@ -5346,11 +5346,17 @@ def create_app(config_path: str | None = None) -> Flask:
                     uw_flow=uw_flow,
                     require_uw_flow=bool(actions_cfg.get("challenge_require_uw_flow", False)),
                 )
-                live_contracts = {
-                    (str(t.get("symbol")), str(t.get("right") or "C")): t
-                    for t in (challenge.get("tickets") or [])
-                    if t.get("ask") is not None or t.get("contract") or t.get("call_wall") is not None
-                }
+                # Key by OCC contract when present — never merge target_ask across
+                # different strikes on the same symbol (caused $0.63 → EXIT $0.05).
+                live_contracts: dict[tuple[str, str] | str, dict] = {}
+                for t in challenge.get("tickets") or []:
+                    if t.get("ask") is None and not t.get("contract") and t.get("call_wall") is None:
+                        continue
+                    occ = str(t.get("contract") or "").strip()
+                    if occ:
+                        live_contracts[occ] = t
+                    else:
+                        live_contracts[(str(t.get("symbol")), str(t.get("right") or "C"))] = t
                 # Refresh marks again right before EXIT sync (board may have open bid)
                 if fetch_ch_contracts and tracker.open_trades():
                     ch_live_marks = {**ch_live_marks, **tracker.refresh_open_marks(aliases=aliases)}
@@ -5368,21 +5374,27 @@ def create_app(config_path: str | None = None) -> Flask:
                         if not occ or occ in seen_occ or not r.get("ask"):
                             continue
                         seen_occ.add(occ)
-                        ch_tickets.append(
-                            {
-                                **r,
-                                "action": "BUY_RIP",
-                                "right": str(r.get("right") or "C").upper(),
-                                "hold_style": "sprint",
-                                "horizon": "sprint",
-                                "hold_min_days": 0,
-                                "hold_max_days": 1,
-                                "hold_ideal_days": 1,
-                                "target_premium_mult": float(r.get("target_premium_mult") or 1.5),
-                                "ensemble_score": float(r.get("ensemble_score") or r.get("strength") or 70),
-                                "thesis": r.get("detail") or r.get("headline") or "BUY_RIP → challenge",
-                            }
-                        )
+                        from odte_scanner.challenge.million import reconcile_target_ask
+
+                        rip_mult = float(r.get("target_premium_mult") or 1.5)
+                        rip_ask = float(r.get("ask") or 0) or None
+                        rip_ticket = {
+                            **r,
+                            "action": "BUY_RIP",
+                            "right": str(r.get("right") or "C").upper(),
+                            "hold_style": "sprint",
+                            "horizon": "sprint",
+                            "hold_min_days": 0,
+                            "hold_max_days": 1,
+                            "hold_ideal_days": 1,
+                            "target_premium_mult": rip_mult,
+                            "target_ask": (
+                                round(rip_ask * rip_mult, 2) if rip_ask and rip_ask > 0 else r.get("target_ask")
+                            ),
+                            "ensemble_score": float(r.get("ensemble_score") or r.get("strength") or 70),
+                            "thesis": r.get("detail") or r.get("headline") or "BUY_RIP → challenge",
+                        }
+                        ch_tickets.append(reconcile_target_ask(rip_ticket))
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("rip→challenge bridge skipped: %s", exc)
                 # Index sniper: RADAR HOT SPY/QQQ/IWM wings → challenge (SPX via SPY)
@@ -5421,31 +5433,45 @@ def create_app(config_path: str | None = None) -> Flask:
                             right = str(r.get("right") or "").upper()
                             if right not in {"C", "P"}:
                                 right = occ[-9] if len(occ) >= 15 and occ[-9] in {"C", "P"} else "C"
-                            ch_tickets.insert(
-                                0,
-                                {
-                                    **r,
-                                    "symbol": sym,
-                                    "action": "RADAR_HOT",
-                                    "right": right,
-                                    "sniper": True,
-                                    "from_radar": True,
-                                    "hold_style": "sprint",
-                                    "horizon": "sprint",
-                                    "hold_min_days": 0,
-                                    "hold_max_days": 1,
-                                    "hold_ideal_days": 0,
-                                    "target_premium_mult": float(
-                                        actions_cfg.get("challenge_sniper_target_mult", 1.2)
-                                    ),
-                                    "stop_loss_pct": float(
-                                        actions_cfg.get("challenge_sniper_stop_pct", 20)
-                                    ),
-                                    "thesis": r.get("detail")
-                                    or r.get("headline")
-                                    or f"INDEX SNIPER {sym} RADAR HOT same-day → challenge",
-                                },
+                            sniper_mult = float(
+                                actions_cfg.get("challenge_sniper_target_mult", 1.2)
                             )
+                            sniper_ask = float(r.get("ask") or 0)
+                            sniper_tgt = (
+                                round(sniper_ask * sniper_mult, 2) if sniper_ask > 0 else None
+                            )
+                            sniper_pct = round((sniper_mult - 1.0) * 100.0, 1)
+                            sniper_ticket = {
+                                **r,
+                                "symbol": sym,
+                                "action": "RADAR_HOT",
+                                "right": right,
+                                "sniper": True,
+                                "from_radar": True,
+                                "hold_style": "sprint",
+                                "horizon": "sprint",
+                                "hold_min_days": 0,
+                                "hold_max_days": 1,
+                                "hold_ideal_days": 0,
+                                "target_premium_mult": sniper_mult,
+                                "target_ask": sniper_tgt,
+                                "target_profit_pct": sniper_pct,
+                                "stop_loss_pct": float(
+                                    actions_cfg.get("challenge_sniper_stop_pct", 20)
+                                ),
+                                "thesis": r.get("detail")
+                                or r.get("headline")
+                                or f"INDEX SNIPER {sym} RADAR HOT same-day → challenge",
+                            }
+                            if sniper_tgt is not None:
+                                sniper_ticket["exit_plan"] = (
+                                    f"EXIT at ≥${sniper_tgt:.2f} (+{sniper_pct:.0f}% premium), "
+                                    f"or stop −{float(actions_cfg.get('challenge_sniper_stop_pct', 20)):.0f}%, "
+                                    "or flatten same day / ~4h."
+                                )
+                            from odte_scanner.challenge.million import reconcile_target_ask
+
+                            ch_tickets.insert(0, reconcile_target_ask(sniper_ticket))
                     except Exception as exc:  # noqa: BLE001
                         logger.debug("radar→challenge sniper bridge skipped: %s", exc)
                 sync = tracker.sync_from_tickets(
@@ -5541,6 +5567,8 @@ def create_app(config_path: str | None = None) -> Flask:
                         for t in ch_tickets
                         if t.get("from_radar") or t.get("sniper") or str(t.get("action") or "") == "RADAR_HOT"
                     ]
+                    from odte_scanner.challenge.million import reconcile_target_ask
+
                     for t in sniper_extra:
                         occ = str(t.get("contract") or "")
                         if not occ or occ in board_occ:
@@ -5548,14 +5576,18 @@ def create_app(config_path: str | None = None) -> Flask:
                         board_occ.add(occ)
                         board_tickets.insert(
                             0,
-                            {
-                                **t,
-                                "action": "ENTRY",
-                                "pace_style": "sprint",
-                                "certainty_tier": "sniper",
-                                "recommend_reason": t.get("thesis") or "INDEX SNIPER RADAR HOT",
-                            },
+                            reconcile_target_ask(
+                                {
+                                    **t,
+                                    "action": "ENTRY",
+                                    "pace_style": "sprint",
+                                    "certainty_tier": "sniper",
+                                    "recommend_reason": t.get("thesis") or "INDEX SNIPER RADAR HOT",
+                                }
+                            ),
                         )
+                    for t in board_tickets:
+                        reconcile_target_ask(t)
                     challenge["tickets"] = board_tickets
                     challenge["entry"] = [t for t in board_tickets if t.get("action") == "ENTRY"]
                     if board_tickets and (
@@ -5575,76 +5607,93 @@ def create_app(config_path: str | None = None) -> Flask:
                     challenge["counts"] = counts
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("sniper board merge skipped: %s", exc)
+                from odte_scanner.challenge.million import reconcile_target_ask
+
                 for t in challenge.get("tickets") or []:
-                    prev = live_contracts.get((str(t.get("symbol")), str(t.get("right") or "C")))
-                    if not prev:
-                        continue
-                    for key in (
-                        "contract",
-                        "expiry",
-                        "dte",
-                        "strike",
-                        "ask",
-                        "bid",
-                        "option_last",
-                        "mark_source",
-                        "moneyness_pct",
-                        "open_interest",
-                        "volume",
-                        "target_ask",
-                        "debit_usd",
-                        "contracts_for_bankroll",
-                        "call_wall",
-                        "put_wall",
-                        "call_wall_oi",
-                        "put_wall_oi",
-                        "primary_wall",
-                        "primary_wall_side",
-                        "soft_exit",
-                        "wall_buffer_usd",
-                        "wall_exit_hint",
-                        "gex_flip",
-                        "gex_regime",
-                        "exit_plan",
-                        "reasons",
-                        "spot",
-                        "spot_source",
-                        "live_ok",
-                        "data_note",
-                    ):
-                        if t.get(key) in (None, "", "zone") and prev.get(key) not in (None, ""):
-                            t[key] = prev.get(key)
-                    # Prefer live ask from first pass when second pass fell back to zone
-                    if prev.get("ask") is not None and (
-                        t.get("ask") is None or t.get("mark_source") == "zone"
-                    ):
-                        t["ask"] = prev.get("ask")
-                        t["bid"] = prev.get("bid")
-                        t["option_last"] = prev.get("option_last")
-                        t["mark_source"] = prev.get("mark_source") or "ask"
-                        t["contract"] = prev.get("contract") or t.get("contract")
-                        t["expiry"] = prev.get("expiry") or t.get("expiry")
-                        t["dte"] = prev.get("dte") if prev.get("dte") is not None else t.get("dte")
-                        t["strike"] = prev.get("strike") if prev.get("strike") is not None else t.get("strike")
-                        if prev.get("target_ask") is not None:
-                            t["target_ask"] = prev.get("target_ask")
-                    # Second pass rebuilds without chains and demotes ENTRY→WAIT — restore action
-                    prev_action = str(prev.get("action") or "")
-                    if prev_action in {"ENTRY", "HOLD", "EXIT"} and t.get("action") == "WAIT":
-                        if t.get("ask") is not None or prev.get("ask") is not None:
-                            t["action"] = prev_action
-                            for k in (
-                                "status_detail",
-                                "enter_plan",
-                                "exit_plan",
-                                "recommend_reason",
-                                "thesis",
-                                "target_ask",
-                                "debit_usd",
-                                "contracts_for_bankroll",
-                            ):
-                                if prev.get(k) not in (None, ""):
-                                    t[k] = prev.get(k)
+                    occ = str(t.get("contract") or "").strip()
+                    prev = live_contracts.get(occ) if occ else None
+                    if prev is None:
+                        prev = live_contracts.get((str(t.get("symbol")), str(t.get("right") or "C")))
+                    # Only merge mark/wall fields when OCC matches (or both lack OCC).
+                    same_contract = bool(
+                        prev
+                        and (
+                            (
+                                occ
+                                and str(prev.get("contract") or "").strip() == occ
+                            )
+                            or (
+                                not occ
+                                and not str(prev.get("contract") or "").strip()
+                                and str(prev.get("symbol")) == str(t.get("symbol"))
+                                and str(prev.get("right") or "C") == str(t.get("right") or "C")
+                            )
+                        )
+                    )
+                    if same_contract and prev:
+                        for key in (
+                            "contract",
+                            "expiry",
+                            "dte",
+                            "strike",
+                            "ask",
+                            "bid",
+                            "option_last",
+                            "mark_source",
+                            "moneyness_pct",
+                            "open_interest",
+                            "volume",
+                            "debit_usd",
+                            "contracts_for_bankroll",
+                            "call_wall",
+                            "put_wall",
+                            "call_wall_oi",
+                            "put_wall_oi",
+                            "primary_wall",
+                            "primary_wall_side",
+                            "soft_exit",
+                            "wall_buffer_usd",
+                            "wall_exit_hint",
+                            "gex_flip",
+                            "gex_regime",
+                            "reasons",
+                            "spot",
+                            "spot_source",
+                            "live_ok",
+                            "data_note",
+                        ):
+                            if t.get(key) in (None, "", "zone") and prev.get(key) not in (None, ""):
+                                t[key] = prev.get(key)
+                        # Prefer live ask from first pass when second pass fell back to zone
+                        if prev.get("ask") is not None and (
+                            t.get("ask") is None or t.get("mark_source") == "zone"
+                        ):
+                            t["ask"] = prev.get("ask")
+                            t["bid"] = prev.get("bid")
+                            t["option_last"] = prev.get("option_last")
+                            t["mark_source"] = prev.get("mark_source") or "ask"
+                            t["contract"] = prev.get("contract") or t.get("contract")
+                            t["expiry"] = prev.get("expiry") or t.get("expiry")
+                            t["dte"] = prev.get("dte") if prev.get("dte") is not None else t.get("dte")
+                            t["strike"] = (
+                                prev.get("strike") if prev.get("strike") is not None else t.get("strike")
+                            )
+                        # Second pass rebuilds without chains and demotes ENTRY→WAIT — restore action
+                        prev_action = str(prev.get("action") or "")
+                        if prev_action in {"ENTRY", "HOLD", "EXIT"} and t.get("action") == "WAIT":
+                            if t.get("ask") is not None or prev.get("ask") is not None:
+                                t["action"] = prev_action
+                                for k in (
+                                    "status_detail",
+                                    "enter_plan",
+                                    "recommend_reason",
+                                    "thesis",
+                                    "debit_usd",
+                                    "contracts_for_bankroll",
+                                ):
+                                    if prev.get(k) not in (None, ""):
+                                        t[k] = prev.get(k)
+                    reconcile_target_ask(t)
                 # Refresh counts after merge
                 tickets = challenge.get("tickets") or []
                 challenge["counts"] = {
