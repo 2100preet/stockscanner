@@ -27,8 +27,15 @@ _challenge_win_warm_started = False
 
 
 def _schedule_challenge_win_warm(config_path: str | None = None) -> None:
-    """Fill challenge hist win rates in a daemon thread — never on the request path."""
+    """Fill challenge hist win rates in a daemon thread — never on the request path.
+
+    Off by default: Yahoo hist fan-out fights /api/snapshot for the GIL on small VMs.
+    Set CHALLENGE_WIN_WARM=1 to enable.
+    """
     global _challenge_win_warm_started
+    flag = (os.environ.get("CHALLENGE_WIN_WARM") or "").strip().lower()
+    if flag not in {"1", "true", "yes", "on"}:
+        return
     with _challenge_win_warm_lock:
         if _challenge_win_warm_started:
             return
@@ -4101,6 +4108,9 @@ def create_app(config_path: str | None = None) -> Flask:
     scan_lock = threading.Lock()
     actions_cfg = cfg.get("actions") or {}
     risk = cfg.get("risk") or {}
+    # Single-flight + short TTL — UI polls ~15s; a 60s snapshot must not pile up.
+    _snap_gate = threading.Lock()
+    _snap_memo: dict = {"body": None, "t": 0.0}
 
     @app.get("/")
     def index():
@@ -4108,184 +4118,179 @@ def create_app(config_path: str | None = None) -> Flask:
 
     @app.get("/api/snapshot")
     def snapshot():
-        from odte_scanner.calendars import resolve_yahoo_symbol
-        from odte_scanner.data.live_quotes import fetch_live_quote
-        from odte_scanner.options.live_chain import refresh_candidate_quote
+        import time
 
-        offline = _snapshot_offline()
-        tradier_live = _tradier_live_ok()
-        # Pages sets offline=1 to skip Yahoo fan-out; Tradier still supplies live marks/bars
-        live_marks = (not offline) or tradier_live
-        scan = _read_json(ROOT / "outputs" / "latest_scan.json") or {}
-        watch = _read_json(ROOT / "outputs" / "watch" / "latest_watch.json")
-        ledger_path = Path(cfg.get("paper_trading", {}).get("ledger_path", "outputs/paper_ledger.json"))
-        if not ledger_path.is_absolute():
-            ledger_path = ROOT / ledger_path
-        ledger = _read_json(ledger_path)
-        quotes = dict((watch or {}).get("quotes") or {})
+        ttl = float(os.environ.get("SNAPSHOT_CACHE_SEC") or "30")
+        force = str(request.args.get("fresh") or "").strip().lower() in {"1", "true", "yes", "on"}
+        cached = _snap_memo.get("body")
+        cached_t = float(_snap_memo.get("t") or 0.0)
+        if (not force) and cached is not None and (time.time() - cached_t) < ttl:
+            return jsonify(cached)
+        if (not force) and cached is None:
+            disk = _read_json(ROOT / "outputs" / "last_api_snapshot.json")
+            if isinstance(disk, dict) and disk.get("scores"):
+                _snap_memo["body"] = disk
+                _snap_memo["t"] = time.time()
+                return jsonify(disk)
 
-        merged: list[dict] = []
-        for key in (
-            "option_candidates",
-            "call_candidates_0dte",
-            "call_candidates_weekly",
-            "call_candidates",
-            "put_candidates_0dte",
-            "put_candidates_weekly",
-            "put_candidates",
-        ):
-            for c in scan.get(key) or []:
-                merged.append(dict(c))
-        deduped: list[dict] = []
-        seen: set[str] = set()
-        for item in merged:
-            key = item.get("contract") or f"{item.get('symbol')}-{item.get('right')}-{item.get('expiry')}-{item.get('strike')}"
-            if key in seen:
-                continue
-            seen.add(key)
-            deduped.append(item)
-
-        win_table = scan.get("win_rates") or load_win_rate_table()
-        # Merge full cache so challenge can see mid/small hist beyond this scan slice
+        got_lock = _snap_gate.acquire(timeout=180)
+        if not got_lock:
+            if _snap_memo.get("body") is not None:
+                return jsonify(_snap_memo["body"])
+            return jsonify({"error": "snapshot busy", "scores": [], "actions": {}}), 503
         try:
-            cached_wr = load_win_rate_table()
-            if cached_wr and isinstance(win_table, dict):
-                merged_syms = dict(cached_wr.get("symbols") or {})
-                merged_syms.update(win_table.get("symbols") or {})
-                win_table = {**cached_wr, **win_table, "symbols": merged_syms}
-            elif cached_wr and not win_table:
-                win_table = cached_wr
-        except Exception:  # noqa: BLE001
-            pass
-        # Prefer scan/disk win rates — rebuilding here blocks the UI for minutes
-        if not win_table:
+            cached = _snap_memo.get("body")
+            cached_t = float(_snap_memo.get("t") or 0.0)
+            if (not force) and cached is not None and (time.time() - cached_t) < ttl:
+                return jsonify(cached)
+            from odte_scanner.calendars import resolve_yahoo_symbol
+            from odte_scanner.data.live_quotes import fetch_live_quote
+            from odte_scanner.options.live_chain import refresh_candidate_quote
+
+            offline = _snapshot_offline()
+            tradier_live = _tradier_live_ok()
+            # Pages sets offline=1 to skip Yahoo fan-out; Tradier still supplies live marks/bars.
+            # Outside RTH, skip live quote fan-out — scan marks paint the board in seconds.
+            live_marks = (not offline) or tradier_live
             try:
-                win_table = load_win_rate_table() or {}
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("win rates unavailable: %s", exc)
-                win_table = {}
+                from odte_scanner.live_desk import _in_rth_window
 
-        board_rows = _prioritize_action_board_rows(deduped, win_table, limit=24)
-        syms = sorted({str(c.get("symbol")) for c in board_rows if c.get("symbol")})
-        # Also include action-card symbols for win rates
-        for bucket in (scan.get("action_cards") or {}).values():
-            for t in bucket or []:
-                if t.get("symbol"):
-                    syms.append(str(t["symbol"]))
-        syms = sorted(set(syms))
-        aliases = {s: resolve_yahoo_symbol(s, cfg) for s in syms}
+                if live_marks and not _in_rth_window(extended=True):
+                    live_marks = False
+            except Exception:  # noqa: BLE001
+                pass
+            scan = _read_json(ROOT / "outputs" / "latest_scan.json") or {}
+            watch = _read_json(ROOT / "outputs" / "watch" / "latest_watch.json")
+            ledger_path = Path(cfg.get("paper_trading", {}).get("ledger_path", "outputs/paper_ledger.json"))
+            if not ledger_path.is_absolute():
+                ledger_path = ROOT / ledger_path
+            ledger = _read_json(ledger_path)
+            quotes = dict((watch or {}).get("quotes") or {})
 
-        # Challenge hist coverage is filled by live desk scans / boot warm — never here.
-        # ensure_challenge_win_table() rebuilds Yahoo hist and used to block this endpoint
-        # for minutes on cold Fly hosts (keys valid, board still blank).
+            merged: list[dict] = []
+            for key in (
+                "option_candidates",
+                "call_candidates_0dte",
+                "call_candidates_weekly",
+                "call_candidates",
+                "put_candidates_0dte",
+                "put_candidates_weekly",
+                "put_candidates",
+            ):
+                for c in scan.get(key) or []:
+                    merged.append(dict(c))
+            deduped: list[dict] = []
+            seen: set[str] = set()
+            for item in merged:
+                key = item.get("contract") or f"{item.get('symbol')}-{item.get('right')}-{item.get('expiry')}-{item.get('strike')}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                deduped.append(item)
 
-        # Challenge-eligible + DRAM/memory sleeve need live/cache quotes (often outside focus)
-        challenge_syms: list[str] = []
-        dram_syms: list[str] = []
-        try:
-            from odte_scanner.challenge.million import _eligible_rows
-            from odte_scanner.data.universe import challenge_hist_universe, dram_memory_universe, liquid_universe
-
-            # Only pull challenge/DRAM live quotes when we already have scan scores —
-            # otherwise empty first paint waits minutes on Yahoo and the UI aborts.
-            has_scan_scores = bool(scan.get("scores"))
-            # Cap live quote fan-out — full challenge/DRAM sleeves make snapshot >3 min
-            if has_scan_scores:
-                challenge_syms = [
-                    str(r["symbol"])
-                    for r in _eligible_rows(win_table if isinstance(win_table, dict) else None)[
-                        : max(12, int(actions_cfg.get("challenge_max_tickets", 8)) + 4)
-                    ]
-                ]
-                if len(challenge_syms) < 4:
-                    challenge_syms = sorted(
-                        set(challenge_syms) | set(challenge_hist_universe()[:12])
-                    )
-            dram_syms = dram_memory_universe()[:4] if has_scan_scores else []
-            # Aliases for full liquid universe (earnings/volume board — no extra quotes)
-            for s in liquid_universe():
-                aliases.setdefault(s, resolve_yahoo_symbol(s, cfg))
-        except Exception:  # noqa: BLE001
-            challenge_syms = []
-            dram_syms = []
-        quote_syms = (
-            []
-            if not live_marks
-            else sorted(set(syms[:8]) | set(challenge_syms[:12]) | set(dram_syms))
-        )
-        # Always refresh CORE mega tape — RIP/BUY NOW was missing session % for INTC/GOOGL
-        try:
-            from odte_scanner.signals.rip_radar import MEGA_RIP_SYMBOLS
-
-            if live_marks:
-                mega_on_board = {
-                    str(c.get("symbol") or "").upper()
-                    for c in board_rows
-                    if str(c.get("symbol") or "").upper() in MEGA_RIP_SYMBOLS
-                }
-                mega_on_board |= {
-                    str(s.get("symbol") or "").upper()
-                    for s in (scan.get("scores") or [])
-                    if str(s.get("symbol") or "").upper() in MEGA_RIP_SYMBOLS
-                }
-                quote_syms = sorted(set(quote_syms) | mega_on_board)
-        except Exception:  # noqa: BLE001
-            pass
-        for s in quote_syms:
-            aliases.setdefault(s, resolve_yahoo_symbol(s, cfg))
-
-        def _uq(sym: str):
-            return sym, fetch_live_quote(sym, yahoo_symbol=aliases.get(sym))
-
-        if quote_syms:
-            with ThreadPoolExecutor(max_workers=8) as pool:
-                for sym, q in pool.map(_uq, quote_syms):
-                    if q:
-                        quotes[sym] = q.to_dict()
-
-        refreshed: list[dict] = []
-
-        def _refresh(item: dict) -> dict:
-            # Equity tape always overlays; when Tradier is live also refresh option marks
-            # so BUY NOW / WAIT see real bid/ask (scan-time Yahoo asks go stale on Pages).
-            out = dict(item)
-            ask = item.get("ask")
-            has_mark = ask is not None and float(ask or 0) > 0
-            contract = item.get("contract")
-            synthetic = bool(item.get("synthetic")) or (
-                isinstance(contract, str) and contract.endswith("_SYN")
-            )
-            out["quote_stale"] = synthetic or not has_mark
-            sym = str(item.get("symbol"))
-            q = quotes.get(sym)
-            if q:
-                out["live_change_pct"] = q.get("session_change_pct")
-                if out["live_change_pct"] is None:
-                    out["live_change_pct"] = q.get("change_pct")
-                out["live_last"] = q.get("last")
-            if live_marks and item.get("expiry") and item.get("strike") is not None:
+            win_table = scan.get("win_rates") or load_win_rate_table()
+            # Merge full cache so challenge can see mid/small hist beyond this scan slice
+            try:
+                cached_wr = load_win_rate_table()
+                if cached_wr and isinstance(win_table, dict):
+                    merged_syms = dict(cached_wr.get("symbols") or {})
+                    merged_syms.update(win_table.get("symbols") or {})
+                    win_table = {**cached_wr, **win_table, "symbols": merged_syms}
+                elif cached_wr and not win_table:
+                    win_table = cached_wr
+            except Exception:  # noqa: BLE001
+                pass
+            # Prefer scan/disk win rates — rebuilding here blocks the UI for minutes
+            if not win_table:
                 try:
-                    refreshed_opt = refresh_candidate_quote(
-                        out,
-                        yahoo_symbol=aliases.get(sym),
-                    )
-                    out.update(refreshed_opt)
-                    if float(out.get("ask") or 0) > 0:
-                        out["quote_stale"] = False
-                        out["synthetic"] = False
-                except Exception:  # noqa: BLE001
-                    pass
-            return out
+                    win_table = load_win_rate_table() or {}
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("win rates unavailable: %s", exc)
+                    win_table = {}
 
-        # Cap live option fan-out — Tradier OCC quotes are fast but still N calls
-        refresh_cap = 16 if live_marks else len(board_rows)
-        with ThreadPoolExecutor(max_workers=6) as pool:
-            futs = [pool.submit(_refresh, item) for item in board_rows[:refresh_cap]]
-            for fut in as_completed(futs):
-                refreshed.append(fut.result())
-        # Keep remaining board rows without live option refresh
-        if refresh_cap < len(board_rows):
-            for item in board_rows[refresh_cap:]:
+            board_rows = _prioritize_action_board_rows(deduped, win_table, limit=24)
+            syms = sorted({str(c.get("symbol")) for c in board_rows if c.get("symbol")})
+            # Also include action-card symbols for win rates
+            for bucket in (scan.get("action_cards") or {}).values():
+                for t in bucket or []:
+                    if t.get("symbol"):
+                        syms.append(str(t["symbol"]))
+            syms = sorted(set(syms))
+            aliases = {s: resolve_yahoo_symbol(s, cfg) for s in syms}
+
+            # Challenge hist coverage is filled by live desk scans / boot warm — never here.
+            # ensure_challenge_win_table() rebuilds Yahoo hist and used to block this endpoint
+            # for minutes on cold Fly hosts (keys valid, board still blank).
+
+            # Challenge-eligible + DRAM/memory sleeve need live/cache quotes (often outside focus)
+            challenge_syms: list[str] = []
+            dram_syms: list[str] = []
+            try:
+                from odte_scanner.challenge.million import _eligible_rows
+                from odte_scanner.data.universe import challenge_hist_universe, dram_memory_universe, liquid_universe
+
+                # Only pull challenge/DRAM live quotes when we already have scan scores —
+                # otherwise empty first paint waits minutes on Yahoo and the UI aborts.
+                has_scan_scores = bool(scan.get("scores"))
+                # Cap live quote fan-out — full challenge/DRAM sleeves make snapshot >3 min
+                if has_scan_scores:
+                    challenge_syms = [
+                        str(r["symbol"])
+                        for r in _eligible_rows(win_table if isinstance(win_table, dict) else None)[
+                            : max(12, int(actions_cfg.get("challenge_max_tickets", 8)) + 4)
+                        ]
+                    ]
+                    if len(challenge_syms) < 4:
+                        challenge_syms = sorted(
+                            set(challenge_syms) | set(challenge_hist_universe()[:12])
+                        )
+                dram_syms = dram_memory_universe()[:4] if has_scan_scores else []
+                # Aliases for full liquid universe (earnings/volume board — no extra quotes)
+                for s in liquid_universe():
+                    aliases.setdefault(s, resolve_yahoo_symbol(s, cfg))
+            except Exception:  # noqa: BLE001
+                challenge_syms = []
+                dram_syms = []
+            quote_syms = (
+                []
+                if not live_marks
+                else sorted(set(syms[:8]) | set(challenge_syms[:12]) | set(dram_syms))
+            )
+            # Always refresh CORE mega tape — RIP/BUY NOW was missing session % for INTC/GOOGL
+            try:
+                from odte_scanner.signals.rip_radar import MEGA_RIP_SYMBOLS
+
+                if live_marks:
+                    mega_on_board = {
+                        str(c.get("symbol") or "").upper()
+                        for c in board_rows
+                        if str(c.get("symbol") or "").upper() in MEGA_RIP_SYMBOLS
+                    }
+                    mega_on_board |= {
+                        str(s.get("symbol") or "").upper()
+                        for s in (scan.get("scores") or [])
+                        if str(s.get("symbol") or "").upper() in MEGA_RIP_SYMBOLS
+                    }
+                    quote_syms = sorted(set(quote_syms) | mega_on_board)
+            except Exception:  # noqa: BLE001
+                pass
+            for s in quote_syms:
+                aliases.setdefault(s, resolve_yahoo_symbol(s, cfg))
+
+            def _uq(sym: str):
+                return sym, fetch_live_quote(sym, yahoo_symbol=aliases.get(sym))
+
+            if quote_syms:
+                with ThreadPoolExecutor(max_workers=8) as pool:
+                    for sym, q in pool.map(_uq, quote_syms):
+                        if q:
+                            quotes[sym] = q.to_dict()
+
+            refreshed: list[dict] = []
+
+            def _refresh(item: dict) -> dict:
+                # Equity tape always overlays; when Tradier is live also refresh option marks
+                # so BUY NOW / WAIT see real bid/ask (scan-time Yahoo asks go stale on Pages).
                 out = dict(item)
                 ask = item.get("ask")
                 has_mark = ask is not None and float(ask or 0) > 0
@@ -4301,357 +4306,127 @@ def create_app(config_path: str | None = None) -> Flask:
                     if out["live_change_pct"] is None:
                         out["live_change_pct"] = q.get("change_pct")
                     out["live_last"] = q.get("last")
-                refreshed.append(out)
-
-        refreshed.sort(key=lambda c: float(c.get("score") or 0), reverse=True)
-
-        jcfg = cfg.get("journal") or {}
-        insights = None
-        journal_sync = None
-        journal = None
-        journal_opens: list[dict] = []
-        marks: dict[str, float] = {}
-        if jcfg.get("enabled", True):
-            from odte_scanner.options.live_chain import fetch_live_option_quote
-            from odte_scanner.trading.journal import SignalJournal
-
-            jpath = Path(jcfg.get("path", "outputs/signal_journal.json"))
-            if not jpath.is_absolute():
-                jpath = ROOT / jpath
-            journal = SignalJournal(
-                jpath, starting_cash=float(jcfg.get("starting_cash", 5000))
-            )
-            # Always create an empty journal file so Pages export can copy it
-            if not jpath.exists():
-                journal.save()
-            else:
-                # One-shot: closed trades that cited live ask but booked exit=entry ($0 P&L)
-                journal.reprice_flat_exits_from_reasons()
-            # Mark open journal calls FIRST so TP/SL / SELL NOW see live premium
-            open_syms_for_quotes: list[str] = []
-            if live_marks:
-                for t in journal.book.trades:
-                    if t.status != "open":
-                        continue
-                    open_syms_for_quotes.append(t.symbol)
-                    aliases.setdefault(t.symbol, resolve_yahoo_symbol(t.symbol, cfg))
-                    if t.expiry and t.strike is not None:
-                        opt_right = "put" if str(getattr(t, "right", "C") or "C").upper() == "P" else "call"
-                        q = fetch_live_option_quote(
-                            t.symbol,
-                            t.expiry,
-                            float(t.strike),
-                            yahoo_symbol=aliases.get(t.symbol) or resolve_yahoo_symbol(t.symbol, cfg),
-                            right=opt_right,
-                        )
-                        if q:
-                            if q.bid > 0 and q.ask > 0:
-                                marks[t.contract] = (q.bid + q.ask) / 2
-                            elif q.bid > 0:
-                                marks[t.contract] = q.bid
-                            elif q.ask > 0:
-                                marks[t.contract] = q.ask
-                # Underlying tape for open positions (exit on dumps / soft wall)
-                for sym in sorted(set(open_syms_for_quotes)):
-                    if sym in quotes:
-                        continue
+                if live_marks and item.get("expiry") and item.get("strike") is not None:
                     try:
-                        lq = fetch_live_quote(sym, yahoo_symbol=aliases.get(sym))
-                        if lq:
-                            quotes[sym] = lq.to_dict()
+                        refreshed_opt = refresh_candidate_quote(
+                            out,
+                            yahoo_symbol=aliases.get(sym),
+                        )
+                        out.update(refreshed_opt)
+                        if float(out.get("ask") or 0) > 0:
+                            out["quote_stale"] = False
+                            out["synthetic"] = False
                     except Exception:  # noqa: BLE001
                         pass
-            else:
-                # Pages offline without Tradier: mark from matching board asks so open P&L is not blank
-                by_contract = {
-                    str(c.get("contract") or ""): c for c in refreshed if c.get("contract")
-                }
-                for t in journal.book.trades:
-                    if t.status != "open":
-                        continue
-                    c = by_contract.get(t.contract) or {}
-                    px = None
-                    for key in ("bid", "ask", "mid", "mark"):
-                        if c.get(key) is not None and float(c.get(key) or 0) > 0:
-                            px = float(c[key])
-                            break
-                    if px is None and t.mark and float(t.mark) > 0:
-                        px = float(t.mark)
-                    if px is None and t.entry_ask and float(t.entry_ask) > 0:
-                        px = float(t.entry_ask)
-                    if px is not None:
-                        marks[t.contract] = px
-            if marks:
-                journal.mark_open(marks)
-            # Enrich open rows with bid=mark for decide_exit premium P&L
-            journal_opens = []
-            for t in journal.book.trades:
-                if t.status != "open":
-                    continue
-                row = t.to_dict()
-                if row.get("mark") is not None:
-                    row["bid"] = row.get("bid") or row["mark"]
-                    row["entry"] = row.get("entry_ask")
-                journal_opens.append(row)
+                return out
 
-        red_flag_snapshot = scan.get("red_flag")
-        rf_cfg = cfg.get("red_flag") or {}
-        if rf_cfg.get("enabled", True) and not offline:
-            try:
-                from odte_scanner.signals.red_flag import analyze_red_flag
-
-                rf_sym = str(rf_cfg.get("symbol") or (cfg.get("regime") or {}).get("spy") or "SPY")
-                red_flag_snapshot = analyze_red_flag(
-                    rf_sym,
-                    yahoo_symbol=rf_cfg.get("yahoo_symbol")
-                    or resolve_yahoo_symbol(rf_sym, cfg),
-                    otm_min_pct=float(rf_cfg.get("otm_min_pct", 0.15)),
-                    otm_max_pct=float(rf_cfg.get("otm_max_pct", 2.5)),
-                    min_oi=int(rf_cfg.get("min_oi", 500)),
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Red Flag live refresh failed: %s", exc)
-
-        free_dealer = None
-        if not offline:
-            try:
-                from odte_scanner.signals.free_feeds import build_free_dealer_cockpit
-
-                free_dealer = build_free_dealer_cockpit()
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Free dealer cockpit failed: %s", exc)
-                free_dealer = {"ok": False, "error": str(exc)}
-        else:
-            free_dealer = scan.get("free_dealer") or {"ok": False, "error": "offline"}
-
-        # Pages snapshot has no 5m tape. buy_score 72 left hist-gated names in WAIT.
-        pages_buy_score = float(
-            actions_cfg.get("wait_score", 62) if offline else actions_cfg.get("buy_score", 70)
-        )
-        weekly_buy_score = float(
-            actions_cfg.get(
-                "weekly_buy_score",
-                actions_cfg.get("wait_score", 62) if offline else 65,
-            )
-        )
-
-        from odte_scanner.echo.flow_snapshot import flow_leaders_from_cache
-        from odte_scanner.signals.unusual_whales import (
-            api_key_from_env,
-            build_uw_desk_context,
-            merge_flow_leaders,
-        )
-
-        flow_top_n = int(actions_cfg.get("flow_leaders_top_n", 12))
-        flow_leaders = flow_leaders_from_cache(top_n=max(flow_top_n, 20))
-        # Unusual Whales desk pack — flow + market tide + dark pool (even on Pages offline)
-        uw_flow: dict = {"ok": False, "configured": bool(api_key_from_env()), "skipped": True}
-        market_tide: dict = {}
-        darkpool_symbols: list[str] = []
-        try:
-            if api_key_from_env():
-                # Cap expiry/intraday enrich — greek-by-expiry + flow-per-expiry per ticker
-                uw_focus = [
-                    str(s).upper()
-                    for s in (actions_cfg.get("uw_focus_tickers") or [])
-                    if s
-                ]
-                if not uw_focus:
-                    # Prefer sticky level-watch + a few mega RIP names for desk context
-                    uw_focus = ["AMAT", "AMD", "TSM", "NVDA"]
-                uw_contracts = [
-                    str(c).upper()
-                    for c in (actions_cfg.get("uw_focus_contracts") or [])
-                    if c
-                ]
-                uw_flow = build_uw_desk_context(
-                    flow_limit=int(actions_cfg.get("uw_flow_limit", 100)),
-                    min_premium=float(actions_cfg.get("uw_min_premium", 50_000)),
-                    timeout=float(actions_cfg.get("uw_timeout_sec", 18)),
-                    focus_tickers=uw_focus[: int(actions_cfg.get("uw_max_focus_tickers", 4))],
-                    focus_contracts=uw_contracts[: int(actions_cfg.get("uw_max_focus_contracts", 2))],
-                    max_focus_tickers=int(actions_cfg.get("uw_max_focus_tickers", 4)),
-                    max_focus_contracts=int(actions_cfg.get("uw_max_focus_contracts", 2)),
-                )
-                market_tide = uw_flow.get("market_tide") or {}
-                darkpool_symbols = list((uw_flow.get("darkpool") or {}).get("symbols") or [])
-                if uw_flow.get("ok"):
-                    flow_leaders = merge_flow_leaders(flow_leaders, uw_flow, prefer_uw=True)
-                    logger.info(
-                        "UW desk ok alerts=%s bullish=%s bearish=%s tide=%s dp=%s",
-                        uw_flow.get("alerts_n"),
-                        len(uw_flow.get("bullish_calls") or []),
-                        len(uw_flow.get("bearish_puts") or []),
-                        market_tide.get("sentiment"),
-                        len(darkpool_symbols),
+            # Cap live option fan-out — Tradier OCC quotes are fast but still N calls
+            refresh_cap = 16 if live_marks else len(board_rows)
+            with ThreadPoolExecutor(max_workers=6) as pool:
+                futs = [pool.submit(_refresh, item) for item in board_rows[:refresh_cap]]
+                for fut in as_completed(futs):
+                    refreshed.append(fut.result())
+            # Keep remaining board rows without live option refresh
+            if refresh_cap < len(board_rows):
+                for item in board_rows[refresh_cap:]:
+                    out = dict(item)
+                    ask = item.get("ask")
+                    has_mark = ask is not None and float(ask or 0) > 0
+                    contract = item.get("contract")
+                    synthetic = bool(item.get("synthetic")) or (
+                        isinstance(contract, str) and contract.endswith("_SYN")
                     )
+                    out["quote_stale"] = synthetic or not has_mark
+                    sym = str(item.get("symbol"))
+                    q = quotes.get(sym)
+                    if q:
+                        out["live_change_pct"] = q.get("session_change_pct")
+                        if out["live_change_pct"] is None:
+                            out["live_change_pct"] = q.get("change_pct")
+                        out["live_last"] = q.get("last")
+                    refreshed.append(out)
+
+            refreshed.sort(key=lambda c: float(c.get("score") or 0), reverse=True)
+
+            jcfg = cfg.get("journal") or {}
+            insights = None
+            journal_sync = None
+            journal = None
+            journal_opens: list[dict] = []
+            marks: dict[str, float] = {}
+            if jcfg.get("enabled", True):
+                from odte_scanner.options.live_chain import fetch_live_option_quote
+                from odte_scanner.trading.journal import SignalJournal
+
+                jpath = Path(jcfg.get("path", "outputs/signal_journal.json"))
+                if not jpath.is_absolute():
+                    jpath = ROOT / jpath
+                journal = SignalJournal(
+                    jpath, starting_cash=float(jcfg.get("starting_cash", 5000))
+                )
+                # Always create an empty journal file so Pages export can copy it
+                if not jpath.exists():
+                    journal.save()
                 else:
-                    logger.warning(
-                        "UW desk not active configured=%s err=%s",
-                        uw_flow.get("configured"),
-                        uw_flow.get("error"),
-                    )
-            else:
-                logger.warning("UW flow skipped — UNUSUAL_WHALES_API_KEY not set")
-                uw_flow = {
-                    "ok": False,
-                    "configured": False,
-                    "skipped": True,
-                    "error": "UNUSUAL_WHALES_API_KEY not set",
-                    "source": "unusual_whales",
-                }
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("unusual_whales desk failed: %s", exc)
-            uw_flow = {
-                "ok": False,
-                "configured": bool(api_key_from_env()),
-                "error": str(exc),
-                "source": "unusual_whales",
-            }
-        # When UW is live, always enforce flow confirm on BUY NOW
-        require_flow = bool(actions_cfg.get("require_flow_confirm", False)) or bool(
-            uw_flow.get("ok")
-        )
-        flow_board_kw = dict(
-            flow_leaders=flow_leaders,
-            require_flow_confirm=require_flow,
-            flow_leaders_top_n=max(flow_top_n, 20) if uw_flow.get("ok") else flow_top_n,
-            flow_min_net_score=float(actions_cfg.get("flow_min_net_score", 8.0)),
-            flow_min_tier=str(actions_cfg.get("flow_min_tier", "aggressive")),
-            flow_require_vol_gt_oi=bool(actions_cfg.get("flow_require_vol_gt_oi", False)),
-            market_tide=market_tide if market_tide.get("ok") else None,
-        )
-        flow_gate_journal = bool(jcfg.get("require_flow_gate", False)) and require_flow
-
-        def _uw_annotate_board(
-            board: dict,
-            *,
-            keys: tuple[str, ...] = ("buy_now",),
-            hard_block: bool = True,
-            right_default: str = "C",
-        ) -> dict:
-            """Stamp Unusual Whales confirm/veto onto desk lane rows."""
-            if not isinstance(board, dict) or not uw_flow.get("ok"):
-                return board
-            from odte_scanner.signals.flow_gate import annotate_dict_with_uw
-
-            for key in keys:
-                rows = board.get(key)
-                if not isinstance(rows, list):
-                    continue
-                board[key] = [
-                    annotate_dict_with_uw(
-                        r,
-                        flow_leaders=flow_board_kw.get("flow_leaders"),
-                        market_tide=flow_board_kw.get("market_tide"),
-                        darkpool_symbols=darkpool_symbols,
-                        hard_block=hard_block,
-                        right_default=right_default,
-                    )
-                    if isinstance(r, dict)
-                    else r
-                    for r in rows
-                ]
-            board["uw_annotated"] = True
-            return board
-
-        # Shared loss cooldown for Options BUY NOW (journal + rec-log + challenge).
-        # Challenge-only cooldown left META weekly losers reappearing on BUY NOW.
-        from odte_scanner.signals.loss_cooldown import (
-            collect_loss_blocks,
-            loss_rows_from_journal_trades,
-            loss_rows_from_rec_log,
-        )
-
-        loss_cd_days = float(
-            actions_cfg.get(
-                "buy_now_loss_cooldown_days",
-                actions_cfg.get("challenge_loss_cooldown_days", 5),
-            )
-        )
-        loss_ct_days = float(actions_cfg.get("buy_now_contract_cooldown_days", 45))
-        loss_rows: list[dict] = []
-        if journal is not None:
-            loss_rows.extend(
-                loss_rows_from_journal_trades([t.to_dict() for t in journal.book.trades])
-            )
-        try:
-            from odte_scanner.trading.rec_log import RecommendationLog
-
-            rec_path_early = Path(actions_cfg.get("rec_log_path", "outputs/recommendation_log.json"))
-            if not rec_path_early.is_absolute():
-                rec_path_early = ROOT / rec_path_early
-            if rec_path_early.exists():
-                rlog_early = RecommendationLog(rec_path_early)
-                loss_rows.extend(loss_rows_from_rec_log(rlog_early.board(limit=200)))
-                by_sec = {}
-                for sec in ("lottery", "weekly", "odte", "swing", "challenge", "odte_1k"):
-                    by_sec[sec] = rlog_early.board(section=sec, limit=80)
-                loss_rows.extend(loss_rows_from_rec_log({"by_section": by_sec}))
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("loss cooldown rec-log load failed: %s", exc)
-        try:
-            ch_path = Path(actions_cfg.get("challenge_ledger_path", "outputs/challenge_ledger.json"))
-            if not ch_path.is_absolute():
-                ch_path = ROOT / ch_path
-            ch_raw = _read_json(ch_path) or {}
-            loss_rows.extend(loss_rows_from_journal_trades(ch_raw.get("trades") or []))
-        except Exception:  # noqa: BLE001
-            pass
-        loss_cooldown_syms, loss_cooldown_cts = collect_loss_blocks(
-            loss_rows,
-            cooldown_days=loss_cd_days,
-            contract_cooldown_days=loss_ct_days,
-        )
-        loss_board_kw = dict(
-            loss_cooldown_symbols=loss_cooldown_syms,
-            loss_cooldown_contracts=loss_cooldown_cts,
-        )
-
-        actions = build_action_board(
-            candidates=refreshed,
-            scores=scan.get("scores") or [],
-            quotes=quotes,
-            ledger=ledger if isinstance(ledger, dict) else None,
-            journal_opens=journal_opens,
-            buy_score=pages_buy_score,
-            wait_score=float(actions_cfg.get("wait_score", 62)),
-            weekly_buy_score=weekly_buy_score,
-            sell_score=float(actions_cfg.get("sell_score", 48)),
-            stop_loss_pct=float(risk.get("stop_loss_pct", 50)),
-            take_profit_pct=float(risk.get("take_profit_pct", 80)),
-            max_chase_pct=float(actions_cfg.get("max_chase_pct", 2.5)),
-            win_rate_table=win_table,
-            min_hist_win_pct=float(actions_cfg.get("min_hist_win_pct", 80)),
-            min_hist_win_samples=int(actions_cfg.get("min_hist_win_samples", 5)),
-            require_hist_win=bool(actions_cfg.get("require_hist_win", True)),
-            mega_min_hist_win_pct=(
-                float(actions_cfg["mega_min_hist_win_pct"])
-                if actions_cfg.get("mega_min_hist_win_pct") is not None
-                else 50.0
-            ),
-            mega_rip_live_pct=float(actions_cfg.get("mega_rip_live_pct", 1.0)),
-            weekly_max_hold_days=int(actions_cfg.get("weekly_max_hold_days", 7)),
-            odte_flatten_et=str(actions_cfg.get("odte_flatten_et") or "15:45"),
-            # Pages offline has no live tape — still allow gated BUY so journal/exits can run
-            require_live_confirm=not offline,
-            red_flag=red_flag_snapshot,
-            **flow_board_kw,
-            **loss_board_kw,
-        )
-
-        if journal is not None:
-            from odte_scanner.trading.insights import build_insights
-
-            journal_sync = journal.sync_from_actions(
-                actions,
-                max_risk_usd=float(jcfg.get("max_risk_per_trade_usd", 250)),
-                auto_enter=bool(jcfg.get("auto_enter", True)),
-                auto_exit=bool(jcfg.get("auto_exit", True)),
-                require_flow_gate=flow_gate_journal,
-            )
-            # If we just opened fills, rebuild SELL NOW (TP/SL/clock) against new opens
-            if journal_sync and journal_sync.get("entered"):
+                    # One-shot: closed trades that cited live ask but booked exit=entry ($0 P&L)
+                    journal.reprice_flat_exits_from_reasons()
+                # Mark open journal calls FIRST so TP/SL / SELL NOW see live premium
+                open_syms_for_quotes: list[str] = []
+                if live_marks:
+                    for t in journal.book.trades:
+                        if t.status != "open":
+                            continue
+                        open_syms_for_quotes.append(t.symbol)
+                        aliases.setdefault(t.symbol, resolve_yahoo_symbol(t.symbol, cfg))
+                        if t.expiry and t.strike is not None:
+                            opt_right = "put" if str(getattr(t, "right", "C") or "C").upper() == "P" else "call"
+                            q = fetch_live_option_quote(
+                                t.symbol,
+                                t.expiry,
+                                float(t.strike),
+                                yahoo_symbol=aliases.get(t.symbol) or resolve_yahoo_symbol(t.symbol, cfg),
+                                right=opt_right,
+                            )
+                            if q:
+                                if q.bid > 0 and q.ask > 0:
+                                    marks[t.contract] = (q.bid + q.ask) / 2
+                                elif q.bid > 0:
+                                    marks[t.contract] = q.bid
+                                elif q.ask > 0:
+                                    marks[t.contract] = q.ask
+                    # Underlying tape for open positions (exit on dumps / soft wall)
+                    for sym in sorted(set(open_syms_for_quotes)):
+                        if sym in quotes:
+                            continue
+                        try:
+                            lq = fetch_live_quote(sym, yahoo_symbol=aliases.get(sym))
+                            if lq:
+                                quotes[sym] = lq.to_dict()
+                        except Exception:  # noqa: BLE001
+                            pass
+                else:
+                    # Pages offline without Tradier: mark from matching board asks so open P&L is not blank
+                    by_contract = {
+                        str(c.get("contract") or ""): c for c in refreshed if c.get("contract")
+                    }
+                    for t in journal.book.trades:
+                        if t.status != "open":
+                            continue
+                        c = by_contract.get(t.contract) or {}
+                        px = None
+                        for key in ("bid", "ask", "mid", "mark"):
+                            if c.get(key) is not None and float(c.get(key) or 0) > 0:
+                                px = float(c[key])
+                                break
+                        if px is None and t.mark and float(t.mark) > 0:
+                            px = float(t.mark)
+                        if px is None and t.entry_ask and float(t.entry_ask) > 0:
+                            px = float(t.entry_ask)
+                        if px is not None:
+                            marks[t.contract] = px
+                if marks:
+                    journal.mark_open(marks)
+                # Enrich open rows with bid=mark for decide_exit premium P&L
                 journal_opens = []
                 for t in journal.book.trades:
                     if t.status != "open":
@@ -4661,578 +4436,1481 @@ def create_app(config_path: str | None = None) -> Flask:
                         row["bid"] = row.get("bid") or row["mark"]
                         row["entry"] = row.get("entry_ask")
                     journal_opens.append(row)
-                actions = build_action_board(
-                    candidates=refreshed,
-                    scores=scan.get("scores") or [],
-                    quotes=quotes,
-                    ledger=ledger if isinstance(ledger, dict) else None,
-                    journal_opens=journal_opens,
-                    buy_score=pages_buy_score,
-                    wait_score=float(actions_cfg.get("wait_score", 62)),
-                    weekly_buy_score=weekly_buy_score,
-                    sell_score=float(actions_cfg.get("sell_score", 48)),
-                    stop_loss_pct=float(risk.get("stop_loss_pct", 50)),
-                    take_profit_pct=float(risk.get("take_profit_pct", 80)),
-                    max_chase_pct=float(actions_cfg.get("max_chase_pct", 2.5)),
-                    win_rate_table=win_table,
-                    min_hist_win_pct=float(actions_cfg.get("min_hist_win_pct", 80)),
-                    min_hist_win_samples=int(actions_cfg.get("min_hist_win_samples", 5)),
-                    require_hist_win=bool(actions_cfg.get("require_hist_win", True)),
-                    mega_min_hist_win_pct=(
-                        float(actions_cfg["mega_min_hist_win_pct"])
-                        if actions_cfg.get("mega_min_hist_win_pct") is not None
-                        else 50.0
-                    ),
-                    mega_rip_live_pct=float(actions_cfg.get("mega_rip_live_pct", 1.0)),
-                    weekly_max_hold_days=int(actions_cfg.get("weekly_max_hold_days", 7)),
-                    odte_flatten_et=str(actions_cfg.get("odte_flatten_et") or "15:45"),
-                    require_live_confirm=not offline,
-                    red_flag=red_flag_snapshot,
-                    **flow_board_kw,
-                    **loss_board_kw,
-                )
-                more = journal.sync_from_actions(
-                    actions,
-                    max_risk_usd=float(jcfg.get("max_risk_per_trade_usd", 250)),
-                    auto_enter=False,
-                    auto_exit=bool(jcfg.get("auto_exit", True)),
-                )
-                if more.get("exited"):
-                    journal_sync = dict(journal_sync)
-                    journal_sync["exited"] = list(journal_sync.get("exited") or []) + list(more["exited"])
-                    journal_sync["performance"] = more.get("performance") or journal_sync.get("performance")
-            # Re-mark after exits so open MTM / equity stay current
-            if marks:
-                still = {t.contract: marks[t.contract] for t in journal.book.trades if t.status == "open" and t.contract in marks}
-                if still:
-                    journal.mark_open(still)
-            insights = build_insights(journal=journal, actions=actions, win_rates=win_table)
-            # Attach just-closed exits onto actions so UI shows EXIT + P&L this cycle
-            if journal_sync and journal_sync.get("exited"):
-                actions = dict(actions)
-                actions["just_exited"] = journal_sync["exited"]
-                actions["counts"] = dict(actions.get("counts") or {})
-                actions["counts"]["just_exited"] = len(journal_sync["exited"])
+
+            red_flag_snapshot = scan.get("red_flag")
+            rf_cfg = cfg.get("red_flag") or {}
+            if rf_cfg.get("enabled", True) and not offline:
+                try:
+                    from odte_scanner.signals.red_flag import analyze_red_flag
+
+                    rf_sym = str(rf_cfg.get("symbol") or (cfg.get("regime") or {}).get("spy") or "SPY")
+                    red_flag_snapshot = analyze_red_flag(
+                        rf_sym,
+                        yahoo_symbol=rf_cfg.get("yahoo_symbol")
+                        or resolve_yahoo_symbol(rf_sym, cfg),
+                        otm_min_pct=float(rf_cfg.get("otm_min_pct", 0.15)),
+                        otm_max_pct=float(rf_cfg.get("otm_max_pct", 2.5)),
+                        min_oi=int(rf_cfg.get("min_oi", 500)),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Red Flag live refresh failed: %s", exc)
+
+            free_dealer = None
+            if not offline:
+                try:
+                    from odte_scanner.signals.free_feeds import build_free_dealer_cockpit
+
+                    free_dealer = build_free_dealer_cockpit()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Free dealer cockpit failed: %s", exc)
+                    free_dealer = {"ok": False, "error": str(exc)}
             else:
-                # Keep closed history visible even when this cycle had no new exits
-                closed = (insights or {}).get("closed_trades") or []
-                if closed and not (actions.get("just_exited")):
-                    actions = dict(actions)
-                    actions["recent_exits"] = closed[:8]
+                free_dealer = scan.get("free_dealer") or {"ok": False, "error": "offline"}
 
-        from odte_scanner.options.explosive import build_explosive_board, build_radar_wing_board
-        from odte_scanner.signals.lottery import build_lottery_board
-        from odte_scanner.signals.radar import build_radar_board
-
-        # Lottery / parabolic 0DTE–1DTE tickets (e.g. cheap calls that can 3×–100× on a rip)
-        explosive = build_explosive_board(
-            refreshed,
-            scores=scan.get("scores") or [],
-            quotes=quotes,
-            aliases=aliases,
-            enrich_live=False,  # live option enrich is too slow for interactive snapshot
-            per_symbol=2,
-            max_total=24,
-        )
-
-        open_lottery_trades: list[dict] = []
-        if journal is not None:
-            open_lottery_trades.extend(
-                [t.to_dict() for t in journal.book.trades if t.status == "open"]
+            # Pages snapshot has no 5m tape. buy_score 72 left hist-gated names in WAIT.
+            pages_buy_score = float(
+                actions_cfg.get("wait_score", 62) if offline else actions_cfg.get("buy_score", 70)
             )
-        elif insights and isinstance(insights, dict):
-            open_lottery_trades.extend(insights.get("open_positions") or [])
-        # Also fold paper ledger opens (0DTE-style) for SELL NOW
-        if isinstance(ledger, dict):
-            seen_c = {str(t.get("contract")) for t in open_lottery_trades if t.get("contract")}
-            for t in ledger.get("trades") or []:
-                if t.get("status") == "open" and str(t.get("contract") or "") not in seen_c:
-                    open_lottery_trades.append(t)
+            weekly_buy_score = float(
+                actions_cfg.get(
+                    "weekly_buy_score",
+                    actions_cfg.get("wait_score", 62) if offline else 65,
+                )
+            )
 
-        lottery = build_lottery_board(
-            explosive,
-            quotes=quotes,
-            scores=scan.get("scores") or [],
-            open_trades=open_lottery_trades,
-            min_lottery_score=float(actions_cfg.get("lottery_min_score", 62)),
-            min_confirms=int(actions_cfg.get("lottery_min_confirms", 4)),
-            flow_leaders=flow_board_kw.get("flow_leaders"),
-            require_flow_confirm=bool(flow_board_kw.get("require_flow_confirm")),
-            flow_leaders_top_n=int(flow_board_kw.get("flow_leaders_top_n") or 20),
-            flow_min_net_score=float(flow_board_kw.get("flow_min_net_score") or 8.0),
-            market_tide=flow_board_kw.get("market_tide"),
-        )
+            from odte_scanner.echo.flow_snapshot import flow_leaders_from_cache
+            from odte_scanner.signals.unusual_whales import (
+                api_key_from_env,
+                build_uw_desk_context,
+                merge_flow_leaders,
+            )
 
-        # Paper journal also follows lottery BUY/SELL NOW
-        if journal is not None and jcfg.get("enabled", True):
+            flow_top_n = int(actions_cfg.get("flow_leaders_top_n", 12))
+            flow_leaders = flow_leaders_from_cache(top_n=max(flow_top_n, 20))
+            # Unusual Whales desk pack — flow + market tide + dark pool (even on Pages offline)
+            uw_flow: dict = {"ok": False, "configured": bool(api_key_from_env()), "skipped": True}
+            market_tide: dict = {}
+            darkpool_symbols: list[str] = []
             try:
-                from odte_scanner.trading.insights import build_insights as _build_insights
+                if api_key_from_env():
+                    # Cap expiry/intraday enrich — greek-by-expiry + flow-per-expiry per ticker
+                    uw_focus = [
+                        str(s).upper()
+                        for s in (actions_cfg.get("uw_focus_tickers") or [])
+                        if s
+                    ]
+                    if not uw_focus:
+                        # Prefer sticky level-watch + a few mega RIP names for desk context
+                        uw_focus = ["AMAT", "AMD", "TSM", "NVDA"]
+                    uw_contracts = [
+                        str(c).upper()
+                        for c in (actions_cfg.get("uw_focus_contracts") or [])
+                        if c
+                    ]
+                    uw_flow = build_uw_desk_context(
+                        flow_limit=int(actions_cfg.get("uw_flow_limit", 100)),
+                        min_premium=float(actions_cfg.get("uw_min_premium", 50_000)),
+                        timeout=float(actions_cfg.get("uw_timeout_sec", 18)),
+                        focus_tickers=uw_focus[: int(actions_cfg.get("uw_max_focus_tickers", 4))],
+                        focus_contracts=uw_contracts[: int(actions_cfg.get("uw_max_focus_contracts", 2))],
+                        max_focus_tickers=int(actions_cfg.get("uw_max_focus_tickers", 4)),
+                        max_focus_contracts=int(actions_cfg.get("uw_max_focus_contracts", 2)),
+                    )
+                    market_tide = uw_flow.get("market_tide") or {}
+                    darkpool_symbols = list((uw_flow.get("darkpool") or {}).get("symbols") or [])
+                    if uw_flow.get("ok"):
+                        flow_leaders = merge_flow_leaders(flow_leaders, uw_flow, prefer_uw=True)
+                        logger.info(
+                            "UW desk ok alerts=%s bullish=%s bearish=%s tide=%s dp=%s",
+                            uw_flow.get("alerts_n"),
+                            len(uw_flow.get("bullish_calls") or []),
+                            len(uw_flow.get("bearish_puts") or []),
+                            market_tide.get("sentiment"),
+                            len(darkpool_symbols),
+                        )
+                    else:
+                        logger.warning(
+                            "UW desk not active configured=%s err=%s",
+                            uw_flow.get("configured"),
+                            uw_flow.get("error"),
+                        )
+                else:
+                    logger.warning("UW flow skipped — UNUSUAL_WHALES_API_KEY not set")
+                    uw_flow = {
+                        "ok": False,
+                        "configured": False,
+                        "skipped": True,
+                        "error": "UNUSUAL_WHALES_API_KEY not set",
+                        "source": "unusual_whales",
+                    }
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("unusual_whales desk failed: %s", exc)
+                uw_flow = {
+                    "ok": False,
+                    "configured": bool(api_key_from_env()),
+                    "error": str(exc),
+                    "source": "unusual_whales",
+                }
+            # When UW is live, always enforce flow confirm on BUY NOW
+            require_flow = bool(actions_cfg.get("require_flow_confirm", False)) or bool(
+                uw_flow.get("ok")
+            )
+            flow_board_kw = dict(
+                flow_leaders=flow_leaders,
+                require_flow_confirm=require_flow,
+                flow_leaders_top_n=max(flow_top_n, 20) if uw_flow.get("ok") else flow_top_n,
+                flow_min_net_score=float(actions_cfg.get("flow_min_net_score", 8.0)),
+                flow_min_tier=str(actions_cfg.get("flow_min_tier", "aggressive")),
+                flow_require_vol_gt_oi=bool(actions_cfg.get("flow_require_vol_gt_oi", False)),
+                market_tide=market_tide if market_tide.get("ok") else None,
+            )
+            flow_gate_journal = bool(jcfg.get("require_flow_gate", False)) and require_flow
 
-                lot_sync = journal.sync_from_actions(
-                    {"buy_now": [], "sell_now": [], "buy_now_0dte": [], "buy_now_weekly": []},
+            def _uw_annotate_board(
+                board: dict,
+                *,
+                keys: tuple[str, ...] = ("buy_now",),
+                hard_block: bool = True,
+                right_default: str = "C",
+            ) -> dict:
+                """Stamp Unusual Whales confirm/veto onto desk lane rows."""
+                if not isinstance(board, dict) or not uw_flow.get("ok"):
+                    return board
+                from odte_scanner.signals.flow_gate import annotate_dict_with_uw
+
+                for key in keys:
+                    rows = board.get(key)
+                    if not isinstance(rows, list):
+                        continue
+                    board[key] = [
+                        annotate_dict_with_uw(
+                            r,
+                            flow_leaders=flow_board_kw.get("flow_leaders"),
+                            market_tide=flow_board_kw.get("market_tide"),
+                            darkpool_symbols=darkpool_symbols,
+                            hard_block=hard_block,
+                            right_default=right_default,
+                        )
+                        if isinstance(r, dict)
+                        else r
+                        for r in rows
+                    ]
+                board["uw_annotated"] = True
+                return board
+
+            # Shared loss cooldown for Options BUY NOW (journal + rec-log + challenge).
+            # Challenge-only cooldown left META weekly losers reappearing on BUY NOW.
+            from odte_scanner.signals.loss_cooldown import (
+                collect_loss_blocks,
+                loss_rows_from_journal_trades,
+                loss_rows_from_rec_log,
+            )
+
+            loss_cd_days = float(
+                actions_cfg.get(
+                    "buy_now_loss_cooldown_days",
+                    actions_cfg.get("challenge_loss_cooldown_days", 5),
+                )
+            )
+            loss_ct_days = float(actions_cfg.get("buy_now_contract_cooldown_days", 45))
+            loss_rows: list[dict] = []
+            if journal is not None:
+                loss_rows.extend(
+                    loss_rows_from_journal_trades([t.to_dict() for t in journal.book.trades])
+                )
+            try:
+                from odte_scanner.trading.rec_log import RecommendationLog
+
+                rec_path_early = Path(actions_cfg.get("rec_log_path", "outputs/recommendation_log.json"))
+                if not rec_path_early.is_absolute():
+                    rec_path_early = ROOT / rec_path_early
+                if rec_path_early.exists():
+                    rlog_early = RecommendationLog(rec_path_early)
+                    loss_rows.extend(loss_rows_from_rec_log(rlog_early.board(limit=200)))
+                    by_sec = {}
+                    for sec in ("lottery", "weekly", "odte", "swing", "challenge", "odte_1k"):
+                        by_sec[sec] = rlog_early.board(section=sec, limit=80)
+                    loss_rows.extend(loss_rows_from_rec_log({"by_section": by_sec}))
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("loss cooldown rec-log load failed: %s", exc)
+            try:
+                ch_path = Path(actions_cfg.get("challenge_ledger_path", "outputs/challenge_ledger.json"))
+                if not ch_path.is_absolute():
+                    ch_path = ROOT / ch_path
+                ch_raw = _read_json(ch_path) or {}
+                loss_rows.extend(loss_rows_from_journal_trades(ch_raw.get("trades") or []))
+            except Exception:  # noqa: BLE001
+                pass
+            loss_cooldown_syms, loss_cooldown_cts = collect_loss_blocks(
+                loss_rows,
+                cooldown_days=loss_cd_days,
+                contract_cooldown_days=loss_ct_days,
+            )
+            loss_board_kw = dict(
+                loss_cooldown_symbols=loss_cooldown_syms,
+                loss_cooldown_contracts=loss_cooldown_cts,
+            )
+
+            actions = build_action_board(
+                candidates=refreshed,
+                scores=scan.get("scores") or [],
+                quotes=quotes,
+                ledger=ledger if isinstance(ledger, dict) else None,
+                journal_opens=journal_opens,
+                buy_score=pages_buy_score,
+                wait_score=float(actions_cfg.get("wait_score", 62)),
+                weekly_buy_score=weekly_buy_score,
+                sell_score=float(actions_cfg.get("sell_score", 48)),
+                stop_loss_pct=float(risk.get("stop_loss_pct", 50)),
+                take_profit_pct=float(risk.get("take_profit_pct", 80)),
+                max_chase_pct=float(actions_cfg.get("max_chase_pct", 2.5)),
+                win_rate_table=win_table,
+                min_hist_win_pct=float(actions_cfg.get("min_hist_win_pct", 80)),
+                min_hist_win_samples=int(actions_cfg.get("min_hist_win_samples", 5)),
+                require_hist_win=bool(actions_cfg.get("require_hist_win", True)),
+                mega_min_hist_win_pct=(
+                    float(actions_cfg["mega_min_hist_win_pct"])
+                    if actions_cfg.get("mega_min_hist_win_pct") is not None
+                    else 50.0
+                ),
+                mega_rip_live_pct=float(actions_cfg.get("mega_rip_live_pct", 1.0)),
+                weekly_max_hold_days=int(actions_cfg.get("weekly_max_hold_days", 7)),
+                odte_flatten_et=str(actions_cfg.get("odte_flatten_et") or "15:45"),
+                # Pages offline has no live tape — still allow gated BUY so journal/exits can run
+                require_live_confirm=not offline,
+                red_flag=red_flag_snapshot,
+                **flow_board_kw,
+                **loss_board_kw,
+            )
+
+            if journal is not None:
+                from odte_scanner.trading.insights import build_insights
+
+                journal_sync = journal.sync_from_actions(
+                    actions,
                     max_risk_usd=float(jcfg.get("max_risk_per_trade_usd", 250)),
                     auto_enter=bool(jcfg.get("auto_enter", True)),
                     auto_exit=bool(jcfg.get("auto_exit", True)),
-                    lottery=lottery,
+                    require_flow_gate=flow_gate_journal,
                 )
-                if journal_sync is None:
-                    journal_sync = lot_sync
-                else:
-                    journal_sync = dict(journal_sync)
-                    journal_sync["entered"] = list(journal_sync.get("entered") or []) + list(
-                        lot_sync.get("entered") or []
+                # If we just opened fills, rebuild SELL NOW (TP/SL/clock) against new opens
+                if journal_sync and journal_sync.get("entered"):
+                    journal_opens = []
+                    for t in journal.book.trades:
+                        if t.status != "open":
+                            continue
+                        row = t.to_dict()
+                        if row.get("mark") is not None:
+                            row["bid"] = row.get("bid") or row["mark"]
+                            row["entry"] = row.get("entry_ask")
+                        journal_opens.append(row)
+                    actions = build_action_board(
+                        candidates=refreshed,
+                        scores=scan.get("scores") or [],
+                        quotes=quotes,
+                        ledger=ledger if isinstance(ledger, dict) else None,
+                        journal_opens=journal_opens,
+                        buy_score=pages_buy_score,
+                        wait_score=float(actions_cfg.get("wait_score", 62)),
+                        weekly_buy_score=weekly_buy_score,
+                        sell_score=float(actions_cfg.get("sell_score", 48)),
+                        stop_loss_pct=float(risk.get("stop_loss_pct", 50)),
+                        take_profit_pct=float(risk.get("take_profit_pct", 80)),
+                        max_chase_pct=float(actions_cfg.get("max_chase_pct", 2.5)),
+                        win_rate_table=win_table,
+                        min_hist_win_pct=float(actions_cfg.get("min_hist_win_pct", 80)),
+                        min_hist_win_samples=int(actions_cfg.get("min_hist_win_samples", 5)),
+                        require_hist_win=bool(actions_cfg.get("require_hist_win", True)),
+                        mega_min_hist_win_pct=(
+                            float(actions_cfg["mega_min_hist_win_pct"])
+                            if actions_cfg.get("mega_min_hist_win_pct") is not None
+                            else 50.0
+                        ),
+                        mega_rip_live_pct=float(actions_cfg.get("mega_rip_live_pct", 1.0)),
+                        weekly_max_hold_days=int(actions_cfg.get("weekly_max_hold_days", 7)),
+                        odte_flatten_et=str(actions_cfg.get("odte_flatten_et") or "15:45"),
+                        require_live_confirm=not offline,
+                        red_flag=red_flag_snapshot,
+                        **flow_board_kw,
+                        **loss_board_kw,
                     )
-                    journal_sync["exited"] = list(journal_sync.get("exited") or []) + list(
-                        lot_sync.get("exited") or []
+                    more = journal.sync_from_actions(
+                        actions,
+                        max_risk_usd=float(jcfg.get("max_risk_per_trade_usd", 250)),
+                        auto_enter=False,
+                        auto_exit=bool(jcfg.get("auto_exit", True)),
                     )
-                    journal_sync["performance"] = lot_sync.get("performance") or journal_sync.get(
-                        "performance"
-                    )
-                if lot_sync.get("exited"):
+                    if more.get("exited"):
+                        journal_sync = dict(journal_sync)
+                        journal_sync["exited"] = list(journal_sync.get("exited") or []) + list(more["exited"])
+                        journal_sync["performance"] = more.get("performance") or journal_sync.get("performance")
+                # Re-mark after exits so open MTM / equity stay current
+                if marks:
+                    still = {t.contract: marks[t.contract] for t in journal.book.trades if t.status == "open" and t.contract in marks}
+                    if still:
+                        journal.mark_open(still)
+                insights = build_insights(journal=journal, actions=actions, win_rates=win_table)
+                # Attach just-closed exits onto actions so UI shows EXIT + P&L this cycle
+                if journal_sync and journal_sync.get("exited"):
                     actions = dict(actions)
-                    actions["just_exited"] = list(actions.get("just_exited") or []) + list(
-                        lot_sync["exited"]
-                    )
+                    actions["just_exited"] = journal_sync["exited"]
                     actions["counts"] = dict(actions.get("counts") or {})
-                    actions["counts"]["just_exited"] = len(actions["just_exited"])
-                insights = _build_insights(journal=journal, actions=actions, win_rates=win_table)
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("lottery journal sync skipped: %s", exc)
+                    actions["counts"]["just_exited"] = len(journal_sync["exited"])
+                else:
+                    # Keep closed history visible even when this cycle had no new exits
+                    closed = (insights or {}).get("closed_trades") or []
+                    if closed and not (actions.get("just_exited")):
+                        actions = dict(actions)
+                        actions["recent_exits"] = closed[:8]
 
-        # Discord-style radar — cheap index wings; does NOT feed BUY NOW / journal
-        radar: dict = {"hot": [], "watch": [], "cool": [], "tickets": [], "counts": {}, "note": ""}
-        if actions_cfg.get("radar_enabled", True):
-            try:
-                focus = list(actions_cfg.get("radar_focus") or ["SPY", "QQQ", "IWM", "DIA"])
-                radar_tickets = build_radar_wing_board(
-                    scores=scan.get("scores") or [],
-                    quotes=quotes,
-                    aliases=aliases,
-                    focus_symbols=focus,
-                    candidates=refreshed,
-                    min_ask=float(actions_cfg.get("radar_min_ask", 0.15)),
-                    max_ask=float(actions_cfg.get("radar_max_ask", 2.50)),
-                    otm_pct_max=float(actions_cfg.get("radar_otm_pct_max", 1.50)),
-                    enrich_live=bool(actions_cfg.get("radar_enrich_live", True)),
-                    per_symbol=3,
-                    max_total=18,
-                )
-                radar = build_radar_board(
-                    radar_tickets,
-                    quotes=quotes,
-                    scores=scan.get("scores") or [],
-                    min_ask=float(actions_cfg.get("radar_min_ask", 0.15)),
-                    max_ask=float(actions_cfg.get("radar_max_ask", 2.50)),
-                    max_otm_pct=float(actions_cfg.get("radar_otm_pct_max", 1.50)),
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("radar board unavailable: %s", exc)
-                radar = {
-                    "error": str(exc),
-                    "hot": [],
-                    "watch": [],
-                    "cool": [],
-                    "tickets": [],
-                    "counts": {},
-                    "note": "Radar temporarily unavailable.",
-                }
+            from odte_scanner.options.explosive import build_explosive_board, build_radar_wing_board
+            from odte_scanner.signals.lottery import build_lottery_board
+            from odte_scanner.signals.radar import build_radar_board
 
-        # Chase / high-convexity lane — BUY_RISKY / WATCH_CONVEX (not hist-gated BUY NOW)
-        chase_radar: dict = {
-            "buy_risky": [],
-            "watch": [],
-            "cool": [],
-            "tickets": [],
-            "counts": {},
-            "note": "",
-            "score_note": "",
-        }
-        if actions_cfg.get("chase_radar_enabled", True):
-            try:
-                from odte_scanner.options.explosive import build_chase_wing_board
-                from odte_scanner.signals.chase_radar import build_chase_board
-
-                chase_tickets = build_chase_wing_board(
-                    scores=scan.get("scores") or [],
-                    quotes=quotes,
-                    aliases=aliases,
-                    candidates=refreshed,
-                    min_ask=float(actions_cfg.get("chase_min_ask", 0.20)),
-                    max_ask=float(actions_cfg.get("chase_max_ask", 12.0)),
-                    otm_pct_max=float(actions_cfg.get("chase_otm_pct_max", 8.0)),
-                    enrich_live=bool(actions_cfg.get("chase_enrich_live", True)),
-                    max_live_symbols=int(actions_cfg.get("chase_max_live_symbols", 8)),
-                    per_symbol=2,
-                    max_total=16,
-                )
-                chase_radar = build_chase_board(
-                    chase_tickets,
-                    quotes=quotes,
-                    scores=scan.get("scores") or [],
-                    min_ask=float(actions_cfg.get("chase_min_ask", 0.20)),
-                    max_ask=float(actions_cfg.get("chase_max_ask", 12.0)),
-                    max_otm_pct=float(actions_cfg.get("chase_otm_pct_max", 8.0)),
-                    min_mult_at_3pct=float(actions_cfg.get("chase_min_mult_at_3pct", 3.5)),
-                    min_mom_5m=float(actions_cfg.get("chase_min_mom_5m", 0.08)),
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("chase radar unavailable: %s", exc)
-                chase_radar = {
-                    "error": str(exc),
-                    "buy_risky": [],
-                    "watch": [],
-                    "cool": [],
-                    "tickets": [],
-                    "counts": {},
-                    "note": "Chase / convex lane temporarily unavailable.",
-                    "score_note": "",
-                }
-
-        # META-class RIP / CONTINUATION (megas ripping — symbol cooldown waived)
-        rip_radar: dict = {
-            "buy_rip": [],
-            "buy_now": [],
-            "watch": [],
-            "cool": [],
-            "counts": {},
-            "mega_symbols": [],
-            "rules": [],
-        }
-        try:
-            from odte_scanner.signals.rip_radar import build_rip_board, is_mega_rip_symbol
-
-            score_rows = scan.get("scores") or []
-            mega_cands = list(refreshed)
-            seen_syms = {str(c.get("symbol") or "").upper() for c in mega_cands}
-            for s in score_rows:
-                sym = str(s.get("symbol") or "").upper()
-                if not is_mega_rip_symbol(sym) or sym in seen_syms:
-                    continue
-                seen_syms.add(sym)
-                q = quotes.get(sym) or {}
-                mega_cands.append(
-                    {
-                        "symbol": sym,
-                        "score": s.get("ensemble_score"),
-                        "right": "C",
-                        "live_change_pct": q.get("session_change_pct") or q.get("change_pct"),
-                    }
-                )
-            for sym in ("BABA", "GOOGL", "AMD", "META"):
-                if sym in seen_syms:
-                    continue
-                seen_syms.add(sym)
-                q = quotes.get(sym) or {}
-                mega_cands.append(
-                    {
-                        "symbol": sym,
-                        "score": 0,
-                        "right": "C",
-                        "live_change_pct": q.get("session_change_pct") or q.get("change_pct"),
-                    }
-                )
-            rip_radar = build_rip_board(
-                candidates=mega_cands,
-                scores=score_rows,
+            # Lottery / parabolic 0DTE–1DTE tickets (e.g. cheap calls that can 3×–100× on a rip)
+            explosive = build_explosive_board(
+                refreshed,
+                scores=scan.get("scores") or [],
                 quotes=quotes,
-                loss_cooldown_contracts=loss_cooldown_cts,
-                min_live_pct=float(actions_cfg.get("rip_min_live_pct", 1.0)),
-                min_mom5=float(actions_cfg.get("rip_min_mom_5m", 0.05)),
-                max_tickets=int(actions_cfg.get("rip_max_tickets", 12)),
+                aliases=aliases,
+                enrich_live=False,  # live option enrich is too slow for interactive snapshot
+                per_symbol=2,
+                max_total=24,
             )
-            rip_radar = _uw_annotate_board(
-                rip_radar, keys=("buy_rip", "buy_now", "watch"), hard_block=False
+
+            open_lottery_trades: list[dict] = []
+            if journal is not None:
+                open_lottery_trades.extend(
+                    [t.to_dict() for t in journal.book.trades if t.status == "open"]
+                )
+            elif insights and isinstance(insights, dict):
+                open_lottery_trades.extend(insights.get("open_positions") or [])
+            # Also fold paper ledger opens (0DTE-style) for SELL NOW
+            if isinstance(ledger, dict):
+                seen_c = {str(t.get("contract")) for t in open_lottery_trades if t.get("contract")}
+                for t in ledger.get("trades") or []:
+                    if t.get("status") == "open" and str(t.get("contract") or "") not in seen_c:
+                        open_lottery_trades.append(t)
+
+            lottery = build_lottery_board(
+                explosive,
+                quotes=quotes,
+                scores=scan.get("scores") or [],
+                open_trades=open_lottery_trades,
+                min_lottery_score=float(actions_cfg.get("lottery_min_score", 62)),
+                min_confirms=int(actions_cfg.get("lottery_min_confirms", 4)),
+                flow_leaders=flow_board_kw.get("flow_leaders"),
+                require_flow_confirm=bool(flow_board_kw.get("require_flow_confirm")),
+                flow_leaders_top_n=int(flow_board_kw.get("flow_leaders_top_n") or 20),
+                flow_min_net_score=float(flow_board_kw.get("flow_min_net_score") or 8.0),
+                market_tide=flow_board_kw.get("market_tide"),
             )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("rip radar unavailable: %s", exc)
-            rip_radar = {
-                "error": str(exc),
+
+            # Paper journal also follows lottery BUY/SELL NOW
+            if journal is not None and jcfg.get("enabled", True):
+                try:
+                    from odte_scanner.trading.insights import build_insights as _build_insights
+
+                    lot_sync = journal.sync_from_actions(
+                        {"buy_now": [], "sell_now": [], "buy_now_0dte": [], "buy_now_weekly": []},
+                        max_risk_usd=float(jcfg.get("max_risk_per_trade_usd", 250)),
+                        auto_enter=bool(jcfg.get("auto_enter", True)),
+                        auto_exit=bool(jcfg.get("auto_exit", True)),
+                        lottery=lottery,
+                    )
+                    if journal_sync is None:
+                        journal_sync = lot_sync
+                    else:
+                        journal_sync = dict(journal_sync)
+                        journal_sync["entered"] = list(journal_sync.get("entered") or []) + list(
+                            lot_sync.get("entered") or []
+                        )
+                        journal_sync["exited"] = list(journal_sync.get("exited") or []) + list(
+                            lot_sync.get("exited") or []
+                        )
+                        journal_sync["performance"] = lot_sync.get("performance") or journal_sync.get(
+                            "performance"
+                        )
+                    if lot_sync.get("exited"):
+                        actions = dict(actions)
+                        actions["just_exited"] = list(actions.get("just_exited") or []) + list(
+                            lot_sync["exited"]
+                        )
+                        actions["counts"] = dict(actions.get("counts") or {})
+                        actions["counts"]["just_exited"] = len(actions["just_exited"])
+                    insights = _build_insights(journal=journal, actions=actions, win_rates=win_table)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("lottery journal sync skipped: %s", exc)
+
+            # Discord-style radar — cheap index wings; does NOT feed BUY NOW / journal
+            radar: dict = {"hot": [], "watch": [], "cool": [], "tickets": [], "counts": {}, "note": ""}
+            if actions_cfg.get("radar_enabled", True):
+                try:
+                    focus = list(actions_cfg.get("radar_focus") or ["SPY", "QQQ", "IWM", "DIA"])
+                    radar_tickets = build_radar_wing_board(
+                        scores=scan.get("scores") or [],
+                        quotes=quotes,
+                        aliases=aliases,
+                        focus_symbols=focus,
+                        candidates=refreshed,
+                        min_ask=float(actions_cfg.get("radar_min_ask", 0.15)),
+                        max_ask=float(actions_cfg.get("radar_max_ask", 2.50)),
+                        otm_pct_max=float(actions_cfg.get("radar_otm_pct_max", 1.50)),
+                        enrich_live=bool(actions_cfg.get("radar_enrich_live", True)),
+                        per_symbol=3,
+                        max_total=18,
+                    )
+                    radar = build_radar_board(
+                        radar_tickets,
+                        quotes=quotes,
+                        scores=scan.get("scores") or [],
+                        min_ask=float(actions_cfg.get("radar_min_ask", 0.15)),
+                        max_ask=float(actions_cfg.get("radar_max_ask", 2.50)),
+                        max_otm_pct=float(actions_cfg.get("radar_otm_pct_max", 1.50)),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("radar board unavailable: %s", exc)
+                    radar = {
+                        "error": str(exc),
+                        "hot": [],
+                        "watch": [],
+                        "cool": [],
+                        "tickets": [],
+                        "counts": {},
+                        "note": "Radar temporarily unavailable.",
+                    }
+
+            # Chase / high-convexity lane — BUY_RISKY / WATCH_CONVEX (not hist-gated BUY NOW)
+            chase_radar: dict = {
+                "buy_risky": [],
+                "watch": [],
+                "cool": [],
+                "tickets": [],
+                "counts": {},
+                "note": "",
+                "score_note": "",
+            }
+            if actions_cfg.get("chase_radar_enabled", True):
+                try:
+                    from odte_scanner.options.explosive import build_chase_wing_board
+                    from odte_scanner.signals.chase_radar import build_chase_board
+
+                    chase_tickets = build_chase_wing_board(
+                        scores=scan.get("scores") or [],
+                        quotes=quotes,
+                        aliases=aliases,
+                        candidates=refreshed,
+                        min_ask=float(actions_cfg.get("chase_min_ask", 0.20)),
+                        max_ask=float(actions_cfg.get("chase_max_ask", 12.0)),
+                        otm_pct_max=float(actions_cfg.get("chase_otm_pct_max", 8.0)),
+                        enrich_live=bool(actions_cfg.get("chase_enrich_live", True)),
+                        max_live_symbols=int(actions_cfg.get("chase_max_live_symbols", 8)),
+                        per_symbol=2,
+                        max_total=16,
+                    )
+                    chase_radar = build_chase_board(
+                        chase_tickets,
+                        quotes=quotes,
+                        scores=scan.get("scores") or [],
+                        min_ask=float(actions_cfg.get("chase_min_ask", 0.20)),
+                        max_ask=float(actions_cfg.get("chase_max_ask", 12.0)),
+                        max_otm_pct=float(actions_cfg.get("chase_otm_pct_max", 8.0)),
+                        min_mult_at_3pct=float(actions_cfg.get("chase_min_mult_at_3pct", 3.5)),
+                        min_mom_5m=float(actions_cfg.get("chase_min_mom_5m", 0.08)),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("chase radar unavailable: %s", exc)
+                    chase_radar = {
+                        "error": str(exc),
+                        "buy_risky": [],
+                        "watch": [],
+                        "cool": [],
+                        "tickets": [],
+                        "counts": {},
+                        "note": "Chase / convex lane temporarily unavailable.",
+                        "score_note": "",
+                    }
+
+            # META-class RIP / CONTINUATION (megas ripping — symbol cooldown waived)
+            rip_radar: dict = {
                 "buy_rip": [],
                 "buy_now": [],
                 "watch": [],
                 "cool": [],
                 "counts": {},
-                "note": "RIP radar temporarily unavailable.",
+                "mega_symbols": [],
+                "rules": [],
             }
-
-        # Beauty / monthly lane — AMD META MU SNDK class (~1mo DTE)
-        beauty_monthly: dict = {
-            "buy_beauty": [],
-            "buy_now": [],
-            "watch": [],
-            "cool": [],
-            "counts": {},
-            "beauty_symbols": [],
-            "rules": [],
-        }
-        if actions_cfg.get("beauty_enabled", True):
             try:
-                from odte_scanner.signals.beauty_monthly import (
-                    build_beauty_board,
-                    is_beauty_symbol,
-                    oct_end_pace_note,
-                )
+                from odte_scanner.signals.rip_radar import build_rip_board, is_mega_rip_symbol
 
                 score_rows = scan.get("scores") or []
-                beauty_cands = [
-                    c for c in refreshed if is_beauty_symbol(str(c.get("symbol") or ""))
-                ]
-                seen_b = {str(c.get("symbol") or "").upper() for c in beauty_cands}
+                mega_cands = list(refreshed)
+                seen_syms = {str(c.get("symbol") or "").upper() for c in mega_cands}
                 for s in score_rows:
                     sym = str(s.get("symbol") or "").upper()
-                    if not is_beauty_symbol(sym) or sym in seen_b:
+                    if not is_mega_rip_symbol(sym) or sym in seen_syms:
                         continue
-                    seen_b.add(sym)
+                    seen_syms.add(sym)
                     q = quotes.get(sym) or {}
-                    beauty_cands.append(
+                    mega_cands.append(
                         {
                             "symbol": sym,
                             "score": s.get("ensemble_score"),
                             "right": "C",
                             "live_change_pct": q.get("session_change_pct") or q.get("change_pct"),
-                            "month_change_pct": q.get("month_change_pct") or q.get("1m_change_pct"),
                         }
                     )
-                for sym in ("AMD", "META", "MU", "SNDK", "BABA", "GOOGL", "NVDA"):
-                    if sym in seen_b:
+                for sym in ("BABA", "GOOGL", "AMD", "META"):
+                    if sym in seen_syms:
                         continue
-                    seen_b.add(sym)
+                    seen_syms.add(sym)
                     q = quotes.get(sym) or {}
-                    beauty_cands.append(
+                    mega_cands.append(
                         {
                             "symbol": sym,
                             "score": 0,
                             "right": "C",
                             "live_change_pct": q.get("session_change_pct") or q.get("change_pct"),
-                            "month_change_pct": q.get("month_change_pct") or q.get("1m_change_pct"),
                         }
                     )
-                # Pull ~1mo contracts for top beauty names (capped)
-                if bool(actions_cfg.get("beauty_fetch_contracts", True)):
-                    try:
-                        from odte_scanner.options.yahoo_session import pick_challenge_contract
-
-                        fetch_n = int(actions_cfg.get("beauty_max_live_symbols", 6))
-                        prefer = int(actions_cfg.get("beauty_prefer_dte", 30))
-                        min_d = int(actions_cfg.get("beauty_min_dte", 18))
-                        max_d = int(actions_cfg.get("beauty_max_dte", 45))
-                        fetched = 0
-                        for row in beauty_cands:
-                            if fetched >= fetch_n:
-                                break
-                            sym = str(row.get("symbol") or "").upper()
-                            if row.get("ask") and row.get("dte") and min_d <= int(row["dte"]) <= max_d:
-                                continue
-                            spot = float((quotes.get(sym) or {}).get("last") or row.get("score") or 0)
-                            if spot <= 1:
-                                # last-price from scores often missing — skip pick without spot
-                                qlast = (quotes.get(sym) or {}).get("last")
-                                if qlast:
-                                    spot = float(qlast)
-                                else:
-                                    continue
-                            aliases.setdefault(sym, resolve_yahoo_symbol(sym, cfg))
-                            picked = pick_challenge_contract(
-                                sym,
-                                spot,
-                                right="C",
-                                min_dte=min_d,
-                                max_dte=max_d,
-                                prefer_dte=prefer,
-                                yahoo_symbol=aliases.get(sym),
-                            )
-                            if not picked or not picked.get("ask"):
-                                continue
-                            row.update(
-                                {
-                                    "ask": picked.get("ask"),
-                                    "bid": picked.get("bid"),
-                                    "strike": picked.get("strike"),
-                                    "expiry": picked.get("expiry"),
-                                    "contract": picked.get("contract"),
-                                    "dte": picked.get("dte"),
-                                    "dte_bucket": "monthly",
-                                    "volume": picked.get("volume"),
-                                    "open_interest": picked.get("open_interest") or picked.get("oi"),
-                                    "spot": spot,
-                                    "moneyness_pct": picked.get("moneyness_pct"),
-                                }
-                            )
-                            fetched += 1
-                    except Exception as exc:  # noqa: BLE001
-                        logger.debug("beauty contract fetch skipped: %s", exc)
-
-                beauty_monthly = build_beauty_board(
-                    candidates=beauty_cands,
+                rip_radar = build_rip_board(
+                    candidates=mega_cands,
                     scores=score_rows,
                     quotes=quotes,
                     loss_cooldown_contracts=loss_cooldown_cts,
-                    min_dte=int(actions_cfg.get("beauty_min_dte", 18)),
-                    max_dte=int(actions_cfg.get("beauty_max_dte", 45)),
-                    prefer_dte=int(actions_cfg.get("beauty_prefer_dte", 30)),
-                    min_month_pct=float(actions_cfg.get("beauty_min_month_pct", 5.0)),
-                    max_tickets=int(actions_cfg.get("beauty_max_tickets", 12)),
+                    min_live_pct=float(actions_cfg.get("rip_min_live_pct", 1.0)),
+                    min_mom5=float(actions_cfg.get("rip_min_mom_5m", 0.05)),
+                    max_tickets=int(actions_cfg.get("rip_max_tickets", 12)),
                 )
-                beauty_monthly = _uw_annotate_board(
-                    beauty_monthly, keys=("buy_beauty", "buy_now", "watch"), hard_block=True
-                )
-                beauty_monthly["oct_end_pace"] = oct_end_pace_note(
-                    equity=1000.0,
-                    target_usd=float(actions_cfg.get("challenge_target_usd", 100_000)),
-                    deadline=str(actions_cfg.get("challenge_deadline") or "2026-10-31"),
+                rip_radar = _uw_annotate_board(
+                    rip_radar, keys=("buy_rip", "buy_now", "watch"), hard_block=False
                 )
             except Exception as exc:  # noqa: BLE001
-                logger.warning("beauty monthly unavailable: %s", exc)
-                beauty_monthly = {
+                logger.warning("rip radar unavailable: %s", exc)
+                rip_radar = {
                     "error": str(exc),
-                    "buy_beauty": [],
+                    "buy_rip": [],
                     "buy_now": [],
                     "watch": [],
                     "cool": [],
                     "counts": {},
-                    "note": "Beauty monthly temporarily unavailable.",
+                    "note": "RIP radar temporarily unavailable.",
                 }
 
-        # Sticky TA level-watch — ALAB/AMAT/AMD/AXTI/BE/BMNR/CAT/DELL/FPS
-        level_watch: dict = {
-            "buy_level": [],
-            "buy_now": [],
-            "watch": [],
-            "cool": [],
-            "counts": {},
-            "level_symbols": [],
-        }
-        if actions_cfg.get("level_watch_enabled", True):
-            try:
-                from odte_scanner.signals.level_watch import build_level_board
-
-                level_watch = build_level_board(
-                    quotes=quotes,
-                    scores=scan.get("scores") or [],
-                    candidates=refreshed,
-                    near_breakout_pct=float(actions_cfg.get("level_near_breakout_pct", 1.5)),
-                )
-                level_watch = _uw_annotate_board(
-                    level_watch, keys=("buy_level", "buy_now", "watch"), hard_block=True
-                )
-                level_watch["generated_at"] = datetime.now(timezone.utc).isoformat()
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("level watch unavailable: %s", exc)
-                level_watch = {
-                    "error": str(exc),
-                    "buy_level": [],
-                    "buy_now": [],
-                    "watch": [],
-                    "cool": [],
-                    "counts": {},
-                    "note": "Level watch temporarily unavailable.",
-                }
-
-        from odte_scanner.challenge import build_challenge_board
-        from odte_scanner.data.universe import liquid_universe
-        from odte_scanner.echo import build_echo_board
-
-        focus_size = scan.get("focus_size") or len(scan.get("tickers") or [])
-        liquid_size = len(liquid_universe())
-
-        echo = {}
-        try:
-            echo = build_echo_board(
-                scores=scan.get("scores") or [],
-                candidates=refreshed,
-                quotes=quotes,
-                aliases=aliases,
-                insights=insights if isinstance(insights, dict) else None,
-                journal_sync=journal_sync if isinstance(journal_sync, dict) else None,
-                actions=actions,
-                lottery=lottery,
-                max_symbols=int(actions_cfg.get("echo_max_symbols", 8)),
-                max_dte=int((cfg.get("options") or {}).get("max_dte", 5)),
-                fetch_ladders=bool(actions_cfg.get("echo_fetch_ladders", True)) and not offline,
-            )
-            if echo.get("flow_leaders"):
-                # Keep UW leaders on top of Yahoo echo flow
-                from odte_scanner.signals.unusual_whales import merge_flow_leaders
-
-                flow_board_kw["flow_leaders"] = merge_flow_leaders(
-                    echo.get("flow_leaders") or [],
-                    uw_flow if isinstance(uw_flow, dict) else None,
-                    prefer_uw=True,
-                )
-                actions = build_action_board(
-                    candidates=refreshed,
-                    scores=scan.get("scores") or [],
-                    quotes=quotes,
-                    ledger=ledger if isinstance(ledger, dict) else None,
-                    journal_opens=journal_opens,
-                    buy_score=pages_buy_score,
-                    wait_score=float(actions_cfg.get("wait_score", 62)),
-                    weekly_buy_score=weekly_buy_score,
-                    sell_score=float(actions_cfg.get("sell_score", 48)),
-                    stop_loss_pct=float(risk.get("stop_loss_pct", 50)),
-                    take_profit_pct=float(risk.get("take_profit_pct", 80)),
-                    max_chase_pct=float(actions_cfg.get("max_chase_pct", 2.5)),
-                    win_rate_table=win_table,
-                    min_hist_win_pct=float(actions_cfg.get("min_hist_win_pct", 80)),
-                    min_hist_win_samples=int(actions_cfg.get("min_hist_win_samples", 5)),
-                    require_hist_win=bool(actions_cfg.get("require_hist_win", True)),
-                    mega_min_hist_win_pct=(
-                        float(actions_cfg["mega_min_hist_win_pct"])
-                        if actions_cfg.get("mega_min_hist_win_pct") is not None
-                        else 50.0
-                    ),
-                    mega_rip_live_pct=float(actions_cfg.get("mega_rip_live_pct", 1.0)),
-                    weekly_max_hold_days=int(actions_cfg.get("weekly_max_hold_days", 7)),
-                    odte_flatten_et=str(actions_cfg.get("odte_flatten_et") or "15:45"),
-                    require_live_confirm=not offline,
-                    red_flag=red_flag_snapshot,
-                    **flow_board_kw,
-                    **loss_board_kw,
-                )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("echo board unavailable: %s", exc)
-            echo = {
-                "error": str(exc),
-                "dark_pool": {"available": False, "reason": "echo board failed to build"},
-                "disclaimer": "Echo Desk temporarily unavailable.",
+            # Beauty / monthly lane — AMD META MU SNDK class (~1mo DTE)
+            beauty_monthly: dict = {
+                "buy_beauty": [],
+                "buy_now": [],
+                "watch": [],
+                "cool": [],
+                "counts": {},
+                "beauty_symbols": [],
+                "rules": [],
             }
+            if actions_cfg.get("beauty_enabled", True):
+                try:
+                    from odte_scanner.signals.beauty_monthly import (
+                        build_beauty_board,
+                        is_beauty_symbol,
+                        oct_end_pace_note,
+                    )
 
-        challenge = {}
-        try:
-            from odte_scanner.challenge.tracker import ChallengeTracker
+                    score_rows = scan.get("scores") or []
+                    beauty_cands = [
+                        c for c in refreshed if is_beauty_symbol(str(c.get("symbol") or ""))
+                    ]
+                    seen_b = {str(c.get("symbol") or "").upper() for c in beauty_cands}
+                    for s in score_rows:
+                        sym = str(s.get("symbol") or "").upper()
+                        if not is_beauty_symbol(sym) or sym in seen_b:
+                            continue
+                        seen_b.add(sym)
+                        q = quotes.get(sym) or {}
+                        beauty_cands.append(
+                            {
+                                "symbol": sym,
+                                "score": s.get("ensemble_score"),
+                                "right": "C",
+                                "live_change_pct": q.get("session_change_pct") or q.get("change_pct"),
+                                "month_change_pct": q.get("month_change_pct") or q.get("1m_change_pct"),
+                            }
+                        )
+                    for sym in ("AMD", "META", "MU", "SNDK", "BABA", "GOOGL", "NVDA"):
+                        if sym in seen_b:
+                            continue
+                        seen_b.add(sym)
+                        q = quotes.get(sym) or {}
+                        beauty_cands.append(
+                            {
+                                "symbol": sym,
+                                "score": 0,
+                                "right": "C",
+                                "live_change_pct": q.get("session_change_pct") or q.get("change_pct"),
+                                "month_change_pct": q.get("month_change_pct") or q.get("1m_change_pct"),
+                            }
+                        )
+                    # Pull ~1mo contracts for top beauty names (capped)
+                    if bool(actions_cfg.get("beauty_fetch_contracts", True)):
+                        try:
+                            from odte_scanner.options.yahoo_session import pick_challenge_contract
 
-            ch_path = Path(actions_cfg.get("challenge_ledger_path", "outputs/challenge_ledger.json"))
-            if not ch_path.is_absolute():
-                ch_path = ROOT / ch_path
-            tracker = ChallengeTracker(
-                ch_path,
-                starting_cash=float(actions_cfg.get("challenge_start_usd", 1000)),
-                epoch=str(actions_cfg.get("challenge_epoch") or ""),
-                rebuild_seed_usd=(
-                    float(actions_cfg["challenge_rebuild_seed_usd"])
-                    if actions_cfg.get("challenge_rebuild_seed_usd") is not None
-                    else None
-                ),
-                rebuild_reason=str(actions_cfg.get("challenge_rebuild_reason") or "") or None,
-                target_usd=float(actions_cfg.get("challenge_target_usd", 100_000)),
-            )
-            # Live option marks BEFORE evaluate/EXIT — otherwise exits book at entry ($0 P&L)
-            fetch_ch_contracts = bool(actions_cfg.get("challenge_fetch_contracts", True)) and (
-                (not offline) or bool(actions_cfg.get("challenge_fetch_contracts_offline", True))
-            )
-            ch_live_marks: dict = {}
-            if fetch_ch_contracts and tracker.open_trades():
+                            fetch_n = int(actions_cfg.get("beauty_max_live_symbols", 6))
+                            prefer = int(actions_cfg.get("beauty_prefer_dte", 30))
+                            min_d = int(actions_cfg.get("beauty_min_dte", 18))
+                            max_d = int(actions_cfg.get("beauty_max_dte", 45))
+                            fetched = 0
+                            for row in beauty_cands:
+                                if fetched >= fetch_n:
+                                    break
+                                sym = str(row.get("symbol") or "").upper()
+                                if row.get("ask") and row.get("dte") and min_d <= int(row["dte"]) <= max_d:
+                                    continue
+                                spot = float((quotes.get(sym) or {}).get("last") or row.get("score") or 0)
+                                if spot <= 1:
+                                    # last-price from scores often missing — skip pick without spot
+                                    qlast = (quotes.get(sym) or {}).get("last")
+                                    if qlast:
+                                        spot = float(qlast)
+                                    else:
+                                        continue
+                                aliases.setdefault(sym, resolve_yahoo_symbol(sym, cfg))
+                                picked = pick_challenge_contract(
+                                    sym,
+                                    spot,
+                                    right="C",
+                                    min_dte=min_d,
+                                    max_dte=max_d,
+                                    prefer_dte=prefer,
+                                    yahoo_symbol=aliases.get(sym),
+                                )
+                                if not picked or not picked.get("ask"):
+                                    continue
+                                row.update(
+                                    {
+                                        "ask": picked.get("ask"),
+                                        "bid": picked.get("bid"),
+                                        "strike": picked.get("strike"),
+                                        "expiry": picked.get("expiry"),
+                                        "contract": picked.get("contract"),
+                                        "dte": picked.get("dte"),
+                                        "dte_bucket": "monthly",
+                                        "volume": picked.get("volume"),
+                                        "open_interest": picked.get("open_interest") or picked.get("oi"),
+                                        "spot": spot,
+                                        "moneyness_pct": picked.get("moneyness_pct"),
+                                    }
+                                )
+                                fetched += 1
+                        except Exception as exc:  # noqa: BLE001
+                            logger.debug("beauty contract fetch skipped: %s", exc)
+
+                    beauty_monthly = build_beauty_board(
+                        candidates=beauty_cands,
+                        scores=score_rows,
+                        quotes=quotes,
+                        loss_cooldown_contracts=loss_cooldown_cts,
+                        min_dte=int(actions_cfg.get("beauty_min_dte", 18)),
+                        max_dte=int(actions_cfg.get("beauty_max_dte", 45)),
+                        prefer_dte=int(actions_cfg.get("beauty_prefer_dte", 30)),
+                        min_month_pct=float(actions_cfg.get("beauty_min_month_pct", 5.0)),
+                        max_tickets=int(actions_cfg.get("beauty_max_tickets", 12)),
+                    )
+                    beauty_monthly = _uw_annotate_board(
+                        beauty_monthly, keys=("buy_beauty", "buy_now", "watch"), hard_block=True
+                    )
+                    beauty_monthly["oct_end_pace"] = oct_end_pace_note(
+                        equity=1000.0,
+                        target_usd=float(actions_cfg.get("challenge_target_usd", 100_000)),
+                        deadline=str(actions_cfg.get("challenge_deadline") or "2026-10-31"),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("beauty monthly unavailable: %s", exc)
+                    beauty_monthly = {
+                        "error": str(exc),
+                        "buy_beauty": [],
+                        "buy_now": [],
+                        "watch": [],
+                        "cool": [],
+                        "counts": {},
+                        "note": "Beauty monthly temporarily unavailable.",
+                    }
+
+            # Sticky TA level-watch — ALAB/AMAT/AMD/AXTI/BE/BMNR/CAT/DELL/FPS
+            level_watch: dict = {
+                "buy_level": [],
+                "buy_now": [],
+                "watch": [],
+                "cool": [],
+                "counts": {},
+                "level_symbols": [],
+            }
+            if actions_cfg.get("level_watch_enabled", True):
+                try:
+                    from odte_scanner.signals.level_watch import build_level_board
+
+                    level_watch = build_level_board(
+                        quotes=quotes,
+                        scores=scan.get("scores") or [],
+                        candidates=refreshed,
+                        near_breakout_pct=float(actions_cfg.get("level_near_breakout_pct", 1.5)),
+                    )
+                    level_watch = _uw_annotate_board(
+                        level_watch, keys=("buy_level", "buy_now", "watch"), hard_block=True
+                    )
+                    level_watch["generated_at"] = datetime.now(timezone.utc).isoformat()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("level watch unavailable: %s", exc)
+                    level_watch = {
+                        "error": str(exc),
+                        "buy_level": [],
+                        "buy_now": [],
+                        "watch": [],
+                        "cool": [],
+                        "counts": {},
+                        "note": "Level watch temporarily unavailable.",
+                    }
+
+            from odte_scanner.challenge import build_challenge_board
+            from odte_scanner.data.universe import liquid_universe
+            from odte_scanner.echo import build_echo_board
+
+            focus_size = scan.get("focus_size") or len(scan.get("tickers") or [])
+            liquid_size = len(liquid_universe())
+
+            echo = {}
+            try:
+                echo = build_echo_board(
+                    scores=scan.get("scores") or [],
+                    candidates=refreshed,
+                    quotes=quotes,
+                    aliases=aliases,
+                    insights=insights if isinstance(insights, dict) else None,
+                    journal_sync=journal_sync if isinstance(journal_sync, dict) else None,
+                    actions=actions,
+                    lottery=lottery,
+                    max_symbols=int(actions_cfg.get("echo_max_symbols", 8)),
+                    max_dte=int((cfg.get("options") or {}).get("max_dte", 5)),
+                    fetch_ladders=bool(actions_cfg.get("echo_fetch_ladders", True)) and not offline,
+                )
+                if echo.get("flow_leaders"):
+                    # Keep UW leaders on top of Yahoo echo flow
+                    from odte_scanner.signals.unusual_whales import merge_flow_leaders
+
+                    flow_board_kw["flow_leaders"] = merge_flow_leaders(
+                        echo.get("flow_leaders") or [],
+                        uw_flow if isinstance(uw_flow, dict) else None,
+                        prefer_uw=True,
+                    )
+                    actions = build_action_board(
+                        candidates=refreshed,
+                        scores=scan.get("scores") or [],
+                        quotes=quotes,
+                        ledger=ledger if isinstance(ledger, dict) else None,
+                        journal_opens=journal_opens,
+                        buy_score=pages_buy_score,
+                        wait_score=float(actions_cfg.get("wait_score", 62)),
+                        weekly_buy_score=weekly_buy_score,
+                        sell_score=float(actions_cfg.get("sell_score", 48)),
+                        stop_loss_pct=float(risk.get("stop_loss_pct", 50)),
+                        take_profit_pct=float(risk.get("take_profit_pct", 80)),
+                        max_chase_pct=float(actions_cfg.get("max_chase_pct", 2.5)),
+                        win_rate_table=win_table,
+                        min_hist_win_pct=float(actions_cfg.get("min_hist_win_pct", 80)),
+                        min_hist_win_samples=int(actions_cfg.get("min_hist_win_samples", 5)),
+                        require_hist_win=bool(actions_cfg.get("require_hist_win", True)),
+                        mega_min_hist_win_pct=(
+                            float(actions_cfg["mega_min_hist_win_pct"])
+                            if actions_cfg.get("mega_min_hist_win_pct") is not None
+                            else 50.0
+                        ),
+                        mega_rip_live_pct=float(actions_cfg.get("mega_rip_live_pct", 1.0)),
+                        weekly_max_hold_days=int(actions_cfg.get("weekly_max_hold_days", 7)),
+                        odte_flatten_et=str(actions_cfg.get("odte_flatten_et") or "15:45"),
+                        require_live_confirm=not offline,
+                        red_flag=red_flag_snapshot,
+                        **flow_board_kw,
+                        **loss_board_kw,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("echo board unavailable: %s", exc)
+                echo = {
+                    "error": str(exc),
+                    "dark_pool": {"available": False, "reason": "echo board failed to build"},
+                    "disclaimer": "Echo Desk temporarily unavailable.",
+                }
+
+            challenge = {}
+            try:
+                from odte_scanner.challenge.tracker import ChallengeTracker
+
+                ch_path = Path(actions_cfg.get("challenge_ledger_path", "outputs/challenge_ledger.json"))
+                if not ch_path.is_absolute():
+                    ch_path = ROOT / ch_path
+                tracker = ChallengeTracker(
+                    ch_path,
+                    starting_cash=float(actions_cfg.get("challenge_start_usd", 1000)),
+                    epoch=str(actions_cfg.get("challenge_epoch") or ""),
+                    rebuild_seed_usd=(
+                        float(actions_cfg["challenge_rebuild_seed_usd"])
+                        if actions_cfg.get("challenge_rebuild_seed_usd") is not None
+                        else None
+                    ),
+                    rebuild_reason=str(actions_cfg.get("challenge_rebuild_reason") or "") or None,
+                    target_usd=float(actions_cfg.get("challenge_target_usd", 100_000)),
+                )
+                # Live option marks BEFORE evaluate/EXIT — otherwise exits book at entry ($0 P&L)
+                fetch_ch_contracts = bool(actions_cfg.get("challenge_fetch_contracts", True)) and (
+                    (not offline) or bool(actions_cfg.get("challenge_fetch_contracts_offline", True))
+                )
+                ch_live_marks: dict = {}
+                if fetch_ch_contracts and tracker.open_trades():
+                    for t in tracker.open_trades():
+                        aliases.setdefault(t.symbol, resolve_yahoo_symbol(t.symbol, cfg))
+                    ch_live_marks = tracker.refresh_open_marks(aliases=aliases)
+                # Pre-evaluate opens so board sees HOLD/EXIT
                 for t in tracker.open_trades():
-                    aliases.setdefault(t.symbol, resolve_yahoo_symbol(t.symbol, cfg))
-                ch_live_marks = tracker.refresh_open_marks(aliases=aliases)
-            # Pre-evaluate opens so board sees HOLD/EXIT
-            for t in tracker.open_trades():
-                mark = ch_live_marks.get(t.id) or ch_live_marks.get(t.contract) or t.mark
-                tracker.evaluate_open(t, mark=mark, quote=quotes.get(t.symbol))
-            tracker.save()
+                    mark = ch_live_marks.get(t.id) or ch_live_marks.get(t.contract) or t.mark
+                    tracker.evaluate_open(t, mark=mark, quote=quotes.get(t.symbol))
+                tracker.save()
 
-            # Seed walls from Echo DealerEdge profiles (already fetched ladders)
-            echo_walls: dict[str, dict] = {}
+                # Seed walls from Echo DealerEdge profiles (already fetched ladders)
+                echo_walls: dict[str, dict] = {}
+                try:
+                    from odte_scanner.options.walls import wall_exit_levels
+
+                    for p in ((echo.get("dealer_edge") or {}).get("profiles") or []):
+                        sym = str(p.get("symbol") or "").upper()
+                        if not sym:
+                            continue
+                        echo_walls[sym] = {
+                            **wall_exit_levels(
+                                right="C",
+                                spot=p.get("spot"),
+                                call_wall=p.get("call_wall"),
+                                put_wall=p.get("put_wall"),
+                                buffer_usd=float(actions_cfg.get("wall_exit_buffer_usd", 0.10)),
+                            ),
+                            "flip": p.get("flip"),
+                            "regime": p.get("regime"),
+                            "expiry": p.get("expiry"),
+                            "dte": p.get("dte"),
+                            "source": "echo_gex",
+                        }
+                except Exception:  # noqa: BLE001
+                    echo_walls = {}
+
+                # $1k→$100k sleeve needs listed asks to flip ENTRY; Pages was stuck
+                # because fetch_contracts was hard-disabled and auto_enter was false.
+                loss_cd_days = int(actions_cfg.get("challenge_loss_cooldown_days", 5))
+                loss_cooldown_syms = tracker.recent_loss_symbols(cooldown_days=loss_cd_days)
+                from odte_scanner.signals.beauty_monthly import days_to_deadline, oct_end_pace_note
+
+                deadline = str(actions_cfg.get("challenge_deadline") or "2026-10-31")
+                days_left = days_to_deadline(deadline)
+                pace_months = max(0.25, days_left / 30.4375)
+                # Reuse UW board already fetched for BUY/SELL NOW (do not double-hit API)
+                if not isinstance(uw_flow, dict):
+                    uw_flow = {"ok": False, "configured": False, "skipped": True}
+                challenge = build_challenge_board(
+                    win_table=win_table if isinstance(win_table, dict) else None,
+                    scores=scan.get("scores") or [],
+                    quotes=quotes,
+                    aliases=aliases,
+                    open_trades=[t.to_dict() for t in tracker.book.trades],
+                    start_usd=float(actions_cfg.get("challenge_start_usd", 1000)),
+                    target_usd=float(actions_cfg.get("challenge_target_usd", 100_000)),
+                    flips=int(actions_cfg.get("challenge_flips", 15)),
+                    max_tickets=int(actions_cfg.get("challenge_max_tickets", 10)),
+                    fetch_contracts=fetch_ch_contracts,
+                    fetch_earnings=bool(actions_cfg.get("challenge_fetch_earnings", True)) and not offline,
+                    earnings_max_fetch=int(actions_cfg.get("challenge_earnings_max_fetch", 36)),
+                    fetch_walls=bool(actions_cfg.get("challenge_fetch_walls", True)) and not offline,
+                    wall_buffer_usd=float(actions_cfg.get("wall_exit_buffer_usd", 0.10)),
+                    walls_map=echo_walls,
+                    sprint_desk=bool(actions_cfg.get("challenge_sprint_desk", True)),
+                    min_dte=int(actions_cfg.get("challenge_min_dte", 1)),
+                    max_dte=int(actions_cfg.get("challenge_max_dte", 5)),
+                    prefer_dte=int(actions_cfg.get("challenge_prefer_dte", 2)),
+                    target_premium_min=float(actions_cfg.get("challenge_target_premium_min", 1.5)),
+                    target_premium_max=float(actions_cfg.get("challenge_target_premium_max", 2.0)),
+                    min_option_volume=int(actions_cfg.get("challenge_min_option_volume", 100)),
+                    min_option_oi=int(actions_cfg.get("challenge_min_option_oi", 200)),
+                    allow_zero_volume_if_oi=int(actions_cfg.get("challenge_allow_zero_volume_if_oi", 0)),
+                    max_ask=float(actions_cfg.get("challenge_max_ask", 2.50)),
+                    loss_cooldown_symbols=loss_cooldown_syms,
+                    pace_months=pace_months,
+                    pace_milestone_usd=float(actions_cfg.get("challenge_pace_milestone_usd", 100_000)),
+                    prefer_weekly_pace=bool(actions_cfg.get("challenge_prefer_weekly_pace", True)),
+                    current_equity=float(tracker.book.equity or tracker.book.cash or 1000),
+                    uw_flow=uw_flow,
+                    require_uw_flow=bool(actions_cfg.get("challenge_require_uw_flow", False)),
+                )
+                live_contracts = {
+                    (str(t.get("symbol")), str(t.get("right") or "C")): t
+                    for t in (challenge.get("tickets") or [])
+                    if t.get("ask") is not None or t.get("contract") or t.get("call_wall") is not None
+                }
+                # Refresh marks again right before EXIT sync (board may have open bid)
+                if fetch_ch_contracts and tracker.open_trades():
+                    ch_live_marks = {**ch_live_marks, **tracker.refresh_open_marks(aliases=aliases)}
+                # Feed RIP megas + index RADAR HOT (SPY/QQQ sniper) into challenge auto-enter
+                ch_tickets = list(challenge.get("tickets") or [])
+                seen_occ = {
+                    str(t.get("contract") or "")
+                    for t in ch_tickets
+                    if t.get("contract")
+                }
+                try:
+                    rip_buys = list((rip_radar or {}).get("buy_rip") or (rip_radar or {}).get("buy_now") or [])
+                    for r in rip_buys[:6]:
+                        occ = str(r.get("contract") or "")
+                        if not occ or occ in seen_occ or not r.get("ask"):
+                            continue
+                        seen_occ.add(occ)
+                        ch_tickets.append(
+                            {
+                                **r,
+                                "action": "BUY_RIP",
+                                "right": str(r.get("right") or "C").upper(),
+                                "hold_style": "sprint",
+                                "horizon": "sprint",
+                                "hold_min_days": 0,
+                                "hold_max_days": 1,
+                                "hold_ideal_days": 1,
+                                "target_premium_mult": float(r.get("target_premium_mult") or 1.5),
+                                "ensemble_score": float(r.get("ensemble_score") or r.get("strength") or 70),
+                                "thesis": r.get("detail") or r.get("headline") or "BUY_RIP → challenge",
+                            }
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("rip→challenge bridge skipped: %s", exc)
+                # Index sniper: RADAR HOT SPY/QQQ/IWM wings → challenge (SPX via SPY)
+                if bool(actions_cfg.get("challenge_sniper_enabled", True)):
+                    try:
+                        sniper_syms = {
+                            str(s).upper()
+                            for s in (
+                                actions_cfg.get("challenge_sniper_symbols")
+                                or ["SPY", "QQQ", "IWM"]
+                            )
+                        }
+                        sniper_syms |= {"SPY", "QQQ", "IWM"}  # always keep core trio
+                        hot = list((radar or {}).get("hot") or [])
+                        # Prefer cheapest liquid wing per symbol
+                        by_sym: dict[str, dict] = {}
+                        for r in hot:
+                            sym = str(r.get("symbol") or "").upper()
+                            if sym == "SPX":
+                                sym = "SPY"
+                            if sym not in sniper_syms:
+                                continue
+                            occ = str(r.get("contract") or "")
+                            ask = r.get("ask")
+                            if not occ or ask in (None, 0) or occ in seen_occ:
+                                continue
+                            prev = by_sym.get(sym)
+                            if prev is None or float(ask) < float(prev.get("ask") or 1e9):
+                                by_sym[sym] = dict(r, symbol=sym)
+                        for sym in ("SPY", "QQQ", "IWM"):
+                            r = by_sym.get(sym)
+                            if not r:
+                                continue
+                            occ = str(r.get("contract") or "")
+                            seen_occ.add(occ)
+                            right = str(r.get("right") or "").upper()
+                            if right not in {"C", "P"}:
+                                right = occ[-9] if len(occ) >= 15 and occ[-9] in {"C", "P"} else "C"
+                            ch_tickets.insert(
+                                0,
+                                {
+                                    **r,
+                                    "symbol": sym,
+                                    "action": "RADAR_HOT",
+                                    "right": right,
+                                    "sniper": True,
+                                    "from_radar": True,
+                                    "hold_style": "sprint",
+                                    "horizon": "sprint",
+                                    "hold_min_days": 0,
+                                    "hold_max_days": 1,
+                                    "hold_ideal_days": 0,
+                                    "target_premium_mult": float(
+                                        actions_cfg.get("challenge_sniper_target_mult", 1.2)
+                                    ),
+                                    "stop_loss_pct": float(
+                                        actions_cfg.get("challenge_sniper_stop_pct", 20)
+                                    ),
+                                    "thesis": r.get("detail")
+                                    or r.get("headline")
+                                    or f"INDEX SNIPER {sym} RADAR HOT same-day → challenge",
+                                },
+                            )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("radar→challenge sniper bridge skipped: %s", exc)
+                sync = tracker.sync_from_tickets(
+                    ch_tickets,
+                    quotes=quotes,
+                    auto_enter=bool(actions_cfg.get("challenge_auto_enter", True)),
+                    auto_exit=bool(actions_cfg.get("challenge_auto_exit", True)),
+                    max_open=int(actions_cfg.get("challenge_max_open", 1)),
+                    sprint_desk=bool(actions_cfg.get("challenge_sprint_desk", True)),
+                    live_marks=ch_live_marks,
+                    loss_cooldown_days=int(actions_cfg.get("challenge_loss_cooldown_days", 7)),
+                    max_cash_frac=float(actions_cfg.get("challenge_max_cash_frac", 0.30)),
+                    max_contracts=int(actions_cfg.get("challenge_max_contracts", 2)),
+                    prefer_calls=bool(actions_cfg.get("challenge_prefer_calls", True)),
+                    prefer_core_megas=bool(actions_cfg.get("challenge_prefer_core_megas", True)),
+                    min_ensemble=float(actions_cfg.get("challenge_min_ensemble", 60)),
+                    mega_min_ensemble=(
+                        float(actions_cfg["challenge_mega_min_ensemble"])
+                        if actions_cfg.get("challenge_mega_min_ensemble") is not None
+                        else 55.0
+                    ),
+                    min_ask=float(actions_cfg.get("challenge_min_ask", 0.20)),
+                    max_ask=(
+                        float(actions_cfg["challenge_max_ask"])
+                        if actions_cfg.get("challenge_max_ask") is not None
+                        else 2.50
+                    ),
+                    max_consecutive_losses=int(actions_cfg.get("challenge_max_consecutive_losses", 3)),
+                )
+                challenge["sync"] = sync
+                challenge["book"] = sync.get("book") or tracker.book.to_dict()
+                challenge["deadline"] = deadline
+                challenge["oct_end_pace"] = oct_end_pace_note(
+                    equity=float(tracker.book.equity or tracker.book.cash or 1000),
+                    target_usd=float(actions_cfg.get("challenge_pace_milestone_usd", 100_000)),
+                    deadline=deadline,
+                    ideal_hold_days=1.0,
+                )
+                if isinstance(beauty_monthly, dict):
+                    beauty_monthly["oct_end_pace"] = challenge["oct_end_pace"]
+                # Rebuild statuses after sync; keep prior contract fields when present
+                challenge = build_challenge_board(
+                    win_table=win_table if isinstance(win_table, dict) else None,
+                    scores=scan.get("scores") or [],
+                    quotes=quotes,
+                    aliases=aliases,
+                    open_trades=[t.to_dict() for t in tracker.book.trades],
+                    start_usd=float(actions_cfg.get("challenge_start_usd", 1000)),
+                    target_usd=float(actions_cfg.get("challenge_target_usd", 100_000)),
+                    flips=int(actions_cfg.get("challenge_flips", 15)),
+                    max_tickets=int(actions_cfg.get("challenge_max_tickets", 10)),
+                    fetch_contracts=False,
+                    fetch_earnings=False,
+                    earnings_max_fetch=int(actions_cfg.get("challenge_earnings_max_fetch", 36)),
+                    fetch_walls=False,
+                    wall_buffer_usd=float(actions_cfg.get("wall_exit_buffer_usd", 0.10)),
+                    walls_map=challenge.get("walls_map") or echo_walls,
+                    sprint_desk=bool(actions_cfg.get("challenge_sprint_desk", True)),
+                    min_dte=int(actions_cfg.get("challenge_min_dte", 1)),
+                    max_dte=int(actions_cfg.get("challenge_max_dte", 5)),
+                    prefer_dte=int(actions_cfg.get("challenge_prefer_dte", 2)),
+                    target_premium_min=float(actions_cfg.get("challenge_target_premium_min", 1.5)),
+                    target_premium_max=float(actions_cfg.get("challenge_target_premium_max", 2.0)),
+                    min_option_volume=int(actions_cfg.get("challenge_min_option_volume", 100)),
+                    min_option_oi=int(actions_cfg.get("challenge_min_option_oi", 200)),
+                    allow_zero_volume_if_oi=int(actions_cfg.get("challenge_allow_zero_volume_if_oi", 0)),
+                    max_ask=float(actions_cfg.get("challenge_max_ask", 2.50)),
+                    loss_cooldown_symbols=loss_cooldown_syms,
+                    pace_months=pace_months,
+                    pace_milestone_usd=float(actions_cfg.get("challenge_pace_milestone_usd", 100_000)),
+                    prefer_weekly_pace=bool(actions_cfg.get("challenge_prefer_weekly_pace", True)),
+                    current_equity=float(tracker.book.equity or tracker.book.cash or 1000),
+                    uw_flow=uw_flow,
+                    require_uw_flow=bool(actions_cfg.get("challenge_require_uw_flow", False)),
+                )
+                challenge["sync"] = sync
+                challenge["book"] = sync.get("book") or tracker.book.to_dict()
+                challenge["deadline"] = deadline
+                challenge["oct_end_pace"] = oct_end_pace_note(
+                    equity=float(tracker.book.equity or tracker.book.cash or 1000),
+                    target_usd=float(actions_cfg.get("challenge_pace_milestone_usd", 100_000)),
+                    deadline=deadline,
+                    ideal_hold_days=1.0,
+                )
+                if isinstance(beauty_monthly, dict):
+                    beauty_monthly["oct_end_pace"] = challenge["oct_end_pace"]
+                # Keep index sniper / RIP bridge tickets visible on the board after rebuild
+                try:
+                    board_tickets = list(challenge.get("tickets") or [])
+                    board_occ = {str(t.get("contract") or "") for t in board_tickets if t.get("contract")}
+                    sniper_extra = [
+                        t
+                        for t in ch_tickets
+                        if t.get("from_radar") or t.get("sniper") or str(t.get("action") or "") == "RADAR_HOT"
+                    ]
+                    for t in sniper_extra:
+                        occ = str(t.get("contract") or "")
+                        if not occ or occ in board_occ:
+                            continue
+                        board_occ.add(occ)
+                        board_tickets.insert(
+                            0,
+                            {
+                                **t,
+                                "action": "ENTRY",
+                                "pace_style": "sprint",
+                                "certainty_tier": "sniper",
+                                "recommend_reason": t.get("thesis") or "INDEX SNIPER RADAR HOT",
+                            },
+                        )
+                    challenge["tickets"] = board_tickets
+                    challenge["entry"] = [t for t in board_tickets if t.get("action") == "ENTRY"]
+                    if board_tickets and (
+                        not challenge.get("primary")
+                        or str((challenge.get("primary") or {}).get("action")) == "WAIT"
+                    ):
+                        challenge["primary"] = next(
+                            (t for t in board_tickets if t.get("action") == "ENTRY"),
+                            board_tickets[0],
+                        )
+                    counts = dict(challenge.get("counts") or {})
+                    counts["entry"] = sum(1 for t in board_tickets if t.get("action") == "ENTRY")
+                    counts["tickets"] = len(board_tickets)
+                    counts["sniper"] = sum(
+                        1 for t in board_tickets if t.get("sniper") or t.get("certainty_tier") == "sniper"
+                    )
+                    challenge["counts"] = counts
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("sniper board merge skipped: %s", exc)
+                for t in challenge.get("tickets") or []:
+                    prev = live_contracts.get((str(t.get("symbol")), str(t.get("right") or "C")))
+                    if not prev:
+                        continue
+                    for key in (
+                        "contract",
+                        "expiry",
+                        "dte",
+                        "strike",
+                        "ask",
+                        "bid",
+                        "option_last",
+                        "mark_source",
+                        "moneyness_pct",
+                        "open_interest",
+                        "volume",
+                        "target_ask",
+                        "debit_usd",
+                        "contracts_for_bankroll",
+                        "call_wall",
+                        "put_wall",
+                        "call_wall_oi",
+                        "put_wall_oi",
+                        "primary_wall",
+                        "primary_wall_side",
+                        "soft_exit",
+                        "wall_buffer_usd",
+                        "wall_exit_hint",
+                        "gex_flip",
+                        "gex_regime",
+                        "exit_plan",
+                        "reasons",
+                        "spot",
+                        "spot_source",
+                        "live_ok",
+                        "data_note",
+                    ):
+                        if t.get(key) in (None, "", "zone") and prev.get(key) not in (None, ""):
+                            t[key] = prev.get(key)
+                    # Prefer live ask from first pass when second pass fell back to zone
+                    if prev.get("ask") is not None and (
+                        t.get("ask") is None or t.get("mark_source") == "zone"
+                    ):
+                        t["ask"] = prev.get("ask")
+                        t["bid"] = prev.get("bid")
+                        t["option_last"] = prev.get("option_last")
+                        t["mark_source"] = prev.get("mark_source") or "ask"
+                        t["contract"] = prev.get("contract") or t.get("contract")
+                        t["expiry"] = prev.get("expiry") or t.get("expiry")
+                        t["dte"] = prev.get("dte") if prev.get("dte") is not None else t.get("dte")
+                        t["strike"] = prev.get("strike") if prev.get("strike") is not None else t.get("strike")
+                        if prev.get("target_ask") is not None:
+                            t["target_ask"] = prev.get("target_ask")
+                    # Second pass rebuilds without chains and demotes ENTRY→WAIT — restore action
+                    prev_action = str(prev.get("action") or "")
+                    if prev_action in {"ENTRY", "HOLD", "EXIT"} and t.get("action") == "WAIT":
+                        if t.get("ask") is not None or prev.get("ask") is not None:
+                            t["action"] = prev_action
+                            for k in (
+                                "status_detail",
+                                "enter_plan",
+                                "exit_plan",
+                                "recommend_reason",
+                                "thesis",
+                                "target_ask",
+                                "debit_usd",
+                                "contracts_for_bankroll",
+                            ):
+                                if prev.get(k) not in (None, ""):
+                                    t[k] = prev.get(k)
+                # Refresh counts after merge
+                tickets = challenge.get("tickets") or []
+                challenge["counts"] = {
+                    **(challenge.get("counts") or {}),
+                    "live_ask": sum(1 for t in tickets if t.get("ask") is not None and t.get("mark_source") != "zone"),
+                    "live_spot": sum(1 for t in tickets if t.get("spot_source") == "live"),
+                    "cache_spot": sum(1 for t in tickets if t.get("spot_source") == "cache"),
+                    "entry": sum(1 for t in tickets if t.get("action") == "ENTRY"),
+                    "hold": sum(1 for t in tickets if t.get("action") == "HOLD"),
+                    "exit": sum(1 for t in tickets if t.get("action") == "EXIT"),
+                }
+                challenge["entry"] = [t for t in tickets if t.get("action") == "ENTRY"]
+                challenge["hold"] = [t for t in tickets if t.get("action") == "HOLD"]
+                challenge["exit"] = [t for t in tickets if t.get("action") == "EXIT"]
+                # Keep just-closed flips visible this cycle (rebuild drops them from open_map)
+                just_closed = [
+                    t.to_dict()
+                    for t in tracker.book.trades
+                    if t.status == "closed" and t.id in set(sync.get("exited") or [])
+                ]
+                if just_closed:
+                    challenge["just_exited"] = just_closed
+                    # Surface as EXIT cards with P&L so the desk isn't ENTER-only after auto-exit
+                    for t in just_closed:
+                        challenge["exit"].append(
+                            {
+                                "symbol": t.get("symbol"),
+                                "right": t.get("right") or "C",
+                                "action": "EXIT",
+                                "strike": t.get("strike"),
+                                "expiry": t.get("expiry"),
+                                "contract": t.get("contract"),
+                                "ask": t.get("entry_ask"),
+                                "bid": t.get("exit_bid"),
+                                "mark": t.get("exit_bid"),
+                                "entered_at": t.get("entered_at"),
+                                "exited_at": t.get("exited_at"),
+                                "closed_at": t.get("exited_at"),
+                                "profit_pct": t.get("profit_pct"),
+                                "pnl_usd": t.get("pnl_usd"),
+                                "cash_after": t.get("cash_after"),
+                                "equity_after": t.get("equity_after"),
+                                "balance_note": t.get("balance_note"),
+                                "exit_plan": t.get("exit_reason") or t.get("last_action_detail"),
+                                "recommend_reason": t.get("exit_reason") or "Auto EXIT",
+                                "reasons": [t.get("exit_reason") or t.get("last_action_detail") or "EXIT"],
+                            }
+                        )
+                    challenge["counts"] = {
+                        **(challenge.get("counts") or {}),
+                        "exit": len(challenge["exit"]),
+                        "just_exited": len(just_closed),
+                    }
+                challenge["sync"] = sync
+                challenge["book"] = tracker.book.to_dict()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("challenge board unavailable: %s", exc)
+                challenge = {"error": str(exc), "tickets": [], "disclaimer": "Challenge board unavailable."}
+
+            odte_1k: dict = {}
+            try:
+                if bool(actions_cfg.get("odte_1k_enabled", True)):
+                    from odte_scanner.challenge.odte_1k import build_odte_1k_board, resolve_odte_1k_symbols
+                    from odte_scanner.challenge.odte_1k_tracker import Odte1kTracker
+
+                    o1k_path = Path(actions_cfg.get("odte_1k_ledger_path", "outputs/odte_1k_ledger.json"))
+                    if not o1k_path.is_absolute():
+                        o1k_path = ROOT / o1k_path
+                    o1k_tracker = Odte1kTracker(
+                        o1k_path,
+                        starting_cash=float(actions_cfg.get("odte_1k_start_usd", 1000)),
+                        max_trades_per_day=int(actions_cfg.get("odte_1k_max_trades_per_day", 2)),
+                        default_size_usd=float(actions_cfg.get("odte_1k_position_size_usd", 850)),
+                    )
+                    o1k_syms = resolve_odte_1k_symbols(
+                        actions_cfg.get("odte_1k_symbols"),
+                        config=cfg,
+                    )
+                    max_q = int(actions_cfg.get("odte_1k_max_quote_fetch", 48))
+                    # Ensure quotes for ORB symbols (capped — full focus sleeve is large)
+                    if live_marks:
+                        for s in o1k_syms[:max_q]:
+                            if s not in quotes:
+                                aliases.setdefault(s, resolve_yahoo_symbol(s, cfg))
+                                try:
+                                    q = fetch_live_quote(s, yahoo_symbol=aliases.get(s))
+                                    if q:
+                                        quotes[s] = q.to_dict()
+                                except Exception:  # noqa: BLE001
+                                    pass
+                    odte_1k = build_odte_1k_board(
+                        quotes=quotes,
+                        red_flag=red_flag_snapshot if isinstance(red_flag_snapshot, dict) else None,
+                        actions=actions if isinstance(actions, dict) else None,
+                        symbols=o1k_syms,
+                        config=cfg,
+                        open_trades=[t.to_dict() for t in o1k_tracker.open_trades()],
+                        book=o1k_tracker.book.to_dict(),
+                        starting_cash=float(actions_cfg.get("odte_1k_start_usd", 1000)),
+                        position_size_usd=float(actions_cfg.get("odte_1k_position_size_usd", 850)),
+                        position_pct=float(actions_cfg.get("odte_1k_position_pct", 0.85)),
+                        max_trades_per_day=int(actions_cfg.get("odte_1k_max_trades_per_day", 2)),
+                        max_orb_fetch=int(actions_cfg.get("odte_1k_max_orb_fetch", 20)),
+                        max_contract_fetch=int(actions_cfg.get("odte_1k_max_contract_fetch", 8)),
+                        fetch_bars=bool(actions_cfg.get("odte_1k_fetch_bars", True)) and live_marks,
+                        fetch_contracts=bool(actions_cfg.get("odte_1k_fetch_contracts", True)) and live_marks,
+                        flatten_et=str(actions_cfg.get("odte_flatten_et", "15:45")),
+                        aliases=aliases,
+                        include_backtest=bool(actions_cfg.get("odte_1k_include_backtest", True)) and not offline,
+                    )
+                    odte_1k = _uw_annotate_board(
+                        odte_1k,
+                        keys=("put_now", "call_now", "entry", "in"),
+                        hard_block=True,
+                        right_default="P",
+                    )
+                    # Auto IN on PUT_NOW when armed (zone ask is enough for paper)
+                    if bool(actions_cfg.get("odte_1k_auto_enter", True)):
+                        for sig in odte_1k.get("put_now") or []:
+                            if str(sig.get("action") or sig.get("alert_action") or "").upper() in {
+                                "WAIT",
+                                "WATCH",
+                            }:
+                                continue
+                            if not sig.get("ask"):
+                                continue
+                            if any(t.symbol == str(sig.get("symbol") or "").upper() for t in o1k_tracker.open_trades()):
+                                continue
+                            o1k_tracker.enter(sig)
+                    # Auto OUT when board says EXIT
+                    if bool(actions_cfg.get("odte_1k_auto_exit", True)):
+                        for sig in odte_1k.get("exit_now") or []:
+                            sym = str(sig.get("symbol") or "")
+                            for t in list(o1k_tracker.open_trades()):
+                                if t.symbol != sym:
+                                    continue
+                                mark = float(sig.get("bid") or sig.get("ask") or t.mark or t.entry_ask or 0)
+                                o1k_tracker.exit_trade(t.id, exit_bid=mark, reason=str(sig.get("detail") or "AUTO OUT · SELL PUT"))
+                    # Refresh book + re-decide open names after auto fills
+                    if bool(actions_cfg.get("odte_1k_auto_enter", True)) or bool(actions_cfg.get("odte_1k_auto_exit", True)):
+                        odte_1k["book"] = o1k_tracker.book.to_dict()
+                        odte_1k["cash"] = odte_1k["book"].get("cash")
+                        odte_1k["equity"] = odte_1k["book"].get("equity")
+                        odte_1k["doubled"] = odte_1k["book"].get("doubled")
+                        odte_1k["progress_2x_pct"] = odte_1k["book"].get("progress_2x_pct")
+                        odte_1k["trades_today"] = odte_1k["book"].get("trades_today")
+                        # Rebuild signals with updated open trades so OUT/HOLD cards match ledger
+                        saved_orb = odte_1k.get("orb") or {}
+                        saved_bt = odte_1k.get("backtest")
+                        odte_1k = build_odte_1k_board(
+                            quotes=quotes,
+                            red_flag=red_flag_snapshot if isinstance(red_flag_snapshot, dict) else None,
+                            actions=actions if isinstance(actions, dict) else None,
+                            symbols=o1k_syms,
+                            config=cfg,
+                            orb_map=saved_orb,
+                            open_trades=[t.to_dict() for t in o1k_tracker.open_trades()],
+                            book=o1k_tracker.book.to_dict(),
+                            starting_cash=float(actions_cfg.get("odte_1k_start_usd", 1000)),
+                            position_size_usd=float(actions_cfg.get("odte_1k_position_size_usd", 850)),
+                            position_pct=float(actions_cfg.get("odte_1k_position_pct", 0.85)),
+                            max_trades_per_day=int(actions_cfg.get("odte_1k_max_trades_per_day", 2)),
+                            max_orb_fetch=int(actions_cfg.get("odte_1k_max_orb_fetch", 20)),
+                            max_contract_fetch=0,
+                            fetch_bars=False,
+                            fetch_contracts=False,
+                            flatten_et=str(actions_cfg.get("odte_flatten_et", "15:45")),
+                            aliases=aliases,
+                            include_backtest=False,
+                            backtest=saved_bt,
+                        )
+                        odte_1k["book"] = o1k_tracker.book.to_dict()
+                        odte_1k["cash"] = odte_1k["book"].get("cash")
+                        odte_1k["equity"] = odte_1k["book"].get("equity")
+                        odte_1k["doubled"] = odte_1k["book"].get("doubled")
+                        odte_1k["progress_2x_pct"] = odte_1k["book"].get("progress_2x_pct")
+                        odte_1k["trades_today"] = odte_1k["book"].get("trades_today")
+                    else:
+                        odte_1k["book"] = o1k_tracker.book.to_dict()
+                        odte_1k["cash"] = odte_1k["book"].get("cash")
+                        odte_1k["equity"] = odte_1k["book"].get("equity")
+                        odte_1k["doubled"] = odte_1k["book"].get("doubled")
+                        odte_1k["progress_2x_pct"] = odte_1k["book"].get("progress_2x_pct")
+                        odte_1k["trades_today"] = odte_1k["book"].get("trades_today")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("odte_1k board unavailable: %s", exc)
+                odte_1k = {"error": str(exc), "put_now": [], "disclaimer": "0DTE $1K board unavailable."}
+
+            power_hour: dict = {}
+            try:
+                if bool(actions_cfg.get("power_hour_enabled", True)):
+                    from odte_scanner.signals.power_hour import (
+                        build_power_hour_board,
+                        resolve_power_hour_symbols,
+                    )
+
+                    ph_syms = resolve_power_hour_symbols(
+                        actions_cfg.get("power_hour_symbols"),
+                        config=cfg,
+                    )
+                    max_q = int(actions_cfg.get("power_hour_max_quote_fetch", 48))
+                    if live_marks:
+                        for s in (["QQQ"] + ph_syms)[:max_q]:
+                            if s not in quotes:
+                                aliases.setdefault(s, resolve_yahoo_symbol(s, cfg))
+                                try:
+                                    q = fetch_live_quote(s, yahoo_symbol=aliases.get(s))
+                                    if q:
+                                        quotes[s] = q.to_dict()
+                                except Exception:  # noqa: BLE001
+                                    pass
+                    power_hour = build_power_hour_board(
+                        quotes=quotes,
+                        symbols=ph_syms,
+                        config=cfg,
+                        fetch_bars=bool(actions_cfg.get("power_hour_fetch_bars", True)) and live_marks,
+                        max_bar_fetch=int(actions_cfg.get("power_hour_max_bar_fetch", 16)),
+                        aliases=aliases,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("power hour board unavailable: %s", exc)
+                power_hour = {"error": str(exc), "long": [], "short": [], "disclaimer": "Power Hour board unavailable."}
+
+            market = {}
+            try:
+                from odte_scanner.market import build_market_board
+
+                market = build_market_board(
+                    scores=scan.get("scores") or [],
+                    quotes=quotes,
+                    aliases=aliases,
+                    # Earnings cache only — live Yahoo warm on every snapshot starves the UI
+                    fetch_earnings=False,
+                    earnings_max_fetch=int(
+                        actions_cfg.get(
+                            "market_board_earnings_max_fetch",
+                            actions_cfg.get("challenge_earnings_max_fetch", 60),
+                        )
+                    ),
+                    win_table=win_table if isinstance(win_table, dict) else None,
+                )
+                # Keep challenge earnings watch at least as broad as market board
+                if market.get("earnings_watch") and (
+                    len(market.get("earnings_watch") or [])
+                    >= len(challenge.get("earnings_watch") or [])
+                ):
+                    challenge["earnings_watch"] = market.get("earnings_watch")
+                    challenge["earnings_watch_buckets"] = {
+                        "today": (market.get("counts") or {}).get("today", 0),
+                        "this_week": (market.get("counts") or {}).get("this_week", 0),
+                        "next_week": (market.get("counts") or {}).get("next_week", 0),
+                        "post": (market.get("counts") or {}).get("post", 0),
+                        "soon": (market.get("counts") or {}).get("soon", 0),
+                    }
+                    challenge["counts"] = {
+                        **(challenge.get("counts") or {}),
+                        "earn_today": challenge["earnings_watch_buckets"]["today"],
+                        "earn_this_week": challenge["earnings_watch_buckets"]["this_week"],
+                        "earn_next_week": challenge["earnings_watch_buckets"]["next_week"],
+                    }
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("market board unavailable: %s", exc)
+                market = {"error": str(exc), "by_earnings": [], "by_volume": [], "by_score": []}
+
+            # Unified walls map for all recommended surfaces (challenge + echo + action cards)
+            walls_by_symbol: dict[str, dict] = {}
             try:
                 from odte_scanner.options.walls import wall_exit_levels
 
@@ -5240,7 +5918,7 @@ def create_app(config_path: str | None = None) -> Flask:
                     sym = str(p.get("symbol") or "").upper()
                     if not sym:
                         continue
-                    echo_walls[sym] = {
+                    walls_by_symbol[sym] = {
                         **wall_exit_levels(
                             right="C",
                             spot=p.get("spot"),
@@ -5250,1120 +5928,494 @@ def create_app(config_path: str | None = None) -> Flask:
                         ),
                         "flip": p.get("flip"),
                         "regime": p.get("regime"),
-                        "expiry": p.get("expiry"),
-                        "dte": p.get("dte"),
+                        "exit_hint": None,
                         "source": "echo_gex",
                     }
-            except Exception:  # noqa: BLE001
-                echo_walls = {}
-
-            # $1k→$100k sleeve needs listed asks to flip ENTRY; Pages was stuck
-            # because fetch_contracts was hard-disabled and auto_enter was false.
-            loss_cd_days = int(actions_cfg.get("challenge_loss_cooldown_days", 5))
-            loss_cooldown_syms = tracker.recent_loss_symbols(cooldown_days=loss_cd_days)
-            from odte_scanner.signals.beauty_monthly import days_to_deadline, oct_end_pace_note
-
-            deadline = str(actions_cfg.get("challenge_deadline") or "2026-10-31")
-            days_left = days_to_deadline(deadline)
-            pace_months = max(0.25, days_left / 30.4375)
-            # Reuse UW board already fetched for BUY/SELL NOW (do not double-hit API)
-            if not isinstance(uw_flow, dict):
-                uw_flow = {"ok": False, "configured": False, "skipped": True}
-            challenge = build_challenge_board(
-                win_table=win_table if isinstance(win_table, dict) else None,
-                scores=scan.get("scores") or [],
-                quotes=quotes,
-                aliases=aliases,
-                open_trades=[t.to_dict() for t in tracker.book.trades],
-                start_usd=float(actions_cfg.get("challenge_start_usd", 1000)),
-                target_usd=float(actions_cfg.get("challenge_target_usd", 100_000)),
-                flips=int(actions_cfg.get("challenge_flips", 15)),
-                max_tickets=int(actions_cfg.get("challenge_max_tickets", 10)),
-                fetch_contracts=fetch_ch_contracts,
-                fetch_earnings=bool(actions_cfg.get("challenge_fetch_earnings", True)) and not offline,
-                earnings_max_fetch=int(actions_cfg.get("challenge_earnings_max_fetch", 36)),
-                fetch_walls=bool(actions_cfg.get("challenge_fetch_walls", True)) and not offline,
-                wall_buffer_usd=float(actions_cfg.get("wall_exit_buffer_usd", 0.10)),
-                walls_map=echo_walls,
-                sprint_desk=bool(actions_cfg.get("challenge_sprint_desk", True)),
-                min_dte=int(actions_cfg.get("challenge_min_dte", 1)),
-                max_dte=int(actions_cfg.get("challenge_max_dte", 5)),
-                prefer_dte=int(actions_cfg.get("challenge_prefer_dte", 2)),
-                target_premium_min=float(actions_cfg.get("challenge_target_premium_min", 1.5)),
-                target_premium_max=float(actions_cfg.get("challenge_target_premium_max", 2.0)),
-                min_option_volume=int(actions_cfg.get("challenge_min_option_volume", 100)),
-                min_option_oi=int(actions_cfg.get("challenge_min_option_oi", 200)),
-                allow_zero_volume_if_oi=int(actions_cfg.get("challenge_allow_zero_volume_if_oi", 0)),
-                max_ask=float(actions_cfg.get("challenge_max_ask", 2.50)),
-                loss_cooldown_symbols=loss_cooldown_syms,
-                pace_months=pace_months,
-                pace_milestone_usd=float(actions_cfg.get("challenge_pace_milestone_usd", 100_000)),
-                prefer_weekly_pace=bool(actions_cfg.get("challenge_prefer_weekly_pace", True)),
-                current_equity=float(tracker.book.equity or tracker.book.cash or 1000),
-                uw_flow=uw_flow,
-                require_uw_flow=bool(actions_cfg.get("challenge_require_uw_flow", False)),
-            )
-            live_contracts = {
-                (str(t.get("symbol")), str(t.get("right") or "C")): t
-                for t in (challenge.get("tickets") or [])
-                if t.get("ask") is not None or t.get("contract") or t.get("call_wall") is not None
-            }
-            # Refresh marks again right before EXIT sync (board may have open bid)
-            if fetch_ch_contracts and tracker.open_trades():
-                ch_live_marks = {**ch_live_marks, **tracker.refresh_open_marks(aliases=aliases)}
-            # Feed RIP megas + index RADAR HOT (SPY/QQQ sniper) into challenge auto-enter
-            ch_tickets = list(challenge.get("tickets") or [])
-            seen_occ = {
-                str(t.get("contract") or "")
-                for t in ch_tickets
-                if t.get("contract")
-            }
-            try:
-                rip_buys = list((rip_radar or {}).get("buy_rip") or (rip_radar or {}).get("buy_now") or [])
-                for r in rip_buys[:6]:
-                    occ = str(r.get("contract") or "")
-                    if not occ or occ in seen_occ or not r.get("ask"):
+                    walls_by_symbol[sym]["exit_hint"] = walls_by_symbol[sym].get("exit_hint")
+                for t in (challenge.get("tickets") or []):
+                    sym = str(t.get("symbol") or "").upper()
+                    if not sym or t.get("call_wall") is None and t.get("put_wall") is None:
                         continue
-                    seen_occ.add(occ)
-                    ch_tickets.append(
-                        {
-                            **r,
-                            "action": "BUY_RIP",
-                            "right": str(r.get("right") or "C").upper(),
-                            "hold_style": "sprint",
-                            "horizon": "sprint",
-                            "hold_min_days": 0,
-                            "hold_max_days": 1,
-                            "hold_ideal_days": 1,
-                            "target_premium_mult": float(r.get("target_premium_mult") or 1.5),
-                            "ensemble_score": float(r.get("ensemble_score") or r.get("strength") or 70),
-                            "thesis": r.get("detail") or r.get("headline") or "BUY_RIP → challenge",
-                        }
-                    )
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("rip→challenge bridge skipped: %s", exc)
-            # Index sniper: RADAR HOT SPY/QQQ/IWM wings → challenge (SPX via SPY)
-            if bool(actions_cfg.get("challenge_sniper_enabled", True)):
-                try:
-                    sniper_syms = {
-                        str(s).upper()
-                        for s in (
-                            actions_cfg.get("challenge_sniper_symbols")
-                            or ["SPY", "QQQ", "IWM"]
-                        )
-                    }
-                    sniper_syms |= {"SPY", "QQQ", "IWM"}  # always keep core trio
-                    hot = list((radar or {}).get("hot") or [])
-                    # Prefer cheapest liquid wing per symbol
-                    by_sym: dict[str, dict] = {}
-                    for r in hot:
-                        sym = str(r.get("symbol") or "").upper()
-                        if sym == "SPX":
-                            sym = "SPY"
-                        if sym not in sniper_syms:
-                            continue
-                        occ = str(r.get("contract") or "")
-                        ask = r.get("ask")
-                        if not occ or ask in (None, 0) or occ in seen_occ:
-                            continue
-                        prev = by_sym.get(sym)
-                        if prev is None or float(ask) < float(prev.get("ask") or 1e9):
-                            by_sym[sym] = dict(r, symbol=sym)
-                    for sym in ("SPY", "QQQ", "IWM"):
-                        r = by_sym.get(sym)
-                        if not r:
-                            continue
-                        occ = str(r.get("contract") or "")
-                        seen_occ.add(occ)
-                        right = str(r.get("right") or "").upper()
-                        if right not in {"C", "P"}:
-                            right = occ[-9] if len(occ) >= 15 and occ[-9] in {"C", "P"} else "C"
-                        ch_tickets.insert(
-                            0,
-                            {
-                                **r,
-                                "symbol": sym,
-                                "action": "RADAR_HOT",
-                                "right": right,
-                                "sniper": True,
-                                "from_radar": True,
-                                "hold_style": "sprint",
-                                "horizon": "sprint",
-                                "hold_min_days": 0,
-                                "hold_max_days": 1,
-                                "hold_ideal_days": 0,
-                                "target_premium_mult": float(
-                                    actions_cfg.get("challenge_sniper_target_mult", 1.2)
-                                ),
-                                "stop_loss_pct": float(
-                                    actions_cfg.get("challenge_sniper_stop_pct", 20)
-                                ),
-                                "thesis": r.get("detail")
-                                or r.get("headline")
-                                or f"INDEX SNIPER {sym} RADAR HOT same-day → challenge",
-                            },
-                        )
-                except Exception as exc:  # noqa: BLE001
-                    logger.debug("radar→challenge sniper bridge skipped: %s", exc)
-            sync = tracker.sync_from_tickets(
-                ch_tickets,
-                quotes=quotes,
-                auto_enter=bool(actions_cfg.get("challenge_auto_enter", True)),
-                auto_exit=bool(actions_cfg.get("challenge_auto_exit", True)),
-                max_open=int(actions_cfg.get("challenge_max_open", 1)),
-                sprint_desk=bool(actions_cfg.get("challenge_sprint_desk", True)),
-                live_marks=ch_live_marks,
-                loss_cooldown_days=int(actions_cfg.get("challenge_loss_cooldown_days", 7)),
-                max_cash_frac=float(actions_cfg.get("challenge_max_cash_frac", 0.30)),
-                max_contracts=int(actions_cfg.get("challenge_max_contracts", 2)),
-                prefer_calls=bool(actions_cfg.get("challenge_prefer_calls", True)),
-                prefer_core_megas=bool(actions_cfg.get("challenge_prefer_core_megas", True)),
-                min_ensemble=float(actions_cfg.get("challenge_min_ensemble", 60)),
-                mega_min_ensemble=(
-                    float(actions_cfg["challenge_mega_min_ensemble"])
-                    if actions_cfg.get("challenge_mega_min_ensemble") is not None
-                    else 55.0
-                ),
-                min_ask=float(actions_cfg.get("challenge_min_ask", 0.20)),
-                max_ask=(
-                    float(actions_cfg["challenge_max_ask"])
-                    if actions_cfg.get("challenge_max_ask") is not None
-                    else 2.50
-                ),
-                max_consecutive_losses=int(actions_cfg.get("challenge_max_consecutive_losses", 3)),
-            )
-            challenge["sync"] = sync
-            challenge["book"] = sync.get("book") or tracker.book.to_dict()
-            challenge["deadline"] = deadline
-            challenge["oct_end_pace"] = oct_end_pace_note(
-                equity=float(tracker.book.equity or tracker.book.cash or 1000),
-                target_usd=float(actions_cfg.get("challenge_pace_milestone_usd", 100_000)),
-                deadline=deadline,
-                ideal_hold_days=1.0,
-            )
-            if isinstance(beauty_monthly, dict):
-                beauty_monthly["oct_end_pace"] = challenge["oct_end_pace"]
-            # Rebuild statuses after sync; keep prior contract fields when present
-            challenge = build_challenge_board(
-                win_table=win_table if isinstance(win_table, dict) else None,
-                scores=scan.get("scores") or [],
-                quotes=quotes,
-                aliases=aliases,
-                open_trades=[t.to_dict() for t in tracker.book.trades],
-                start_usd=float(actions_cfg.get("challenge_start_usd", 1000)),
-                target_usd=float(actions_cfg.get("challenge_target_usd", 100_000)),
-                flips=int(actions_cfg.get("challenge_flips", 15)),
-                max_tickets=int(actions_cfg.get("challenge_max_tickets", 10)),
-                fetch_contracts=False,
-                fetch_earnings=False,
-                earnings_max_fetch=int(actions_cfg.get("challenge_earnings_max_fetch", 36)),
-                fetch_walls=False,
-                wall_buffer_usd=float(actions_cfg.get("wall_exit_buffer_usd", 0.10)),
-                walls_map=challenge.get("walls_map") or echo_walls,
-                sprint_desk=bool(actions_cfg.get("challenge_sprint_desk", True)),
-                min_dte=int(actions_cfg.get("challenge_min_dte", 1)),
-                max_dte=int(actions_cfg.get("challenge_max_dte", 5)),
-                prefer_dte=int(actions_cfg.get("challenge_prefer_dte", 2)),
-                target_premium_min=float(actions_cfg.get("challenge_target_premium_min", 1.5)),
-                target_premium_max=float(actions_cfg.get("challenge_target_premium_max", 2.0)),
-                min_option_volume=int(actions_cfg.get("challenge_min_option_volume", 100)),
-                min_option_oi=int(actions_cfg.get("challenge_min_option_oi", 200)),
-                allow_zero_volume_if_oi=int(actions_cfg.get("challenge_allow_zero_volume_if_oi", 0)),
-                max_ask=float(actions_cfg.get("challenge_max_ask", 2.50)),
-                loss_cooldown_symbols=loss_cooldown_syms,
-                pace_months=pace_months,
-                pace_milestone_usd=float(actions_cfg.get("challenge_pace_milestone_usd", 100_000)),
-                prefer_weekly_pace=bool(actions_cfg.get("challenge_prefer_weekly_pace", True)),
-                current_equity=float(tracker.book.equity or tracker.book.cash or 1000),
-                uw_flow=uw_flow,
-                require_uw_flow=bool(actions_cfg.get("challenge_require_uw_flow", False)),
-            )
-            challenge["sync"] = sync
-            challenge["book"] = sync.get("book") or tracker.book.to_dict()
-            challenge["deadline"] = deadline
-            challenge["oct_end_pace"] = oct_end_pace_note(
-                equity=float(tracker.book.equity or tracker.book.cash or 1000),
-                target_usd=float(actions_cfg.get("challenge_pace_milestone_usd", 100_000)),
-                deadline=deadline,
-                ideal_hold_days=1.0,
-            )
-            if isinstance(beauty_monthly, dict):
-                beauty_monthly["oct_end_pace"] = challenge["oct_end_pace"]
-            # Keep index sniper / RIP bridge tickets visible on the board after rebuild
-            try:
-                board_tickets = list(challenge.get("tickets") or [])
-                board_occ = {str(t.get("contract") or "") for t in board_tickets if t.get("contract")}
-                sniper_extra = [
-                    t
-                    for t in ch_tickets
-                    if t.get("from_radar") or t.get("sniper") or str(t.get("action") or "") == "RADAR_HOT"
-                ]
-                for t in sniper_extra:
-                    occ = str(t.get("contract") or "")
-                    if not occ or occ in board_occ:
-                        continue
-                    board_occ.add(occ)
-                    board_tickets.insert(
-                        0,
-                        {
-                            **t,
-                            "action": "ENTRY",
-                            "pace_style": "sprint",
-                            "certainty_tier": "sniper",
-                            "recommend_reason": t.get("thesis") or "INDEX SNIPER RADAR HOT",
-                        },
-                    )
-                challenge["tickets"] = board_tickets
-                challenge["entry"] = [t for t in board_tickets if t.get("action") == "ENTRY"]
-                if board_tickets and (
-                    not challenge.get("primary")
-                    or str((challenge.get("primary") or {}).get("action")) == "WAIT"
-                ):
-                    challenge["primary"] = next(
-                        (t for t in board_tickets if t.get("action") == "ENTRY"),
-                        board_tickets[0],
-                    )
-                counts = dict(challenge.get("counts") or {})
-                counts["entry"] = sum(1 for t in board_tickets if t.get("action") == "ENTRY")
-                counts["tickets"] = len(board_tickets)
-                counts["sniper"] = sum(
-                    1 for t in board_tickets if t.get("sniper") or t.get("certainty_tier") == "sniper"
-                )
-                challenge["counts"] = counts
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("sniper board merge skipped: %s", exc)
-            for t in challenge.get("tickets") or []:
-                prev = live_contracts.get((str(t.get("symbol")), str(t.get("right") or "C")))
-                if not prev:
-                    continue
-                for key in (
-                    "contract",
-                    "expiry",
-                    "dte",
-                    "strike",
-                    "ask",
-                    "bid",
-                    "option_last",
-                    "mark_source",
-                    "moneyness_pct",
-                    "open_interest",
-                    "volume",
-                    "target_ask",
-                    "debit_usd",
-                    "contracts_for_bankroll",
-                    "call_wall",
-                    "put_wall",
-                    "call_wall_oi",
-                    "put_wall_oi",
-                    "primary_wall",
-                    "primary_wall_side",
-                    "soft_exit",
-                    "wall_buffer_usd",
-                    "wall_exit_hint",
-                    "gex_flip",
-                    "gex_regime",
-                    "exit_plan",
-                    "reasons",
-                    "spot",
-                    "spot_source",
-                    "live_ok",
-                    "data_note",
-                ):
-                    if t.get(key) in (None, "", "zone") and prev.get(key) not in (None, ""):
-                        t[key] = prev.get(key)
-                # Prefer live ask from first pass when second pass fell back to zone
-                if prev.get("ask") is not None and (
-                    t.get("ask") is None or t.get("mark_source") == "zone"
-                ):
-                    t["ask"] = prev.get("ask")
-                    t["bid"] = prev.get("bid")
-                    t["option_last"] = prev.get("option_last")
-                    t["mark_source"] = prev.get("mark_source") or "ask"
-                    t["contract"] = prev.get("contract") or t.get("contract")
-                    t["expiry"] = prev.get("expiry") or t.get("expiry")
-                    t["dte"] = prev.get("dte") if prev.get("dte") is not None else t.get("dte")
-                    t["strike"] = prev.get("strike") if prev.get("strike") is not None else t.get("strike")
-                    if prev.get("target_ask") is not None:
-                        t["target_ask"] = prev.get("target_ask")
-                # Second pass rebuilds without chains and demotes ENTRY→WAIT — restore action
-                prev_action = str(prev.get("action") or "")
-                if prev_action in {"ENTRY", "HOLD", "EXIT"} and t.get("action") == "WAIT":
-                    if t.get("ask") is not None or prev.get("ask") is not None:
-                        t["action"] = prev_action
-                        for k in (
-                            "status_detail",
-                            "enter_plan",
-                            "exit_plan",
-                            "recommend_reason",
-                            "thesis",
-                            "target_ask",
-                            "debit_usd",
-                            "contracts_for_bankroll",
-                        ):
-                            if prev.get(k) not in (None, ""):
-                                t[k] = prev.get(k)
-            # Refresh counts after merge
-            tickets = challenge.get("tickets") or []
-            challenge["counts"] = {
-                **(challenge.get("counts") or {}),
-                "live_ask": sum(1 for t in tickets if t.get("ask") is not None and t.get("mark_source") != "zone"),
-                "live_spot": sum(1 for t in tickets if t.get("spot_source") == "live"),
-                "cache_spot": sum(1 for t in tickets if t.get("spot_source") == "cache"),
-                "entry": sum(1 for t in tickets if t.get("action") == "ENTRY"),
-                "hold": sum(1 for t in tickets if t.get("action") == "HOLD"),
-                "exit": sum(1 for t in tickets if t.get("action") == "EXIT"),
-            }
-            challenge["entry"] = [t for t in tickets if t.get("action") == "ENTRY"]
-            challenge["hold"] = [t for t in tickets if t.get("action") == "HOLD"]
-            challenge["exit"] = [t for t in tickets if t.get("action") == "EXIT"]
-            # Keep just-closed flips visible this cycle (rebuild drops them from open_map)
-            just_closed = [
-                t.to_dict()
-                for t in tracker.book.trades
-                if t.status == "closed" and t.id in set(sync.get("exited") or [])
-            ]
-            if just_closed:
-                challenge["just_exited"] = just_closed
-                # Surface as EXIT cards with P&L so the desk isn't ENTER-only after auto-exit
-                for t in just_closed:
-                    challenge["exit"].append(
-                        {
-                            "symbol": t.get("symbol"),
-                            "right": t.get("right") or "C",
-                            "action": "EXIT",
-                            "strike": t.get("strike"),
-                            "expiry": t.get("expiry"),
-                            "contract": t.get("contract"),
-                            "ask": t.get("entry_ask"),
-                            "bid": t.get("exit_bid"),
-                            "mark": t.get("exit_bid"),
-                            "entered_at": t.get("entered_at"),
-                            "exited_at": t.get("exited_at"),
-                            "closed_at": t.get("exited_at"),
-                            "profit_pct": t.get("profit_pct"),
-                            "pnl_usd": t.get("pnl_usd"),
-                            "cash_after": t.get("cash_after"),
-                            "equity_after": t.get("equity_after"),
-                            "balance_note": t.get("balance_note"),
-                            "exit_plan": t.get("exit_reason") or t.get("last_action_detail"),
-                            "recommend_reason": t.get("exit_reason") or "Auto EXIT",
-                            "reasons": [t.get("exit_reason") or t.get("last_action_detail") or "EXIT"],
-                        }
-                    )
-                challenge["counts"] = {
-                    **(challenge.get("counts") or {}),
-                    "exit": len(challenge["exit"]),
-                    "just_exited": len(just_closed),
-                }
-            challenge["sync"] = sync
-            challenge["book"] = tracker.book.to_dict()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("challenge board unavailable: %s", exc)
-            challenge = {"error": str(exc), "tickets": [], "disclaimer": "Challenge board unavailable."}
-
-        odte_1k: dict = {}
-        try:
-            if bool(actions_cfg.get("odte_1k_enabled", True)):
-                from odte_scanner.challenge.odte_1k import build_odte_1k_board, resolve_odte_1k_symbols
-                from odte_scanner.challenge.odte_1k_tracker import Odte1kTracker
-
-                o1k_path = Path(actions_cfg.get("odte_1k_ledger_path", "outputs/odte_1k_ledger.json"))
-                if not o1k_path.is_absolute():
-                    o1k_path = ROOT / o1k_path
-                o1k_tracker = Odte1kTracker(
-                    o1k_path,
-                    starting_cash=float(actions_cfg.get("odte_1k_start_usd", 1000)),
-                    max_trades_per_day=int(actions_cfg.get("odte_1k_max_trades_per_day", 2)),
-                    default_size_usd=float(actions_cfg.get("odte_1k_position_size_usd", 850)),
-                )
-                o1k_syms = resolve_odte_1k_symbols(
-                    actions_cfg.get("odte_1k_symbols"),
-                    config=cfg,
-                )
-                max_q = int(actions_cfg.get("odte_1k_max_quote_fetch", 48))
-                # Ensure quotes for ORB symbols (capped — full focus sleeve is large)
-                if live_marks:
-                    for s in o1k_syms[:max_q]:
-                        if s not in quotes:
-                            aliases.setdefault(s, resolve_yahoo_symbol(s, cfg))
-                            try:
-                                q = fetch_live_quote(s, yahoo_symbol=aliases.get(s))
-                                if q:
-                                    quotes[s] = q.to_dict()
-                            except Exception:  # noqa: BLE001
-                                pass
-                odte_1k = build_odte_1k_board(
-                    quotes=quotes,
-                    red_flag=red_flag_snapshot if isinstance(red_flag_snapshot, dict) else None,
-                    actions=actions if isinstance(actions, dict) else None,
-                    symbols=o1k_syms,
-                    config=cfg,
-                    open_trades=[t.to_dict() for t in o1k_tracker.open_trades()],
-                    book=o1k_tracker.book.to_dict(),
-                    starting_cash=float(actions_cfg.get("odte_1k_start_usd", 1000)),
-                    position_size_usd=float(actions_cfg.get("odte_1k_position_size_usd", 850)),
-                    position_pct=float(actions_cfg.get("odte_1k_position_pct", 0.85)),
-                    max_trades_per_day=int(actions_cfg.get("odte_1k_max_trades_per_day", 2)),
-                    max_orb_fetch=int(actions_cfg.get("odte_1k_max_orb_fetch", 20)),
-                    max_contract_fetch=int(actions_cfg.get("odte_1k_max_contract_fetch", 8)),
-                    fetch_bars=bool(actions_cfg.get("odte_1k_fetch_bars", True)) and live_marks,
-                    fetch_contracts=bool(actions_cfg.get("odte_1k_fetch_contracts", True)) and live_marks,
-                    flatten_et=str(actions_cfg.get("odte_flatten_et", "15:45")),
-                    aliases=aliases,
-                    include_backtest=bool(actions_cfg.get("odte_1k_include_backtest", True)) and not offline,
-                )
-                odte_1k = _uw_annotate_board(
-                    odte_1k,
-                    keys=("put_now", "call_now", "entry", "in"),
-                    hard_block=True,
-                    right_default="P",
-                )
-                # Auto IN on PUT_NOW when armed (zone ask is enough for paper)
-                if bool(actions_cfg.get("odte_1k_auto_enter", True)):
-                    for sig in odte_1k.get("put_now") or []:
-                        if str(sig.get("action") or sig.get("alert_action") or "").upper() in {
-                            "WAIT",
-                            "WATCH",
-                        }:
-                            continue
-                        if not sig.get("ask"):
-                            continue
-                        if any(t.symbol == str(sig.get("symbol") or "").upper() for t in o1k_tracker.open_trades()):
-                            continue
-                        o1k_tracker.enter(sig)
-                # Auto OUT when board says EXIT
-                if bool(actions_cfg.get("odte_1k_auto_exit", True)):
-                    for sig in odte_1k.get("exit_now") or []:
-                        sym = str(sig.get("symbol") or "")
-                        for t in list(o1k_tracker.open_trades()):
-                            if t.symbol != sym:
-                                continue
-                            mark = float(sig.get("bid") or sig.get("ask") or t.mark or t.entry_ask or 0)
-                            o1k_tracker.exit_trade(t.id, exit_bid=mark, reason=str(sig.get("detail") or "AUTO OUT · SELL PUT"))
-                # Refresh book + re-decide open names after auto fills
-                if bool(actions_cfg.get("odte_1k_auto_enter", True)) or bool(actions_cfg.get("odte_1k_auto_exit", True)):
-                    odte_1k["book"] = o1k_tracker.book.to_dict()
-                    odte_1k["cash"] = odte_1k["book"].get("cash")
-                    odte_1k["equity"] = odte_1k["book"].get("equity")
-                    odte_1k["doubled"] = odte_1k["book"].get("doubled")
-                    odte_1k["progress_2x_pct"] = odte_1k["book"].get("progress_2x_pct")
-                    odte_1k["trades_today"] = odte_1k["book"].get("trades_today")
-                    # Rebuild signals with updated open trades so OUT/HOLD cards match ledger
-                    saved_orb = odte_1k.get("orb") or {}
-                    saved_bt = odte_1k.get("backtest")
-                    odte_1k = build_odte_1k_board(
-                        quotes=quotes,
-                        red_flag=red_flag_snapshot if isinstance(red_flag_snapshot, dict) else None,
-                        actions=actions if isinstance(actions, dict) else None,
-                        symbols=o1k_syms,
-                        config=cfg,
-                        orb_map=saved_orb,
-                        open_trades=[t.to_dict() for t in o1k_tracker.open_trades()],
-                        book=o1k_tracker.book.to_dict(),
-                        starting_cash=float(actions_cfg.get("odte_1k_start_usd", 1000)),
-                        position_size_usd=float(actions_cfg.get("odte_1k_position_size_usd", 850)),
-                        position_pct=float(actions_cfg.get("odte_1k_position_pct", 0.85)),
-                        max_trades_per_day=int(actions_cfg.get("odte_1k_max_trades_per_day", 2)),
-                        max_orb_fetch=int(actions_cfg.get("odte_1k_max_orb_fetch", 20)),
-                        max_contract_fetch=0,
-                        fetch_bars=False,
-                        fetch_contracts=False,
-                        flatten_et=str(actions_cfg.get("odte_flatten_et", "15:45")),
-                        aliases=aliases,
-                        include_backtest=False,
-                        backtest=saved_bt,
-                    )
-                    odte_1k["book"] = o1k_tracker.book.to_dict()
-                    odte_1k["cash"] = odte_1k["book"].get("cash")
-                    odte_1k["equity"] = odte_1k["book"].get("equity")
-                    odte_1k["doubled"] = odte_1k["book"].get("doubled")
-                    odte_1k["progress_2x_pct"] = odte_1k["book"].get("progress_2x_pct")
-                    odte_1k["trades_today"] = odte_1k["book"].get("trades_today")
-                else:
-                    odte_1k["book"] = o1k_tracker.book.to_dict()
-                    odte_1k["cash"] = odte_1k["book"].get("cash")
-                    odte_1k["equity"] = odte_1k["book"].get("equity")
-                    odte_1k["doubled"] = odte_1k["book"].get("doubled")
-                    odte_1k["progress_2x_pct"] = odte_1k["book"].get("progress_2x_pct")
-                    odte_1k["trades_today"] = odte_1k["book"].get("trades_today")
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("odte_1k board unavailable: %s", exc)
-            odte_1k = {"error": str(exc), "put_now": [], "disclaimer": "0DTE $1K board unavailable."}
-
-        power_hour: dict = {}
-        try:
-            if bool(actions_cfg.get("power_hour_enabled", True)):
-                from odte_scanner.signals.power_hour import (
-                    build_power_hour_board,
-                    resolve_power_hour_symbols,
-                )
-
-                ph_syms = resolve_power_hour_symbols(
-                    actions_cfg.get("power_hour_symbols"),
-                    config=cfg,
-                )
-                max_q = int(actions_cfg.get("power_hour_max_quote_fetch", 48))
-                if live_marks:
-                    for s in (["QQQ"] + ph_syms)[:max_q]:
-                        if s not in quotes:
-                            aliases.setdefault(s, resolve_yahoo_symbol(s, cfg))
-                            try:
-                                q = fetch_live_quote(s, yahoo_symbol=aliases.get(s))
-                                if q:
-                                    quotes[s] = q.to_dict()
-                            except Exception:  # noqa: BLE001
-                                pass
-                power_hour = build_power_hour_board(
-                    quotes=quotes,
-                    symbols=ph_syms,
-                    config=cfg,
-                    fetch_bars=bool(actions_cfg.get("power_hour_fetch_bars", True)) and live_marks,
-                    max_bar_fetch=int(actions_cfg.get("power_hour_max_bar_fetch", 16)),
-                    aliases=aliases,
-                )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("power hour board unavailable: %s", exc)
-            power_hour = {"error": str(exc), "long": [], "short": [], "disclaimer": "Power Hour board unavailable."}
-
-        market = {}
-        try:
-            from odte_scanner.market import build_market_board
-
-            market = build_market_board(
-                scores=scan.get("scores") or [],
-                quotes=quotes,
-                aliases=aliases,
-                # Earnings cache only — live Yahoo warm on every snapshot starves the UI
-                fetch_earnings=False,
-                earnings_max_fetch=int(
-                    actions_cfg.get(
-                        "market_board_earnings_max_fetch",
-                        actions_cfg.get("challenge_earnings_max_fetch", 60),
-                    )
-                ),
-                win_table=win_table if isinstance(win_table, dict) else None,
-            )
-            # Keep challenge earnings watch at least as broad as market board
-            if market.get("earnings_watch") and (
-                len(market.get("earnings_watch") or [])
-                >= len(challenge.get("earnings_watch") or [])
-            ):
-                challenge["earnings_watch"] = market.get("earnings_watch")
-                challenge["earnings_watch_buckets"] = {
-                    "today": (market.get("counts") or {}).get("today", 0),
-                    "this_week": (market.get("counts") or {}).get("this_week", 0),
-                    "next_week": (market.get("counts") or {}).get("next_week", 0),
-                    "post": (market.get("counts") or {}).get("post", 0),
-                    "soon": (market.get("counts") or {}).get("soon", 0),
-                }
-                challenge["counts"] = {
-                    **(challenge.get("counts") or {}),
-                    "earn_today": challenge["earnings_watch_buckets"]["today"],
-                    "earn_this_week": challenge["earnings_watch_buckets"]["this_week"],
-                    "earn_next_week": challenge["earnings_watch_buckets"]["next_week"],
-                }
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("market board unavailable: %s", exc)
-            market = {"error": str(exc), "by_earnings": [], "by_volume": [], "by_score": []}
-
-        # Unified walls map for all recommended surfaces (challenge + echo + action cards)
-        walls_by_symbol: dict[str, dict] = {}
-        try:
-            from odte_scanner.options.walls import wall_exit_levels
-
-            for p in ((echo.get("dealer_edge") or {}).get("profiles") or []):
-                sym = str(p.get("symbol") or "").upper()
-                if not sym:
-                    continue
-                walls_by_symbol[sym] = {
-                    **wall_exit_levels(
-                        right="C",
-                        spot=p.get("spot"),
-                        call_wall=p.get("call_wall"),
-                        put_wall=p.get("put_wall"),
-                        buffer_usd=float(actions_cfg.get("wall_exit_buffer_usd", 0.10)),
-                    ),
-                    "flip": p.get("flip"),
-                    "regime": p.get("regime"),
-                    "exit_hint": None,
-                    "source": "echo_gex",
-                }
-                walls_by_symbol[sym]["exit_hint"] = walls_by_symbol[sym].get("exit_hint")
-            for t in (challenge.get("tickets") or []):
-                sym = str(t.get("symbol") or "").upper()
-                if not sym or t.get("call_wall") is None and t.get("put_wall") is None:
-                    continue
-                right = str(t.get("right") or "C").upper()
-                refreshed_w = wall_exit_levels(
-                    right=right,
-                    spot=t.get("spot") or t.get("live_last"),
-                    call_wall=t.get("call_wall"),
-                    put_wall=t.get("put_wall"),
-                    buffer_usd=float(actions_cfg.get("wall_exit_buffer_usd", 0.10)),
-                )
-                walls_by_symbol[sym] = {
-                    "call_wall": t.get("call_wall"),
-                    "put_wall": t.get("put_wall"),
-                    "call_wall_oi": t.get("call_wall_oi"),
-                    "put_wall_oi": t.get("put_wall_oi"),
-                    "primary_wall": t.get("primary_wall"),
-                    "primary_wall_side": t.get("primary_wall_side"),
-                    "soft_exit": refreshed_w.get("soft_exit") or t.get("soft_exit"),
-                    "wall_buffer_usd": t.get("wall_buffer_usd"),
-                    "exit_hint": refreshed_w.get("exit_hint") or t.get("wall_exit_hint"),
-                    "wall_exit_hint": refreshed_w.get("exit_hint") or t.get("wall_exit_hint"),
-                    "flip": t.get("gex_flip"),
-                    "regime": t.get("gex_regime"),
-                    "right": right,
-                    "source": "challenge",
-                }
-            # Soft-exit hint for long bias on action-card names using call wall
-            for sym, w in list(walls_by_symbol.items()):
-                if w.get("soft_exit") is None and w.get("call_wall") is not None:
+                    right = str(t.get("right") or "C").upper()
                     refreshed_w = wall_exit_levels(
-                        right="C",
-                        spot=None,
-                        call_wall=w.get("call_wall"),
-                        put_wall=w.get("put_wall"),
-                        call_wall_oi=w.get("call_wall_oi"),
-                        put_wall_oi=w.get("put_wall_oi"),
+                        right=right,
+                        spot=t.get("spot") or t.get("live_last"),
+                        call_wall=t.get("call_wall"),
+                        put_wall=t.get("put_wall"),
                         buffer_usd=float(actions_cfg.get("wall_exit_buffer_usd", 0.10)),
                     )
-                    walls_by_symbol[sym] = {**w, **refreshed_w, "exit_hint": refreshed_w.get("exit_hint")}
-            # Attach walls onto market board rows for Screener
-            for key in ("by_earnings", "by_volume", "by_score"):
-                for row in market.get(key) or []:
-                    w = walls_by_symbol.get(str(row.get("symbol") or "").upper())
-                    if not w:
-                        continue
-                    row["call_wall"] = w.get("call_wall")
-                    row["put_wall"] = w.get("put_wall")
-                    row["soft_exit"] = w.get("soft_exit")
-                    row["wall_exit_hint"] = w.get("exit_hint") or w.get("wall_exit_hint")
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("walls_by_symbol merge failed: %s", exc)
-            walls_by_symbol = {}
-
-        # Persist recommendation history (lottery / challenge / 0DTE / weekly / swing)
-        rec_log_payload: dict = {}
-        try:
-            from odte_scanner.trading.rec_log import RecommendationLog
-
-            rec_path = Path(actions_cfg.get("rec_log_path", "outputs/recommendation_log.json"))
-            if not rec_path.is_absolute():
-                rec_path = ROOT / rec_path
-            rlog = RecommendationLog(rec_path)
-            rlog.sync_all(
-                lottery=lottery,
-                challenge=challenge,
-                actions=actions,
-                action_cards=scan.get("action_cards") or {},
-                radar=radar,
-                journal=journal,
-                odte_1k=odte_1k,
-            )
-            by_section = {
-                "lottery": rlog.board(section="lottery", limit=30),
-                "challenge": rlog.board(section="challenge", limit=30),
-                "odte_1k": rlog.board(section="odte_1k", limit=30),
-                "odte": rlog.board(section="odte", limit=30),
-                "weekly": rlog.board(section="weekly", limit=30),
-                "swing": rlog.board(section="swing", limit=30),
-                "radar": rlog.board(section="radar", limit=30),
-            }
-            rec_log_payload = {
-                **rlog.board(limit=50),
-                "by_section": by_section,
-                "lottery": by_section["lottery"],
-                "challenge": by_section["challenge"],
-                "odte_1k": by_section["odte_1k"],
-                "odte": by_section["odte"],
-                "weekly": by_section["weekly"],
-                "swing": by_section["swing"],
-                "radar": by_section["radar"],
-            }
-            if insights and isinstance(insights, dict):
-                perf = (insights.get("performance") or {})
-                if perf.get("realized_pnl_usd") is not None:
-                    rec_log_payload["paper_pnl_usd"] = perf["realized_pnl_usd"]
-                    rec_log_payload["journal_pnl_usd"] = perf["realized_pnl_usd"]
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("recommendation log unavailable: %s", exc)
-            rec_log_payload = {"error": str(exc), "open_recs": [], "closed_recs": [], "by_section": {}}
-
-        # BUY/SELL NOW board: hide stale BUY rows after close; allow fresh re-entry
-        # stamps (signaled_at > closed_at). Loss cooldowns remain separate.
-        try:
-            from odte_scanner.signals.now_board_filter import apply_settled_contract_filter
-
-            apply_settled_contract_filter(
-                journal=journal,
-                rec_log=rec_log_payload if isinstance(rec_log_payload, dict) else None,
-                actions=actions if isinstance(actions, dict) else None,
-                lottery=lottery if isinstance(lottery, dict) else None,
-                rip_radar=rip_radar if isinstance(rip_radar, dict) else None,
-                beauty_monthly=beauty_monthly if isinstance(beauty_monthly, dict) else None,
-                level_watch=level_watch if isinstance(level_watch, dict) else None,
-                challenge=challenge if isinstance(challenge, dict) else None,
-                odte_1k=odte_1k if isinstance(odte_1k, dict) else None,
-            )
-            if journal is not None and isinstance(actions, dict):
-                from odte_scanner.trading.insights import build_insights as _insights_after_filter
-
-                insights = _insights_after_filter(
-                    journal=journal, actions=actions, win_rates=win_table
-                )
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("settled-contract BUY filter skipped: %s", exc)
-
-        ml6 = scan.get("ml6")
-        if not ml6:
-            ml6 = _read_json(ROOT / "outputs" / "latest_ml6.json")
-        if not ml6 and not offline:
-            try:
-                from odte_scanner.ml6.board import build_ml6_board
-
-                ml6 = build_ml6_board()
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("ML6 snapshot fallback failed: %s", exc)
-                ml6 = {}
-        ml6 = ml6 or {}
-
-        # Refresh ML6 BUY/SELL automation with live quotes + open journal trades
-        if live_marks:
-            try:
-                from odte_scanner.data.fetcher import fetch_many as _fetch_many
-                from odte_scanner.data.live_quotes import fetch_live_quote as _flq
-                from odte_scanner.ml6.board import build_ml6_board as _bml6
-                from odte_scanner.ml6.watchlist import ml6_tickers as _ml6t
-
-                ml6_syms = _ml6t()
-                for s in ml6_syms:
-                    aliases.setdefault(s, resolve_yahoo_symbol(s, cfg))
-                ml6_quotes: dict = {}
-                for sym in ml6_syms:
-                    qq = quotes.get(sym)
-                    if not qq:
-                        lq = _flq(sym, yahoo_symbol=aliases.get(sym))
-                        if lq:
-                            qq = lq.to_dict() if hasattr(lq, "to_dict") else dict(lq)
-                    if qq:
-                        ml6_quotes[sym] = qq
-                        quotes[sym] = qq
-                open_ml6 = []
-                if journal is not None:
-                    open_ml6 = [t.to_dict() for t in journal.book.trades if t.status == "open"]
-                elif isinstance(ledger, dict):
-                    open_ml6 = [t for t in (ledger.get("trades") or []) if t.get("status") == "open"]
-                hist = _fetch_many(ml6_syms, period="1y", aliases=aliases)
-                ml6 = _bml6(
-                    hist,
-                    quotes=ml6_quotes,
-                    symbols=ml6_syms,
-                    open_trades=open_ml6,
-                    min_buy_score=float((cfg.get("ml6") or {}).get("min_buy_score", 70)),
-                    attach_calls=bool((cfg.get("ml6") or {}).get("attach_calls", True)),
-                )
-                # Paper sync ML6 BUY/SELL like lottery desk
-                if journal is not None and jcfg.get("enabled", True) and bool((cfg.get("ml6") or {}).get("auto_trade", True)):
-                    from odte_scanner.trading.insights import build_insights as _bi2
-
-                    ml6_sync = journal.sync_from_actions(
-                        {"buy_now": [], "sell_now": [], "buy_now_0dte": [], "buy_now_weekly": []},
-                        max_risk_usd=float(jcfg.get("max_risk_per_trade_usd", 250)),
-                        auto_enter=bool(jcfg.get("auto_enter", True)),
-                        auto_exit=bool(jcfg.get("auto_exit", True)),
-                        ml6=ml6.get("actions"),
-                    )
-                    if journal_sync is None:
-                        journal_sync = ml6_sync
-                    else:
-                        journal_sync = dict(journal_sync)
-                        journal_sync["entered"] = list(journal_sync.get("entered") or []) + list(
-                            ml6_sync.get("entered") or []
-                        )
-                        journal_sync["exited"] = list(journal_sync.get("exited") or []) + list(
-                            ml6_sync.get("exited") or []
-                        )
-                    if ml6_sync.get("exited") or ml6_sync.get("entered"):
-                        insights = _bi2(journal=journal, actions=actions, win_rates=win_table)
-                    ml6["journal_sync"] = {
-                        "entered": len(ml6_sync.get("entered") or []),
-                        "exited": len(ml6_sync.get("exited") or []),
+                    walls_by_symbol[sym] = {
+                        "call_wall": t.get("call_wall"),
+                        "put_wall": t.get("put_wall"),
+                        "call_wall_oi": t.get("call_wall_oi"),
+                        "put_wall_oi": t.get("put_wall_oi"),
+                        "primary_wall": t.get("primary_wall"),
+                        "primary_wall_side": t.get("primary_wall_side"),
+                        "soft_exit": refreshed_w.get("soft_exit") or t.get("soft_exit"),
+                        "wall_buffer_usd": t.get("wall_buffer_usd"),
+                        "exit_hint": refreshed_w.get("exit_hint") or t.get("wall_exit_hint"),
+                        "wall_exit_hint": refreshed_w.get("exit_hint") or t.get("wall_exit_hint"),
+                        "flip": t.get("gex_flip"),
+                        "regime": t.get("gex_regime"),
+                        "right": right,
+                        "source": "challenge",
                     }
+                # Soft-exit hint for long bias on action-card names using call wall
+                for sym, w in list(walls_by_symbol.items()):
+                    if w.get("soft_exit") is None and w.get("call_wall") is not None:
+                        refreshed_w = wall_exit_levels(
+                            right="C",
+                            spot=None,
+                            call_wall=w.get("call_wall"),
+                            put_wall=w.get("put_wall"),
+                            call_wall_oi=w.get("call_wall_oi"),
+                            put_wall_oi=w.get("put_wall_oi"),
+                            buffer_usd=float(actions_cfg.get("wall_exit_buffer_usd", 0.10)),
+                        )
+                        walls_by_symbol[sym] = {**w, **refreshed_w, "exit_hint": refreshed_w.get("exit_hint")}
+                # Attach walls onto market board rows for Screener
+                for key in ("by_earnings", "by_volume", "by_score"):
+                    for row in market.get(key) or []:
+                        w = walls_by_symbol.get(str(row.get("symbol") or "").upper())
+                        if not w:
+                            continue
+                        row["call_wall"] = w.get("call_wall")
+                        row["put_wall"] = w.get("put_wall")
+                        row["soft_exit"] = w.get("soft_exit")
+                        row["wall_exit_hint"] = w.get("exit_hint") or w.get("wall_exit_hint")
             except Exception as exc:  # noqa: BLE001
-                logger.warning("ML6 live action refresh failed: %s", exc)
+                logger.debug("walls_by_symbol merge failed: %s", exc)
+                walls_by_symbol = {}
 
-        # Persist boards so /api/webull/sync + auto_sync see the same ENTER/EXIT set
-        if isinstance(actions, dict):
-            # Compact expiry / intraday pack for Echo desk (no raw minute ticks)
-            greek_flow_sum: dict = {}
-            for sym, pack in ((uw_flow or {}).get("greek_flow_by_ticker") or {}).items():
-                if not isinstance(pack, dict):
-                    continue
-                greek_flow_sum[str(sym).upper()] = {
-                    "ok": bool(pack.get("ok")),
-                    "greek": pack.get("greek_by_expiry") or {},
-                    "flow": pack.get("flow_per_expiry") or {},
-                }
-            contract_intra_sum: dict = {}
-            for cid, pack in ((uw_flow or {}).get("contract_intraday") or {}).items():
-                if not isinstance(pack, dict):
-                    continue
-                contract_intra_sum[str(cid).upper()] = {
-                    "ok": bool(pack.get("ok")),
-                    "summary": pack.get("summary") or {},
-                    "bars_n": pack.get("bars_n"),
-                }
-            uw_summary = {
-                "ok": bool((uw_flow or {}).get("ok")),
-                "configured": bool((uw_flow or {}).get("configured")),
-                "alerts_n": (uw_flow or {}).get("alerts_n"),
-                "bullish_calls": list((uw_flow or {}).get("bullish_calls") or [])[:24],
-                "bearish_puts": list((uw_flow or {}).get("bearish_puts") or [])[:24],
-                "error": (uw_flow or {}).get("error"),
-                "source": "unusual_whales",
-                "market_tide": (uw_flow or {}).get("market_tide") or market_tide or {},
-                "darkpool_leaders": list(
-                    ((uw_flow or {}).get("darkpool") or {}).get("leaders") or []
-                )[:12],
-                "greek_flow_by_ticker": greek_flow_sum,
-                "contract_intraday": contract_intra_sum,
-                "expiry_headlines": list((uw_flow or {}).get("expiry_headlines") or [])[:8],
-                "drives": [
-                    "BUY_NOW",
-                    "SELL_NOW",
-                    "lottery",
-                    "rip",
-                    "beauty",
-                    "level_watch",
-                    "odte_1k",
-                    "challenge_ENTRY",
-                ],
-            }
-            actions["uw_flow"] = uw_summary
-            fg = dict(actions.get("flow_gate") or {})
-            fg["unusual_whales"] = uw_summary.get("ok")
-            fg["uw_configured"] = uw_summary.get("configured")
-            fg["market_tide"] = (uw_summary.get("market_tide") or {}).get("sentiment")
-            actions["flow_gate"] = fg
-            if isinstance(echo, dict):
-                echo["uw_flow"] = uw_summary
-                if flow_board_kw.get("flow_leaders"):
-                    echo["flow_leaders"] = flow_board_kw["flow_leaders"][:20]
-                if (uw_flow or {}).get("darkpool"):
-                    echo["uw_darkpool"] = (uw_flow or {}).get("darkpool")
-            if isinstance(lottery, dict):
-                lottery["uw_flow"] = {
-                    "ok": uw_summary.get("ok"),
-                    "market_tide": (uw_summary.get("market_tide") or {}).get("sentiment"),
-                }
-        # Tradier full market pack (quotes/chains/expirations/timesales/clock)
-        tradier_status: dict = {"configured": False, "ok": False, "source": "tradier"}
-        try:
-            from odte_scanner.data.tradier import probe as tradier_probe
-
-            tradier_status = tradier_probe()
-            if tradier_status.get("configured"):
-                logger.info(
-                    "Tradier marks configured=%s ok=%s sandbox=%s clock=%s endpoints=%s",
-                    tradier_status.get("configured"),
-                    tradier_status.get("ok"),
-                    tradier_status.get("sandbox"),
-                    (tradier_status.get("clock") or {}).get("state"),
-                    tradier_status.get("endpoints"),
-                )
-            else:
-                logger.warning("Tradier marks skipped — TRADIER_ACCESS_TOKEN not set")
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("tradier status failed: %s", exc)
-            tradier_status = {
-                "configured": False,
-                "ok": False,
-                "error": str(exc),
-                "source": "tradier",
-            }
-        # Polygon / Massive backup marks
-        polygon_status: dict = {"configured": False, "ok": False, "source": "polygon"}
-        try:
-            from odte_scanner.data.polygon import probe as polygon_probe
-
-            polygon_status = polygon_probe()
-            if polygon_status.get("configured"):
-                logger.info(
-                    "Polygon/Massive configured=%s ok=%s source=%s",
-                    polygon_status.get("configured"),
-                    polygon_status.get("ok"),
-                    polygon_status.get("source"),
-                )
-            else:
-                logger.info("Polygon/Massive skipped — POLYGON_API_KEY not set")
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("polygon status failed: %s", exc)
-            polygon_status = {
-                "configured": False,
-                "ok": False,
-                "error": str(exc),
-                "source": "polygon",
-            }
-        if isinstance(actions, dict):
-            actions["tradier"] = tradier_status
-            actions["polygon"] = polygon_status
-            # Desk confidence: Yahoo≈58; +UW≈70; +Tradier≈80; +Polygon≈85; ORATS later ≈90
-            uw_ok = bool((actions.get("uw_flow") or {}).get("ok"))
-            tr_ok = bool(tradier_status.get("ok"))
-            poly_ok = bool(polygon_status.get("ok"))
-            conf = 58
-            if uw_ok:
-                conf += 12
-            if tr_ok:
-                conf += 10
-            if uw_ok and tr_ok:
-                conf += 3
-            if tradier_live and offline:
-                conf += 2
-            if poly_ok:
-                conf += 5  # backup marks / denser snapshots
-            soft_cap = 88 if poly_ok else 80
-            actions["data_confidence"] = {
-                "pct": min(soft_cap, conf),
-                "cap_note": (
-                    "Soft cap ~88% with Polygon backup; ORATS IV filter can push ~90"
-                    if poly_ok
-                    else "Hard cap ~80% without Polygon/ORATS"
-                ),
-                "unusual_whales": uw_ok,
-                "tradier": tr_ok,
-                "polygon": poly_ok,
-                "tradier_live_on_pages": bool(tradier_live and offline),
-                "quotes_landed": len(quotes),
-                "mark_source_priority": ["tradier", "polygon", "yahoo", "cache"],
-                "feeds": {
-                    "uw": "flow+tide+darkpool" if uw_ok else "off",
-                    "tradier": (
-                        "quotes+chains+expirations+timesales+clock"
-                        if tr_ok
-                        else ("configured-fail" if tradier_status.get("configured") else "off")
-                    ),
-                    "polygon": (
-                        "equity+option snapshots"
-                        if poly_ok
-                        else ("configured-fail" if polygon_status.get("configured") else "off")
-                    ),
-                },
-            }
-            # Soft haircut when Pages claimed live Tradier but no quotes landed
-            if offline and tradier_live and len(quotes) == 0 and not poly_ok:
-                actions["data_confidence"]["pct"] = max(55, int(actions["data_confidence"]["pct"]) - 8)
-                actions["data_confidence"]["note"] = "Tradier token set but no equity quotes in snapshot"
-        cache_path = ROOT / "outputs" / "ui_snapshot_cache.json"
-        try:
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            cache_path.write_text(
-                dumps_strict(
-                    {
-                        "generated_at": datetime.now(timezone.utc).isoformat(),
-                        "actions": actions,
-                        "lottery": lottery,
-                        "challenge": challenge,
-                        "odte_1k": odte_1k,
-                        "radar": radar,
-                        "chase_radar": chase_radar,
-                        "rip_radar": rip_radar,
-                        "beauty_monthly": beauty_monthly,
-                        "level_watch": level_watch,
-                    },
-                    indent=2,
-                    default=str,
-                )
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("ui snapshot cache write failed: %s", exc)
-
-        webull_payload = _webull_status_payload()
-        lt_cfg = cfg.get("live_trading") or {}
-        # Auto-stage BUY/SELL into Webull ledger (preview/dry-run by default).
-        # Also run offline so Pages export captures history after a scan.
-        if bool(lt_cfg.get("auto_sync", True)):
+            # Persist recommendation history (lottery / challenge / 0DTE / weekly / swing)
+            rec_log_payload: dict = {}
             try:
-                webull_payload = _run_webull_sync(
-                    actions=actions,
+                from odte_scanner.trading.rec_log import RecommendationLog
+
+                rec_path = Path(actions_cfg.get("rec_log_path", "outputs/recommendation_log.json"))
+                if not rec_path.is_absolute():
+                    rec_path = ROOT / rec_path
+                rlog = RecommendationLog(rec_path)
+                rlog.sync_all(
                     lottery=lottery,
                     challenge=challenge,
+                    actions=actions,
+                    action_cards=scan.get("action_cards") or {},
+                    radar=radar,
+                    journal=journal,
+                    odte_1k=odte_1k,
+                )
+                by_section = {
+                    "lottery": rlog.board(section="lottery", limit=30),
+                    "challenge": rlog.board(section="challenge", limit=30),
+                    "odte_1k": rlog.board(section="odte_1k", limit=30),
+                    "odte": rlog.board(section="odte", limit=30),
+                    "weekly": rlog.board(section="weekly", limit=30),
+                    "swing": rlog.board(section="swing", limit=30),
+                    "radar": rlog.board(section="radar", limit=30),
+                }
+                rec_log_payload = {
+                    **rlog.board(limit=50),
+                    "by_section": by_section,
+                    "lottery": by_section["lottery"],
+                    "challenge": by_section["challenge"],
+                    "odte_1k": by_section["odte_1k"],
+                    "odte": by_section["odte"],
+                    "weekly": by_section["weekly"],
+                    "swing": by_section["swing"],
+                    "radar": by_section["radar"],
+                }
+                if insights and isinstance(insights, dict):
+                    perf = (insights.get("performance") or {})
+                    if perf.get("realized_pnl_usd") is not None:
+                        rec_log_payload["paper_pnl_usd"] = perf["realized_pnl_usd"]
+                        rec_log_payload["journal_pnl_usd"] = perf["realized_pnl_usd"]
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("recommendation log unavailable: %s", exc)
+                rec_log_payload = {"error": str(exc), "open_recs": [], "closed_recs": [], "by_section": {}}
+
+            # BUY/SELL NOW board: hide stale BUY rows after close; allow fresh re-entry
+            # stamps (signaled_at > closed_at). Loss cooldowns remain separate.
+            try:
+                from odte_scanner.signals.now_board_filter import apply_settled_contract_filter
+
+                apply_settled_contract_filter(
+                    journal=journal,
+                    rec_log=rec_log_payload if isinstance(rec_log_payload, dict) else None,
+                    actions=actions if isinstance(actions, dict) else None,
+                    lottery=lottery if isinstance(lottery, dict) else None,
+                    rip_radar=rip_radar if isinstance(rip_radar, dict) else None,
+                    beauty_monthly=beauty_monthly if isinstance(beauty_monthly, dict) else None,
+                    level_watch=level_watch if isinstance(level_watch, dict) else None,
+                    challenge=challenge if isinstance(challenge, dict) else None,
+                    odte_1k=odte_1k if isinstance(odte_1k, dict) else None,
+                )
+                if journal is not None and isinstance(actions, dict):
+                    from odte_scanner.trading.insights import build_insights as _insights_after_filter
+
+                    insights = _insights_after_filter(
+                        journal=journal, actions=actions, win_rates=win_table
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("settled-contract BUY filter skipped: %s", exc)
+
+            ml6 = scan.get("ml6")
+            if not ml6:
+                ml6 = _read_json(ROOT / "outputs" / "latest_ml6.json")
+            if not ml6 and not offline:
+                try:
+                    from odte_scanner.ml6.board import build_ml6_board
+
+                    ml6 = build_ml6_board()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("ML6 snapshot fallback failed: %s", exc)
+                    ml6 = {}
+            ml6 = ml6 or {}
+
+            # Refresh ML6 BUY/SELL automation with live quotes + open journal trades
+            if live_marks:
+                try:
+                    from odte_scanner.data.fetcher import fetch_many as _fetch_many
+                    from odte_scanner.data.live_quotes import fetch_live_quote as _flq
+                    from odte_scanner.ml6.board import build_ml6_board as _bml6
+                    from odte_scanner.ml6.watchlist import ml6_tickers as _ml6t
+
+                    ml6_syms = _ml6t()
+                    for s in ml6_syms:
+                        aliases.setdefault(s, resolve_yahoo_symbol(s, cfg))
+                    ml6_quotes: dict = {}
+                    for sym in ml6_syms:
+                        qq = quotes.get(sym)
+                        if not qq:
+                            lq = _flq(sym, yahoo_symbol=aliases.get(sym))
+                            if lq:
+                                qq = lq.to_dict() if hasattr(lq, "to_dict") else dict(lq)
+                        if qq:
+                            ml6_quotes[sym] = qq
+                            quotes[sym] = qq
+                    open_ml6 = []
+                    if journal is not None:
+                        open_ml6 = [t.to_dict() for t in journal.book.trades if t.status == "open"]
+                    elif isinstance(ledger, dict):
+                        open_ml6 = [t for t in (ledger.get("trades") or []) if t.get("status") == "open"]
+                    hist = _fetch_many(ml6_syms, period="1y", aliases=aliases)
+                    ml6 = _bml6(
+                        hist,
+                        quotes=ml6_quotes,
+                        symbols=ml6_syms,
+                        open_trades=open_ml6,
+                        min_buy_score=float((cfg.get("ml6") or {}).get("min_buy_score", 70)),
+                        attach_calls=bool((cfg.get("ml6") or {}).get("attach_calls", True)),
+                    )
+                    # Paper sync ML6 BUY/SELL like lottery desk
+                    if journal is not None and jcfg.get("enabled", True) and bool((cfg.get("ml6") or {}).get("auto_trade", True)):
+                        from odte_scanner.trading.insights import build_insights as _bi2
+
+                        ml6_sync = journal.sync_from_actions(
+                            {"buy_now": [], "sell_now": [], "buy_now_0dte": [], "buy_now_weekly": []},
+                            max_risk_usd=float(jcfg.get("max_risk_per_trade_usd", 250)),
+                            auto_enter=bool(jcfg.get("auto_enter", True)),
+                            auto_exit=bool(jcfg.get("auto_exit", True)),
+                            ml6=ml6.get("actions"),
+                        )
+                        if journal_sync is None:
+                            journal_sync = ml6_sync
+                        else:
+                            journal_sync = dict(journal_sync)
+                            journal_sync["entered"] = list(journal_sync.get("entered") or []) + list(
+                                ml6_sync.get("entered") or []
+                            )
+                            journal_sync["exited"] = list(journal_sync.get("exited") or []) + list(
+                                ml6_sync.get("exited") or []
+                            )
+                        if ml6_sync.get("exited") or ml6_sync.get("entered"):
+                            insights = _bi2(journal=journal, actions=actions, win_rates=win_table)
+                        ml6["journal_sync"] = {
+                            "entered": len(ml6_sync.get("entered") or []),
+                            "exited": len(ml6_sync.get("exited") or []),
+                        }
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("ML6 live action refresh failed: %s", exc)
+
+            # Persist boards so /api/webull/sync + auto_sync see the same ENTER/EXIT set
+            if isinstance(actions, dict):
+                # Compact expiry / intraday pack for Echo desk (no raw minute ticks)
+                greek_flow_sum: dict = {}
+                for sym, pack in ((uw_flow or {}).get("greek_flow_by_ticker") or {}).items():
+                    if not isinstance(pack, dict):
+                        continue
+                    greek_flow_sum[str(sym).upper()] = {
+                        "ok": bool(pack.get("ok")),
+                        "greek": pack.get("greek_by_expiry") or {},
+                        "flow": pack.get("flow_per_expiry") or {},
+                    }
+                contract_intra_sum: dict = {}
+                for cid, pack in ((uw_flow or {}).get("contract_intraday") or {}).items():
+                    if not isinstance(pack, dict):
+                        continue
+                    contract_intra_sum[str(cid).upper()] = {
+                        "ok": bool(pack.get("ok")),
+                        "summary": pack.get("summary") or {},
+                        "bars_n": pack.get("bars_n"),
+                    }
+                uw_summary = {
+                    "ok": bool((uw_flow or {}).get("ok")),
+                    "configured": bool((uw_flow or {}).get("configured")),
+                    "alerts_n": (uw_flow or {}).get("alerts_n"),
+                    "bullish_calls": list((uw_flow or {}).get("bullish_calls") or [])[:24],
+                    "bearish_puts": list((uw_flow or {}).get("bearish_puts") or [])[:24],
+                    "error": (uw_flow or {}).get("error"),
+                    "source": "unusual_whales",
+                    "market_tide": (uw_flow or {}).get("market_tide") or market_tide or {},
+                    "darkpool_leaders": list(
+                        ((uw_flow or {}).get("darkpool") or {}).get("leaders") or []
+                    )[:12],
+                    "greek_flow_by_ticker": greek_flow_sum,
+                    "contract_intraday": contract_intra_sum,
+                    "expiry_headlines": list((uw_flow or {}).get("expiry_headlines") or [])[:8],
+                    "drives": [
+                        "BUY_NOW",
+                        "SELL_NOW",
+                        "lottery",
+                        "rip",
+                        "beauty",
+                        "level_watch",
+                        "odte_1k",
+                        "challenge_ENTRY",
+                    ],
+                }
+                actions["uw_flow"] = uw_summary
+                fg = dict(actions.get("flow_gate") or {})
+                fg["unusual_whales"] = uw_summary.get("ok")
+                fg["uw_configured"] = uw_summary.get("configured")
+                fg["market_tide"] = (uw_summary.get("market_tide") or {}).get("sentiment")
+                actions["flow_gate"] = fg
+                if isinstance(echo, dict):
+                    echo["uw_flow"] = uw_summary
+                    if flow_board_kw.get("flow_leaders"):
+                        echo["flow_leaders"] = flow_board_kw["flow_leaders"][:20]
+                    if (uw_flow or {}).get("darkpool"):
+                        echo["uw_darkpool"] = (uw_flow or {}).get("darkpool")
+                if isinstance(lottery, dict):
+                    lottery["uw_flow"] = {
+                        "ok": uw_summary.get("ok"),
+                        "market_tide": (uw_summary.get("market_tide") or {}).get("sentiment"),
+                    }
+            # Tradier full market pack (quotes/chains/expirations/timesales/clock)
+            tradier_status: dict = {"configured": False, "ok": False, "source": "tradier"}
+            try:
+                from odte_scanner.data.tradier import probe as tradier_probe
+
+                tradier_status = tradier_probe()
+                if tradier_status.get("configured"):
+                    logger.info(
+                        "Tradier marks configured=%s ok=%s sandbox=%s clock=%s endpoints=%s",
+                        tradier_status.get("configured"),
+                        tradier_status.get("ok"),
+                        tradier_status.get("sandbox"),
+                        (tradier_status.get("clock") or {}).get("state"),
+                        tradier_status.get("endpoints"),
+                    )
+                else:
+                    logger.warning("Tradier marks skipped — TRADIER_ACCESS_TOKEN not set")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("tradier status failed: %s", exc)
+                tradier_status = {
+                    "configured": False,
+                    "ok": False,
+                    "error": str(exc),
+                    "source": "tradier",
+                }
+            # Polygon / Massive backup marks
+            polygon_status: dict = {"configured": False, "ok": False, "source": "polygon"}
+            try:
+                from odte_scanner.data.polygon import probe as polygon_probe
+
+                polygon_status = polygon_probe()
+                if polygon_status.get("configured"):
+                    logger.info(
+                        "Polygon/Massive configured=%s ok=%s source=%s",
+                        polygon_status.get("configured"),
+                        polygon_status.get("ok"),
+                        polygon_status.get("source"),
+                    )
+                else:
+                    logger.info("Polygon/Massive skipped — POLYGON_API_KEY not set")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("polygon status failed: %s", exc)
+                polygon_status = {
+                    "configured": False,
+                    "ok": False,
+                    "error": str(exc),
+                    "source": "polygon",
+                }
+            if isinstance(actions, dict):
+                actions["tradier"] = tradier_status
+                actions["polygon"] = polygon_status
+                # Desk confidence: Yahoo≈58; +UW≈70; +Tradier≈80; +Polygon≈85; ORATS later ≈90
+                uw_ok = bool((actions.get("uw_flow") or {}).get("ok"))
+                tr_ok = bool(tradier_status.get("ok"))
+                poly_ok = bool(polygon_status.get("ok"))
+                conf = 58
+                if uw_ok:
+                    conf += 12
+                if tr_ok:
+                    conf += 10
+                if uw_ok and tr_ok:
+                    conf += 3
+                if tradier_live and offline:
+                    conf += 2
+                if poly_ok:
+                    conf += 5  # backup marks / denser snapshots
+                soft_cap = 88 if poly_ok else 80
+                actions["data_confidence"] = {
+                    "pct": min(soft_cap, conf),
+                    "cap_note": (
+                        "Soft cap ~88% with Polygon backup; ORATS IV filter can push ~90"
+                        if poly_ok
+                        else "Hard cap ~80% without Polygon/ORATS"
+                    ),
+                    "unusual_whales": uw_ok,
+                    "tradier": tr_ok,
+                    "polygon": poly_ok,
+                    "tradier_live_on_pages": bool(tradier_live and offline),
+                    "quotes_landed": len(quotes),
+                    "mark_source_priority": ["tradier", "polygon", "yahoo", "cache"],
+                    "feeds": {
+                        "uw": "flow+tide+darkpool" if uw_ok else "off",
+                        "tradier": (
+                            "quotes+chains+expirations+timesales+clock"
+                            if tr_ok
+                            else ("configured-fail" if tradier_status.get("configured") else "off")
+                        ),
+                        "polygon": (
+                            "equity+option snapshots"
+                            if poly_ok
+                            else ("configured-fail" if polygon_status.get("configured") else "off")
+                        ),
+                    },
+                }
+                # Soft haircut when Pages claimed live Tradier but no quotes landed
+                if offline and tradier_live and len(quotes) == 0 and not poly_ok:
+                    actions["data_confidence"]["pct"] = max(55, int(actions["data_confidence"]["pct"]) - 8)
+                    actions["data_confidence"]["note"] = "Tradier token set but no equity quotes in snapshot"
+            cache_path = ROOT / "outputs" / "ui_snapshot_cache.json"
+            try:
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                cache_path.write_text(
+                    dumps_strict(
+                        {
+                            "generated_at": datetime.now(timezone.utc).isoformat(),
+                            "actions": actions,
+                            "lottery": lottery,
+                            "challenge": challenge,
+                            "odte_1k": odte_1k,
+                            "radar": radar,
+                            "chase_radar": chase_radar,
+                            "rip_radar": rip_radar,
+                            "beauty_monthly": beauty_monthly,
+                            "level_watch": level_watch,
+                        },
+                        indent=2,
+                        default=str,
+                    )
                 )
             except Exception as exc:  # noqa: BLE001
-                logger.warning("webull auto_sync failed: %s", exc)
-                webull_payload = {**(webull_payload or {}), "auto_sync_error": str(exc)}
+                logger.debug("ui snapshot cache write failed: %s", exc)
 
-        daily_pnl: dict = {}
-        try:
-            from odte_scanner.trading.daily_pnl import build_daily_pnl
-
-            journal_book = None
-            if journal is not None:
+            webull_payload = _webull_status_payload()
+            lt_cfg = cfg.get("live_trading") or {}
+            # Auto-stage BUY/SELL into Webull ledger (preview/dry-run by default).
+            # Also run offline so Pages export captures history after a scan.
+            if bool(lt_cfg.get("auto_sync", True)):
                 try:
-                    journal_book = journal.book.to_dict()
-                except Exception:  # noqa: BLE001
-                    journal_book = None
-            daily_pnl = build_daily_pnl(
-                insights=insights if isinstance(insights, dict) else None,
-                journal_book=journal_book,
-                challenge=challenge if isinstance(challenge, dict) else None,
-                odte_1k=odte_1k if isinstance(odte_1k, dict) else None,
-                rec_log=rec_log_payload if isinstance(rec_log_payload, dict) else None,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("daily_pnl build failed: %s", exc)
-            daily_pnl = {"error": str(exc), "totals": {}, "by_day": [], "closed": [], "open": []}
+                    webull_payload = _run_webull_sync(
+                        actions=actions,
+                        lottery=lottery,
+                        challenge=challenge,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("webull auto_sync failed: %s", exc)
+                    webull_payload = {**(webull_payload or {}), "auto_sync_error": str(exc)}
 
-        return jsonify(
-            sanitize_for_json(
-                {
-                "generated_at": datetime.now(timezone.utc).isoformat(),
-                "offline": offline,
-                "host": "github-pages" if offline else "live",
-                "session": scan.get("session_weekday"),
-                "universe_mode": scan.get("universe_mode"),
-                "universe_size": scan.get("universe_size"),
-                "focus_size": focus_size,
-                "liquid_size": liquid_size,
-                "scores": scan.get("scores") or [],
-                "horizons": scan.get("horizons") or {},
-                "action_cards": scan.get("action_cards") or {},
-                "quality_gates": scan.get("quality_gates") or {},
-                "call_candidates": refreshed,
-                "explosive": explosive,
-                "lottery": lottery,
-                "ml6": ml6,
-                "red_flag": red_flag_snapshot,
-                "free_dealer": free_dealer,
-                "radar": radar,
-                "chase_radar": chase_radar,
-                "rip_radar": rip_radar,
-                "beauty_monthly": beauty_monthly,
-                "level_watch": level_watch,
-                "echo": echo,
-                "challenge": challenge,
-                "tradier": tradier_status,
-                "polygon": polygon_status,
-                "data_confidence": (actions.get("data_confidence") if isinstance(actions, dict) else None),
-                "odte_1k": odte_1k,
-                "power_hour": power_hour,
-                "market": market,
-                "walls_by_symbol": walls_by_symbol,
-                "watch": {"quotes": quotes},
-                "ledger": ledger,
-                "actions": actions,
-                "hist_win_gate": actions.get("hist_win_gate"),
-                "insights": insights,
-                "journal_sync": journal_sync,
-                "daily_pnl": daily_pnl,
-                "win_rates": win_table,
-                "rec_log": rec_log_payload,
-                "webull": webull_payload,
-                }
-            )
-        )
+            daily_pnl: dict = {}
+            try:
+                from odte_scanner.trading.daily_pnl import build_daily_pnl
+
+                journal_book = None
+                if journal is not None:
+                    try:
+                        journal_book = journal.book.to_dict()
+                    except Exception:  # noqa: BLE001
+                        journal_book = None
+                daily_pnl = build_daily_pnl(
+                    insights=insights if isinstance(insights, dict) else None,
+                    journal_book=journal_book,
+                    challenge=challenge if isinstance(challenge, dict) else None,
+                    odte_1k=odte_1k if isinstance(odte_1k, dict) else None,
+                    rec_log=rec_log_payload if isinstance(rec_log_payload, dict) else None,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("daily_pnl build failed: %s", exc)
+                daily_pnl = {"error": str(exc), "totals": {}, "by_day": [], "closed": [], "open": []}
+
+            payload = sanitize_for_json(
+                    {
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                    "offline": offline,
+                    "host": "github-pages" if offline else "live",
+                    "session": scan.get("session_weekday"),
+                    "universe_mode": scan.get("universe_mode"),
+                    "universe_size": scan.get("universe_size"),
+                    "focus_size": focus_size,
+                    "liquid_size": liquid_size,
+                    "scores": scan.get("scores") or [],
+                    "horizons": scan.get("horizons") or {},
+                    "action_cards": scan.get("action_cards") or {},
+                    "quality_gates": scan.get("quality_gates") or {},
+                    "call_candidates": refreshed,
+                    "explosive": explosive,
+                    "lottery": lottery,
+                    "ml6": ml6,
+                    "red_flag": red_flag_snapshot,
+                    "free_dealer": free_dealer,
+                    "radar": radar,
+                    "chase_radar": chase_radar,
+                    "rip_radar": rip_radar,
+                    "beauty_monthly": beauty_monthly,
+                    "level_watch": level_watch,
+                    "echo": echo,
+                    "challenge": challenge,
+                    "tradier": tradier_status,
+                    "polygon": polygon_status,
+                    "data_confidence": (actions.get("data_confidence") if isinstance(actions, dict) else None),
+                    "odte_1k": odte_1k,
+                    "power_hour": power_hour,
+                    "market": market,
+                    "walls_by_symbol": walls_by_symbol,
+                    "watch": {"quotes": quotes},
+                    "ledger": ledger,
+                    "actions": actions,
+                    "hist_win_gate": actions.get("hist_win_gate"),
+                    "insights": insights,
+                    "journal_sync": journal_sync,
+                    "daily_pnl": daily_pnl,
+                    "win_rates": win_table,
+                    "rec_log": rec_log_payload,
+                    "webull": webull_payload,
+                    }
+                )
+            _snap_memo["body"] = payload
+            _snap_memo["t"] = time.time()
+            try:
+                outp = ROOT / "outputs" / "last_api_snapshot.json"
+                outp.parent.mkdir(parents=True, exist_ok=True)
+                outp.write_text(dumps_strict(payload, indent=2, default=str))
+            except Exception:
+                pass
+            return jsonify(payload)
+        finally:
+            _snap_gate.release()
 
     def _challenge_tracker():
         from odte_scanner.challenge.tracker import ChallengeTracker
