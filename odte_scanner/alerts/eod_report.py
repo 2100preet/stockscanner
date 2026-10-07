@@ -272,6 +272,214 @@ def _collect_day_sells(snapshot: dict[str, Any], day: str) -> list[dict[str, Any
     return out
 
 
+def _iter_rec_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    """Flatten recommendation-log rows from the snapshot (and disk fallback)."""
+    rows: list[dict[str, Any]] = []
+    rec = snapshot.get("rec_log") or snapshot.get("recommendation_log") or {}
+    if isinstance(rec, dict):
+        for key in ("closed_recs", "open_recs"):
+            for r in rec.get(key) or []:
+                if isinstance(r, dict):
+                    rows.append(r)
+        by = rec.get("by_section") or {}
+        if isinstance(by, dict):
+            for sec, block in by.items():
+                if not isinstance(block, dict):
+                    continue
+                for key in ("closed_recs", "open_recs", "recs"):
+                    for r in block.get(key) or []:
+                        if isinstance(r, dict):
+                            rows.append({**r, "section": r.get("section") or sec})
+    # Disk fallback — full recommendation_log.json has every WAIT/lapse
+    path = ROOT / "outputs" / "recommendation_log.json"
+    if path.exists():
+        try:
+            raw = json.loads(path.read_text())
+            for r in raw.get("recommendations") or []:
+                if isinstance(r, dict):
+                    rows.append(r)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("eod rec_log disk load failed: %s", exc)
+    return rows
+
+
+def _mark_index(snapshot: dict[str, Any]) -> dict[str, float]:
+    """OCC / SYM|strike|right → bid/mark from snapshot candidates + latest scan."""
+    marks: dict[str, float] = {}
+
+    def ingest(c: dict[str, Any]) -> None:
+        bid = _as_float(c.get("bid"))
+        mid = _as_float(c.get("mid"))
+        ask = _as_float(c.get("ask"))
+        mark = bid if bid and bid > 0 else (mid if mid and mid > 0 else ask)
+        if mark is None or mark <= 0:
+            return
+        occ = str(c.get("contract") or "").upper()
+        sym = str(c.get("symbol") or "").upper()
+        right = str(c.get("right") or "C").upper()[:1]
+        strike = c.get("strike")
+        if occ:
+            marks[occ] = mark
+        if sym and strike is not None:
+            marks[f"{sym}|{strike}|{right}"] = mark
+
+    for key in (
+        "call_candidates",
+        "call_candidates_0dte",
+        "call_candidates_weekly",
+        "put_candidates",
+        "put_candidates_0dte",
+        "put_candidates_weekly",
+        "option_candidates",
+    ):
+        for c in snapshot.get(key) or []:
+            if isinstance(c, dict):
+                ingest(c)
+
+    scan_path = ROOT / "outputs" / "latest_scan.json"
+    if scan_path.exists():
+        try:
+            scan = json.loads(scan_path.read_text())
+            for key in (
+                "call_candidates",
+                "call_candidates_0dte",
+                "call_candidates_weekly",
+                "put_candidates",
+                "put_candidates_0dte",
+                "put_candidates_weekly",
+                "option_candidates",
+            ):
+                for c in scan.get(key) or []:
+                    if isinstance(c, dict):
+                        ingest(c)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("eod mark scan load failed: %s", exc)
+    return marks
+
+
+def _collect_missed_winners(
+    snapshot: dict[str, Any],
+    day: str,
+    *,
+    min_pct: float = 80.0,
+) -> list[dict[str, Any]]:
+    """Strategy ideas that printed (or would have) but were never paper BUY NOW.
+
+    Reprices today's WAIT / WATCH / RADAR_HOT / lapsed recs against exit or EOD mark
+    so the Telegram EOD surfaces left-on-table multi-baggers.
+    """
+    marks = _mark_index(snapshot)
+    best: dict[str, dict[str, Any]] = {}
+    _BUY_TOOK = {"BUY_NOW", "ENTRY", "BUY_RIP", "BUY_BEAUTY", "BUY_LEVEL", "PUT_NOW", "CALL_NOW"}
+
+    for r in _iter_rec_rows(snapshot):
+        if not isinstance(r, dict):
+            continue
+        when = r.get("recommended_at") or r.get("last_recommended_at") or r.get("closed_at")
+        if (
+            _day_key_ct(when) != day
+            and _day_key_ct(r.get("closed_at")) != day
+            and r.get("day_entry") != day
+        ):
+            continue
+        act = str(r.get("open_action") or r.get("action") or "").upper()
+        status = str(r.get("status") or "").lower()
+        # Missed = never a gated take, or lapsed off the board as WAIT
+        took = act in _BUY_TOOK and status == "closed"
+        if took:
+            continue
+        if act in _BUY_TOOK and status == "open":
+            # Still open paper/signal — not a "miss"
+            continue
+        entry = _as_float(r.get("entry_price") if r.get("entry_price") is not None else r.get("entry_ask"))
+        if entry is None or entry <= 0:
+            continue
+        exit_px = _as_float(r.get("exit_price") if r.get("exit_price") is not None else r.get("exit_bid"))
+        src = "signal_exit"
+        if exit_px is None:
+            occ = str(r.get("contract") or "").upper()
+            sym = str(r.get("symbol") or "").upper()
+            right = str(r.get("right") or "C").upper()[:1]
+            strike = r.get("strike")
+            exit_px = marks.get(occ) or marks.get(f"{sym}|{strike}|{right}")
+            src = "eod_mark"
+        if exit_px is None or exit_px <= 0:
+            continue
+        pct = round((exit_px - entry) / entry * 100.0, 1)
+        if pct < float(min_pct):
+            continue
+        pnl = round((exit_px - entry) * 100.0, 2)
+        key = f"{str(r.get('symbol') or '').upper()}|{r.get('strike')}|{str(r.get('right') or 'C').upper()[:1]}"
+        row = {
+            "symbol": str(r.get("symbol") or "").upper(),
+            "name": _trade_label(r),
+            "section": r.get("section") or "signal",
+            "open_action": act or "WAIT",
+            "status": status,
+            "entry_ask": entry,
+            "exit_bid": exit_px,
+            "profit_pct": pct,
+            "pnl_usd": pnl,
+            "mark_source": src,
+            "why": (
+                "WAIT / never upgraded to BUY NOW"
+                if act in {"", "WAIT", "WATCH", "RADAR_HOT", "HOLD"}
+                else f"{act} left on table"
+            ),
+            "when": to_cst_label(when) if when else None,
+        }
+        prev = best.get(key)
+        if prev is None or float(prev.get("profit_pct") or 0) < pct:
+            best[key] = row
+
+    # Also surface daily_pnl recommended_not_taken with marks
+    dp = snapshot.get("daily_pnl") or {}
+    for r in dp.get("recommended_not_taken") or []:
+        if not isinstance(r, dict):
+            continue
+        if r.get("day_entry") != day and _day_key_ct(r.get("entered_at") or r.get("recommended_at")) != day:
+            continue
+        entry = _as_float(r.get("entry_ask") if r.get("entry_ask") is not None else r.get("entry_price"))
+        if entry is None or entry <= 0:
+            continue
+        exit_px = _as_float(r.get("exit_bid") if r.get("exit_bid") is not None else r.get("mark"))
+        src = "rec_mark"
+        if exit_px is None:
+            occ = str(r.get("contract") or "").upper()
+            sym = str(r.get("symbol") or "").upper()
+            right = str(r.get("right") or "C").upper()[:1]
+            strike = r.get("strike")
+            exit_px = marks.get(occ) or marks.get(f"{sym}|{strike}|{right}")
+            src = "eod_mark"
+        if exit_px is None or exit_px <= 0:
+            continue
+        pct = round((exit_px - entry) / entry * 100.0, 1)
+        if pct < float(min_pct):
+            continue
+        sym = str(r.get("symbol") or "").upper()
+        key = f"{sym}|{r.get('strike')}|{str(r.get('right') or 'C').upper()[:1]}"
+        row = {
+            "symbol": sym,
+            "name": _trade_label(r),
+            "section": r.get("category") or r.get("section") or "signal",
+            "open_action": "NOT_TAKEN",
+            "status": str(r.get("status") or "open"),
+            "entry_ask": entry,
+            "exit_bid": exit_px,
+            "profit_pct": pct,
+            "pnl_usd": round((exit_px - entry) * 100.0, 2),
+            "mark_source": src,
+            "why": "recommended but not auto-taken",
+            "when": to_cst_label(r.get("entered_at") or r.get("recommended_at")),
+        }
+        prev = best.get(key)
+        if prev is None or float(prev.get("profit_pct") or 0) < pct:
+            best[key] = row
+
+    out = sorted(best.values(), key=lambda x: -float(x.get("profit_pct") or 0))
+    return out[:15]
+
+
 def build_eod_report(
     snapshot: dict[str, Any],
     *,
@@ -300,6 +508,7 @@ def build_eod_report(
 
     buys = _collect_day_buys(snapshot, day_ct)
     sells = _collect_day_sells(snapshot, day_ct)
+    missed = _collect_missed_winners(snapshot, day_ct)
 
     # Prefer day bucket from by_day when present
     for bucket in dp.get("by_day") or []:
@@ -308,14 +517,37 @@ def build_eod_report(
                 closed_pnl = float(bucket["realized_pnl_usd"])
             break
 
+    rec = snapshot.get("rec_log") or {}
+    signal_closed = _as_float(rec.get("closed_pnl_usd") or rec.get("board_signal_pnl_usd"))
+
     lines = [
         f"📊 EOD desk report · {et_label}",
         f"Session day (CT): {day_ct}",
         "",
-        f"Closed P&L today: {_money(closed_pnl)}  ({len(closed_today)} exits)",
-        f"Open P&L (mark):  {_money(open_pnl)}  ({len(open_rows)} open)",
-        "",
+        f"Paper closed P&L: {_money(closed_pnl)}  ({len(closed_today)} exits)",
+        f"Paper open P&L:   {_money(open_pnl)}  ({len(open_rows)} open)",
     ]
+    if signal_closed is not None:
+        lines.append(f"Signal-log closed: {_money(signal_closed)}  (1ct hypo tracks)")
+    lines.append("")
+
+    # Missed / left on table — answer "why didn't you flag the rip"
+    lines.append(f"MISSED (≥+80%, WAIT / not BUY NOW) · {len(missed)}")
+    if missed:
+        for m in missed[:10]:
+            path = f"${m['entry_ask']:.2f} → ${m['exit_bid']:.2f}"
+            lines.append(
+                f"  · {m['name']} · {path} · {_money(m.get('pnl_usd'))}{_pct(m.get('profit_pct'))}"
+            )
+            lines.append(f"    {m.get('why')} · {m.get('section')} · {m.get('open_action')}")
+        top = missed[0]
+        lines.append(
+            f"  Biggest left on table: {top['name']} {_pct(top.get('profit_pct')).strip() or ''} "
+            f"(strategy kept it {top.get('open_action') or 'WAIT'}, not gated BUY NOW)"
+        )
+    else:
+        lines.append("  · none priced ≥+80% among WAIT / not-taken today")
+    lines.append("")
 
     lines.append(f"BUY recommended ({len(buys)})")
     if buys:
@@ -364,6 +596,10 @@ def build_eod_report(
             lines.append(f"  · … +{len(open_rows) - 12} more")
 
     lines.append("")
+    lines.append(
+        "Note: paper P&L = auto-took fills only. MISSED = WAIT/radar ideas that "
+        "never cleared hist/tape BUY NOW — marked to exit or EOD bid."
+    )
     lines.append("Signal Desk · stockscanner")
     message = "\n".join(lines)
 
@@ -377,6 +613,7 @@ def build_eod_report(
         "open_n": len(open_rows),
         "buys": buys,
         "sells": sells,
+        "missed": missed,
         "message": message,
     }
 

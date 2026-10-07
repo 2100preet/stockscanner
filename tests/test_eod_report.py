@@ -48,6 +48,26 @@ def test_build_eod_report_message():
                 }
             ],
         },
+        "call_candidates": [
+            {"symbol": "GLD", "strike": 375, "right": "P", "bid": 1.29, "ask": 1.35},
+        ],
+        "rec_log": {
+            "closed_pnl_usd": -130.0,
+            "closed_recs": [
+                {
+                    "symbol": "GLD",
+                    "right": "P",
+                    "strike": 375,
+                    "open_action": "WAIT",
+                    "status": "lapsed",
+                    "section": "odte",
+                    "entry_price": 0.14,
+                    "recommended_at": "2026-10-07T16:28:00+00:00",
+                    "headline": "WAIT GLD PUT",
+                }
+            ],
+            "open_recs": [],
+        },
         "daily_pnl": {
             "closed": [
                 {
@@ -81,19 +101,25 @@ def test_build_eod_report_message():
                 }
             ],
             "by_day": [{"day": "2026-10-07", "realized_pnl_usd": 50.0}],
+            "recommended_not_taken": [],
         },
     }
     now = datetime(2026, 10, 7, 15, 2, tzinfo=ET)
     report = eod.build_eod_report(snap, now=now)
     assert report["closed_pnl_usd"] == 50.0
     assert report["open_pnl_usd"] == 40.0
+    assert report["missed"]
+    assert report["missed"][0]["symbol"] == "GLD"
+    assert report["missed"][0]["profit_pct"] >= 800
     msg = report["message"]
     assert "EOD desk report" in msg
+    assert "MISSED" in msg
+    assert "GLD" in msg
+    assert "WAIT" in msg
     assert "NVDA" in msg
     assert "AAPL" in msg
     assert "bought $2.00 → sell $2.80" in msg
-    assert "Closed P&L today" in msg
-    assert "Open P&L" in msg
+    assert "Paper closed P&L" in msg
     assert "MSFT" in msg
     assert "TSLA" in msg
 
