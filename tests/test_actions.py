@@ -393,6 +393,57 @@ def test_hist_win_gate_mega_rip_override():
     assert "mega rip override" in out.detail
 
 
+def test_hist_win_gate_ipo_thin_hist_tape_override():
+    """SPCX-class IPO with null hist must clear BUY NOW when tape is ripping.
+
+    Live desk lapsed WAIT SPCX 10/9 162.5c on Friday solely for
+    'no hist win backtest yet' — while the cheap 172.5 wing printed ~500%.
+    """
+    sig = ActionSignal(
+        action="BUY_NOW",
+        strength=70,
+        headline="BUY NOW SPCX · 1W",
+        detail="[1W] Score 70 · 2026-10-09 162.5 call @ ask $2.29",
+        symbol="SPCX",
+        win_pct=None,
+        win_samples=0,
+        dte_bucket="weekly",
+        live_change_pct=2.4,
+    )
+    out = apply_hist_win_gate(
+        sig,
+        min_hist_win_pct=80,
+        min_hist_win_samples=5,
+        ipo_thin_hist_live_pct=1.5,
+    )
+    assert out.action == "BUY_NOW"
+    assert "IPO thin-hist tape override" in out.detail
+    assert "IPO TAPE" in out.headline
+
+
+def test_hist_win_gate_ipo_still_blocks_without_tape():
+    """Null hist IPO without a session rip stays WAIT (no free pass)."""
+    sig = ActionSignal(
+        action="BUY_NOW",
+        strength=70,
+        headline="BUY NOW SPCX · 1W",
+        detail="score ok",
+        symbol="SPCX",
+        win_pct=None,
+        win_samples=0,
+        dte_bucket="weekly",
+        live_change_pct=0.3,
+    )
+    out = apply_hist_win_gate(
+        sig,
+        min_hist_win_pct=80,
+        min_hist_win_samples=5,
+        ipo_thin_hist_live_pct=1.5,
+    )
+    assert out.action == "WAIT"
+    assert "no hist win backtest yet" in out.detail
+
+
 def test_hist_win_gate_allows_80_plus():
     sig = ActionSignal(
         action="BUY_NOW",

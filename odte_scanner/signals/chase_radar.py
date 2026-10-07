@@ -65,9 +65,12 @@ def decide_chase_entry(
     max_otm_pct: float = 8.0,
     min_mult_at_3pct: float = 3.5,
     min_mom_5m: float = 0.08,
+    max_dte: int = 1,
     now: datetime | None = None,
 ) -> ChaseAction:
     """Classify a convex wing as BUY_RISKY / WATCH_CONVEX / CHASE_COOL."""
+    from odte_scanner.data.universe import is_thin_hist_ipo
+
     symbol = str(ticket.get("symbol") or "")
     contract = str(ticket.get("contract") or "")
     ask = float(ticket.get("ask") or 0)
@@ -156,8 +159,15 @@ def decide_chase_entry(
     )
 
     vetoes: list[str] = []
-    if dte > 1:
-        vetoes.append("DTE>1 — chase lane is 0DTE/1DTE only")
+    # IPO / thin-hist names may use Friday weeklies (SPCX 10/9 172.5 lesson)
+    eff_max_dte = int(max_dte)
+    if is_thin_hist_ipo(symbol):
+        eff_max_dte = max(eff_max_dte, 7)
+    if dte > eff_max_dte:
+        if eff_max_dte <= 1:
+            vetoes.append("DTE>1 — chase lane is 0DTE/1DTE only")
+        else:
+            vetoes.append(f"DTE {dte} > {eff_max_dte} — chase IPO weekly window")
     if ask <= 0:
         vetoes.append("no ask")
     if ask < min_ask:
@@ -320,11 +330,16 @@ def build_chase_board(
     min_ask: float = 0.20,
     max_ask: float = 12.0,
     max_otm_pct: float = 8.0,
+    ipo_max_otm_pct: float = 10.0,
     min_mult_at_3pct: float = 3.5,
     min_mom_5m: float = 0.08,
+    max_dte: int = 1,
+    ipo_max_dte: int = 7,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Partition chase tickets into BUY_RISKY / WATCH_CONVEX / COOL."""
+    from odte_scanner.data.universe import is_thin_hist_ipo
+
     quotes = quotes or {}
     score_map = {
         str(s.get("symbol") or "").upper(): float(s.get("ensemble_score") or 0)
@@ -337,15 +352,17 @@ def build_chase_board(
 
     for t in tickets:
         sym = str(t.get("symbol") or "").upper()
+        ipo = is_thin_hist_ipo(sym)
         sig = decide_chase_entry(
             t,
             quote=quotes.get(sym),
             ensemble_score=score_map.get(sym),
             min_ask=min_ask,
             max_ask=max_ask,
-            max_otm_pct=max_otm_pct,
+            max_otm_pct=float(ipo_max_otm_pct if ipo else max_otm_pct),
             min_mult_at_3pct=min_mult_at_3pct,
             min_mom_5m=min_mom_5m,
+            max_dte=int(ipo_max_dte if ipo else max_dte),
             now=now,
         )
         row = sig.to_dict()
@@ -372,7 +389,8 @@ def build_chase_board(
             "all": len(all_rows),
         },
         "note": (
-            "Chase / high-convexity lane: far-OTM or already-ripping 0DTE/1DTE calls. "
+            "Chase / high-convexity lane: far-OTM or already-ripping 0DTE/1DTE calls "
+            "(IPO/thin-hist names may use Friday weeklies up to ~7 DTE). "
             "BUY — BIT RISKY ≠ gated Options BUY NOW (no hist-win / anti-chase). "
             "Size small — options can go to zero. Not journaled by default."
         ),
