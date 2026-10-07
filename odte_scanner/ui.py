@@ -995,10 +995,12 @@ PAGE = r"""
         const st = String(t.status || "open").toLowerCase();
         if (st === "closed") return;
         const entered = t.entered_at || t.recommended_at;
-        if (!entered) return;
+        const entryAsk = t.entry_ask ?? t.entry_price ?? t.entry ?? null;
+        if (!entered && entryAsk == null) return;
         const row = {
-          entered_at: entered,
+          entered_at: entered || null,
           entered_at_cst: t.entered_at_cst || null,
+          entry_ask: entryAsk,
         };
         const occ = String(t.contract || "");
         if (occ) byOcc[occ] = row;
@@ -1015,15 +1017,15 @@ PAGE = r"""
     }
     function withOpenEntryTime(row, idx) {
       if (!row) return row;
-      if (row.entered_at || row.entered_at_cst) return row;
       const occ = String(row.contract || "");
       const hit = (occ && idx.byOcc[occ])
         || idx.bySym[String(row.symbol || "").toUpperCase() + "|" + String(row.right || "C").toUpperCase()];
       if (!hit) return row;
-      return Object.assign({}, row, {
-        entered_at: hit.entered_at,
-        entered_at_cst: hit.entered_at_cst,
-      });
+      const patch = {};
+      if (!row.entered_at && hit.entered_at) patch.entered_at = hit.entered_at;
+      if (!row.entered_at_cst && hit.entered_at_cst) patch.entered_at_cst = hit.entered_at_cst;
+      if (row.entry_ask == null && hit.entry_ask != null) patch.entry_ask = hit.entry_ask;
+      return Object.keys(patch).length ? Object.assign({}, row, patch) : row;
     }
 
     document.querySelectorAll("#tabs button").forEach(btn => {
@@ -1153,17 +1155,38 @@ PAGE = r"""
     function ticketHtml(sym, row) {
       const t = ticketLines(sym, row || {});
       const w = winLookup(sym, row?.dte_bucket || row?.horizon || "0dte");
-      const enterAt = row?.signaled_at_cst || fmtCST(row?.signaled_at || row?.recommended_at || t.recommended_at);
+      const selling = String(row?._side || row?.action || "").toUpperCase().includes("SELL")
+        || String(row?.action || "").toUpperCase() === "EXIT";
+      const bought = t.entry ?? row?.entry_ask ?? row?.entry_price;
+      const sellPx = selling
+        ? (row?.bid ?? row?.exit_bid ?? t.exitPx ?? row?.ask)
+        : t.exitPx;
+      const enterAt = row?.entered_at_cst
+        || fmtCST(row?.entered_at)
+        || row?.signaled_at_cst
+        || fmtCST(row?.signaled_at || row?.recommended_at || t.recommended_at);
+      const sellAt = selling ? (row?.signaled_at_cst || fmtCST(row?.signaled_at) || "—") : null;
       const sr = w.hit1==null ? "—" : `${fmt(w.hit1,0)}% ≥1%` + (w.hit2==null?"":` / ${fmt(w.hit2,0)}% ≥2%`);
-      const pnlTxt = t.pnl==null && t.pct==null ? "unfilled" : `${t.pct==null?"—":fmt(t.pct,1)+"%"}${t.pnl==null?"":" · $"+fmt(t.pnl,2)}`;
+      let livePct = null;
+      if (bought != null && sellPx != null && Number(bought) > 0) {
+        livePct = ((Number(sellPx) - Number(bought)) / Number(bought)) * 100;
+      }
+      const pnlTxt = t.pnl==null && t.pct==null && livePct==null
+        ? (selling ? "exiting" : "unfilled")
+        : `${(t.pct??livePct)==null?"—":fmt(t.pct??livePct,1)+"%"}${t.pnl==null?"":" · $"+fmt(t.pnl,2)}`;
+      const path = (bought != null && sellPx != null)
+        ? `$${fmt(bought,2)} → $${fmt(sellPx,2)}`
+        : null;
       return `<div class="ac-meta" style="margin-top:.4rem">
-        <div>ENTER<strong>${t.entry==null?"—":"$"+fmt(t.entry,2)}</strong></div>
-        <div>EXIT mark<strong>${t.exitPx==null?"—":"$"+fmt(t.exitPx,2)}</strong></div>
-        <div>P&amp;L (1ct)<strong class="${t.pnl==null&&t.pct==null?"":pctClass(t.pct??t.pnl)}">${pnlTxt}</strong></div>
-        <div>Status<strong>${t.status}</strong></div>
+        <div>BOUGHT<strong>${bought==null?"—":"$"+fmt(bought,2)}</strong></div>
+        <div>${selling ? "SELL bid" : "EXIT mark"}<strong>${sellPx==null?"—":"$"+fmt(sellPx,2)}</strong></div>
+        <div>P&amp;L (1ct)<strong class="${t.pnl==null&&t.pct==null&&livePct==null?"":pctClass(t.pct??livePct??t.pnl)}">${pnlTxt}</strong></div>
+        <div>Status<strong>${selling ? "EXITING · BUY→SELL" : t.status}</strong></div>
         <div>Strike rate<strong>${sr}</strong></div>
-        <div>ENTER time (CST)<strong>${enterAt}</strong></div>
+        <div>Bought time (CST)<strong>${enterAt || "—"}</strong></div>
+        ${sellAt ? `<div>Asked to sell (CST)<strong>${sellAt}</strong></div>` : ""}
       </div>
+      ${path ? `<p class="pc-why"><strong>BUY → SELL:</strong> ${path}${livePct==null?"":" · "+fmt(livePct,1)+"%"}</p>` : ""}
       <p class="pc-why"><strong>ENTER:</strong> ${t.planIn}</p>
       <p class="pc-why"><strong>EXIT:</strong> ${t.planOut}</p>`;
     }
@@ -1291,6 +1314,7 @@ PAGE = r"""
       const buy = r._side === "BUY";
       const wait = r._side === "WAIT";
       const setup = r._side === "SETUP";
+      const sell = !buy && !wait && !setup;
       const right = String(r.right || "C").toUpperCase() === "P" ? "PUT" : "CALL";
       const win = Number(r.win_pct ?? r.hist_win_pct);
       const n = Number(r.win_samples ?? r.hist_samples);
@@ -1301,30 +1325,41 @@ PAGE = r"""
       const cls = buy ? (isRip || isBeauty || isLevel ? "long" : (gated ? "enter-now" : "long")) : (wait || setup ? "wait" : "short");
       const label = buy
         ? (isLevel ? "BUY LEVEL" : (isBeauty ? "BUY BEAUTY" : (isRip ? "BUY RIP" : (gated ? "ENTER NOW" : "BUY NOW"))))
-        : (setup ? "SETUP · not BUY" : (wait ? "WAIT" : "SELL NOW"));
+        : (setup ? "SETUP · not BUY" : (wait ? "WAIT" : "SELL NOW · EXIT"));
       const strike = r.strike == null ? "—" : `${fmt(r.strike, Number(r.strike) % 1 ? 2 : 0)}${right === "PUT" ? "p" : "c"}`;
-      const px = buy ? (r.ask ?? r.entry_ask) : (r.bid ?? r.mark ?? r.ask ?? r.exit_bid);
-      const ex = rowExitDollars(r);
+      const bought = r.entry_ask ?? r.entry_price ?? (buy ? (r.ask ?? null) : null);
+      const sellPx = sell ? (r.bid ?? r.mark ?? r.ask ?? r.exit_bid) : null;
+      const px = buy ? (r.ask ?? r.entry_ask) : sellPx;
+      const ex = rowExitDollars(Object.assign({}, r, { ask: bought ?? r.ask, entry_ask: bought ?? r.entry_ask }));
       const when = rowAskedAt(r);
       const entryWhen = r.entered_at_cst || (r.entered_at ? fmtCST(r.entered_at) : "");
       const showEntry = entryWhen && entryWhen !== "—" && entryWhen !== when;
       const w = winLookup(r.symbol, r.dte_bucket || r.horizon || "0dte");
       const sr = w.hit1 == null ? "—" : `${fmt(w.hit1,0)}% ≥1%` + (w.hit2 == null ? "" : ` / ${fmt(w.hit2,0)}% ≥2%`);
+      let pathLine = "";
+      if (sell && bought != null && sellPx != null) {
+        const pct = Number(bought) > 0 ? ((Number(sellPx) - Number(bought)) / Number(bought)) * 100 : null;
+        pathLine = `<p class="why" style="margin:.35rem 0 0"><strong>BUY → SELL:</strong> $${fmt(bought,2)} → $${fmt(sellPx,2)}${pct==null?"":` · <span class="${pctClass(pct)}">${fmt(pct,1)}%</span>`}${showEntry ? ` · bought ${entryWhen}` : ""}</p>`;
+      } else if (sell && bought != null) {
+        pathLine = `<p class="why" style="margin:.35rem 0 0"><strong>BOUGHT:</strong> $${fmt(bought,2)} → exiting${showEntry ? ` · ${entryWhen}` : ""}</p>`;
+      }
       return `<article class="action-card ${cls}">
         <div class="ac-top">
           <div class="ac-sym">${r.symbol} <span class="tag">${r._desk}</span>${r.hold_style ? ` <span class="tag">${r.hold_style}</span>` : ""} <span class="tag">${right}</span></div>
           <div class="ac-dir ${buy && gated ? "" : (buy ? "long" : (wait || setup ? "wait" : "short"))}">${label}</div>
         </div>
-        <div class="ac-conf">${r._desk} · ${when && when !== "—" ? when : "time —"}${showEntry ? ` · entered ${entryWhen}` : ""}</div>
+        <div class="ac-conf">${r._desk} · ${when && when !== "—" ? when : "time —"}${showEntry && !sell ? ` · entered ${entryWhen}` : ""}</div>
         <div class="ac-meta">
           <div>Strike / expiry<strong>${strike} · ${r.expiry || "—"}${r.dte != null ? ` (${r.dte}DTE)` : ""}</strong></div>
-          <div>${buy ? "Buy ask" : "Bid"}<strong>${px == null ? "—" : "$" + fmt(px, 2)}</strong></div>
+          <div>${buy ? "Buy ask" : (sell ? "Bought" : "Bid")}<strong>${(sell ? bought : px) == null ? "—" : "$" + fmt(sell ? bought : px, 2)}</strong></div>
+          ${sell ? `<div>Sell bid<strong class="down">${sellPx == null ? "—" : "$" + fmt(sellPx, 2)}</strong></div>` : ""}
           <div>EXIT TP<strong class="up">${ex.tp == null ? "—" : "$" + fmt(ex.tp, 2)}${ex.tpPct != null ? ` (+${fmt(ex.tpPct, 0)}%)` : ""}</strong></div>
           <div>EXIT SL<strong class="down">${ex.sl == null ? "—" : "$" + fmt(ex.sl, 2)}${ex.slPct != null ? ` (−${fmt(Math.abs(ex.slPct), 0)}%)` : ""}</strong></div>
           <div>Hist win<strong>${Number.isNaN(win) ? "—" : fmt(win, 0) + "%"}</strong></div>
           <div>Strike rate ≥1%<strong>${sr}</strong></div>
           ${levelsMeta(r)}
         </div>
+        ${pathLine}
         <p class="why" style="margin:.45rem 0 0">${r.exit_plan || r.detail || r.headline || r.recommend_reason || ""}</p>
         ${ticketHtml(r.symbol, r)}
       </article>`;
@@ -1415,25 +1450,37 @@ PAGE = r"""
         if (!all.length) table.innerHTML = `<div class="empty">Empty board — wait for the next Actions publish, or run a live Flask scan with option chains.</div>`;
         else table.innerHTML = `<table class="zl-tape"><thead><tr>
           <th>Side</th><th>Desk</th><th>Symbol</th><th>Asked (CST)</th><th>Contract</th>
-          <th>Buy</th><th>EXIT TP</th><th>EXIT SL</th><th>Soft EXIT</th>
+          <th>Bought</th><th>Sell / Ask</th><th>BUY→SELL</th><th>EXIT TP</th><th>EXIT SL</th><th>Soft EXIT</th>
           <th>Hist win</th><th>Strike rate</th><th>EXIT plan</th>
         </tr></thead><tbody>${all.map(r => {
           const buy = r._side === "BUY";
-          const side = r._side === "BUY" ? "BUY NOW" : (r._side === "SELL" ? "SELL NOW" : r._side);
-          const badge = buy ? "buy" : (r._side === "SELL" ? "sell" : "wait");
+          const sell = r._side === "SELL";
+          const side = r._side === "BUY" ? "BUY NOW" : (sell ? "SELL · EXIT" : r._side);
+          const badge = buy ? "buy" : (sell ? "sell" : "wait");
           const right = String(r.right || "C").toUpperCase() === "P" ? "p" : "c";
-          const ex = rowExitDollars(r);
-          const px = buy ? (r.ask ?? r.entry_ask) : (r.bid ?? r.mark ?? r.ask);
+          const bought = r.entry_ask ?? r.entry_price ?? (buy ? (r.ask ?? null) : null);
+          const ex = rowExitDollars(Object.assign({}, r, { ask: bought ?? r.ask, entry_ask: bought ?? r.entry_ask }));
+          const sellAsk = sell ? (r.bid ?? r.mark ?? r.ask ?? r.exit_bid) : (buy ? (r.ask ?? r.entry_ask) : (r.bid ?? r.ask));
+          let path = "—";
+          if (sell && bought != null && sellAsk != null) {
+            const pct = Number(bought) > 0 ? ((Number(sellAsk) - Number(bought)) / Number(bought)) * 100 : null;
+            path = `$${fmt(bought,2)}→$${fmt(sellAsk,2)}${pct==null?"":` <span class="${pctClass(pct)}">(${fmt(pct,0)}%)</span>`}`;
+          } else if (buy && sellAsk != null) {
+            path = `ask $${fmt(sellAsk,2)}`;
+          }
           const w = winLookup(r.symbol, r.dte_bucket || r.horizon || "0dte");
           const sr = w.hit1 == null ? "—" : `${fmt(w.hit1,0)}%`;
           const win = r.win_pct ?? r.hist_win_pct ?? w.pct;
+          const entryWhen = r.entered_at_cst || (r.entered_at ? fmtCST(r.entered_at) : "");
           return `<tr>
             <td><span class="badge ${badge}">${side}</span></td>
             <td><span class="tag">${r._desk}</span></td>
             <td><strong>${r.symbol}</strong></td>
-            <td class="mono">${rowAskedAt(r)}</td>
+            <td class="mono">${rowAskedAt(r)}${sell && entryWhen && entryWhen !== "—" ? `<div class="why">bought ${entryWhen}</div>` : ""}</td>
             <td class="mono">${r.strike == null ? "—" : fmt(r.strike, 2) + right} ${r.expiry || ""}</td>
-            <td class="mono">${px == null ? "—" : "$" + fmt(px, 2)}</td>
+            <td class="mono">${bought == null ? "—" : "$" + fmt(bought, 2)}</td>
+            <td class="mono ${sell ? "down" : ""}">${sellAsk == null ? "—" : "$" + fmt(sellAsk, 2)}</td>
+            <td class="mono">${path}</td>
             <td class="mono up">${ex.tp == null ? "—" : "$" + fmt(ex.tp, 2)}${ex.tpPct != null ? ` <span class="why">(+${fmt(ex.tpPct,0)}%)</span>` : ""}</td>
             <td class="mono down">${ex.sl == null ? "—" : "$" + fmt(ex.sl, 2)}${ex.slPct != null ? ` <span class="why">(−${fmt(Math.abs(ex.slPct),0)}%)</span>` : ""}</td>
             <td class="mono">${ex.soft == null ? "—" : "$" + fmt(ex.soft, 2)}</td>
@@ -4248,6 +4295,10 @@ def create_app(config_path: str | None = None) -> Flask:
                     live_marks = False
             except Exception:  # noqa: BLE001
                 pass
+            # Fast rebuild when we already have a board: skip live fan-out unless ?fresh=1.
+            # Otherwise RTH scans + mark refresh block /api/snapshot and the UI looks empty.
+            if (not force) and cached is not None:
+                live_marks = False
             scan = _read_json(ROOT / "outputs" / "latest_scan.json") or {}
             watch = _read_json(ROOT / "outputs" / "watch" / "latest_watch.json")
             ledger_path = Path(cfg.get("paper_trading", {}).get("ledger_path", "outputs/paper_ledger.json"))

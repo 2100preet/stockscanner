@@ -93,20 +93,50 @@ def _fmt_alert(row: dict[str, Any], side: str, desk: str) -> str:
     strike = row.get("strike")
     exp = str(row.get("expiry") or "")[:10]
     ask = row.get("ask")
-    spot = row.get("spot") or row.get("last")
+    bid = row.get("bid")
+    entry = row.get("entry_ask") if row.get("entry_ask") is not None else row.get("entry_price")
+    spot = row.get("spot") or row.get("last") or row.get("live_last")
     when = row.get("signaled_at_cst") or ""
-    detail = str(row.get("detail") or row.get("headline") or row.get("reason") or "")[:180]
+    entered = row.get("entered_at_cst") or ""
+    detail = str(row.get("detail") or row.get("headline") or row.get("reason") or "")[:220]
     strike_s = f"{strike}{right}" if strike is not None else right
-    ask_s = f"${float(ask):.2f}" if ask is not None else "—"
     spot_s = f"${float(spot):.2f}" if spot is not None else "—"
     emoji = "🟢" if side == "BUY" else "🔴"
     lines = [
         f"{emoji} {side} · {desk}",
         f"{sym} {strike_s} · exp {exp or '—'}",
-        f"Ask {ask_s} · spot {spot_s}",
     ]
-    if when:
-        lines.append(f"Asked {when}")
+    if side == "SELL":
+        try:
+            entry_f = float(entry) if entry is not None else None
+        except (TypeError, ValueError):
+            entry_f = None
+        sell_px = bid if bid is not None else ask
+        try:
+            sell_f = float(sell_px) if sell_px is not None else None
+        except (TypeError, ValueError):
+            sell_f = None
+        if entry_f is not None and sell_f is not None:
+            pnl_pct = ((sell_f - entry_f) / entry_f * 100.0) if entry_f else None
+            pnl_usd = (sell_f - entry_f) * 100.0
+            pct_s = f" ({pnl_pct:+.0f}%)" if pnl_pct is not None else ""
+            lines.append(f"BUY ${entry_f:.2f} → SELL ${sell_f:.2f}{pct_s}")
+            lines.append(f"P&L ~${pnl_usd:+.2f} / ct · spot {spot_s}")
+        elif sell_f is not None:
+            lines.append(f"SELL bid ${sell_f:.2f} · spot {spot_s}")
+            if entry_f is not None:
+                lines.append(f"Bought ${entry_f:.2f}")
+        else:
+            lines.append(f"EXIT · spot {spot_s}")
+        if entered:
+            lines.append(f"Bought at {entered}")
+        if when:
+            lines.append(f"Asked to sell {when}")
+    else:
+        ask_s = f"${float(ask):.2f}" if ask is not None else "—"
+        lines.append(f"Buy ask {ask_s} · spot {spot_s}")
+        if when:
+            lines.append(f"Asked to buy {when}")
     if detail:
         lines.append(detail)
     lines.append("Signal Desk · stockscanner")

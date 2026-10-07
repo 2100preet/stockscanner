@@ -41,6 +41,7 @@ class ActionSignal:
     dte: int | None = None
     dte_bucket: str | None = None  # 0dte | weekly
     bid: float | None = None
+    entry_ask: float | None = None  # filled / journal buy premium (SELL path)
     right: str | None = "C"  # C | P
     exit_plan: str | None = None
     target_ask: float | None = None  # dollar TP from live/scan ask
@@ -54,6 +55,8 @@ class ActionSignal:
     hit_2pct: float | None = None
     signaled_at: str | None = None
     signaled_at_cst: str | None = None
+    entered_at: str | None = None
+    entered_at_cst: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -597,18 +600,27 @@ def decide_exit(
             strength = max(strength, 80.0)
             reasons.append(f"underlying dumped {live:+.2f}% — bank put premium")
 
+    entry_px = None
+    for k in ("entry_ask", "entry_price", "entry"):
+        raw = trade.get(k)
+        if raw is None:
+            continue
+        try:
+            v = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if v > 0:
+            entry_px = v
+            break
+    if entry_px is None and entry > 0:
+        entry_px = float(entry)
+
     detail_extra = ""
-    if unreal is not None:
+    if unreal is not None and exit_px is not None and entry_px is not None:
+        detail_extra = f" · bought ${entry_px:.2f} → sell ${exit_px:.2f} ({unreal:+.0f}%)"
+    elif unreal is not None:
         detail_extra = f" · unreal {unreal:+.0f}% @ ${exit_px:.2f}" if exit_px else f" · unreal {unreal:+.0f}%"
 
-    entry_px = None
-    for k in ("entry_ask", "entry_price", "ask"):
-        if trade.get(k) is not None:
-            try:
-                entry_px = float(trade[k])
-                break
-            except (TypeError, ValueError):
-                pass
     target_ask, stop_ask = premium_exit_levels(
         entry_px,
         take_profit_pct=take_profit_pct,
@@ -628,6 +640,13 @@ def decide_exit(
         target_ask=target_ask,
         stop_ask=stop_ask,
     )
+
+    entered_at = trade.get("entered_at") or trade.get("recommended_at")
+    entered_at_cst = trade.get("entered_at_cst")
+    if entered_at and not entered_at_cst:
+        from odte_scanner.time_cst import to_cst_label
+
+        entered_at_cst = to_cst_label(entered_at)
 
     kwargs = dict(
         symbol=symbol,
@@ -650,13 +669,21 @@ def decide_exit(
         # Critical: price the exit at mark/bid — never entry ask (that forced ~0% P&L)
         ask=exit_px,
         bid=exit_px,
+        entry_ask=entry_px,
+        entered_at=entered_at,
+        entered_at_cst=entered_at_cst,
     )
 
     if sell:
+        bought_sell = (
+            f"BUY ${entry_px:.2f} → SELL ${exit_px:.2f}"
+            if entry_px is not None and exit_px is not None
+            else "EXIT open position"
+        )
         return ActionSignal(
             action="SELL_NOW",
             strength=strength,
-            headline=f"SELL NOW {symbol} {side_lbl.upper()}",
+            headline=f"SELL NOW {symbol} {side_lbl.upper()} · {bought_sell}",
             detail=("; ".join(reasons) or "Exit signal") + detail_extra,
             **kwargs,
         )
