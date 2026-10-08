@@ -1,5 +1,8 @@
+import math
+
 from odte_scanner.options.explosive import (
     _est_option_after_move,
+    _safe_int,
     build_explosive_from_candidate,
     score_lottery,
 )
@@ -85,3 +88,27 @@ def test_rejects_non_convex_weeklyish():
         }
     )
     assert c is None
+
+
+def test_nan_volume_does_not_crash():
+    assert _safe_int(float("nan")) == 0
+    assert _safe_int(math.nan, 7) == 7
+    c = build_explosive_from_candidate(
+        {
+            "symbol": "SPY",
+            "contract": "SPYNAN",
+            "expiry": "2026-08-06",
+            "dte": 0,
+            "strike": 520,
+            "spot": 505,
+            "ask": 1.2,
+            "bid": 1.05,
+            "moneyness_pct": (520 - 505) / 505 * 100,
+            "volume": float("nan"),
+            "open_interest": float("nan"),
+            "score": 72,
+        }
+    )
+    assert c is not None
+    assert c.volume == 0
+    assert c.open_interest == 0

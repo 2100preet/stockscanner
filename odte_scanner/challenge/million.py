@@ -36,6 +36,60 @@ from odte_scanner.options.walls import WALL_EXIT_BUFFER_USD, fetch_walls_for_sym
 logger = logging.getLogger(__name__)
 
 
+def reconcile_target_ask(ticket: dict[str, Any]) -> dict[str, Any]:
+    """Keep long-premium target_ask = ask × target_premium_mult.
+
+    Challenge board merges (and radar→sniper bridges) used to copy target_ask /
+    exit_plan from a *different* contract on the same symbol, so a $0.63 ask could
+    show EXIT ≥ $0.05 while still claiming +21%.
+    """
+    if not isinstance(ticket, dict):
+        return ticket
+    try:
+        ask_raw = ticket.get("ask")
+        if ask_raw is None:
+            ask_raw = ticket.get("option_last")
+        ask = float(ask_raw) if ask_raw is not None else None
+        mult = ticket.get("target_premium_mult")
+        mult_f = float(mult) if mult is not None else None
+        if ask is None or ask <= 0 or mult_f is None or mult_f <= 1.0:
+            return ticket
+        expected = round(ask * mult_f, 2)
+        if expected <= ask:
+            expected = round(ask + max(0.01, ask * 0.01), 2)
+        cur_raw = ticket.get("target_ask")
+        cur = float(cur_raw) if cur_raw is not None else None
+        drifted = cur is None or cur <= ask or abs(cur - expected) / max(expected, 0.01) > 0.05
+        if not drifted:
+            return ticket
+        pct = round((mult_f - 1.0) * 100.0, 1)
+        ticket["target_ask"] = expected
+        ticket["target_profit_pct"] = pct
+        plan = str(ticket.get("exit_plan") or "")
+        import re
+
+        patched = re.sub(
+            r"EXIT at ≥\$[0-9]+(?:\.[0-9]+)? \(\+[0-9]+(?:\.[0-9]+)?% premium\)",
+            f"EXIT at ≥${expected:.2f} (+{pct:.0f}% premium)",
+            plan,
+            count=1,
+        )
+        if patched != plan:
+            ticket["exit_plan"] = patched
+        elif plan.startswith("EXIT when premium ≥$"):
+            ticket["exit_plan"] = re.sub(
+                r"EXIT when premium ≥\$[0-9]+(?:\.[0-9]+)? \(\+[0-9]+(?:\.[0-9]+)?%\)",
+                f"EXIT when premium ≥${expected:.2f} (+{pct:.0f}%)",
+                plan,
+                count=1,
+            )
+        elif not plan:
+            ticket["exit_plan"] = f"EXIT at ≥${expected:.2f} (+{pct:.0f}% premium)"
+    except (TypeError, ValueError):
+        return ticket
+    return ticket
+
+
 @dataclass
 class ChallengeTicket:
     symbol: str

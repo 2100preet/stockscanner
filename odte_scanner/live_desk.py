@@ -5,7 +5,8 @@ This worker runs *inside* the live Flask host and continuously:
 
   1. focus scan (Tradier / UW / Polygon when secrets set)
   2. Telegram pulse for *new* BUY/SELL
-  3. Offline snapshot rebuild → Webull auto_sync (stage or live submit)
+  3. Telegram EOD report at ~3:00 PM ET (buys/sells + day P&L)
+  4. Offline snapshot rebuild → Webull auto_sync (stage or live submit)
 
 Cadence ≈ one focus-scan duration + short pause (back-to-back). That is the
 practical floor unless the scan universe is cut further.
@@ -50,6 +51,7 @@ def _in_rth_window(*, extended: bool = False) -> bool:
 def run_live_desk_cycle(config_path: str | None = None) -> dict[str, Any]:
     """One scan + Telegram/Webull pulse. Safe to call from a background thread."""
     from odte_scanner.alert_pulse import pulse_desk_alerts
+    from odte_scanner.alerts.eod_report import maybe_send_eod_report
     from odte_scanner.scanner import run_scan
 
     started = datetime.now(timezone.utc).isoformat()
@@ -67,11 +69,25 @@ def run_live_desk_cycle(config_path: str | None = None) -> dict[str, Any]:
         alert_meta = {"ok": False, "error": str(exc)}
         logger.exception("live desk pulse failed: %s", exc)
 
+    eod_meta: dict[str, Any] = {"ok": False, "skipped": True}
+    try:
+        eod_meta = maybe_send_eod_report() or {"ok": False}
+        if eod_meta.get("sent"):
+            logger.info(
+                "EOD telegram sent closed=%s open=%s",
+                eod_meta.get("closed_pnl_usd"),
+                eod_meta.get("open_pnl_usd"),
+            )
+    except Exception as exc:  # noqa: BLE001
+        eod_meta = {"ok": False, "error": str(exc)}
+        logger.exception("live desk EOD report failed: %s", exc)
+
     return {
         "started_at": started,
         "finished_at": datetime.now(timezone.utc).isoformat(),
         "scan_error": scan_err,
         "desk_alerts": alert_meta,
+        "eod_report": eod_meta,
     }
 
 

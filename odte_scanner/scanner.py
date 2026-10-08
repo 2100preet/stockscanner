@@ -29,6 +29,33 @@ from odte_scanner.trading.paper import PaperTrader
 logger = logging.getLogger(__name__)
 
 
+def should_fetch_mega_early_calls(
+    symbol: str,
+    *,
+    ensemble_score: float,
+    expected_move_pct: float = 0.0,
+    quality: bool = False,
+    min_score: float = 62.0,
+    mega_call_floor: float = 40.0,
+    mega_min_em: float = 2.0,
+) -> bool:
+    """True when a mega name should get call chains before score clears BUY floor.
+
+    Catches MU-class opens (score ~45, EM ~3%) that previously only loaded puts.
+    """
+    from odte_scanner.signals.rip_radar import is_mega_rip_symbol
+
+    if quality or float(ensemble_score) >= float(min_score):
+        return False  # normal call path already covers
+    if not is_mega_rip_symbol(symbol):
+        return False
+    if float(ensemble_score) < float(mega_call_floor):
+        return False
+    return float(expected_move_pct) >= float(mega_min_em) or float(ensemble_score) >= float(
+        min_score
+    ) - 10
+
+
 def _weights_by_horizon(cfg: dict[str, Any]) -> dict[str, dict[str, float]]:
     algo = cfg.get("algos") or {}
     by_hz = algo.get("weights_by_horizon") or {}
@@ -106,6 +133,14 @@ def run_scan(
     min_score = float(scan_cfg.get("min_score", 62))
     lo = float(scan_cfg.get("target_move_pct_min", 1.0))
     max_show = int(opt_cfg.get("max_candidates_shown", 12))
+    # Mega names (MU/NVDA/…) can rip from a mid score — still pull call chains early
+    # so cheap OTM wings exist before ensemble crosses the normal BUY floor.
+    mega_call_floor = float(opt_cfg.get("mega_call_score_floor", 40.0))
+    mega_otm_pct_max = float(opt_cfg.get("mega_otm_pct_max", 4.5))
+    mega_per_bucket = int(opt_cfg.get("mega_per_bucket", 2))
+    mega_min_em = float(opt_cfg.get("mega_call_min_expected_move_pct", 2.0))
+
+    from odte_scanner.signals.rip_radar import is_mega_rip_symbol
 
     # Options only for focus / high-score 0DTE+weekly (avoid blasting Yahoo on 100+ names)
     option_syms = set(focus)
@@ -116,6 +151,9 @@ def run_scan(
             if ts.quality or ts.ensemble_score >= min_score:
                 if len(option_syms) < 40:
                     option_syms.add(ts.symbol)
+            # Always keep megas on the option universe so early call chains can load
+            if is_mega_rip_symbol(ts.symbol) and len(option_syms) < 48:
+                option_syms.add(ts.symbol)
             if ts.ensemble_score <= put_max_score and len(put_syms) < 20:
                 put_syms.add(ts.symbol)
                 option_syms.add(ts.symbol)
@@ -134,23 +172,46 @@ def run_scan(
         min_volume=int(opt_cfg.get("min_volume", 10)),
         per_bucket=int(opt_cfg.get("per_bucket", 1)),
     )
+
     for sym in sorted(option_syms):
         ts = odte_scores.get(sym)
         if ts is None:
             continue
         ysym = resolve_yahoo_symbol(ts.symbol, cfg)
-        if ts.ensemble_score >= min_score or ts.quality:
-            if ts.expected_move_pct >= lo * 0.6:
+        scored_calls = ts.ensemble_score >= min_score or ts.quality
+        mega_early = should_fetch_mega_early_calls(
+            ts.symbol,
+            ensemble_score=float(ts.ensemble_score or 0),
+            expected_move_pct=float(getattr(ts, "expected_move_pct", 0) or 0),
+            quality=bool(ts.quality),
+            min_score=min_score,
+            mega_call_floor=mega_call_floor,
+            mega_min_em=mega_min_em,
+        )
+        if scored_calls or mega_early:
+            if ts.expected_move_pct >= lo * 0.6 or mega_early:
+                call_kwargs = dict(opt_kwargs)
+                reasons = list(ts.reasons)
+                if mega_early:
+                    call_kwargs["otm_pct_max"] = max(
+                        float(call_kwargs["otm_pct_max"]), mega_otm_pct_max
+                    )
+                    call_kwargs["per_bucket"] = max(int(call_kwargs["per_bucket"]), mega_per_bucket)
+                    reasons = reasons + [
+                        f"mega_early_calls score={ts.ensemble_score:.0f} "
+                        f"(floor {mega_call_floor:.0f}; full buy {min_score:.0f})"
+                    ]
                 picked = select_calls(
                     ts.symbol,
                     ts.last_price,
                     ts.ensemble_score,
-                    ts.reasons,
+                    reasons,
                     yahoo_symbol=ysym,
-                    **opt_kwargs,
+                    **call_kwargs,
                 )
                 candidates.extend(picked)
         # Bearish / weak sleeve → puts (score inverted for ranking)
+        # Megas with elevated EM still get calls above; puts remain available too.
         if include_puts and (sym in put_syms or ts.ensemble_score <= put_max_score):
             put_score = max(float(min_score), 100.0 - float(ts.ensemble_score))
             reasons = list(ts.reasons) + [f"put_sleeve bull_score={ts.ensemble_score:.0f}"]
