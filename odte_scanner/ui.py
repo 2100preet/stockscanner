@@ -5016,15 +5016,19 @@ def create_app(config_path: str | None = None) -> Flask:
             from odte_scanner.signals.radar import build_radar_board
 
             # Lottery / parabolic 0DTE–1DTE tickets (e.g. cheap calls that can 3×–100× on a rip)
-            explosive = build_explosive_board(
-                refreshed,
-                scores=scan.get("scores") or [],
-                quotes=quotes,
-                aliases=aliases,
-                enrich_live=False,  # live option enrich is too slow for interactive snapshot
-                per_symbol=2,
-                max_total=24,
-            )
+            try:
+                explosive = build_explosive_board(
+                    refreshed,
+                    scores=scan.get("scores") or [],
+                    quotes=quotes,
+                    aliases=aliases,
+                    enrich_live=False,  # live option enrich is too slow for interactive snapshot
+                    per_symbol=2,
+                    max_total=24,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("explosive board unavailable: %s", exc)
+                explosive = []
 
             open_lottery_trades: list[dict] = []
             if journal is not None:

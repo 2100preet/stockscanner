@@ -18,6 +18,19 @@ logger = logging.getLogger(__name__)
 STRESS_MOVES_PCT = (1.0, 2.0, 3.0, 5.0)
 
 
+def _safe_int(v: object, default: int = 0) -> int:
+    """Coerce Yahoo/Tradier ints; NaN/`or 0` traps must not crash the desk."""
+    try:
+        if v is None:
+            return default
+        f = float(v)
+        if f != f:  # NaN
+            return default
+        return int(f)
+    except (TypeError, ValueError):
+        return default
+
+
 @dataclass
 class ExplosiveCandidate:
     symbol: str
@@ -177,7 +190,7 @@ def build_explosive_from_candidate(
     ask = float(c.get("ask") or 0)
     spot = float(c.get("spot") or c.get("live_spot") or 0)
     strike = float(c.get("strike") or 0)
-    dte = int(c.get("dte") or 0)
+    dte = _safe_int(c.get("dte"), 0)
     if ask <= 0 or spot <= 0 or strike <= 0:
         return None
     if dte > 1:
@@ -198,6 +211,8 @@ def build_explosive_from_candidate(
         if min_mult_at_1pct <= 0 or mults[1.0] < min_mult_at_1pct:
             return None
 
+    vol = _safe_int(c.get("volume"))
+    oi = _safe_int(c.get("open_interest"))
     lottery = score_lottery(
         ask=ask,
         mult_2=mults[2.0],
@@ -205,8 +220,8 @@ def build_explosive_from_candidate(
         mult_5=mults[5.0],
         moneyness_pct=float(c.get("moneyness_pct") or 0),
         dte=dte,
-        volume=int(c.get("volume") or 0),
-        open_interest=int(c.get("open_interest") or 0),
+        volume=vol,
+        open_interest=oi,
         ensemble_score=float(c.get("score") or 0),
     )
     thesis = (
@@ -224,8 +239,8 @@ def build_explosive_from_candidate(
         ask=ask,
         bid=float(c.get("bid") or 0),
         moneyness_pct=float(c.get("moneyness_pct") or 0),
-        volume=int(c.get("volume") or 0),
-        open_interest=int(c.get("open_interest") or 0),
+        volume=vol,
+        open_interest=oi,
         score=float(c.get("score") or 0),
         upside_at_1pct=ups[1.0],
         upside_at_2pct=ups[2.0],
@@ -315,8 +330,8 @@ def find_explosive_calls(
                 "ask": ask,
                 "bid": bid,
                 "moneyness_pct": mny,
-                "volume": int(row.get("volume") or 0),
-                "open_interest": int(row.get("openInterest") or 0),
+                "volume": _safe_int(row.get("volume")),
+                "open_interest": _safe_int(row.get("openInterest")),
                 "score": score,
             }
             ec = build_explosive_from_candidate(
@@ -381,7 +396,7 @@ def build_radar_wing_board(
         if ask < min_ask or ask > max_ask:
             continue
         dte = c.get("dte")
-        if dte is not None and int(dte) > 1:
+        if dte is not None and _safe_int(dte, 99) > 1:
             continue
         ec = build_explosive_from_candidate(
             {**c, "symbol": sym},
@@ -534,7 +549,7 @@ def build_chase_wing_board(
         if ask < min_ask or ask > max_ask:
             continue
         dte = c.get("dte")
-        if dte is not None and int(dte) > 1:
+        if dte is not None and _safe_int(dte, 99) > 1:
             continue
         mny = c.get("moneyness_pct")
         if mny is not None and float(mny) > otm_pct_max:
@@ -666,7 +681,7 @@ def build_explosive_board(
     board: list[ExplosiveCandidate] = []
     for c in candidates or []:
         dte = c.get("dte")
-        if dte is not None and int(dte) > 1:
+        if dte is not None and _safe_int(dte, 99) > 1:
             continue
         # Explosive / lottery lane is call convexity — skip puts from the weak sleeve
         if str(c.get("right") or "C").upper().startswith("P"):
