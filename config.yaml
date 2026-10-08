@@ -353,6 +353,27 @@ actions:
   # Liquid megas (AAPL/GOOGL/MSFT/INTC/…) rarely clear 80% hist — soft floor + session rip override
   mega_min_hist_win_pct: 50
   mega_rip_live_pct: 1.0
+  # Keep a special eye — RIP seed, UW focus, option-chain priority
+  desk_special_eye:
+    - HOOD
+    - MSFT
+    - INTC
+    - PLTR
+    - AMZN
+    - MU
+    - AVGO
+    - GOOGL
+    - AMD
+  uw_focus_tickers:
+    - HOOD
+    - MSFT
+    - INTC
+    - PLTR
+    - AMZN
+    - MU
+    - AVGO
+    - GOOGL
+    - AMD
   lottery_min_score: 62
   lottery_min_confirms: 4
   # Discord-style radar lane (cheap SPY/QQQ wings) — separate from BUY NOW

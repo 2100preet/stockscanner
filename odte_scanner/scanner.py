@@ -111,10 +111,27 @@ def run_scan(
     option_syms = set(focus)
     put_syms: set[str] = set()
     put_max_score = float(opt_cfg.get("put_max_bull_score", 48))
+    try:
+        from odte_scanner.signals.rip_radar import DESK_SPECIAL_EYE, is_mega_rip_symbol
+    except Exception:  # noqa: BLE001
+        DESK_SPECIAL_EYE = frozenset()  # type: ignore[misc,assignment]
+
+        def is_mega_rip_symbol(symbol: str) -> bool:  # type: ignore[misc]
+            return False
+
+    actions_cfg = cfg.get("actions") or {}
+    special_eye = {
+        str(s).upper()
+        for s in (actions_cfg.get("desk_special_eye") or list(DESK_SPECIAL_EYE))
+        if s
+    }
+    # Always keep desk special-eye names on the option universe
+    for sym in special_eye:
+        option_syms.add(sym)
     for hz in ("0dte", "weekly"):
         for ts in by_horizon.get(hz, []):
-            if ts.quality or ts.ensemble_score >= min_score:
-                if len(option_syms) < 40:
+            if ts.quality or ts.ensemble_score >= min_score or is_mega_rip_symbol(ts.symbol):
+                if len(option_syms) < 48:
                     option_syms.add(ts.symbol)
             if ts.ensemble_score <= put_max_score and len(put_syms) < 20:
                 put_syms.add(ts.symbol)
@@ -139,17 +156,20 @@ def run_scan(
         if ts is None:
             continue
         ysym = resolve_yahoo_symbol(ts.symbol, cfg)
-        if ts.ensemble_score >= min_score or ts.quality:
-            if ts.expected_move_pct >= lo * 0.6:
-                picked = select_calls(
-                    ts.symbol,
-                    ts.last_price,
-                    ts.ensemble_score,
-                    ts.reasons,
-                    yahoo_symbol=ysym,
-                    **opt_kwargs,
-                )
-                candidates.extend(picked)
+        # Special-eye / mega RIP: fetch calls even under the usual score floor
+        mega_or_eye = is_mega_rip_symbol(ts.symbol) or ts.symbol in special_eye
+        score_ok = ts.ensemble_score >= min_score or ts.quality or mega_or_eye
+        move_ok = ts.expected_move_pct >= lo * (0.35 if mega_or_eye else 0.6)
+        if score_ok and move_ok:
+            picked = select_calls(
+                ts.symbol,
+                ts.last_price,
+                ts.ensemble_score,
+                list(ts.reasons) + (["desk_special_eye"] if ts.symbol in special_eye else []),
+                yahoo_symbol=ysym,
+                **opt_kwargs,
+            )
+            candidates.extend(picked)
         # Bearish / weak sleeve → puts (score inverted for ranking)
         if include_puts and (sym in put_syms or ts.ensemble_score <= put_max_score):
             put_score = max(float(min_score), 100.0 - float(ts.ensemble_score))

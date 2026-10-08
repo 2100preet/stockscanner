@@ -33,6 +33,8 @@ BEAUTY_SYMBOLS = {
     "ORCL", "CRM", "NOW", "CRWD", "ANET", "ALAB", "VRT", "MRVL",
     # Range / monthly continuation peers from sticky TA notes
     "AMAT", "DELL", "CAT", "BE",
+    # Desk special-eye peers
+    "HOOD", "INTC",
 }
 
 
