@@ -34,7 +34,25 @@ SPRINT_RETIRE_MAX_DTE = 7
 
 # Core megas for challenge sprint — highest liquidity / mover density
 CORE_MEGAS: frozenset[str] = frozenset(
-    {"SPY", "QQQ", "IWM", "NVDA", "TSLA", "AMD", "META", "MU", "AAPL", "MSFT", "AMZN", "GOOGL"}
+    {
+        "SPY",
+        "QQQ",
+        "IWM",
+        "NVDA",
+        "TSLA",
+        "AMD",
+        "META",
+        "MU",
+        "AAPL",
+        "MSFT",
+        "AMZN",
+        "GOOGL",
+        # Desk special-eye — keep ranked with core megas
+        "HOOD",
+        "INTC",
+        "PLTR",
+        "AVGO",
+    }
 )
 
 # Index sniper sleeve — same-day buy→sell on liquid ETF options (SPX traded via SPY)

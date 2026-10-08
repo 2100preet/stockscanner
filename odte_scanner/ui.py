@@ -4397,18 +4397,23 @@ def create_app(config_path: str | None = None) -> Flask:
                     if s
                 ]
                 if not uw_focus:
-                    # Prefer sticky level-watch + a few mega RIP names for desk context
-                    uw_focus = ["AMAT", "AMD", "TSM", "NVDA"]
+                    # Desk special-eye first, then sticky level-watch megas
+                    from odte_scanner.signals.rip_radar import DESK_SPECIAL_EYE
+
+                    uw_focus = list(actions_cfg.get("desk_special_eye") or sorted(DESK_SPECIAL_EYE))
+                    if not uw_focus:
+                        uw_focus = ["AMAT", "AMD", "TSM", "NVDA"]
                 uw_contracts = [
                     str(c).upper()
                     for c in (actions_cfg.get("uw_focus_contracts") or [])
                     if c
                 ]
+                uw_max_focus = int(actions_cfg.get("uw_max_focus_tickers", 9))
                 uw_flow = build_uw_desk_context(
                     flow_limit=int(actions_cfg.get("uw_flow_limit", 100)),
                     min_premium=float(actions_cfg.get("uw_min_premium", 50_000)),
                     timeout=float(actions_cfg.get("uw_timeout_sec", 18)),
-                    focus_tickers=uw_focus[: int(actions_cfg.get("uw_max_focus_tickers", 4))],
+                    focus_tickers=uw_focus[:uw_max_focus],
                     focus_contracts=uw_contracts[: int(actions_cfg.get("uw_max_focus_contracts", 2))],
                     max_focus_tickers=int(actions_cfg.get("uw_max_focus_tickers", 4)),
                     max_focus_contracts=int(actions_cfg.get("uw_max_focus_contracts", 2)),
@@ -4858,14 +4863,20 @@ def create_app(config_path: str | None = None) -> Flask:
                         "live_change_pct": q.get("session_change_pct") or q.get("change_pct"),
                     }
                 )
-            for sym in ("BABA", "GOOGL", "AMD", "META"):
-                if sym in seen_syms:
+            from odte_scanner.signals.rip_radar import DESK_SPECIAL_EYE
+
+            seed_syms = list(actions_cfg.get("desk_special_eye") or []) or sorted(
+                DESK_SPECIAL_EYE | {"BABA", "META"}
+            )
+            for sym in seed_syms:
+                su = str(sym).upper()
+                if su in seen_syms:
                     continue
-                seen_syms.add(sym)
-                q = quotes.get(sym) or {}
+                seen_syms.add(su)
+                q = quotes.get(su) or {}
                 mega_cands.append(
                     {
-                        "symbol": sym,
+                        "symbol": su,
                         "score": 0,
                         "right": "C",
                         "live_change_pct": q.get("session_change_pct") or q.get("change_pct"),
