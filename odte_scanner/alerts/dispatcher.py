@@ -29,12 +29,14 @@ _BUY_ACTIONS = {
     "CALL_NOW",
     "ENTRY",
     "RADAR_HOT",
+    "SELL_CREDIT",
 }
 _SELL_ACTIONS = {
     "SELL_NOW",
     "EXIT",
     "SELL_PUT",
     "SELL_CALL",
+    "BUY_TO_CLOSE",
 }
 
 
@@ -211,6 +213,30 @@ def collect_trade_alerts(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     levels = snapshot.get("level_watch") or {}
     for r in levels.get("buy_level") or levels.get("buy_now") or []:
         push({**(r or {}), "action": (r or {}).get("action") or "BUY_LEVEL"}, "BUY", "Levels")
+
+    ic = snapshot.get("spx_credit") or {}
+    for r in ic.get("sell_credit") or ic.get("buy_now") or []:
+        push(
+            {
+                **(r or {}),
+                "action": (r or {}).get("alert_action") or "BUY_NOW",
+                "ask": (r or {}).get("credit") or (r or {}).get("ask"),
+            },
+            "BUY",
+            "SPX Credit",
+        )
+    for r in ic.get("exit_now") or ic.get("sell_now") or []:
+        push(
+            {
+                **(r or {}),
+                "action": (r or {}).get("alert_action") or "SELL_NOW",
+                "entry_ask": (r or {}).get("entry_ask") or (r or {}).get("credit"),
+                "bid": (r or {}).get("debit_to_close") or (r or {}).get("bid"),
+                "ask": (r or {}).get("debit_to_close") or (r or {}).get("ask"),
+            },
+            "SELL",
+            "SPX Credit",
+        )
 
     ml = (snapshot.get("ml6") or {}).get("actions") or snapshot.get("ml6") or {}
     for r in ml.get("buy_now") or []:
