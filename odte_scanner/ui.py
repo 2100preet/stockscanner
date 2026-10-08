@@ -461,6 +461,17 @@ PAGE = r"""
       <div class="metric-row" id="ripMetrics"></div>
       <div class="cards" id="ripPrimary"></div>
       <div class="panel">
+        <h2>PREMARKET / CATALYST EYE</h2>
+        <p class="lede" style="font-size:.76rem;margin-top:0">
+          Session movers + headline seeds (WOLF · HAE · PEP · PLTR · XOM · CVX · LEVI · APLD …) —
+          auto-merged into special-eye for RIP / options / UW.
+        </p>
+        <div class="metric-row" id="premarketMetrics"></div>
+        <div id="premarketGainers" class="empty">No premarket gainers yet.</div>
+        <div id="premarketLosers" class="empty" style="margin-top:.5rem"></div>
+        <div id="premarketCatalysts" class="empty" style="margin-top:.5rem"></div>
+      </div>
+      <div class="panel">
         <h2>BUY RIP</h2>
         <div id="ripBuy" class="empty">No BUY RIP yet — need mega + session rip + bounce.</div>
       </div>
@@ -1729,6 +1740,54 @@ PAGE = r"""
       </div>`;
     }
 
+    function premarketRow(r) {
+      const pct = r.session_change_pct != null ? r.session_change_pct : r.change_pct;
+      const cls = pct == null ? "" : (pct >= 0 ? "up" : "down");
+      const note = r.catalyst ? `<div class="why">${r.catalyst}</div>` : "";
+      return `<div class="action-card ${pct!=null && pct<0?"short":"long"}">
+        <div class="ac-top"><strong>${r.symbol||"—"}</strong>
+          <span class="tag">${r.session||"pre"}</span>
+          <span class="tag ${cls}">${pct==null?"—":fmt(pct,2)+"%"}</span>
+          <span class="tag">${r.last==null?"—":"$"+fmt(r.last,2)}</span></div>
+        ${note}
+      </div>`;
+    }
+    function renderPremarket(pm) {
+      const metrics = document.getElementById("premarketMetrics");
+      const gEl = document.getElementById("premarketGainers");
+      const lEl = document.getElementById("premarketLosers");
+      const cEl = document.getElementById("premarketCatalysts");
+      const ch = pm || {};
+      const c = ch.counts || {};
+      const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
+      if (metrics) {
+        metrics.innerHTML = [
+          m("Gainers", c.gainers||0, (c.gainers||0)>0?"up":""),
+          m("Losers", c.losers||0, (c.losers||0)>0?"down":""),
+          m("Catalysts", c.catalysts||0),
+          m("Session eye", c.session_eye||(ch.session_eye||[]).length||0, "up"),
+        ].join("");
+      }
+      if (gEl) {
+        const rows = ch.gainers || [];
+        gEl.innerHTML = rows.length
+          ? `<div class="cards">${rows.slice(0,8).map(premarketRow).join("")}</div>`
+          : `<div class="empty">No premarket gainers ≥ threshold yet — catalyst seeds still on special-eye.</div>`;
+      }
+      if (lEl) {
+        const rows = ch.losers || [];
+        lEl.innerHTML = rows.length
+          ? `<h3 style="font-size:.8rem;margin:.4rem 0">Losers / soft opens</h3><div class="cards">${rows.slice(0,6).map(premarketRow).join("")}</div>`
+          : "";
+      }
+      if (cEl) {
+        const rows = ch.catalysts || [];
+        const eye = (ch.session_eye || []).join(" · ");
+        cEl.innerHTML = (rows.length
+          ? `<h3 style="font-size:.8rem;margin:.4rem 0">Catalyst seeds</h3><div class="cards">${rows.map(premarketRow).join("")}</div>`
+          : "") + (eye ? `<p class="lede" style="font-size:.72rem;margin-top:.5rem"><strong>Session special-eye:</strong> ${eye}</p>` : "");
+      }
+    }
     function renderRipRadar(rip) {
       const metrics = document.getElementById("ripMetrics");
       const buyEl = document.getElementById("ripBuy");
@@ -3629,6 +3688,7 @@ PAGE = r"""
       renderRadar(DATA.radar || {});
       renderChaseRadar(DATA.chase_radar || DATA.convex_risk || {});
       renderRipRadar(DATA.rip_radar || DATA.rip || {});
+      renderPremarket(DATA.premarket || {});
       renderBeautyMonthly(DATA.beauty_monthly || DATA.beauty || {});
       renderEcho(DATA.echo || {});
       renderDarkpoolMini(DATA.echo || {});
@@ -4863,10 +4923,14 @@ def create_app(config_path: str | None = None) -> Flask:
                         "live_change_pct": q.get("session_change_pct") or q.get("change_pct"),
                     }
                 )
+            from odte_scanner.signals.premarket_movers import effective_special_eye
             from odte_scanner.signals.rip_radar import DESK_SPECIAL_EYE
 
-            seed_syms = list(actions_cfg.get("desk_special_eye") or []) or sorted(
-                DESK_SPECIAL_EYE | {"BABA", "META"}
+            seed_syms = sorted(
+                effective_special_eye(cfg)
+                | set(actions_cfg.get("desk_special_eye") or [])
+                | set(DESK_SPECIAL_EYE)
+                | {"BABA", "META"}
             )
             for sym in seed_syms:
                 su = str(sym).upper()
@@ -4905,6 +4969,41 @@ def create_app(config_path: str | None = None) -> Flask:
                 "counts": {},
                 "note": "RIP radar temporarily unavailable.",
             }
+
+        # Premarket / catalyst movers → session special-eye
+        premarket: dict = {
+            "gainers": [],
+            "losers": [],
+            "catalysts": [],
+            "session_eye": [],
+            "counts": {},
+            "rules": [],
+        }
+        if actions_cfg.get("premarket_movers_enabled", True):
+            try:
+                from odte_scanner.signals.premarket_movers import build_premarket_board
+
+                # Prefer quotes already on the snapshot; fall back to live fetch inside builder
+                premarket = build_premarket_board(
+                    cfg,
+                    quotes=quotes,
+                    aliases=aliases,
+                    persist=True,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("premarket movers unavailable: %s", exc)
+                premarket = {
+                    "error": str(exc),
+                    "gainers": [],
+                    "losers": [],
+                    "catalysts": [],
+                    "session_eye": [],
+                    "counts": {},
+                    "note": "Premarket movers temporarily unavailable.",
+                }
+        # Prefer scan-persisted board when fresher / already ranked
+        if isinstance(scan.get("premarket"), dict) and (scan["premarket"].get("session_eye") or scan["premarket"].get("gainers")):
+            premarket = scan["premarket"]
 
         # Beauty / monthly lane — AMD META MU SNDK class (~1mo DTE)
         beauty_monthly: dict = {
@@ -6221,6 +6320,7 @@ def create_app(config_path: str | None = None) -> Flask:
                         "radar": radar,
                         "chase_radar": chase_radar,
                         "rip_radar": rip_radar,
+                        "premarket": premarket,
                         "beauty_monthly": beauty_monthly,
                         "level_watch": level_watch,
                     },
@@ -6291,6 +6391,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 "radar": radar,
                 "chase_radar": chase_radar,
                 "rip_radar": rip_radar,
+                "premarket": premarket,
                 "beauty_monthly": beauty_monthly,
                 "level_watch": level_watch,
                 "echo": echo,

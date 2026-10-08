@@ -26,10 +26,30 @@ from odte_scanner.time_cst import (
 
 ET = ZoneInfo("America/New_York")
 
-# Desk special-eye names — always seed RIP / early options / UW focus
-# (HOOD MSFT INTC PLTR AMZN MU AVGO GOOGL AMD — keep under a tight watch).
+# Desk special-eye names — always seed RIP / early options / UW focus.
+# Includes standing megas + today's catalyst / premarket movers
+# (WOLF HAE PEP PLTR XOM CVX LEVI APLD + HOOD MSFT INTC AMZN MU AVGO GOOGL AMD).
 DESK_SPECIAL_EYE: frozenset[str] = frozenset(
-    {"HOOD", "MSFT", "INTC", "PLTR", "AMZN", "MU", "AVGO", "GOOGL", "GOOG", "AMD"}
+    {
+        "HOOD",
+        "MSFT",
+        "INTC",
+        "PLTR",
+        "AMZN",
+        "MU",
+        "AVGO",
+        "GOOGL",
+        "GOOG",
+        "AMD",
+        # Premarket / catalyst eye
+        "WOLF",
+        "HAE",
+        "PEP",
+        "XOM",
+        "CVX",
+        "LEVI",
+        "APLD",
+    }
 )
 
 # Liquid megas / China ADRs / semis the desk wants on RIP alerts

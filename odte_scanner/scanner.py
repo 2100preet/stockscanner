@@ -67,6 +67,26 @@ def run_scan(
     risk = cfg.get("risk", {})
     weights_hz = _weights_by_horizon(cfg)
     aliases = {str(k).upper(): str(v) for k, v in (cfg.get("symbol_aliases") or {}).items()}
+    # Premarket / catalyst special-eye — ensure they are scored (not just option_syms)
+    premarket_board: dict[str, Any] = {}
+    session_eye: set[str] = set()
+    actions_cfg_early = cfg.get("actions") or {}
+    if bool(actions_cfg_early.get("premarket_movers_enabled", True)):
+        try:
+            from odte_scanner.signals.premarket_movers import (
+                build_premarket_board,
+                effective_special_eye,
+            )
+
+            premarket_board = build_premarket_board(cfg, aliases=aliases, persist=True)
+            session_eye = effective_special_eye(cfg, board=premarket_board)
+            for sym in session_eye:
+                if sym not in tickers:
+                    tickers.append(sym)
+                if sym not in focus:
+                    focus.append(sym)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("premarket movers unavailable: %s", exc)
     lookback = int(scan_cfg.get("lookback_days", 120))
     # Swing needs longer history
     period = "2y" if lookback > 180 or uni_mode in ("liquid", "screener", "all") else "1y"
@@ -125,6 +145,7 @@ def run_scan(
         for s in (actions_cfg.get("desk_special_eye") or list(DESK_SPECIAL_EYE))
         if s
     }
+    special_eye |= {str(s).upper() for s in session_eye if s}
     # Always keep desk special-eye names on the option universe
     for sym in special_eye:
         option_syms.add(sym)
@@ -286,6 +307,8 @@ def run_scan(
         },
         "ml6": ml6_board,
         "red_flag": red_flag,
+        "premarket": premarket_board,
+        "special_eye": sorted(special_eye),
         "scores": summarize_scan(ranked_0dte),  # backward compat
         "action_cards": {
             "0dte_quality": [t.to_dict() for t in ranked_0dte if t.quality][:max_show],

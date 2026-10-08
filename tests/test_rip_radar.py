@@ -21,8 +21,25 @@ def test_mega_symbols_include_baba_googl_amd_meta():
 
 
 def test_desk_special_eye_names():
-    """HOOD MSFT INTC PLTR AMZN MU AVGO GOOGL AMD stay on special eye + mega RIP."""
-    must = {"HOOD", "MSFT", "INTC", "PLTR", "AMZN", "MU", "AVGO", "GOOGL", "AMD"}
+    """Standing megas + premarket catalysts stay on special eye + mega RIP."""
+    must = {
+        "HOOD",
+        "MSFT",
+        "INTC",
+        "PLTR",
+        "AMZN",
+        "MU",
+        "AVGO",
+        "GOOGL",
+        "AMD",
+        "WOLF",
+        "HAE",
+        "PEP",
+        "XOM",
+        "CVX",
+        "LEVI",
+        "APLD",
+    }
     assert must <= set(DESK_SPECIAL_EYE)
     for s in must:
         assert is_desk_special_eye(s)

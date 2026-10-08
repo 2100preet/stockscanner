@@ -52,6 +52,12 @@ CORE_MEGAS: frozenset[str] = frozenset(
         "INTC",
         "PLTR",
         "AVGO",
+        "WOLF",
+        "HAE",
+        "PEP",
+        "XOM",
+        "CVX",
+        "APLD",
     }
 )
 
