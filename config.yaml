@@ -52,6 +52,11 @@ tickers:
   - UNH
   - PFE
   - XOM
+  - CVX   # Chevron — energy sleeve with XOM (oil-driven opens)
+  - PEP   # PepsiCo — consumer mega; earnings / guide tape
+  - WOLF  # Wolfspeed — defense / SiC catalyst tape
+  - HAE   # Haemonetics — plasma platform catalyst
+  - LEVI  # Levi Strauss — soft open / miss watch
   - COST
   - TSM
   - DIA
@@ -353,6 +358,40 @@ actions:
   # Liquid megas (AAPL/GOOGL/MSFT/INTC/…) rarely clear 80% hist — soft floor + session rip override
   mega_min_hist_win_pct: 50
   mega_rip_live_pct: 1.0
+  # Keep a special eye — RIP seed, UW focus, option-chain priority
+  desk_special_eye:
+    - HOOD
+    - MSFT
+    - INTC
+    - PLTR
+    - AMZN
+    - MU
+    - AVGO
+    - GOOGL
+    - AMD
+    # Premarket / catalyst eye (session movers also merge dynamically)
+    - WOLF
+    - HAE
+    - PEP
+    - XOM
+    - CVX
+    - LEVI
+    - APLD
+  uw_focus_tickers:
+    - WOLF
+    - HAE
+    - PLTR
+    - PEP
+    - XOM
+    - CVX
+    - APLD
+    - HOOD
+    - MU
+  # Premarket movers board — quote liquid+seeds, promote into session special-eye
+  premarket_movers_enabled: true
+  premarket_min_abs_pct: 1.5
+  premarket_min_price: 2.0
+  premarket_top_n: 12
   lottery_min_score: 62
   lottery_min_confirms: 4
   # Discord-style radar lane (cheap SPY/QQQ wings) — separate from BUY NOW

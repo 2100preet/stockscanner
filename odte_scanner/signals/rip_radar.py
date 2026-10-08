@@ -26,12 +26,38 @@ from odte_scanner.time_cst import (
 
 ET = ZoneInfo("America/New_York")
 
+# Desk special-eye names — always seed RIP / early options / UW focus.
+# Includes standing megas + today's catalyst / premarket movers
+# (WOLF HAE PEP PLTR XOM CVX LEVI APLD + HOOD MSFT INTC AMZN MU AVGO GOOGL AMD).
+DESK_SPECIAL_EYE: frozenset[str] = frozenset(
+    {
+        "HOOD",
+        "MSFT",
+        "INTC",
+        "PLTR",
+        "AMZN",
+        "MU",
+        "AVGO",
+        "GOOGL",
+        "GOOG",
+        "AMD",
+        # Premarket / catalyst eye
+        "WOLF",
+        "HAE",
+        "PEP",
+        "XOM",
+        "CVX",
+        "LEVI",
+        "APLD",
+    }
+)
+
 # Liquid megas / China ADRs / semis the desk wants on RIP alerts
 MEGA_RIP_SYMBOLS = {
     "META", "GOOGL", "GOOG", "AMD", "BABA", "NVDA", "TSLA", "AAPL", "AMZN",
     "MSFT", "NFLX", "AVGO", "MU", "SMCI", "PLTR", "TSM", "QCOM", "ARM",
-    "SPOT", "SHOP", "CRWD", "PANW", "ORCL", "IBM", "INTC", "SNDK",
-}
+    "SPOT", "SHOP", "CRWD", "PANW", "ORCL", "IBM", "INTC", "SNDK", "HOOD",
+} | set(DESK_SPECIAL_EYE)
 
 
 @dataclass
@@ -113,7 +139,12 @@ def _live_pct(quote: dict[str, Any] | None, candidate: dict[str, Any] | None = N
 
 
 def is_mega_rip_symbol(symbol: str) -> bool:
-    return str(symbol or "").upper() in MEGA_RIP_SYMBOLS
+    sym = str(symbol or "").upper()
+    return sym in MEGA_RIP_SYMBOLS or sym in DESK_SPECIAL_EYE
+
+
+def is_desk_special_eye(symbol: str) -> bool:
+    return str(symbol or "").upper() in DESK_SPECIAL_EYE
 
 
 def bounce_from_day_low_pct(quote: dict[str, Any] | None, spot: float | None = None) -> float | None:

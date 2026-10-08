@@ -4,8 +4,10 @@ from zoneinfo import ZoneInfo
 
 from odte_scanner.signals.actions import decide_entry
 from odte_scanner.signals.rip_radar import (
+    DESK_SPECIAL_EYE,
     build_rip_board,
     decide_rip_entry,
+    is_desk_special_eye,
     is_mega_rip_symbol,
     mega_rip_tape_ok,
 )
@@ -16,6 +18,34 @@ _MORNING = datetime(2026, 9, 18, 11, 0, tzinfo=ZoneInfo("America/New_York"))
 def test_mega_symbols_include_baba_googl_amd_meta():
     for s in ("BABA", "GOOGL", "AMD", "META", "NVDA"):
         assert is_mega_rip_symbol(s)
+
+
+def test_desk_special_eye_names():
+    """Standing megas + premarket catalysts stay on special eye + mega RIP."""
+    must = {
+        "HOOD",
+        "MSFT",
+        "INTC",
+        "PLTR",
+        "AMZN",
+        "MU",
+        "AVGO",
+        "GOOGL",
+        "AMD",
+        "WOLF",
+        "HAE",
+        "PEP",
+        "XOM",
+        "CVX",
+        "LEVI",
+        "APLD",
+    }
+    assert must <= set(DESK_SPECIAL_EYE)
+    for s in must:
+        assert is_desk_special_eye(s)
+        assert is_mega_rip_symbol(s)
+    # HOOD was the prior gap — must not fall off mega early / RIP again
+    assert is_mega_rip_symbol("HOOD")
 
 
 def test_mega_rip_tape_ok():
