@@ -149,8 +149,10 @@ def rank_movers(
         if abs(float(pct)) < min_abs_pct and su not in CATALYST_SEEDS:
             continue
         rows.append(row)
-    gainers = sorted(rows, key=lambda r: float(r.get("session_change_pct") or 0), reverse=True)
-    losers = sorted(rows, key=lambda r: float(r.get("session_change_pct") or 0))
+    up = [r for r in rows if float(r.get("session_change_pct") or 0) > 0]
+    down = [r for r in rows if float(r.get("session_change_pct") or 0) < 0]
+    gainers = sorted(up, key=lambda r: float(r.get("session_change_pct") or 0), reverse=True)
+    losers = sorted(down, key=lambda r: float(r.get("session_change_pct") or 0))
     return gainers[:top_n], losers[:top_n]
 
 
