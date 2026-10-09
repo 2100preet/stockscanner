@@ -855,6 +855,9 @@ def build_action_board(
     loss_cooldown_symbols: set[str] | list[str] | None = None,
     loss_cooldown_contracts: set[str] | list[str] | None = None,
     market_tide: dict[str, Any] | None = None,
+    gex_walls: dict[str, dict[str, Any]] | None = None,
+    gex_wall_buffer_pct: float = 0.15,
+    gex_block_into_call_wall: bool = True,
 ) -> dict[str, Any]:
     score_by_symbol = {
         str(s.get("symbol")): float(s.get("ensemble_score") or 0) for s in scores or []
@@ -1085,4 +1088,173 @@ def build_action_board(
 
         board = apply_red_flag_to_actions(board, red_flag)
 
+    if gex_walls:
+        board = apply_gex_wall_gate(
+            board,
+            gex_walls,
+            buffer_pct=gex_wall_buffer_pct,
+            block_into_call_wall=gex_block_into_call_wall,
+        )
+
     return board
+
+
+_INDEX_GEX_SYMS = frozenset({"SPY", "QQQ", "IWM", "DIA", "SPX", "XSP"})
+
+
+def apply_gex_wall_gate(
+    actions: dict[str, Any],
+    gex_walls: dict[str, dict[str, Any]] | None,
+    *,
+    buffer_pct: float = 0.15,
+    block_into_call_wall: bool = True,
+) -> dict[str, Any]:
+    """Soft-gate CALL BUY NOW using Gex Daddy / dealer walls.
+
+    - Annotate every signal with call/put wall + flip + GEX bias when known
+    - Demote CALL BUY NOW → WAIT when spot is into/near the call wall
+    - For index 0DTE calls: also WAIT when short-gamma (neg bias) and spot > flip
+    """
+    if not actions or not gex_walls:
+        return actions
+
+    from odte_scanner.signals.gex_daddy import call_into_wall, short_gamma_above_flip
+
+    def _wall_for(sym: str) -> dict[str, Any] | None:
+        su = str(sym or "").upper()
+        if su in gex_walls:
+            return gex_walls[su]
+        # SPX walls can proxy XSP (≈ /10) — keep separate if present
+        if su == "XSP" and "SPX" in gex_walls:
+            w = dict(gex_walls["SPX"])
+            for k in ("call_wall", "put_wall", "flip", "spot"):
+                if w.get(k) is not None:
+                    try:
+                        w[k] = float(w[k]) / 10.0
+                    except (TypeError, ValueError):
+                        pass
+            w["source"] = "gex_daddy_spx_scaled"
+            return w
+        return None
+
+    def _patch(sig: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(sig, dict):
+            return sig
+        sym = str(sig.get("symbol") or "").upper()
+        w = _wall_for(sym)
+        if not w:
+            return sig
+        out = dict(sig)
+        call_w = w.get("call_wall")
+        put_w = w.get("put_wall")
+        flip = w.get("flip")
+        bias = w.get("gex_bias") or w.get("regime")
+        spot = None
+        for k in ("live_last", "spot", "live_spot"):
+            if out.get(k) is not None:
+                try:
+                    spot = float(out[k])
+                    break
+                except (TypeError, ValueError):
+                    pass
+        if spot is None:
+            spot = w.get("spot")
+
+        tag = (
+            f"GEX {w.get('source') or 'gex'}: bias={bias or '—'} · "
+            f"call wall {call_w if call_w is not None else '—'} · "
+            f"put wall {put_w if put_w is not None else '—'} · "
+            f"flip {flip if flip is not None else '—'}"
+        )
+        detail = str(out.get("detail") or "")
+        if "GEX " not in detail:
+            out["detail"] = (detail + " · " + tag).strip(" ·")
+        out["call_wall"] = call_w
+        out["put_wall"] = put_w
+        out["gex_flip"] = flip
+        out["gex_bias"] = bias
+        out["gex_source"] = w.get("source")
+
+        right = str(out.get("right") or "C").upper()
+        action = str(out.get("action") or "")
+        if action != "BUY_NOW" or right.startswith("P"):
+            return out
+
+        bucket = str(out.get("dte_bucket") or "").lower()
+        into = call_into_wall(spot=spot, call_wall=call_w, buffer_pct=buffer_pct)
+        short_above = short_gamma_above_flip(spot=spot, flip=flip, gex_bias=str(bias or ""))
+
+        block = False
+        reason = ""
+        if block_into_call_wall and into:
+            block = True
+            reason = (
+                f"spot {spot:.2f} into/near call wall {call_w} "
+                f"(≤{buffer_pct:.2f}% buffer) — dealer supply zone"
+            )
+        elif short_above and sym in _INDEX_GEX_SYMS and bucket in {"0dte", ""}:
+            block = True
+            reason = (
+                f"short-gamma regime above flip {flip} (spot {spot:.2f}) — "
+                "index 0DTE call risk elevated"
+            )
+
+        if block:
+            out["action"] = "WAIT"
+            hl = str(out.get("headline") or "")
+            out["headline"] = hl.replace("BUY NOW", "WAIT", 1) if "BUY NOW" in hl else f"WAIT {sym} · GEX wall"
+            out["detail"] = f"{out.get('detail', '')} · {reason}".strip(" ·")
+            out["strength"] = min(float(out.get("strength") or 50), 52.0)
+            out["gex_blocked"] = True
+            out["gex_block_reason"] = reason
+        return out
+
+    out = dict(actions)
+    for key in (
+        "all",
+        "buy_now",
+        "buy_now_0dte",
+        "buy_now_weekly",
+        "buy_now_calls",
+        "buy_now_puts",
+        "wait",
+        "hold",
+        "sell_now",
+        "sell_now_puts",
+    ):
+        if key in out and isinstance(out[key], list):
+            out[key] = [_patch(s) for s in out[key]]
+
+    # Rebuild BUY buckets after demotions
+    all_rows = list(out.get("all") or [])
+    buys = [s for s in all_rows if str(s.get("action")) == "BUY_NOW"]
+    waits = [s for s in all_rows if str(s.get("action")) == "WAIT"]
+    out["buy_now"] = buys
+    out["buy_now_0dte"] = [s for s in buys if str(s.get("dte_bucket") or "0dte") == "0dte"]
+    out["buy_now_weekly"] = [s for s in buys if str(s.get("dte_bucket") or "") == "weekly"]
+    out["buy_now_calls"] = [s for s in buys if str(s.get("right") or "C").upper() != "P"]
+    out["buy_now_puts"] = [s for s in buys if str(s.get("right") or "C").upper() == "P"]
+    out["wait"] = waits
+    if isinstance(out.get("primary"), dict):
+        out["primary"] = _patch(out["primary"])
+        if out["primary"].get("action") != "BUY_NOW" and buys:
+            out["primary"] = buys[0]
+        elif out["primary"].get("action") == "WAIT" and buys:
+            out["primary"] = buys[0]
+
+    counts = dict(out.get("counts") or {})
+    counts["buy_now"] = len(out["buy_now"])
+    counts["buy_now_0dte"] = len(out["buy_now_0dte"])
+    counts["buy_now_weekly"] = len(out["buy_now_weekly"])
+    counts["buy_now_calls"] = len(out["buy_now_calls"])
+    counts["buy_now_puts"] = len(out["buy_now_puts"])
+    counts["wait"] = len(out["wait"])
+    out["counts"] = counts
+    out["gex_gate"] = {
+        "active": True,
+        "symbols": sorted(gex_walls.keys()),
+        "buffer_pct": buffer_pct,
+        "block_into_call_wall": block_into_call_wall,
+        "source": "gex_daddy",
+    }
+    return out

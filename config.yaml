@@ -353,6 +353,17 @@ actions:
   # Liquid megas (AAPL/GOOGL/MSFT/INTC/…) rarely clear 80% hist — soft floor + session rip override
   mega_min_hist_win_pct: 50
   mega_rip_live_pct: 1.0
+  # Gex Daddy — free GEX / call+put walls / flip (https://gex-daddy.onrender.com)
+  # Soft-gates CALL BUY NOW into call walls + short-gamma above flip (index 0DTE)
+  gex_daddy_enabled: true
+  gex_daddy_base_url: "https://gex-daddy.onrender.com"
+  gex_daddy_tickers:
+    - SPY
+    - SPX
+    - QQQ
+    - IWM
+  gex_wall_buffer_pct: 0.15
+  gex_block_into_call_wall: true
   lottery_min_score: 62
   lottery_min_confirms: 4
   # Discord-style radar lane (cheap SPY/QQQ wings) — separate from BUY NOW
