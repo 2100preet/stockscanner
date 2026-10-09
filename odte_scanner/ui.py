@@ -4353,16 +4353,36 @@ def create_app(config_path: str | None = None) -> Flask:
                 logger.warning("Red Flag live refresh failed: %s", exc)
 
         free_dealer = None
+        gex_daddy_board: dict = {}
+        gex_walls: dict[str, dict] = {}
         if not offline:
             try:
                 from odte_scanner.signals.free_feeds import build_free_dealer_cockpit
 
-                free_dealer = build_free_dealer_cockpit()
+                free_dealer = build_free_dealer_cockpit(
+                    gex_daddy_enabled=bool(actions_cfg.get("gex_daddy_enabled", True)),
+                    gex_daddy_base_url=str(
+                        actions_cfg.get("gex_daddy_base_url") or "https://gex-daddy.onrender.com"
+                    ),
+                    gex_daddy_tickers=list(
+                        actions_cfg.get("gex_daddy_tickers") or ["SPY", "SPX", "QQQ", "IWM"]
+                    ),
+                )
+                gex_daddy_board = (free_dealer or {}).get("gex_daddy") or {}
+                gex_walls = dict(gex_daddy_board.get("walls") or {})
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Free dealer cockpit failed: %s", exc)
                 free_dealer = {"ok": False, "error": str(exc)}
         else:
             free_dealer = scan.get("free_dealer") or {"ok": False, "error": "offline"}
+            gex_daddy_board = (free_dealer or {}).get("gex_daddy") or {}
+            gex_walls = dict(gex_daddy_board.get("walls") or {})
+
+        gex_board_kw = {
+            "gex_walls": gex_walls or None,
+            "gex_wall_buffer_pct": float(actions_cfg.get("gex_wall_buffer_pct", 0.15)),
+            "gex_block_into_call_wall": bool(actions_cfg.get("gex_block_into_call_wall", True)),
+        }
 
         # Pages snapshot has no 5m tape. buy_score 72 left hist-gated names in WAIT.
         pages_buy_score = float(
@@ -4578,6 +4598,7 @@ def create_app(config_path: str | None = None) -> Flask:
             red_flag=red_flag_snapshot,
             **flow_board_kw,
             **loss_board_kw,
+            **gex_board_kw,
         )
 
         if journal is not None:
@@ -4630,6 +4651,7 @@ def create_app(config_path: str | None = None) -> Flask:
                     red_flag=red_flag_snapshot,
                     **flow_board_kw,
                     **loss_board_kw,
+                    **gex_board_kw,
                 )
                 more = journal.sync_from_actions(
                     actions,
@@ -5128,6 +5150,7 @@ def create_app(config_path: str | None = None) -> Flask:
                     red_flag=red_flag_snapshot,
                     **flow_board_kw,
                     **loss_board_kw,
+                    **gex_board_kw,
                 )
         except Exception as exc:  # noqa: BLE001
             logger.warning("echo board unavailable: %s", exc)
@@ -5811,9 +5834,39 @@ def create_app(config_path: str | None = None) -> Flask:
         try:
             from odte_scanner.options.walls import wall_exit_levels
 
+            # Prefer Gex Daddy walls for index names (call/put wall + flip + bias)
+            for sym, gw in (gex_walls or {}).items():
+                su = str(sym or "").upper()
+                if not su:
+                    continue
+                walls_by_symbol[su] = {
+                    **wall_exit_levels(
+                        right="C",
+                        spot=gw.get("spot"),
+                        call_wall=gw.get("call_wall"),
+                        put_wall=gw.get("put_wall"),
+                        call_wall_oi=gw.get("call_wall_oi"),
+                        put_wall_oi=gw.get("put_wall_oi"),
+                        buffer_usd=float(actions_cfg.get("wall_exit_buffer_usd", 0.10)),
+                    ),
+                    "flip": gw.get("flip"),
+                    "regime": gw.get("regime"),
+                    "gex_bias": gw.get("gex_bias"),
+                    "net_gex": gw.get("net_gex"),
+                    "call_walls": gw.get("call_walls"),
+                    "put_walls": gw.get("put_walls"),
+                    "exit_hint": None,
+                    "source": "gex_daddy",
+                    "note": gw.get("note"),
+                }
+                walls_by_symbol[su]["exit_hint"] = walls_by_symbol[su].get("exit_hint")
+
             for p in ((echo.get("dealer_edge") or {}).get("profiles") or []):
                 sym = str(p.get("symbol") or "").upper()
                 if not sym:
+                    continue
+                # Don't overwrite richer Gex Daddy index walls
+                if walls_by_symbol.get(sym, {}).get("source") == "gex_daddy":
                     continue
                 walls_by_symbol[sym] = {
                     **wall_exit_levels(
@@ -5832,6 +5885,9 @@ def create_app(config_path: str | None = None) -> Flask:
             for t in (challenge.get("tickets") or []):
                 sym = str(t.get("symbol") or "").upper()
                 if not sym or t.get("call_wall") is None and t.get("put_wall") is None:
+                    continue
+                # Keep Gex Daddy index walls — challenge Yahoo OI can be stale/wrong magnitude
+                if walls_by_symbol.get(sym, {}).get("source") == "gex_daddy":
                     continue
                 right = str(t.get("right") or "C").upper()
                 refreshed_w = wall_exit_levels(
@@ -6277,6 +6333,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 "ml6": ml6,
                 "red_flag": red_flag_snapshot,
                 "free_dealer": free_dealer,
+                "gex_daddy": gex_daddy_board,
                 "radar": radar,
                 "chase_radar": chase_radar,
                 "rip_radar": rip_radar,

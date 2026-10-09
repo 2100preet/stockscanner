@@ -5,6 +5,7 @@ Sources (no API key):
 - CBOE delayed VIX options → VIX call/put wall proxy
 - CBOE delayed index quotes → VIX term (VIX1D, VIX9D, VIX3M, VVIX, SKEW)
 - SqueezeMetrics DIX.csv → free daily Dark Pool Index + GEX history
+- Gex Daddy (gex-daddy.onrender.com) → multi-ticker GEX / walls / flip
 
 These are **not** VolSignals VS3D actual market-maker participant books.
 """
@@ -180,12 +181,28 @@ def fetch_vix_option_walls(timeout: float = 25.0) -> dict[str, Any]:
     }
 
 
-def build_free_dealer_cockpit() -> dict[str, Any]:
+def build_free_dealer_cockpit(
+    *,
+    gex_daddy_tickers: list[str] | None = None,
+    gex_daddy_base_url: str | None = None,
+    gex_daddy_enabled: bool = True,
+) -> dict[str, Any]:
     """Aggregate all free dealer/vol feeds for the UI."""
     spx = compute_spx_gex(zero_dte_only=True)
     dix = fetch_squeezemetrics_dix()
     vol = fetch_cboe_vol_term()
     vix_walls = fetch_vix_option_walls()
+    gex_daddy: dict[str, Any] = {"ok": False, "skipped": True}
+    if gex_daddy_enabled:
+        try:
+            from odte_scanner.signals.gex_daddy import DEFAULT_BASE, fetch_gex_daddy_board
+
+            gex_daddy = fetch_gex_daddy_board(
+                gex_daddy_tickers,
+                base_url=gex_daddy_base_url or DEFAULT_BASE,
+            )
+        except Exception as exc:  # noqa: BLE001
+            gex_daddy = {"ok": False, "error": str(exc), "source": "gex_daddy"}
 
     summary: list[str] = []
     if spx.get("ok"):
@@ -193,6 +210,8 @@ def build_free_dealer_cockpit() -> dict[str, Any]:
             f"CBOE SPX 0DTE {spx.get('regime')} · wall {spx.get('call_wall')} · "
             f"flip {spx.get('zero_gamma_flip')}"
         )
+    if gex_daddy.get("ok"):
+        summary.extend(list(gex_daddy.get("summary") or [])[:4])
     if dix.get("ok"):
         summary.append(
             f"SqueezeMetrics DIX {dix.get('dix')} ({dix.get('bias')}) · "
@@ -205,10 +224,12 @@ def build_free_dealer_cockpit() -> dict[str, Any]:
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "summary": summary,
         "spx_gex": spx,
+        "gex_daddy": gex_daddy,
         "squeezemetrics": dix,
         "vol_term": vol,
         "vix_walls": vix_walls,
         "available_free": [
+            {"name": "Gex Daddy", "use": "SPY/SPX/QQQ/IWM GEX, call/put walls, flip", "auth": "none", "url": "https://gex-daddy.onrender.com"},
             {"name": "CBOE SPX delayed options", "use": "0DTE GEX, call/put wall, flip", "auth": "none"},
             {"name": "CBOE VIX delayed options", "use": "VIX OI walls", "auth": "none"},
             {"name": "CBOE vol indices", "use": "VIX/VIX1D/VIX3M/VVIX/SKEW term", "auth": "none"},
