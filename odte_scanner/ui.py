@@ -203,7 +203,6 @@ PAGE = r"""
       <span class="status" id="counts"></span>
       <span class="status" id="updated">Loading…</span>
     </div>
-    <div id="mustTradeBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="loadNote" class="loading" style="display:none;margin-bottom:.6rem"></div>
     <div id="alertToasts" aria-live="assertive"></div>
 
@@ -212,6 +211,7 @@ PAGE = r"""
       <button data-tab="overview">Overview</button>
       <button data-tab="odte">0DTE</button>
       <button data-tab="odte1k">0DTE $1K</button>
+      <button data-tab="spxcredit">SPX Credit</button>
       <button data-tab="powerhour">Power Hour</button>
       <button data-tab="explosive">Explosive</button>
       <button data-tab="rip">RIP / META</button>
@@ -231,6 +231,7 @@ PAGE = r"""
       <p class="lede">Live option BUY NOW / SELL NOW across 0DTE, weeklies, swing, Explosive, <strong>RIP/META</strong>, <strong>Levels</strong>, ML6, Challenge, and 0DTE $1K IN/OUT. Hist win ≥80% (n≥5) gates Options BUY NOW. Same losing OCC stays blocked; mega names can still BUY when tape is ripping (see RIP tab). SETUP rows are quality tape without a contract yet — not a buy.</p>
       <div class="metric-row" id="nowBoardMetrics"></div>
       <p class="lede" id="nowBoardNote" style="margin-top:0;font-size:.76rem"></p>
+      <div id="mustTradeBanner" class="pulse-banner" aria-live="polite"></div>
       <h2>BUY NOW</h2>
       <div id="nowBoardBuy" class="empty">—</div>
       <h2>SELL NOW</h2>
@@ -360,6 +361,31 @@ PAGE = r"""
       <p class="lede" id="odte1kDisclaimer" style="font-size:.72rem"></p>
     </section>
 
+    <section class="tabpane" id="tab-spxcredit">
+      <h2>SPX CREDIT — 0DTE iron condor</h2>
+      <p class="lede">
+        Daily defined-risk credit on <strong>SPX</strong> (XSP scaled): sell ~50pt OTM
+        <strong>10-wide</strong> put + call verticals (iron condor). Target credit
+        <strong>~$0.90</strong>, buy-to-close stop <strong>$1.40</strong>, bank ~50% when available.
+        No new entries after 15:00 ET · flatten 15:45 ET. WAIT on ±1.2% trend days.
+      </p>
+      <div class="metric-row" id="spxCreditMetrics"></div>
+      <div class="cards" id="spxCreditPrimary"></div>
+      <div class="panel">
+        <h2>SELL CREDIT (enter IC)</h2>
+        <div id="spxCreditSell" class="empty">No SELL CREDIT package yet — need SPX/XSP 0DTE chain near $0.90 credit.</div>
+      </div>
+      <div class="panel">
+        <h2>BUY TO CLOSE (exit)</h2>
+        <div id="spxCreditExit" class="empty">No open credit IC exits.</div>
+      </div>
+      <div class="panel">
+        <h2>WAIT / HOLD</h2>
+        <div id="spxCreditWait" class="empty">—</div>
+      </div>
+      <p class="lede" id="spxCreditRules" style="font-size:.72rem"></p>
+    </section>
+
     <section class="tabpane" id="tab-powerhour">
       <h2>Power Hour — LONG / SHORT · 15m VWAP</h2>
       <p class="lede">
@@ -460,6 +486,17 @@ PAGE = r"""
       </p>
       <div class="metric-row" id="ripMetrics"></div>
       <div class="cards" id="ripPrimary"></div>
+      <div class="panel">
+        <h2>PREMARKET / CATALYST EYE</h2>
+        <p class="lede" style="font-size:.76rem;margin-top:0">
+          Session movers + headline seeds (TMUS · T · VZ · CCI · AMT · SBAC · HUM · ALHC · AAPL · ORCL · LITE …) —
+          auto-merged into special-eye for RIP / options / UW.
+        </p>
+        <div class="metric-row" id="premarketMetrics"></div>
+        <div id="premarketGainers" class="empty">No premarket gainers yet.</div>
+        <div id="premarketLosers" class="empty" style="margin-top:.5rem"></div>
+        <div id="premarketCatalysts" class="empty" style="margin-top:.5rem"></div>
+      </div>
       <div class="panel">
         <h2>BUY RIP</h2>
         <div id="ripBuy" class="empty">No BUY RIP yet — need mega + session rip + bounce.</div>
@@ -1074,7 +1111,7 @@ PAGE = r"""
       <p class="pc-why"><strong>EXIT:</strong> ${t.planOut}</p>`;
     }
 
-    const NOW_DESK_ORDER = ["0DTE", "1 Week", "Swing 1–3M", "Levels", "Explosive", "ML6", "Challenge", "0DTE $1K", "Options"];
+    const NOW_DESK_ORDER = ["0DTE", "1 Week", "Swing 1–3M", "Levels", "Explosive", "ML6", "Challenge", "0DTE $1K", "SPX Credit", "Options"];
 
     function horizonDesk(row, fallback) {
       const b = String(row.dte_bucket || row.horizon || row.hold_style || row.style || "").toLowerCase();
@@ -1148,6 +1185,9 @@ PAGE = r"""
       const k1 = DATA.odte_1k || {};
       (k1.put_now || k1.entry || k1.in || []).forEach(r => add(Object.assign({}, r, { action: r.alert_action || "BUY_NOW", right: r.right || "P" }), "BUY", "0DTE $1K"));
       (k1.exit_now || k1.exit || k1.out || []).forEach(r => add(Object.assign({}, r, { action: r.alert_action || "SELL_NOW" }), "SELL", "0DTE $1K"));
+      const ic = DATA.spx_credit || {};
+      (ic.sell_credit || ic.buy_now || []).forEach(r => add(Object.assign({}, r, { action: r.alert_action || "BUY_NOW", right: "IC" }), "BUY", "SPX Credit"));
+      (ic.exit_now || ic.sell_now || []).forEach(r => add(Object.assign({}, r, { action: r.alert_action || "SELL_NOW", right: "IC" }), "SELL", "SPX Credit"));
       const ac = DATA.action_cards || {};
       const histOk = (sym, hz) => {
         const w = winLookup(sym, hz);
@@ -1174,19 +1214,25 @@ PAGE = r"""
       const buy = r._side === "BUY";
       const wait = r._side === "WAIT";
       const setup = r._side === "SETUP";
-      const right = String(r.right || "C").toUpperCase() === "P" ? "PUT" : "CALL";
+      const rightRaw = String(r.right || "C").toUpperCase();
+      const right = rightRaw === "P" ? "PUT" : (rightRaw === "IC" ? "IC" : "CALL");
       const win = Number(r.win_pct ?? r.hist_win_pct);
       const n = Number(r.win_samples ?? r.hist_samples);
       const gated = buy && win >= 80 && (Number.isNaN(n) || n >= 3);
       const isRip = buy && String(r.action || "").includes("RIP");
       const isBeauty = buy && String(r.action || "").includes("BEAUTY");
       const isLevel = buy && String(r.action || "").includes("LEVEL");
-      const cls = buy ? (isRip || isBeauty || isLevel ? "long" : (gated ? "enter-now" : "long")) : (wait || setup ? "wait" : "short");
+      const isIc = String(r._desk || "") === "SPX Credit" || right === "IC";
+      const cls = buy ? (isRip || isBeauty || isLevel || isIc ? "long" : (gated ? "enter-now" : "long")) : (wait || setup ? "wait" : "short");
       const label = buy
-        ? (isLevel ? "BUY LEVEL" : (isBeauty ? "BUY BEAUTY" : (isRip ? "BUY RIP" : (gated ? "ENTER NOW" : "BUY NOW"))))
-        : (setup ? "SETUP · not BUY" : (wait ? "WAIT" : "SELL NOW"));
-      const strike = r.strike == null ? "—" : `${fmt(r.strike, Number(r.strike) % 1 ? 2 : 0)}${right === "PUT" ? "p" : "c"}`;
-      const px = buy ? (r.ask ?? r.entry_ask) : (r.bid ?? r.mark ?? r.ask ?? r.exit_bid);
+        ? (isIc ? "SELL CREDIT" : (isLevel ? "BUY LEVEL" : (isBeauty ? "BUY BEAUTY" : (isRip ? "BUY RIP" : (gated ? "ENTER NOW" : "BUY NOW")))))
+        : (setup ? "SETUP · not BUY" : (wait ? "WAIT" : (isIc ? "BUY TO CLOSE" : "SELL NOW")));
+      const strike = right === "IC"
+        ? `IC ${r.short_put == null ? "—" : fmt(r.short_put, 0) + "P"} / ${r.short_call == null ? "—" : fmt(r.short_call, 0) + "C"}`
+        : (r.strike == null ? "—" : `${fmt(r.strike, Number(r.strike) % 1 ? 2 : 0)}${right === "PUT" ? "p" : "c"}`);
+      const px = buy
+        ? (isIc ? (r.credit ?? r.ask ?? r.entry_ask) : (r.ask ?? r.entry_ask))
+        : (isIc ? (r.debit_to_close ?? r.bid ?? r.mark ?? r.ask) : (r.bid ?? r.mark ?? r.ask ?? r.exit_bid));
       const when = rowAskedAt(r);
       const entryWhen = r.entered_at_cst || (r.entered_at ? fmtCST(r.entered_at) : "");
       const showEntry = entryWhen && entryWhen !== "—" && entryWhen !== when;
@@ -1200,7 +1246,7 @@ PAGE = r"""
         <div class="ac-conf">${r._desk} · ${when && when !== "—" ? when : "time —"}${showEntry ? ` · entered ${entryWhen}` : ""}</div>
         <div class="ac-meta">
           <div>Strike / expiry<strong>${strike} · ${r.expiry || "—"}${r.dte != null ? ` (${r.dte}DTE)` : ""}</strong></div>
-          <div>${buy ? "Ask" : "Bid"}<strong>${px == null ? "—" : "$" + fmt(px, 2)}</strong></div>
+          <div>${isIc ? (buy ? "Credit" : "Debit") : (buy ? "Ask" : "Bid")}<strong>${px == null ? "—" : "$" + fmt(px, 2)}</strong></div>
           <div>Hist win<strong>${Number.isNaN(win) ? "—" : fmt(win, 0) + "%"}</strong></div>
           <div>Strike rate ≥1%<strong>${sr}</strong></div>
           ${levelsMeta(r)}
@@ -1727,6 +1773,134 @@ PAGE = r"""
         </div>
         <div class="why">${r.detail||""}</div>
       </div>`;
+    }
+
+    function spxCreditCard(r) {
+      if (!r) return "";
+      const enter = r.action === "SELL_CREDIT" || r.alert_action === "BUY_NOW";
+      const exit = r.action === "BUY_TO_CLOSE" || r.alert_action === "SELL_NOW";
+      const cls = enter ? "long" : (exit ? "short" : "wait");
+      const label = enter ? "SELL CREDIT" : (exit ? "BUY TO CLOSE" : (r.action || "WAIT"));
+      const credit = r.credit ?? r.ask ?? r.entry_ask;
+      const debit = r.debit_to_close ?? r.bid;
+      const when = rowAskedAt(r);
+      return `<article class="action-card ${cls}">
+        <div class="ac-top">
+          <div class="ac-sym">${r.symbol} <span class="tag">Iron Condor</span> <span class="tag">${r.dte != null ? r.dte + "DTE" : "0DTE"}</span></div>
+          <div class="ac-dir ${cls}">${label}</div>
+        </div>
+        <div class="ac-conf">${when && when !== "—" ? when : "time —"} · ${r.expiry || "—"}</div>
+        <div class="ac-meta">
+          <div>Spot<strong>${r.spot == null ? "—" : "$" + fmt(r.spot, 2)}</strong></div>
+          <div>Shorts<strong>${r.short_put == null ? "—" : fmt(r.short_put, 0) + "P"} / ${r.short_call == null ? "—" : fmt(r.short_call, 0) + "C"}</strong></div>
+          <div>Wings<strong>${r.long_put == null ? "—" : fmt(r.long_put, 0) + "P"} / ${r.long_call == null ? "—" : fmt(r.long_call, 0) + "C"} · ${r.wing_width == null ? "10" : fmt(r.wing_width, 0)}-wide</strong></div>
+          <div>Credit<strong class="up">${credit == null ? "—" : "$" + fmt(credit, 2)}</strong></div>
+          <div>Debit mark<strong class="down">${debit == null ? "—" : "$" + fmt(debit, 2)}</strong></div>
+          <div>Stop BTC<strong class="down">${r.stop_debit == null ? "$1.40" : "$" + fmt(r.stop_debit, 2)}</strong></div>
+        </div>
+        <p class="why" style="margin:.45rem 0 0">${r.exit_plan || r.detail || r.headline || ""}</p>
+      </article>`;
+    }
+
+    function renderSpxCredit(board) {
+      const ch = board || {};
+      const c = ch.counts || {};
+      const m = (k, v, cls = "") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
+      const metrics = document.getElementById("spxCreditMetrics");
+      if (metrics) {
+        metrics.innerHTML = [
+          m("SELL CREDIT", c.sell_credit || c.buy_now || 0, (c.sell_credit || c.buy_now || 0) ? "up" : ""),
+          m("BUY TO CLOSE", c.exit_now || c.sell_now || 0, (c.exit_now || c.sell_now || 0) ? "down" : ""),
+          m("WAIT", c.wait || 0),
+          m("HOLD", c.hold || 0),
+          m("Target credit", ch.target_credit == null ? "$0.90" : "$" + fmt(ch.target_credit, 2), "up"),
+          m("Stop debit", ch.stop_debit == null ? "$1.40" : "$" + fmt(ch.stop_debit, 2), "down"),
+        ].join("");
+      }
+      const primaryEl = document.getElementById("spxCreditPrimary");
+      if (primaryEl) {
+        primaryEl.innerHTML = ch.primary
+          ? `<div class="cards">${spxCreditCard(ch.primary)}</div>`
+          : `<div class="empty">${ch.lesson || "Waiting for SPX/XSP 0DTE chain near target credit."}</div>`;
+      }
+      const sellEl = document.getElementById("spxCreditSell");
+      if (sellEl) {
+        const rows = ch.sell_credit || ch.buy_now || [];
+        sellEl.innerHTML = rows.length
+          ? `<div class="cards">${rows.map(spxCreditCard).join("")}</div>`
+          : `<div class="empty">No SELL CREDIT — need ~$0.90 IC after 10:00 ET (skip trend days).</div>`;
+      }
+      const exitEl = document.getElementById("spxCreditExit");
+      if (exitEl) {
+        const rows = ch.exit_now || ch.sell_now || [];
+        exitEl.innerHTML = rows.length
+          ? `<div class="cards">${rows.map(spxCreditCard).join("")}</div>`
+          : `<div class="empty">No BUY TO CLOSE — stop $1.40 / bank ~50% / 15:45 ET clock.</div>`;
+      }
+      const waitEl = document.getElementById("spxCreditWait");
+      if (waitEl) {
+        const rows = [...(ch.wait || []), ...(ch.hold || [])];
+        waitEl.innerHTML = rows.length
+          ? `<div class="cards">${rows.map(spxCreditCard).join("")}</div>`
+          : `<div class="empty">Idle.</div>`;
+      }
+      const rulesEl = document.getElementById("spxCreditRules");
+      if (rulesEl) {
+        const rules = ch.rules || [];
+        rulesEl.innerHTML = rules.length
+          ? `<strong>Rules:</strong> ${rules.join(" · ")}${(ch.errors || []).length ? `<br/><span class="why">Chain: ${ch.errors.join("; ")}</span>` : ""}`
+          : "";
+      }
+    }
+
+    function premarketRow(r) {
+      const pct = r.session_change_pct != null ? r.session_change_pct : r.change_pct;
+      const cls = pct == null ? "" : (pct >= 0 ? "up" : "down");
+      const note = r.catalyst ? `<div class="why">${r.catalyst}</div>` : "";
+      return `<div class="action-card ${pct!=null && pct<0?"short":"long"}">
+        <div class="ac-top"><strong>${r.symbol||"—"}</strong>
+          <span class="tag">${r.session||"pre"}</span>
+          <span class="tag ${cls}">${pct==null?"—":fmt(pct,2)+"%"}</span>
+          <span class="tag">${r.last==null?"—":"$"+fmt(r.last,2)}</span></div>
+        ${note}
+      </div>`;
+    }
+    function renderPremarket(pm) {
+      const metrics = document.getElementById("premarketMetrics");
+      const gEl = document.getElementById("premarketGainers");
+      const lEl = document.getElementById("premarketLosers");
+      const cEl = document.getElementById("premarketCatalysts");
+      const ch = pm || {};
+      const c = ch.counts || {};
+      const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
+      if (metrics) {
+        metrics.innerHTML = [
+          m("Gainers", c.gainers||0, (c.gainers||0)>0?"up":""),
+          m("Losers", c.losers||0, (c.losers||0)>0?"down":""),
+          m("Catalysts", c.catalysts||0),
+          m("Session eye", c.session_eye||(ch.session_eye||[]).length||0, "up"),
+        ].join("");
+      }
+      if (gEl) {
+        const rows = ch.gainers || [];
+        gEl.innerHTML = rows.length
+          ? `<div class="cards">${rows.slice(0,8).map(premarketRow).join("")}</div>`
+          : `<div class="empty">No premarket gainers ≥ threshold yet — catalyst seeds still on special-eye.</div>`;
+      }
+      if (lEl) {
+        const rows = ch.losers || [];
+        lEl.innerHTML = rows.length
+          ? `<h3 style="font-size:.8rem;margin:.4rem 0">Losers / soft opens</h3><div class="cards">${rows.slice(0,6).map(premarketRow).join("")}</div>`
+          : "";
+      }
+      if (cEl) {
+        const rows = ch.catalysts || [];
+        const eye = (ch.session_eye || []).join(" · ");
+        cEl.innerHTML = rows.length
+          ? `<h3 style="font-size:.8rem;margin:.4rem 0">Catalyst seeds</h3><div class="cards">${rows.map(premarketRow).join("")}</div>`
+            + (eye ? `<p class="lede" style="font-size:.72rem;margin:.4rem 0 0"><strong>Session eye:</strong> ${eye}</p>` : "")
+          : "";
+      }
     }
 
     function renderRipRadar(rip) {
@@ -3629,11 +3803,13 @@ PAGE = r"""
       renderRadar(DATA.radar || {});
       renderChaseRadar(DATA.chase_radar || DATA.convex_risk || {});
       renderRipRadar(DATA.rip_radar || DATA.rip || {});
+      renderPremarket(DATA.premarket || {});
       renderBeautyMonthly(DATA.beauty_monthly || DATA.beauty || {});
       renderEcho(DATA.echo || {});
       renderDarkpoolMini(DATA.echo || {});
       renderChallenge(DATA.challenge || {});
       renderOdte1k(DATA.odte_1k || {});
+      renderSpxCredit(DATA.spx_credit || {});
       renderPowerHour(DATA.power_hour || {});
       renderScreener(hz, DATA.market || {});
       renderInsights(DATA.insights);
@@ -3648,11 +3824,24 @@ PAGE = r"""
           (DATA.liquid_size!=null ? ` · liquid ${DATA.liquid_size}` : "");
       }
       document.getElementById("updated").textContent = "Updated " + fmtCST(DATA.generated_at, true);
+      // Toolbar BUY/SELL = aggregated NOW board (all desks), not Options-only actions.counts
+      // (Options hist gate often shows BUY 0 while Challenge/Lottery/Levels still have tickets).
+      let boardBuys = 0, boardSells = 0, boardWaits = 0;
+      try {
+        const nb = collectNowBoard();
+        boardBuys = (nb.buys || []).length;
+        boardSells = (nb.sells || []).length;
+        boardWaits = (nb.waits || []).length;
+      } catch (_) {
+        boardBuys = ((acts.buy_now||[]).length + ((DATA.lottery||{}).buy_now||[]).length + ((DATA.challenge||{}).entry||[]).length);
+        boardSells = ((acts.sell_now||[]).length + ((DATA.lottery||{}).sell_now||[]).length + ((DATA.challenge||{}).exit||[]).length);
+        boardWaits = ((acts.wait||[]).length);
+      }
       const c = acts.counts || {};
       const lc = (DATA.lottery && DATA.lottery.counts) || {};
       const rc = (DATA.radar && DATA.radar.counts) || {};
       document.getElementById("counts").textContent =
-        `BUY ${c.buy_now||0} · SELL ${c.sell_now||0} · WAIT ${c.wait||0} · RIP ${(DATA.rip_radar&&DATA.rip_radar.counts&&DATA.rip_radar.counts.buy_rip)||0} · LOTTO B/S ${lc.buy_now||0}/${lc.sell_now||0} · ML6 B/S ${(DATA.ml6&&DATA.ml6.actions&&DATA.ml6.actions.counts&&DATA.ml6.actions.counts.buy_now)||0}/${(DATA.ml6&&DATA.ml6.actions&&DATA.ml6.actions.counts&&DATA.ml6.actions.counts.sell_now)||0} · RADAR HOT ${rc.hot||0}`;
+        `BUY ${boardBuys} · SELL ${boardSells} · WAIT ${boardWaits} · OPT ${c.buy_now||0}/${c.sell_now||0} · RIP ${(DATA.rip_radar&&DATA.rip_radar.counts&&DATA.rip_radar.counts.buy_rip)||0} · LOTTO B/S ${lc.buy_now||0}/${lc.sell_now||0} · ML6 B/S ${(DATA.ml6&&DATA.ml6.actions&&DATA.ml6.actions.counts&&DATA.ml6.actions.counts.buy_now)||0}/${(DATA.ml6&&DATA.ml6.actions&&DATA.ml6.actions.counts&&DATA.ml6.actions.counts.sell_now)||0} · RADAR HOT ${rc.hot||0}`;
       const gate = acts.hist_win_gate || DATA.hist_win_gate || {};
       const gateEl = document.getElementById("histWinGate");
       if (gateEl) {
@@ -3670,31 +3859,54 @@ PAGE = r"""
 
     async function loadAll() {
       const note = document.getElementById("loadNote");
-      note.style.display = "block";
-      note.textContent = "Refreshing…";
+      const hadData = !!(DATA && ((DATA.scores||[]).length || (DATA.actions||{}).buy_now || (DATA.challenge||{}).entry));
+      // Keep the painted board visible during poll refreshes — don't flash "Refreshing…".
+      if (!hadData) {
+        note.style.display = "block";
+        note.textContent = "Refreshing…";
+      }
       try {
         const ctrl = new AbortController();
-        // Snapshot can take 1–3 min (Yahoo quotes + earnings warm); don't abort early
-        const t = setTimeout(() => ctrl.abort(), 180000);
+        // Stale-serve should answer in seconds; keep a long abort only as a last resort.
+        const t = setTimeout(() => ctrl.abort(), 45000);
         const res = await fetch("/api/snapshot", { signal: ctrl.signal });
         clearTimeout(t);
         if (!res.ok) throw new Error("HTTP " + res.status);
         DATA = await res.json();
         paint();
+        let buys = 0, sells = 0;
+        try {
+          const nb = collectNowBoard();
+          buys = (nb.buys || []).length;
+          sells = (nb.sells || []).length;
+        } catch (_) {
+          buys = ((DATA.actions||{}).buy_now||[]).length
+            + ((DATA.lottery||{}).buy_now||[]).length
+            + ((DATA.challenge||{}).entry||[]).length;
+          sells = ((DATA.actions||{}).sell_now||[]).length
+            + ((DATA.lottery||{}).sell_now||[]).length
+            + ((DATA.challenge||{}).exit||[]).length;
+        }
         const n = (DATA.scores||[]).length;
         const focus = DATA.focus_size ?? 0;
-        if (!n && !focus) {
+        if (!n && !focus && !buys && !sells) {
           note.style.display = "block";
           note.textContent = "No scan yet — tap Scan focus (or Scan liquid) to load data.";
+        } else if (DATA.stale || DATA.rebuild_error) {
+          note.style.display = "block";
+          note.textContent = "Showing last good board while snapshot rebuilds…";
         } else {
           note.style.display = "none";
         }
       } catch (e) {
         const msg = String(e.message||e);
+        note.style.display = "block";
         note.textContent = "Load failed: " + msg +
-          (msg.includes("NaN") || msg.includes("JSON")
-            ? " — snapshot had invalid numbers; hard-refresh after the next Pages deploy."
-            : "");
+          (msg.includes("abort") || msg.includes("Abort")
+            ? " — desk snapshot timed out; tap Reload (stale board should appear)."
+            : (msg.includes("NaN") || msg.includes("JSON")
+              ? " — snapshot had invalid numbers; hard-refresh after the next Pages deploy."
+              : ""));
       }
     }
 
@@ -4030,13 +4242,132 @@ def create_app(config_path: str | None = None) -> Flask:
     scan_lock = threading.Lock()
     actions_cfg = cfg.get("actions") or {}
     risk = cfg.get("risk") or {}
+    # Single-flight + TTL — UI polls while LIVE_DESK_LOOP rebuilds; never blank the board.
+    _snap_gate = threading.Lock()
+    _snap_memo: dict = {"body": None, "t": 0.0}
 
     @app.get("/")
     def index():
         return render_template_string(PAGE)
 
+    def _snapshot_cache_time(body: dict | None) -> float:
+        """Prefer payload generated_at so day-old disk caches don't look 'fresh'."""
+        import time
+        from datetime import datetime as _dt
+
+        if not isinstance(body, dict):
+            return 0.0
+        ga = str(body.get("generated_at") or "").strip()
+        if ga:
+            try:
+                return _dt.fromisoformat(ga.replace("Z", "+00:00")).timestamp()
+            except Exception:  # noqa: BLE001
+                pass
+        return float(_snap_memo.get("t") or 0.0)
+
     @app.get("/api/snapshot")
     def snapshot():
+        import time
+
+        # Serve last good board immediately when a rebuild is slow/locked — otherwise the
+        # HTML loads but BUY/SELL NOW paints empty while /api/snapshot hangs for minutes.
+        ttl = float(os.environ.get("SNAPSHOT_CACHE_SEC") or "90")
+        force = str(request.args.get("fresh") or "").strip().lower() in {"1", "true", "yes", "on"}
+        cached = _snap_memo.get("body")
+        if cached is None:
+            disk = _read_json(ROOT / "outputs" / "last_api_snapshot.json")
+            if not (isinstance(disk, dict) and (disk.get("scores") or disk.get("actions") or disk.get("lottery"))):
+                # Bootstrap from partial board cache so first paint isn't blank after reboot.
+                partial = _read_json(ROOT / "outputs" / "ui_snapshot_cache.json")
+                if isinstance(partial, dict) and (partial.get("actions") or partial.get("lottery")):
+                    disk = {
+                        "generated_at": partial.get("generated_at"),
+                        "stale": True,
+                        "scores": [],
+                        "actions": partial.get("actions") or {},
+                        "lottery": partial.get("lottery") or {},
+                        "challenge": partial.get("challenge") or {},
+                        "odte_1k": partial.get("odte_1k") or {},
+                        "rip_radar": partial.get("rip_radar") or {},
+                        "beauty_monthly": partial.get("beauty_monthly") or {},
+                        "level_watch": partial.get("level_watch") or {},
+                        "spx_credit": partial.get("spx_credit") or {},
+                        "premarket": partial.get("premarket") or {},
+                        "radar": partial.get("radar") or {},
+                        "chase_radar": partial.get("chase_radar") or {},
+                    }
+            if isinstance(disk, dict) and (disk.get("scores") or disk.get("actions") or disk.get("lottery")):
+                cached = disk
+                _snap_memo["body"] = disk
+                _snap_memo["t"] = _snapshot_cache_time(disk)
+        cached_t = _snapshot_cache_time(cached) if cached is not None else 0.0
+        age = (time.time() - cached_t) if cached is not None and cached_t else 1e9
+        if (not force) and cached is not None and age < ttl:
+            return jsonify(cached)
+
+        def _bg_rebuild() -> None:
+            # Background threads have no Flask request/app context — jsonify() needs one.
+            try:
+                with app.app_context():
+                    _snapshot_build()
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("background snapshot rebuild failed: %s", exc)
+            finally:
+                if _snap_gate.locked():
+                    try:
+                        _snap_gate.release()
+                    except RuntimeError:
+                        pass
+
+        got_lock = _snap_gate.acquire(blocking=False)
+        if got_lock:
+            if cached is not None and not force:
+                # Paint last board now; refresh in the background.
+                threading.Thread(target=_bg_rebuild, daemon=True).start()
+                out = dict(cached)
+                out["stale"] = True
+                return jsonify(out)
+            try:
+                return _snapshot_build()
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("snapshot build failed: %s", exc)
+                stale = _snap_memo.get("body") or _read_json(ROOT / "outputs" / "last_api_snapshot.json")
+                if isinstance(stale, dict) and (stale.get("actions") or stale.get("lottery") or stale.get("scores")):
+                    out = dict(stale)
+                    out["stale"] = True
+                    out["rebuild_error"] = str(exc)[:240]
+                    return jsonify(out)
+                return jsonify(
+                    {
+                        "error": str(exc),
+                        "scores": [],
+                        "actions": {"buy_now": [], "sell_now": [], "wait": [], "counts": {}},
+                        "lottery": {"buy_now": [], "sell_now": [], "counts": {}},
+                    }
+                ), 500
+            finally:
+                if _snap_gate.locked():
+                    try:
+                        _snap_gate.release()
+                    except RuntimeError:
+                        pass
+
+        # Rebuild already running — never block the browser.
+        if cached is not None:
+            out = dict(cached)
+            out["stale"] = True
+            return jsonify(out)
+        # No cache yet: wait briefly for the in-flight builder.
+        for _ in range(40):
+            time.sleep(0.5)
+            body = _snap_memo.get("body")
+            if isinstance(body, dict) and (body.get("actions") or body.get("lottery")):
+                return jsonify(body)
+        return jsonify({"error": "snapshot busy", "scores": [], "actions": {}, "lottery": {}}), 503
+
+    def _snapshot_build():
+        import time
+
         from odte_scanner.calendars import resolve_yahoo_symbol
         from odte_scanner.data.live_quotes import fetch_live_quote
         from odte_scanner.options.live_chain import refresh_candidate_quote
@@ -4148,10 +4479,12 @@ def create_app(config_path: str | None = None) -> Flask:
         except Exception:  # noqa: BLE001
             challenge_syms = []
             dram_syms = []
+        # Quote EVERY board symbol — syms[:8] left most BUY/SELL candidates
+        # without session tape ("No live tape confirm") and blanked the NOW desk.
         quote_syms = (
             []
             if not live_marks
-            else sorted(set(syms[:8]) | set(challenge_syms[:12]) | set(dram_syms))
+            else sorted(set(syms) | set(challenge_syms[:12]) | set(dram_syms))
         )
         # Always refresh CORE mega tape — RIP/BUY NOW was missing session % for INTC/GOOGL
         try:
@@ -4169,6 +4502,14 @@ def create_app(config_path: str | None = None) -> Flask:
                     if str(s.get("symbol") or "").upper() in MEGA_RIP_SYMBOLS
                 }
                 quote_syms = sorted(set(quote_syms) | mega_on_board)
+        except Exception:  # noqa: BLE001
+            pass
+        # Premarket catalysts only (not full liquid eye) — board syms already quoted above.
+        try:
+            from odte_scanner.signals.premarket_movers import CATALYST_SEEDS
+
+            if live_marks:
+                quote_syms = sorted(set(quote_syms) | set(CATALYST_SEEDS))
         except Exception:  # noqa: BLE001
             pass
         for s in quote_syms:
@@ -4353,16 +4694,36 @@ def create_app(config_path: str | None = None) -> Flask:
                 logger.warning("Red Flag live refresh failed: %s", exc)
 
         free_dealer = None
+        gex_daddy_board: dict = {}
+        gex_walls: dict[str, dict] = {}
         if not offline:
             try:
                 from odte_scanner.signals.free_feeds import build_free_dealer_cockpit
 
-                free_dealer = build_free_dealer_cockpit()
+                free_dealer = build_free_dealer_cockpit(
+                    gex_daddy_enabled=bool(actions_cfg.get("gex_daddy_enabled", True)),
+                    gex_daddy_base_url=str(
+                        actions_cfg.get("gex_daddy_base_url") or "https://gex-daddy.onrender.com"
+                    ),
+                    gex_daddy_tickers=list(
+                        actions_cfg.get("gex_daddy_tickers") or ["SPY", "SPX", "QQQ", "IWM"]
+                    ),
+                )
+                gex_daddy_board = (free_dealer or {}).get("gex_daddy") or {}
+                gex_walls = dict(gex_daddy_board.get("walls") or {})
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Free dealer cockpit failed: %s", exc)
                 free_dealer = {"ok": False, "error": str(exc)}
         else:
             free_dealer = scan.get("free_dealer") or {"ok": False, "error": "offline"}
+            gex_daddy_board = (free_dealer or {}).get("gex_daddy") or {}
+            gex_walls = dict(gex_daddy_board.get("walls") or {})
+
+        gex_board_kw = {
+            "gex_walls": gex_walls or None,
+            "gex_wall_buffer_pct": float(actions_cfg.get("gex_wall_buffer_pct", 0.15)),
+            "gex_block_into_call_wall": bool(actions_cfg.get("gex_block_into_call_wall", True)),
+        }
 
         # Pages snapshot has no 5m tape. buy_score 72 left hist-gated names in WAIT.
         pages_buy_score = float(
@@ -4578,6 +4939,7 @@ def create_app(config_path: str | None = None) -> Flask:
             red_flag=red_flag_snapshot,
             **flow_board_kw,
             **loss_board_kw,
+            **gex_board_kw,
         )
 
         if journal is not None:
@@ -4630,6 +4992,7 @@ def create_app(config_path: str | None = None) -> Flask:
                     red_flag=red_flag_snapshot,
                     **flow_board_kw,
                     **loss_board_kw,
+                    **gex_board_kw,
                 )
                 more = journal.sync_from_actions(
                     actions,
@@ -4665,15 +5028,19 @@ def create_app(config_path: str | None = None) -> Flask:
         from odte_scanner.signals.radar import build_radar_board
 
         # Lottery / parabolic 0DTE–1DTE tickets (e.g. cheap calls that can 3×–100× on a rip)
-        explosive = build_explosive_board(
-            refreshed,
-            scores=scan.get("scores") or [],
-            quotes=quotes,
-            aliases=aliases,
-            enrich_live=False,  # live option enrich is too slow for interactive snapshot
-            per_symbol=2,
-            max_total=24,
-        )
+        try:
+            explosive = build_explosive_board(
+                refreshed,
+                scores=scan.get("scores") or [],
+                quotes=quotes,
+                aliases=aliases,
+                enrich_live=False,  # live option enrich is too slow for interactive snapshot
+                per_symbol=2,
+                max_total=24,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("explosive board unavailable: %s", exc)
+            explosive = []
 
         open_lottery_trades: list[dict] = []
         if journal is not None:
@@ -5033,6 +5400,45 @@ def create_app(config_path: str | None = None) -> Flask:
                     "note": "Beauty monthly temporarily unavailable.",
                 }
 
+        # Premarket / catalyst movers → session special-eye
+        premarket: dict = {
+            "gainers": [],
+            "losers": [],
+            "catalysts": [],
+            "session_eye": [],
+            "counts": {},
+        }
+        if actions_cfg.get("premarket_movers_enabled", True):
+            try:
+                from odte_scanner.signals.premarket_movers import build_premarket_board
+
+                premarket = build_premarket_board(
+                    cfg,
+                    aliases=aliases,
+                    persist=True,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("premarket movers unavailable: %s", exc)
+                premarket = {
+                    "error": str(exc),
+                    "gainers": [],
+                    "losers": [],
+                    "catalysts": [],
+                    "session_eye": [],
+                    "counts": {},
+                    "note": "Premarket movers temporarily unavailable.",
+                }
+        # Prefer a same-session scan board; never let a stale volume scan
+        # overwrite today's catalyst seeds (Fly desk_outputs persists latest_scan).
+        scan_pm = scan.get("premarket") if isinstance(scan.get("premarket"), dict) else None
+        if scan_pm and (scan_pm.get("session_eye") or scan_pm.get("gainers")):
+            from datetime import date as _date
+
+            scan_day = str(scan_pm.get("session_date") or "")[:10]
+            today = _date.today().isoformat()
+            if scan_day == today:
+                premarket = scan_pm
+
         # Sticky TA level-watch — ALAB/AMAT/AMD/AXTI/BE/BMNR/CAT/DELL/FPS
         level_watch: dict = {
             "buy_level": [],
@@ -5066,6 +5472,81 @@ def create_app(config_path: str | None = None) -> Flask:
                     "cool": [],
                     "counts": {},
                     "note": "Level watch temporarily unavailable.",
+                }
+
+        # SPX 0DTE iron-condor credit (SuperLuckeee-style ~$0.90 / stop $1.40)
+        spx_credit: dict = {
+            "sell_credit": [],
+            "buy_now": [],
+            "wait": [],
+            "exit_now": [],
+            "sell_now": [],
+            "hold": [],
+            "counts": {},
+            "rules": [],
+        }
+        if actions_cfg.get("spx_credit_enabled", True):
+            try:
+                from odte_scanner.signals.spx_credit import build_spx_credit_board
+
+                ic_syms = actions_cfg.get("spx_credit_symbols") or ["SPX", "XSP"]
+                if isinstance(ic_syms, str):
+                    ic_syms = [s.strip().upper() for s in ic_syms.split(",") if s.strip()]
+                # Prefer live quotes; fall back to scan scores for spot
+                ic_quotes = dict(quotes or {})
+                for sym in ic_syms:
+                    su = str(sym).upper()
+                    if su in ic_quotes and ic_quotes[su].get("last"):
+                        continue
+                    for s in scan.get("scores") or []:
+                        if str(s.get("symbol") or "").upper() == su and s.get("last_price"):
+                            ic_quotes[su] = {
+                                **(ic_quotes.get(su) or {}),
+                                "last": s.get("last_price"),
+                                "session_change_pct": s.get("live_change_pct"),
+                            }
+                            break
+                open_ic = []
+                if journal is not None:
+                    for t in journal.book.trades:
+                        td = t.to_dict() if hasattr(t, "to_dict") else dict(t.__dict__)
+                        if str(td.get("status") or "").lower() != "open":
+                            continue
+                        if str(td.get("lane") or td.get("desk") or "").lower() in {
+                            "spx_credit",
+                            "iron_condor",
+                            "credit_ic",
+                        } or str(td.get("symbol") or "").upper() in {"SPX", "XSP"}:
+                            # Only treat as IC if structure tagged or composite contract
+                            if "IC:" in str(td.get("contract") or "") or td.get("structure") == "iron_condor":
+                                open_ic.append(td)
+                spx_credit = build_spx_credit_board(
+                    symbols=list(ic_syms),
+                    quotes=ic_quotes,
+                    open_trades=open_ic,
+                    wing_width=float(actions_cfg.get("spx_credit_wing_width", 10.0)),
+                    short_otm_pts=float(actions_cfg.get("spx_credit_otm_pts", 50.0)),
+                    target_credit=float(actions_cfg.get("spx_credit_target", 0.90)),
+                    min_credit=float(actions_cfg.get("spx_credit_min_credit", 0.70)),
+                    stop_debit=float(actions_cfg.get("spx_credit_stop", 1.40)),
+                    max_dte=int(actions_cfg.get("spx_credit_max_dte", 1)),
+                    fetch_live=bool(actions_cfg.get("spx_credit_fetch_live", True)),
+                    signal_store_path=str(
+                        ROOT / "outputs" / "spx_credit_signal_times.json"
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("spx credit board unavailable: %s", exc)
+                spx_credit = {
+                    "error": str(exc),
+                    "sell_credit": [],
+                    "buy_now": [],
+                    "wait": [],
+                    "exit_now": [],
+                    "sell_now": [],
+                    "hold": [],
+                    "counts": {},
+                    "note": "SPX credit temporarily unavailable.",
                 }
 
         from odte_scanner.challenge import build_challenge_board
@@ -5128,6 +5609,7 @@ def create_app(config_path: str | None = None) -> Flask:
                     red_flag=red_flag_snapshot,
                     **flow_board_kw,
                     **loss_board_kw,
+                    **gex_board_kw,
                 )
         except Exception as exc:  # noqa: BLE001
             logger.warning("echo board unavailable: %s", exc)
@@ -5811,9 +6293,39 @@ def create_app(config_path: str | None = None) -> Flask:
         try:
             from odte_scanner.options.walls import wall_exit_levels
 
+            # Prefer Gex Daddy walls for index names (call/put wall + flip + bias)
+            for sym, gw in (gex_walls or {}).items():
+                su = str(sym or "").upper()
+                if not su:
+                    continue
+                walls_by_symbol[su] = {
+                    **wall_exit_levels(
+                        right="C",
+                        spot=gw.get("spot"),
+                        call_wall=gw.get("call_wall"),
+                        put_wall=gw.get("put_wall"),
+                        call_wall_oi=gw.get("call_wall_oi"),
+                        put_wall_oi=gw.get("put_wall_oi"),
+                        buffer_usd=float(actions_cfg.get("wall_exit_buffer_usd", 0.10)),
+                    ),
+                    "flip": gw.get("flip"),
+                    "regime": gw.get("regime"),
+                    "gex_bias": gw.get("gex_bias"),
+                    "net_gex": gw.get("net_gex"),
+                    "call_walls": gw.get("call_walls"),
+                    "put_walls": gw.get("put_walls"),
+                    "exit_hint": None,
+                    "source": "gex_daddy",
+                    "note": gw.get("note"),
+                }
+                walls_by_symbol[su]["exit_hint"] = walls_by_symbol[su].get("exit_hint")
+
             for p in ((echo.get("dealer_edge") or {}).get("profiles") or []):
                 sym = str(p.get("symbol") or "").upper()
                 if not sym:
+                    continue
+                # Don't overwrite richer Gex Daddy index walls
+                if walls_by_symbol.get(sym, {}).get("source") == "gex_daddy":
                     continue
                 walls_by_symbol[sym] = {
                     **wall_exit_levels(
@@ -5832,6 +6344,9 @@ def create_app(config_path: str | None = None) -> Flask:
             for t in (challenge.get("tickets") or []):
                 sym = str(t.get("symbol") or "").upper()
                 if not sym or t.get("call_wall") is None and t.get("put_wall") is None:
+                    continue
+                # Keep Gex Daddy index walls — challenge Yahoo OI can be stale/wrong magnitude
+                if walls_by_symbol.get(sym, {}).get("source") == "gex_daddy":
                     continue
                 right = str(t.get("right") or "C").upper()
                 refreshed_w = wall_exit_levels(
@@ -6077,6 +6592,7 @@ def create_app(config_path: str | None = None) -> Flask:
                     "rip",
                     "beauty",
                     "level_watch",
+                    "spx_credit",
                     "odte_1k",
                     "challenge_ENTRY",
                 ],
@@ -6212,6 +6728,8 @@ def create_app(config_path: str | None = None) -> Flask:
                         "rip_radar": rip_radar,
                         "beauty_monthly": beauty_monthly,
                         "level_watch": level_watch,
+                        "spx_credit": spx_credit,
+                        "premarket": premarket,
                     },
                     indent=2,
                     default=str,
@@ -6256,9 +6774,8 @@ def create_app(config_path: str | None = None) -> Flask:
             logger.warning("daily_pnl build failed: %s", exc)
             daily_pnl = {"error": str(exc), "totals": {}, "by_day": [], "closed": [], "open": []}
 
-        return jsonify(
-            sanitize_for_json(
-                {
+        payload = sanitize_for_json(
+            {
                 "generated_at": datetime.now(timezone.utc).isoformat(),
                 "offline": offline,
                 "host": "github-pages" if offline else "live",
@@ -6277,11 +6794,14 @@ def create_app(config_path: str | None = None) -> Flask:
                 "ml6": ml6,
                 "red_flag": red_flag_snapshot,
                 "free_dealer": free_dealer,
+                "gex_daddy": gex_daddy_board,
                 "radar": radar,
                 "chase_radar": chase_radar,
                 "rip_radar": rip_radar,
                 "beauty_monthly": beauty_monthly,
                 "level_watch": level_watch,
+                "spx_credit": spx_credit,
+                "premarket": premarket,
                 "echo": echo,
                 "challenge": challenge,
                 "tradier": tradier_status,
@@ -6301,9 +6821,22 @@ def create_app(config_path: str | None = None) -> Flask:
                 "win_rates": win_table,
                 "rec_log": rec_log_payload,
                 "webull": webull_payload,
-                }
-            )
+            }
         )
+        _snap_memo["body"] = payload
+        _snap_memo["t"] = _snapshot_cache_time(payload) or time.time()
+        try:
+            outp = ROOT / "outputs" / "last_api_snapshot.json"
+            outp.parent.mkdir(parents=True, exist_ok=True)
+            outp.write_text(dumps_strict(payload, indent=2, default=str))
+        except Exception:  # noqa: BLE001
+            pass
+        # Prefer Response when an app context exists; fall back to raw payload for
+        # callers that already hold the memo (should not happen — bg uses app_context).
+        try:
+            return jsonify(payload)
+        except RuntimeError:
+            return payload
 
     def _challenge_tracker():
         from odte_scanner.challenge.tracker import ChallengeTracker
