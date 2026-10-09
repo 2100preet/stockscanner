@@ -202,6 +202,26 @@ def time_stop_reason(
     return None
 
 
+def premium_exit_levels(
+    ask: float | None,
+    *,
+    take_profit_pct: float = 80.0,
+    stop_loss_pct: float = 50.0,
+) -> tuple[float | None, float | None]:
+    """Dollar TP / SL marks from the live (or scan) option ask."""
+    try:
+        px = float(ask) if ask is not None else None
+    except (TypeError, ValueError):
+        px = None
+    if px is None or px <= 0:
+        return None, None
+    tp = round(px * (1.0 + float(take_profit_pct) / 100.0), 2)
+    sl = round(max(0.01, px * (1.0 - abs(float(stop_loss_pct)) / 100.0)), 2)
+    if tp <= px:
+        tp = round(px + max(0.01, px * 0.01), 2)
+    return tp, sl
+
+
 def exit_plan_text(
     *,
     dte_bucket: str | None,
@@ -212,8 +232,11 @@ def exit_plan_text(
     weekly_max_days: int = 7,
     odte_flatten_et: str = "15:45",
     soft_exit: float | None = None,
+    ask: float | None = None,
+    target_ask: float | None = None,
+    stop_ask: float | None = None,
 ) -> str:
-    """Short EXIT plan string attached to every ENTER / BUY NOW."""
+    """EXIT plan with dollar premium levels when ask is known (not % labels alone)."""
     style = bucket_style(dte_bucket, dte)
     spec = hold_spec(
         dte_bucket,
@@ -222,11 +245,28 @@ def exit_plan_text(
         odte_flatten_et=odte_flatten_et,
     )
     side = "put" if str(right).upper() == "P" else "call"
-    bits = [
-        f"EXIT plan ({side})",
-        f"TP +{take_profit_pct:.0f}%",
-        f"SL −{abs(stop_loss_pct):.0f}%",
-    ]
+    tp_px, sl_px = premium_exit_levels(
+        ask, take_profit_pct=take_profit_pct, stop_loss_pct=stop_loss_pct
+    )
+    if target_ask is not None:
+        try:
+            tp_px = float(target_ask)
+        except (TypeError, ValueError):
+            pass
+    if stop_ask is not None:
+        try:
+            sl_px = float(stop_ask)
+        except (TypeError, ValueError):
+            pass
+    bits = [f"EXIT plan ({side})"]
+    if tp_px is not None:
+        bits.append(f"TP ≥${tp_px:.2f} (+{take_profit_pct:.0f}%)")
+    else:
+        bits.append(f"TP +{take_profit_pct:.0f}%")
+    if sl_px is not None:
+        bits.append(f"SL ≤${sl_px:.2f} (−{abs(stop_loss_pct):.0f}%)")
+    else:
+        bits.append(f"SL −{abs(stop_loss_pct):.0f}%")
     if style == "0dte":
         bits.append(f"clock flatten {spec.get('flatten_et', '15:45')} ET")
         bits.append(f"hold {spec.get('label')}")

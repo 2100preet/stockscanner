@@ -35,6 +35,9 @@ _SELL_ACTIONS = {
     "EXIT",
     "SELL_PUT",
     "SELL_CALL",
+    "TAKE_PROFIT",
+    "APPROACH_WALL",
+    "WALL_TP",
 }
 
 
@@ -93,20 +96,50 @@ def _fmt_alert(row: dict[str, Any], side: str, desk: str) -> str:
     strike = row.get("strike")
     exp = str(row.get("expiry") or "")[:10]
     ask = row.get("ask")
-    spot = row.get("spot") or row.get("last")
+    bid = row.get("bid")
+    entry = row.get("entry_ask") if row.get("entry_ask") is not None else row.get("entry_price")
+    spot = row.get("spot") or row.get("last") or row.get("live_last")
     when = row.get("signaled_at_cst") or ""
-    detail = str(row.get("detail") or row.get("headline") or row.get("reason") or "")[:180]
+    entered = row.get("entered_at_cst") or ""
+    detail = str(row.get("detail") or row.get("headline") or row.get("reason") or "")[:220]
     strike_s = f"{strike}{right}" if strike is not None else right
-    ask_s = f"${float(ask):.2f}" if ask is not None else "—"
     spot_s = f"${float(spot):.2f}" if spot is not None else "—"
     emoji = "🟢" if side == "BUY" else "🔴"
     lines = [
         f"{emoji} {side} · {desk}",
         f"{sym} {strike_s} · exp {exp or '—'}",
-        f"Ask {ask_s} · spot {spot_s}",
     ]
-    if when:
-        lines.append(f"Asked {when}")
+    if side == "SELL":
+        try:
+            entry_f = float(entry) if entry is not None else None
+        except (TypeError, ValueError):
+            entry_f = None
+        sell_px = bid if bid is not None else ask
+        try:
+            sell_f = float(sell_px) if sell_px is not None else None
+        except (TypeError, ValueError):
+            sell_f = None
+        if entry_f is not None and sell_f is not None:
+            pnl_pct = ((sell_f - entry_f) / entry_f * 100.0) if entry_f else None
+            pnl_usd = (sell_f - entry_f) * 100.0
+            pct_s = f" ({pnl_pct:+.0f}%)" if pnl_pct is not None else ""
+            lines.append(f"BUY ${entry_f:.2f} → SELL ${sell_f:.2f}{pct_s}")
+            lines.append(f"P&L ~${pnl_usd:+.2f} / ct · spot {spot_s}")
+        elif sell_f is not None:
+            lines.append(f"SELL bid ${sell_f:.2f} · spot {spot_s}")
+            if entry_f is not None:
+                lines.append(f"Bought ${entry_f:.2f}")
+        else:
+            lines.append(f"EXIT · spot {spot_s}")
+        if entered:
+            lines.append(f"Bought at {entered}")
+        if when:
+            lines.append(f"Asked to sell {when}")
+    else:
+        ask_s = f"${float(ask):.2f}" if ask is not None else "—"
+        lines.append(f"Buy ask {ask_s} · spot {spot_s}")
+        if when:
+            lines.append(f"Asked to buy {when}")
     if detail:
         lines.append(detail)
     lines.append("Signal Desk · stockscanner")
@@ -136,7 +169,12 @@ def collect_trade_alerts(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             if not any(x in act for x in ("BUY", "PUT_NOW", "CALL_NOW", "ENTRY", "HOT")):
                 return
         if side == "SELL" and act not in _SELL_ACTIONS and "SELL" not in act and act != "EXIT":
-            if "EXIT" not in act and "SELL" not in act:
+            if (
+                "EXIT" not in act
+                and "SELL" not in act
+                and "TAKE_PROFIT" not in act
+                and "WALL" not in act
+            ):
                 return
         key = _row_key(row, side, desk)
         if key in seen_local:
@@ -211,6 +249,34 @@ def collect_trade_alerts(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             "SELL",
             "0DTE $1K",
         )
+
+    # GEX / OI-wall take-profit + approach pings on open positions
+    try:
+        from odte_scanner.alerts.take_profit import collect_take_profit_alerts
+
+        acts_cfg = snapshot.get("actions") or {}
+        # Knobs may also live on snapshot host/config echo; fall back to defaults.
+        tp_pct = float(
+            (snapshot.get("risk") or {}).get("take_profit_pct")
+            or acts_cfg.get("take_profit_pct")
+            or 80.0
+        )
+        approach = float(acts_cfg.get("wall_tp_approach_pct") or 0.35)
+        buf = float(acts_cfg.get("wall_exit_buffer_usd") or 0.10)
+        for a in collect_take_profit_alerts(
+            snapshot,
+            approach_pct=approach,
+            take_profit_pct=tp_pct,
+            wall_buffer_usd=buf,
+        ):
+            # Already formatted — inject as SELL pulse
+            key = a["key"]
+            if key in seen_local:
+                continue
+            seen_local.add(key)
+            out.append(a)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("take-profit collect skipped: %s", exc)
 
     return out
 

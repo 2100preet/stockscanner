@@ -548,9 +548,20 @@ class ChallengeTracker:
         else:
             mult = max(1.4, min(2.0, mult))
         target_pct = round((mult - 1.0) * 100.0, 1)
-        target_ask = ticket.get("target_ask")
-        if target_ask is None:
-            target_ask = round(ask * mult, 2)
+        # Always derive from *this* fill ask — never trust a stale target_ask copied
+        # from another contract on the same symbol during board merges.
+        expected_target = round(ask * mult, 2)
+        if expected_target <= ask:
+            expected_target = round(ask + max(0.01, ask * 0.01), 2)
+        raw_target = ticket.get("target_ask")
+        try:
+            raw_f = float(raw_target) if raw_target is not None else None
+        except (TypeError, ValueError):
+            raw_f = None
+        if raw_f is None or raw_f <= ask or abs(raw_f - expected_target) / max(expected_target, 0.01) > 0.05:
+            target_ask = expected_target
+        else:
+            target_ask = raw_f
         # Snipers cut faster; sprint otherwise
         if is_sniper:
             stop_pct = float(ticket.get("stop_loss_pct") or SNIPER_STOP_PCT)

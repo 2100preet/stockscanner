@@ -9,6 +9,7 @@ from odte_scanner.signals.hold_rules import (
     exit_plan_text,
     expiry_is_today,
     past_no_new_0dte_entries,
+    premium_exit_levels,
     time_stop_reason,
 )
 from odte_scanner.time_cst import (
@@ -40,14 +41,22 @@ class ActionSignal:
     dte: int | None = None
     dte_bucket: str | None = None  # 0dte | weekly
     bid: float | None = None
+    entry_ask: float | None = None  # filled / journal buy premium (SELL path)
     right: str | None = "C"  # C | P
     exit_plan: str | None = None
+    target_ask: float | None = None  # dollar TP from live/scan ask
+    stop_ask: float | None = None  # dollar SL from live/scan ask
+    take_profit_pct: float | None = None
+    stop_loss_pct: float | None = None
+    soft_exit: float | None = None  # underlying soft wall EXIT
     win_pct: float | None = None
     win_samples: int | None = None
     hit_1pct: float | None = None
     hit_2pct: float | None = None
     signaled_at: str | None = None
     signaled_at_cst: str | None = None
+    entered_at: str | None = None
+    entered_at_cst: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -186,6 +195,16 @@ def decide_entry(
         else:
             moneyness = (float(strike) - float(last)) / float(last) * 100
 
+    soft_exit = candidate.get("soft_exit")
+    try:
+        soft_exit_f = float(soft_exit) if soft_exit is not None else None
+    except (TypeError, ValueError):
+        soft_exit_f = None
+    target_ask, stop_ask = premium_exit_levels(
+        float(ask) if ask is not None else None,
+        take_profit_pct=take_profit_pct,
+        stop_loss_pct=stop_loss_pct,
+    )
     plan = exit_plan_text(
         dte_bucket=str(dte_bucket),
         dte=int(dte) if dte is not None else None,
@@ -194,7 +213,10 @@ def decide_entry(
         stop_loss_pct=stop_loss_pct,
         weekly_max_days=weekly_max_hold_days,
         odte_flatten_et=odte_flatten_et,
-        soft_exit=candidate.get("soft_exit"),
+        soft_exit=soft_exit_f,
+        ask=float(ask) if ask is not None else None,
+        target_ask=target_ask,
+        stop_ask=stop_ask,
     )
 
     base_kwargs = dict(
@@ -211,6 +233,11 @@ def decide_entry(
         dte_bucket=dte_bucket,
         right=right,
         exit_plan=plan,
+        target_ask=target_ask,
+        stop_ask=stop_ask,
+        take_profit_pct=float(take_profit_pct),
+        stop_loss_pct=float(stop_loss_pct),
+        soft_exit=soft_exit_f,
     )
 
     def _wait(detail: str, strength: float | None = None) -> ActionSignal:
@@ -348,6 +375,13 @@ def decide_entry(
             mom_boost = max(mom_boost, 8)
     else:
         # Puts: need weakness, not a bounce — block buying into rips (AMZN-class).
+        # Exception: dump-from-HOD (HUM 456→428) — session can still be green vs prior close
+        # while the tape is giving back ≥2% from the day high.
+        thesis_l = str(candidate.get("thesis") or candidate.get("detail") or "").lower()
+        dump_tagged = "dump_put" in thesis_l or bool(candidate.get("dump_put"))
+        off_hod = dist_high is not None and float(dist_high) <= -2.0
+        dump_from_hod = dump_tagged or off_hod
+
         if live is None:
             # Offline Pages: fall back to candidate session % when quote tape missing.
             cand_live = candidate.get("live_change_pct")
@@ -361,19 +395,19 @@ def decide_entry(
             else:
                 return _wait("No session tape — not buying puts blind (need red/weak tape).")
 
-        if mom5 is not None and mom5 >= 0.15:
+        if mom5 is not None and mom5 >= 0.15 and not dump_from_hod:
             return _wait(f"5m tape bouncing ({mom5:+.2f}%) — no BUY NOW put into a reclaim.")
 
-        if mom15 is not None and mom15 >= 0.25:
+        if mom15 is not None and mom15 >= 0.25 and not dump_from_hod:
             return _wait(f"15m momentum up ({mom15:+.2f}%) — wait for rollover for puts.")
 
-        if live >= 0.35 and bucket == "0DTE":
+        if live >= 0.35 and bucket == "0DTE" and not dump_from_hod:
             return _wait(f"Session green for 0DTE put ({live:+.2f}%) — need dump, not rip.")
 
-        if live >= 0.6 and bucket == "0DTE":
+        if live >= 0.6 and bucket == "0DTE" and not dump_from_hod:
             return _wait(f"Session firm for 0DTE put ({live:+.2f}%).")
 
-        if live >= 1.5:
+        if live >= 1.5 and not dump_from_hod:
             return _wait(f"Session strong ({live:+.2f}%). Let dump develop for puts.")
 
         if opt_pct is not None and opt_pct <= -25:
@@ -400,7 +434,7 @@ def decide_entry(
         if live is not None and live <= -chase_limit and score < eff_buy_score + 5:
             return _wait(f"Already down {live:+.2f}% this session — chase risk on puts.")
 
-        if tape_required and bucket == "0DTE":
+        if tape_required and bucket == "0DTE" and not dump_from_hod:
             if mom5 is None and mom15 is None:
                 return _wait("No 5m/15m tape — not buying 0DTE put blind off daily score alone.")
             if mom5 is not None and mom5 > -0.05 and (mom15 is None or mom15 > -0.05):
@@ -410,11 +444,16 @@ def decide_entry(
                     + ")."
                 )
 
-        if bucket == "0DTE":
+        if dump_from_hod:
+            # Off day-high dump confirms put tape even if session vs prior close is green.
+            tape_ok = True
+            mom_boost = 8
+        elif bucket == "0DTE":
             tape_ok = live < -0.05 and (mom5 is None or mom5 <= 0.0) and (mom15 is None or mom15 <= 0.10)
+            mom_boost = 5 if mom5 and mom5 < -0.1 else 0
         else:
             tape_ok = live < 0.20 and (mom5 is None or mom5 <= 0.10)
-        mom_boost = 5 if mom5 and mom5 < -0.1 else 0
+            mom_boost = 5 if mom5 and mom5 < -0.1 else 0
 
     # Puts use inverse score: weak ensemble OR explicit put_score
     eff_score = score
@@ -573,10 +612,33 @@ def decide_exit(
             strength = max(strength, 80.0)
             reasons.append(f"underlying dumped {live:+.2f}% — bank put premium")
 
+    entry_px = None
+    for k in ("entry_ask", "entry_price", "entry"):
+        raw = trade.get(k)
+        if raw is None:
+            continue
+        try:
+            v = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if v > 0:
+            entry_px = v
+            break
+    if entry_px is None and entry > 0:
+        entry_px = float(entry)
+
     detail_extra = ""
-    if unreal is not None:
+    if unreal is not None and exit_px is not None and entry_px is not None:
+        detail_extra = f" · bought ${entry_px:.2f} → sell ${exit_px:.2f} ({unreal:+.0f}%)"
+    elif unreal is not None:
         detail_extra = f" · unreal {unreal:+.0f}% @ ${exit_px:.2f}" if exit_px else f" · unreal {unreal:+.0f}%"
 
+    target_ask, stop_ask = premium_exit_levels(
+        entry_px,
+        take_profit_pct=take_profit_pct,
+        stop_loss_pct=stop_loss_pct,
+    )
+    soft_f = float(soft) if soft is not None else None
     plan = exit_plan_text(
         dte_bucket=str(trade.get("dte_bucket") or "0dte"),
         dte=int(trade["dte"]) if trade.get("dte") is not None else None,
@@ -585,8 +647,18 @@ def decide_exit(
         stop_loss_pct=stop_loss_pct,
         weekly_max_days=weekly_max_hold_days,
         odte_flatten_et=odte_flatten_et,
-        soft_exit=float(soft) if soft is not None else None,
+        soft_exit=soft_f,
+        ask=entry_px,
+        target_ask=target_ask,
+        stop_ask=stop_ask,
     )
+
+    entered_at = trade.get("entered_at") or trade.get("recommended_at")
+    entered_at_cst = trade.get("entered_at_cst")
+    if entered_at and not entered_at_cst:
+        from odte_scanner.time_cst import to_cst_label
+
+        entered_at_cst = to_cst_label(entered_at)
 
     kwargs = dict(
         symbol=symbol,
@@ -601,16 +673,29 @@ def decide_exit(
         dte_bucket=trade.get("dte_bucket"),
         right=right,
         exit_plan=plan,
+        target_ask=target_ask,
+        stop_ask=stop_ask,
+        take_profit_pct=float(take_profit_pct),
+        stop_loss_pct=float(stop_loss_pct),
+        soft_exit=soft_f,
         # Critical: price the exit at mark/bid — never entry ask (that forced ~0% P&L)
         ask=exit_px,
         bid=exit_px,
+        entry_ask=entry_px,
+        entered_at=entered_at,
+        entered_at_cst=entered_at_cst,
     )
 
     if sell:
+        bought_sell = (
+            f"BUY ${entry_px:.2f} → SELL ${exit_px:.2f}"
+            if entry_px is not None and exit_px is not None
+            else "EXIT open position"
+        )
         return ActionSignal(
             action="SELL_NOW",
             strength=strength,
-            headline=f"SELL NOW {symbol} {side_lbl.upper()}",
+            headline=f"SELL NOW {symbol} {side_lbl.upper()} · {bought_sell}",
             detail=("; ".join(reasons) or "Exit signal") + detail_extra,
             **kwargs,
         )
@@ -740,6 +825,11 @@ def apply_hist_win_gate(
     from odte_scanner.signals.rip_radar import is_mega_rip_symbol, mega_rip_tape_ok
 
     is_mega = is_mega_rip_symbol(sig.symbol)
+    # Intraday dump-from-HOD puts (special-eye / scanner dump_put tag): tape is the edge.
+    detail_l = str(sig.detail or "").lower()
+    if is_put and "dump_put" in detail_l:
+        sig.detail = f"{sig.detail} · dump_put hist soft-waive (HOD giveback tape)"
+        return sig
     target = float(min_hist_win_pct)
     if is_mega and mega_min_hist_win_pct is not None:
         target = min(target, float(mega_min_hist_win_pct))
