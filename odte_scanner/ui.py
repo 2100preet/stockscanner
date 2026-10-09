@@ -3850,27 +3850,38 @@ PAGE = r"""
       note.textContent = "Refreshing…";
       try {
         const ctrl = new AbortController();
-        // Snapshot can take 1–3 min (Yahoo quotes + earnings warm); don't abort early
-        const t = setTimeout(() => ctrl.abort(), 180000);
+        // Stale-serve should answer in seconds; keep a long abort only as a last resort.
+        const t = setTimeout(() => ctrl.abort(), 45000);
         const res = await fetch("/api/snapshot", { signal: ctrl.signal });
         clearTimeout(t);
         if (!res.ok) throw new Error("HTTP " + res.status);
         DATA = await res.json();
         paint();
+        const buys = ((DATA.actions||{}).buy_now||[]).length
+          + ((DATA.lottery||{}).buy_now||[]).length
+          + ((DATA.challenge||{}).entry||[]).length;
+        const sells = ((DATA.actions||{}).sell_now||[]).length
+          + ((DATA.lottery||{}).sell_now||[]).length
+          + ((DATA.challenge||{}).exit||[]).length;
         const n = (DATA.scores||[]).length;
         const focus = DATA.focus_size ?? 0;
-        if (!n && !focus) {
+        if (!n && !focus && !buys && !sells) {
           note.style.display = "block";
           note.textContent = "No scan yet — tap Scan focus (or Scan liquid) to load data.";
+        } else if (DATA.stale || DATA.rebuild_error) {
+          note.style.display = "block";
+          note.textContent = "Showing last good board while snapshot rebuilds…";
         } else {
           note.style.display = "none";
         }
       } catch (e) {
         const msg = String(e.message||e);
         note.textContent = "Load failed: " + msg +
-          (msg.includes("NaN") || msg.includes("JSON")
-            ? " — snapshot had invalid numbers; hard-refresh after the next Pages deploy."
-            : "");
+          (msg.includes("abort") || msg.includes("Abort")
+            ? " — desk snapshot timed out; tap Reload (stale board should appear)."
+            : (msg.includes("NaN") || msg.includes("JSON")
+              ? " — snapshot had invalid numbers; hard-refresh after the next Pages deploy."
+              : ""));
       }
     }
 
@@ -4214,6 +4225,21 @@ def create_app(config_path: str | None = None) -> Flask:
     def index():
         return render_template_string(PAGE)
 
+    def _snapshot_cache_time(body: dict | None) -> float:
+        """Prefer payload generated_at so day-old disk caches don't look 'fresh'."""
+        import time
+        from datetime import datetime as _dt
+
+        if not isinstance(body, dict):
+            return 0.0
+        ga = str(body.get("generated_at") or "").strip()
+        if ga:
+            try:
+                return _dt.fromisoformat(ga.replace("Z", "+00:00")).timestamp()
+            except Exception:  # noqa: BLE001
+                pass
+        return float(_snap_memo.get("t") or 0.0)
+
     @app.get("/api/snapshot")
     def snapshot():
         import time
@@ -4221,10 +4247,8 @@ def create_app(config_path: str | None = None) -> Flask:
         # Serve last good board immediately when a rebuild is slow/locked — otherwise the
         # HTML loads but BUY/SELL NOW paints empty while /api/snapshot hangs for minutes.
         ttl = float(os.environ.get("SNAPSHOT_CACHE_SEC") or "90")
-        soft_ttl = float(os.environ.get("SNAPSHOT_STALE_SEC") or "900")
         force = str(request.args.get("fresh") or "").strip().lower() in {"1", "true", "yes", "on"}
         cached = _snap_memo.get("body")
-        cached_t = float(_snap_memo.get("t") or 0.0)
         if cached is None:
             disk = _read_json(ROOT / "outputs" / "last_api_snapshot.json")
             if not (isinstance(disk, dict) and (disk.get("scores") or disk.get("actions") or disk.get("lottery"))):
@@ -4249,48 +4273,70 @@ def create_app(config_path: str | None = None) -> Flask:
                     }
             if isinstance(disk, dict) and (disk.get("scores") or disk.get("actions") or disk.get("lottery")):
                 cached = disk
-                cached_t = time.time()
                 _snap_memo["body"] = disk
-                _snap_memo["t"] = cached_t
+                _snap_memo["t"] = _snapshot_cache_time(disk)
+        cached_t = _snapshot_cache_time(cached) if cached is not None else 0.0
         age = (time.time() - cached_t) if cached is not None and cached_t else 1e9
         if (not force) and cached is not None and age < ttl:
             return jsonify(cached)
 
+        def _bg_rebuild() -> None:
+            try:
+                _snapshot_build()
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("background snapshot rebuild failed: %s", exc)
+            finally:
+                if _snap_gate.locked():
+                    try:
+                        _snap_gate.release()
+                    except RuntimeError:
+                        pass
+
         got_lock = _snap_gate.acquire(blocking=False)
-        if not got_lock:
-            if cached is not None and age < soft_ttl:
-                return jsonify(cached)
-            got_lock = _snap_gate.acquire(timeout=8)
-            if not got_lock:
-                if cached is not None:
-                    return jsonify(cached)
-                return jsonify({"error": "snapshot busy", "scores": [], "actions": {}, "lottery": {}}), 503
-        try:
-            cached = _snap_memo.get("body")
-            cached_t = float(_snap_memo.get("t") or 0.0)
-            age = (time.time() - cached_t) if cached is not None and cached_t else 1e9
-            if (not force) and cached is not None and age < ttl:
-                return jsonify(cached)
-            return _snapshot_build()
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("snapshot build failed: %s", exc)
-            stale = _snap_memo.get("body") or _read_json(ROOT / "outputs" / "last_api_snapshot.json")
-            if isinstance(stale, dict) and (stale.get("actions") or stale.get("lottery") or stale.get("scores")):
-                out = dict(stale)
+        if got_lock:
+            if cached is not None and not force:
+                # Paint last board now; refresh in the background.
+                threading.Thread(target=_bg_rebuild, daemon=True).start()
+                out = dict(cached)
                 out["stale"] = True
-                out["rebuild_error"] = str(exc)[:240]
                 return jsonify(out)
-            return jsonify(
-                {
-                    "error": str(exc),
-                    "scores": [],
-                    "actions": {"buy_now": [], "sell_now": [], "wait": [], "counts": {}},
-                    "lottery": {"buy_now": [], "sell_now": [], "counts": {}},
-                }
-            ), 500
-        finally:
-            if got_lock:
-                _snap_gate.release()
+            try:
+                return _snapshot_build()
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("snapshot build failed: %s", exc)
+                stale = _snap_memo.get("body") or _read_json(ROOT / "outputs" / "last_api_snapshot.json")
+                if isinstance(stale, dict) and (stale.get("actions") or stale.get("lottery") or stale.get("scores")):
+                    out = dict(stale)
+                    out["stale"] = True
+                    out["rebuild_error"] = str(exc)[:240]
+                    return jsonify(out)
+                return jsonify(
+                    {
+                        "error": str(exc),
+                        "scores": [],
+                        "actions": {"buy_now": [], "sell_now": [], "wait": [], "counts": {}},
+                        "lottery": {"buy_now": [], "sell_now": [], "counts": {}},
+                    }
+                ), 500
+            finally:
+                if _snap_gate.locked():
+                    try:
+                        _snap_gate.release()
+                    except RuntimeError:
+                        pass
+
+        # Rebuild already running — never block the browser.
+        if cached is not None:
+            out = dict(cached)
+            out["stale"] = True
+            return jsonify(out)
+        # No cache yet: wait briefly for the in-flight builder.
+        for _ in range(40):
+            time.sleep(0.5)
+            body = _snap_memo.get("body")
+            if isinstance(body, dict) and (body.get("actions") or body.get("lottery")):
+                return jsonify(body)
+        return jsonify({"error": "snapshot busy", "scores": [], "actions": {}, "lottery": {}}), 503
 
     def _snapshot_build():
         import time
