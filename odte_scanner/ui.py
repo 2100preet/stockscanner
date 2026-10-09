@@ -4206,6 +4206,9 @@ def create_app(config_path: str | None = None) -> Flask:
     scan_lock = threading.Lock()
     actions_cfg = cfg.get("actions") or {}
     risk = cfg.get("risk") or {}
+    # Single-flight + TTL — UI polls while LIVE_DESK_LOOP rebuilds; never blank the board.
+    _snap_gate = threading.Lock()
+    _snap_memo: dict = {"body": None, "t": 0.0}
 
     @app.get("/")
     def index():
@@ -4213,6 +4216,85 @@ def create_app(config_path: str | None = None) -> Flask:
 
     @app.get("/api/snapshot")
     def snapshot():
+        import time
+
+        # Serve last good board immediately when a rebuild is slow/locked — otherwise the
+        # HTML loads but BUY/SELL NOW paints empty while /api/snapshot hangs for minutes.
+        ttl = float(os.environ.get("SNAPSHOT_CACHE_SEC") or "90")
+        soft_ttl = float(os.environ.get("SNAPSHOT_STALE_SEC") or "900")
+        force = str(request.args.get("fresh") or "").strip().lower() in {"1", "true", "yes", "on"}
+        cached = _snap_memo.get("body")
+        cached_t = float(_snap_memo.get("t") or 0.0)
+        if cached is None:
+            disk = _read_json(ROOT / "outputs" / "last_api_snapshot.json")
+            if not (isinstance(disk, dict) and (disk.get("scores") or disk.get("actions") or disk.get("lottery"))):
+                # Bootstrap from partial board cache so first paint isn't blank after reboot.
+                partial = _read_json(ROOT / "outputs" / "ui_snapshot_cache.json")
+                if isinstance(partial, dict) and (partial.get("actions") or partial.get("lottery")):
+                    disk = {
+                        "generated_at": partial.get("generated_at"),
+                        "stale": True,
+                        "scores": [],
+                        "actions": partial.get("actions") or {},
+                        "lottery": partial.get("lottery") or {},
+                        "challenge": partial.get("challenge") or {},
+                        "odte_1k": partial.get("odte_1k") or {},
+                        "rip_radar": partial.get("rip_radar") or {},
+                        "beauty_monthly": partial.get("beauty_monthly") or {},
+                        "level_watch": partial.get("level_watch") or {},
+                        "spx_credit": partial.get("spx_credit") or {},
+                        "premarket": partial.get("premarket") or {},
+                        "radar": partial.get("radar") or {},
+                        "chase_radar": partial.get("chase_radar") or {},
+                    }
+            if isinstance(disk, dict) and (disk.get("scores") or disk.get("actions") or disk.get("lottery")):
+                cached = disk
+                cached_t = time.time()
+                _snap_memo["body"] = disk
+                _snap_memo["t"] = cached_t
+        age = (time.time() - cached_t) if cached is not None and cached_t else 1e9
+        if (not force) and cached is not None and age < ttl:
+            return jsonify(cached)
+
+        got_lock = _snap_gate.acquire(blocking=False)
+        if not got_lock:
+            if cached is not None and age < soft_ttl:
+                return jsonify(cached)
+            got_lock = _snap_gate.acquire(timeout=8)
+            if not got_lock:
+                if cached is not None:
+                    return jsonify(cached)
+                return jsonify({"error": "snapshot busy", "scores": [], "actions": {}, "lottery": {}}), 503
+        try:
+            cached = _snap_memo.get("body")
+            cached_t = float(_snap_memo.get("t") or 0.0)
+            age = (time.time() - cached_t) if cached is not None and cached_t else 1e9
+            if (not force) and cached is not None and age < ttl:
+                return jsonify(cached)
+            return _snapshot_build()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("snapshot build failed: %s", exc)
+            stale = _snap_memo.get("body") or _read_json(ROOT / "outputs" / "last_api_snapshot.json")
+            if isinstance(stale, dict) and (stale.get("actions") or stale.get("lottery") or stale.get("scores")):
+                out = dict(stale)
+                out["stale"] = True
+                out["rebuild_error"] = str(exc)[:240]
+                return jsonify(out)
+            return jsonify(
+                {
+                    "error": str(exc),
+                    "scores": [],
+                    "actions": {"buy_now": [], "sell_now": [], "wait": [], "counts": {}},
+                    "lottery": {"buy_now": [], "sell_now": [], "counts": {}},
+                }
+            ), 500
+        finally:
+            if got_lock:
+                _snap_gate.release()
+
+    def _snapshot_build():
+        import time
+
         from odte_scanner.calendars import resolve_yahoo_symbol
         from odte_scanner.data.live_quotes import fetch_live_quote
         from odte_scanner.options.live_chain import refresh_candidate_quote
@@ -6619,9 +6701,8 @@ def create_app(config_path: str | None = None) -> Flask:
             logger.warning("daily_pnl build failed: %s", exc)
             daily_pnl = {"error": str(exc), "totals": {}, "by_day": [], "closed": [], "open": []}
 
-        return jsonify(
-            sanitize_for_json(
-                {
+        payload = sanitize_for_json(
+            {
                 "generated_at": datetime.now(timezone.utc).isoformat(),
                 "offline": offline,
                 "host": "github-pages" if offline else "live",
@@ -6667,9 +6748,17 @@ def create_app(config_path: str | None = None) -> Flask:
                 "win_rates": win_table,
                 "rec_log": rec_log_payload,
                 "webull": webull_payload,
-                }
-            )
+            }
         )
+        _snap_memo["body"] = payload
+        _snap_memo["t"] = time.time()
+        try:
+            outp = ROOT / "outputs" / "last_api_snapshot.json"
+            outp.parent.mkdir(parents=True, exist_ok=True)
+            outp.write_text(dumps_strict(payload, indent=2, default=str))
+        except Exception:  # noqa: BLE001
+            pass
+        return jsonify(payload)
 
     def _challenge_tracker():
         from odte_scanner.challenge.tracker import ChallengeTracker

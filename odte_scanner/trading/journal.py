@@ -146,7 +146,22 @@ class SignalJournal:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.starting_cash = starting_cash
         if self.path.exists():
-            raw = json.loads(self.path.read_text())
+            raw: dict = {}
+            try:
+                text = self.path.read_text().strip()
+                if text:
+                    loaded = json.loads(text)
+                    raw = loaded if isinstance(loaded, dict) else {}
+            except Exception as exc:  # noqa: BLE001
+                # Empty/partial write during OOM must not 500 the whole desk snapshot.
+                logger.warning("journal load failed (%s) — reseeding empty book: %s", self.path, exc)
+                raw = {}
+                try:
+                    # Quarantine corrupt file so the next save can rewrite cleanly
+                    bad = self.path.with_suffix(self.path.suffix + ".corrupt")
+                    self.path.replace(bad)
+                except Exception:  # noqa: BLE001
+                    pass
             known = {f.name for f in fields(JournalTrade)}
             trades: list[JournalTrade] = []
             for t in raw.get("trades") or []:
@@ -166,7 +181,7 @@ class SignalJournal:
                 balance_log=list(raw.get("balance_log") or []),
             )
             # Rewrite once when stale open+closed clones shared an id
-            if len(trades) < n_raw:
+            if len(trades) < n_raw or not raw:
                 try:
                     self.save()
                 except Exception:  # noqa: BLE001

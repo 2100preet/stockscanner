@@ -2,7 +2,7 @@
 # Deploy: fly deploy -a stockscanner
 # Scale:  fly scale memory 4096 -a stockscanner
 # Volume: fly volumes create desk_outputs --region ord --size 1 -a stockscanner
-# redeploy-nudge: 2026-10-09T13:45Z buy-now-tape-oom
+# redeploy-nudge: 2026-10-09T14:10Z snapshot-stale-serve
 
 app = "stockscanner"
 primary_region = "ord"
