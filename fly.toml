@@ -1,8 +1,8 @@
 # ZeroLoss live desk on Fly.io
 # Deploy: fly deploy -a stockscanner
-# Scale:  fly scale memory 2048 -a stockscanner
+# Scale:  fly scale memory 4096 -a stockscanner
 # Volume: fly volumes create desk_outputs --region ord --size 1 -a stockscanner
-# redeploy-nudge: 2026-10-09T13:20Z premarket-spacex-ma-eye
+# redeploy-nudge: 2026-10-09T13:45Z buy-now-tape-oom
 
 app = "stockscanner"
 primary_region = "ord"
@@ -37,4 +37,4 @@ primary_region = "ord"
 
 [[vm]]
   size = "shared-cpu-2x"
-  memory = "2048mb"
+  memory = "4096mb"

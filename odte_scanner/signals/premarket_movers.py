@@ -302,6 +302,11 @@ def effective_special_eye(
     """Static desk eye ∪ catalyst seeds ∪ latest session movers."""
     eye = static_special_eye(cfg)
     src = board if board is not None else load_session_eye(store_path)
+    # Ignore persisted eye from another session day (Fly volume keeps yesterday).
+    if board is None:
+        store_day = str(src.get("session_date") or "")[:10]
+        if store_day and store_day != date.today().isoformat():
+            return eye
     for s in src.get("session_eye") or []:
         u = _sym(s)
         if u:

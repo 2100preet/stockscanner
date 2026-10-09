@@ -78,9 +78,26 @@ def run_scan(
                 effective_special_eye,
             )
 
+            from odte_scanner.signals.premarket_movers import CATALYST_SEEDS
+
             premarket_board = build_premarket_board(cfg, aliases=aliases, persist=True)
             session_eye = effective_special_eye(cfg, board=premarket_board)
-            for sym in session_eye:
+            # Only promote catalyst seeds + top movers into full history scan.
+            # Dumping the entire session_eye into focus OOMs the 2–4GB Fly desk.
+            promote: list[str] = list(CATALYST_SEEDS)
+            for row in (premarket_board.get("gainers") or [])[:8]:
+                s = str(row.get("symbol") or "").upper()
+                if s:
+                    promote.append(s)
+            for row in (premarket_board.get("losers") or [])[:6]:
+                s = str(row.get("symbol") or "").upper()
+                if s:
+                    promote.append(s)
+            seen_promote: set[str] = set()
+            for sym in promote:
+                if not sym or sym in seen_promote:
+                    continue
+                seen_promote.add(sym)
                 if sym not in tickers:
                     tickers.append(sym)
                 if sym not in focus:

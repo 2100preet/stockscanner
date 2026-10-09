@@ -4324,10 +4324,12 @@ def create_app(config_path: str | None = None) -> Flask:
         except Exception:  # noqa: BLE001
             challenge_syms = []
             dram_syms = []
+        # Quote EVERY board symbol — syms[:8] left most BUY/SELL candidates
+        # without session tape ("No live tape confirm") and blanked the NOW desk.
         quote_syms = (
             []
             if not live_marks
-            else sorted(set(syms[:8]) | set(challenge_syms[:12]) | set(dram_syms))
+            else sorted(set(syms) | set(challenge_syms[:12]) | set(dram_syms))
         )
         # Always refresh CORE mega tape — RIP/BUY NOW was missing session % for INTC/GOOGL
         try:
@@ -4347,18 +4349,12 @@ def create_app(config_path: str | None = None) -> Flask:
                 quote_syms = sorted(set(quote_syms) | mega_on_board)
         except Exception:  # noqa: BLE001
             pass
-        # Premarket / catalyst special-eye — keep tape quotes for session %
+        # Premarket catalysts only (not full liquid eye) — board syms already quoted above.
         try:
-            from odte_scanner.signals.premarket_movers import effective_special_eye
-            from odte_scanner.signals.rip_radar import DESK_SPECIAL_EYE
+            from odte_scanner.signals.premarket_movers import CATALYST_SEEDS
 
             if live_marks:
-                eye = (
-                    effective_special_eye(cfg)
-                    | set(actions_cfg.get("desk_special_eye") or [])
-                    | set(DESK_SPECIAL_EYE)
-                )
-                quote_syms = sorted(set(quote_syms) | {str(s).upper() for s in eye if s})
+                quote_syms = sorted(set(quote_syms) | set(CATALYST_SEEDS))
         except Exception:  # noqa: BLE001
             pass
         for s in quote_syms:
