@@ -5277,10 +5277,16 @@ def create_app(config_path: str | None = None) -> Flask:
                     "counts": {},
                     "note": "Premarket movers temporarily unavailable.",
                 }
-        if isinstance(scan.get("premarket"), dict) and (
-            scan["premarket"].get("session_eye") or scan["premarket"].get("gainers")
-        ):
-            premarket = scan["premarket"]
+        # Prefer a same-session scan board; never let a stale volume scan
+        # overwrite today's catalyst seeds (Fly desk_outputs persists latest_scan).
+        scan_pm = scan.get("premarket") if isinstance(scan.get("premarket"), dict) else None
+        if scan_pm and (scan_pm.get("session_eye") or scan_pm.get("gainers")):
+            from datetime import date as _date
+
+            scan_day = str(scan_pm.get("session_date") or "")[:10]
+            today = _date.today().isoformat()
+            if scan_day == today:
+                premarket = scan_pm
 
         # Sticky TA level-watch — ALAB/AMAT/AMD/AXTI/BE/BMNR/CAT/DELL/FPS
         level_watch: dict = {
