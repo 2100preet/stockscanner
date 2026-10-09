@@ -18,6 +18,19 @@ logger = logging.getLogger(__name__)
 STRESS_MOVES_PCT = (1.0, 2.0, 3.0, 5.0)
 
 
+def _safe_int(v: object, default: int = 0) -> int:
+    """Coerce Yahoo/Tradier ints; NaN/`or 0` traps must not crash the desk."""
+    try:
+        if v is None:
+            return default
+        f = float(v)
+        if f != f:  # NaN
+            return default
+        return int(f)
+    except (TypeError, ValueError):
+        return default
+
+
 @dataclass
 class ExplosiveCandidate:
     symbol: str
@@ -177,7 +190,7 @@ def build_explosive_from_candidate(
     ask = float(c.get("ask") or 0)
     spot = float(c.get("spot") or c.get("live_spot") or 0)
     strike = float(c.get("strike") or 0)
-    dte = int(c.get("dte") or 0)
+    dte = _safe_int(c.get("dte"), 0)
     if ask <= 0 or spot <= 0 or strike <= 0:
         return None
     if dte > 1:
@@ -198,6 +211,8 @@ def build_explosive_from_candidate(
         if min_mult_at_1pct <= 0 or mults[1.0] < min_mult_at_1pct:
             return None
 
+    vol = _safe_int(c.get("volume"))
+    oi = _safe_int(c.get("open_interest"))
     lottery = score_lottery(
         ask=ask,
         mult_2=mults[2.0],
@@ -205,8 +220,8 @@ def build_explosive_from_candidate(
         mult_5=mults[5.0],
         moneyness_pct=float(c.get("moneyness_pct") or 0),
         dte=dte,
-        volume=int(c.get("volume") or 0),
-        open_interest=int(c.get("open_interest") or 0),
+        volume=vol,
+        open_interest=oi,
         ensemble_score=float(c.get("score") or 0),
     )
     thesis = (
@@ -224,8 +239,8 @@ def build_explosive_from_candidate(
         ask=ask,
         bid=float(c.get("bid") or 0),
         moneyness_pct=float(c.get("moneyness_pct") or 0),
-        volume=int(c.get("volume") or 0),
-        open_interest=int(c.get("open_interest") or 0),
+        volume=vol,
+        open_interest=oi,
         score=float(c.get("score") or 0),
         upside_at_1pct=ups[1.0],
         upside_at_2pct=ups[2.0],
@@ -315,8 +330,8 @@ def find_explosive_calls(
                 "ask": ask,
                 "bid": bid,
                 "moneyness_pct": mny,
-                "volume": int(row.get("volume") or 0),
-                "open_interest": int(row.get("openInterest") or 0),
+                "volume": _safe_int(row.get("volume")),
+                "open_interest": _safe_int(row.get("openInterest")),
                 "score": score,
             }
             ec = build_explosive_from_candidate(
@@ -381,7 +396,7 @@ def build_radar_wing_board(
         if ask < min_ask or ask > max_ask:
             continue
         dte = c.get("dte")
-        if dte is not None and int(dte) > 1:
+        if dte is not None and _safe_int(dte, 99) > 1:
             continue
         ec = build_explosive_from_candidate(
             {**c, "symbol": sym},
@@ -456,12 +471,19 @@ def _pick_chase_symbols(
 ) -> list[str]:
     """Prefer names that are already ripping or scoring soft-bullish for chase wings."""
     quotes = quotes or {}
+    try:
+        from odte_scanner.signals.rip_radar import is_mega_rip_symbol
+    except Exception:  # noqa: BLE001
+        def is_mega_rip_symbol(symbol: str) -> bool:  # type: ignore[misc]
+            return False
+
     ranked: list[tuple[float, str]] = []
     for s in scores or []:
         sym = str(s.get("symbol") or "").upper()
         if not sym:
             continue
         ens = float(s.get("ensemble_score") or 0)
+        em = float(s.get("expected_move_pct") or 0)
         rs = 0.0
         for sig in s.get("signals") or []:
             if str(sig.get("name") or "") == "relative_strength":
@@ -472,9 +494,12 @@ def _pick_chase_symbols(
         if live is None:
             live = q.get("change_pct")
         live_f = float(live) if live is not None else 0.0
-        if ens < min_ensemble and live_f < 1.2 and rs < 2.5:
+        mega = is_mega_rip_symbol(sym)
+        # Megas with EM fuel (MU open ~score 45 / EM 3%) must not be excluded
+        mega_early = mega and (ens >= 40.0 or em >= 2.0)
+        if ens < min_ensemble and live_f < 1.2 and rs < 2.5 and not mega_early:
             continue
-        chase_rank = ens + live_f * 4.0 + max(0.0, rs) * 0.6
+        chase_rank = ens + live_f * 4.0 + max(0.0, rs) * 0.6 + (em * 2.0 if mega else 0.0)
         ranked.append((chase_rank, sym))
     ranked.sort(key=lambda x: x[0], reverse=True)
     out: list[str] = []
@@ -524,7 +549,7 @@ def build_chase_wing_board(
         if ask < min_ask or ask > max_ask:
             continue
         dte = c.get("dte")
-        if dte is not None and int(dte) > 1:
+        if dte is not None and _safe_int(dte, 99) > 1:
             continue
         mny = c.get("moneyness_pct")
         if mny is not None and float(mny) > otm_pct_max:
@@ -588,6 +613,48 @@ def build_chase_wing_board(
     return [e.to_dict() for e in board[:max_total]]
 
 
+def _mega_wing_symbols(
+    scores: list[dict[str, Any]] | None,
+    *,
+    max_n: int = 8,
+    min_score: float = 40.0,
+    min_expected_move_pct: float = 2.0,
+) -> list[tuple[str, float, float]]:
+    """MU-class names that can rip from a mid score — always worth a cheap-wing sweep.
+
+    Returns (symbol, ensemble_score, spot_hint) ranked by expected-move then score.
+    """
+    try:
+        from odte_scanner.signals.rip_radar import is_mega_rip_symbol
+    except Exception:  # noqa: BLE001
+        return []
+
+    ranked: list[tuple[float, str, float, float]] = []
+    for s in scores or []:
+        sym = str(s.get("symbol") or "").upper()
+        if not sym or not is_mega_rip_symbol(sym):
+            continue
+        ens = float(s.get("ensemble_score") or 0)
+        em = float(s.get("expected_move_pct") or 0)
+        spot = float(s.get("last_price") or s.get("last") or s.get("entry") or 0)
+        if ens < min_score and em < min_expected_move_pct:
+            continue
+        # Prefer elevated EM (rip fuel) even when ensemble is only mid-40s
+        rank = em * 8.0 + ens
+        ranked.append((rank, sym, ens, spot))
+    ranked.sort(key=lambda x: x[0], reverse=True)
+    out: list[tuple[str, float, float]] = []
+    seen: set[str] = set()
+    for _, sym, ens, spot in ranked:
+        if sym in seen:
+            continue
+        seen.add(sym)
+        out.append((sym, ens, spot))
+        if len(out) >= max_n:
+            break
+    return out
+
+
 def build_explosive_board(
     candidates: list[dict[str, Any]],
     *,
@@ -597,8 +664,14 @@ def build_explosive_board(
     enrich_live: bool = True,
     per_symbol: int = 2,
     max_total: int = 24,
+    mega_enrich: bool | None = None,
 ) -> list[dict[str, Any]]:
-    """Combine scan candidates + optional wider chain search into a ranked board."""
+    """Combine scan candidates + optional wider chain search into a ranked board.
+
+    Even when ``enrich_live=False`` (fast snapshot path), mega names with elevated
+    expected move still get a cheap OTM wing sweep — otherwise MU @ score 45 only
+    surfaces puts and the $1–$2 call lottery never appears at the open.
+    """
     aliases = aliases or {}
     quotes = quotes or {}
     score_map = {
@@ -608,25 +681,62 @@ def build_explosive_board(
     board: list[ExplosiveCandidate] = []
     for c in candidates or []:
         dte = c.get("dte")
-        if dte is not None and int(dte) > 1:
+        if dte is not None and _safe_int(dte, 99) > 1:
+            continue
+        # Explosive / lottery lane is call convexity — skip puts from the weak sleeve
+        if str(c.get("right") or "C").upper().startswith("P"):
             continue
         ec = build_explosive_from_candidate(c)
         if ec:
             board.append(ec)
 
+    have = {(e.symbol, e.expiry, e.strike) for e in board}
+
+    def _spot_for(sym: str, hint: float = 0.0) -> float:
+        q = quotes.get(sym) or {}
+        spot = float(q.get("last") or 0)
+        if spot <= 0:
+            spot = float(hint or 0)
+        if spot <= 0:
+            for c in candidates or []:
+                if str(c.get("symbol") or "").upper() == sym and c.get("spot"):
+                    spot = float(c["spot"])
+                    break
+        return spot
+
+    def _absorb(found: list[ExplosiveCandidate]) -> None:
+        for ec in found:
+            key = (ec.symbol, ec.expiry, ec.strike)
+            if key in have:
+                continue
+            have.add(key)
+            board.append(ec)
+
+    # Default ON even when enrich_live=False — megas must not be puts-only at the open.
+    if mega_enrich is not False:
+        for sym, sc, hint in _mega_wing_symbols(scores, max_n=8):
+            spot = _spot_for(sym, hint)
+            if spot <= 0:
+                continue
+            found = find_explosive_calls(
+                sym,
+                spot,
+                score=sc,
+                yahoo_symbol=aliases.get(sym),
+                otm_pct_max=5.0,
+                min_ask=0.25,
+                max_ask=8.0,
+                limit=per_symbol,
+                min_best_mult=2.5,
+                min_mult_at_3pct=2.0,
+            )
+            _absorb(found)
+
     if enrich_live:
         # Top scored names get a wider OTM lottery sweep
         ranked_syms = sorted(score_map.items(), key=lambda kv: kv[1], reverse=True)[:12]
-        have = {(e.symbol, e.expiry, e.strike) for e in board}
         for sym, sc in ranked_syms:
-            q = quotes.get(sym) or {}
-            spot = float(q.get("last") or 0)
-            if spot <= 0:
-                # fall back to any candidate spot
-                for c in candidates or []:
-                    if c.get("symbol") == sym and c.get("spot"):
-                        spot = float(c["spot"])
-                        break
+            spot = _spot_for(sym)
             if spot <= 0:
                 continue
             found = find_explosive_calls(
@@ -636,12 +746,7 @@ def build_explosive_board(
                 yahoo_symbol=aliases.get(sym),
                 limit=per_symbol,
             )
-            for ec in found:
-                key = (ec.symbol, ec.expiry, ec.strike)
-                if key in have:
-                    continue
-                have.add(key)
-                board.append(ec)
+            _absorb(found)
 
     board.sort(key=lambda x: (x.lottery_score, x.best_mult), reverse=True)
     return [e.to_dict() for e in board[:max_total]]

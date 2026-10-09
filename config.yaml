@@ -486,6 +486,16 @@ actions:
   # Auto IN on confirmed PUT_NOW (zone ask ok); auto OUT on EXIT
   odte_1k_auto_enter: true
   odte_1k_auto_exit: true
+  # SPX Credit — SuperLuckeee-style 0DTE iron condor (~$0.90 credit / $1.40 BTC stop)
+  spx_credit_enabled: true
+  spx_credit_symbols: ["SPX", "XSP"]
+  spx_credit_wing_width: 10.0
+  spx_credit_otm_pts: 50.0
+  spx_credit_target: 0.90
+  spx_credit_min_credit: 0.70
+  spx_credit_stop: 1.40
+  spx_credit_max_dte: 1
+  spx_credit_fetch_live: true
   # Power Hour — 15m VWAP LONG/SHORT (NU/NVDA/CAPR/ETON/HTFL + focus sleeve)
   power_hour_enabled: true
   power_hour_symbols: focus

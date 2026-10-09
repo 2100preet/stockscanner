@@ -2,7 +2,7 @@
 # Deploy: fly deploy -a stockscanner
 # Scale:  fly scale memory 2048 -a stockscanner
 # Volume: fly volumes create desk_outputs --region ord --size 1 -a stockscanner
-# redeploy-nudge: 2026-10-09T04:40Z gex-daddy
+# redeploy-nudge: 2026-10-09T04:50Z spx-credit-restore
 
 app = "stockscanner"
 primary_region = "ord"

@@ -212,6 +212,7 @@ PAGE = r"""
       <button data-tab="overview">Overview</button>
       <button data-tab="odte">0DTE</button>
       <button data-tab="odte1k">0DTE $1K</button>
+      <button data-tab="spxcredit">SPX Credit</button>
       <button data-tab="powerhour">Power Hour</button>
       <button data-tab="explosive">Explosive</button>
       <button data-tab="rip">RIP / META</button>
@@ -358,6 +359,31 @@ PAGE = r"""
         <div id="odte1kRules" class="empty">—</div>
       </div>
       <p class="lede" id="odte1kDisclaimer" style="font-size:.72rem"></p>
+    </section>
+
+    <section class="tabpane" id="tab-spxcredit">
+      <h2>SPX CREDIT — 0DTE iron condor</h2>
+      <p class="lede">
+        Daily defined-risk credit on <strong>SPX</strong> (XSP scaled): sell ~50pt OTM
+        <strong>10-wide</strong> put + call verticals (iron condor). Target credit
+        <strong>~$0.90</strong>, buy-to-close stop <strong>$1.40</strong>, bank ~50% when available.
+        No new entries after 15:00 ET · flatten 15:45 ET. WAIT on ±1.2% trend days.
+      </p>
+      <div class="metric-row" id="spxCreditMetrics"></div>
+      <div class="cards" id="spxCreditPrimary"></div>
+      <div class="panel">
+        <h2>SELL CREDIT (enter IC)</h2>
+        <div id="spxCreditSell" class="empty">No SELL CREDIT package yet — need SPX/XSP 0DTE chain near $0.90 credit.</div>
+      </div>
+      <div class="panel">
+        <h2>BUY TO CLOSE (exit)</h2>
+        <div id="spxCreditExit" class="empty">No open credit IC exits.</div>
+      </div>
+      <div class="panel">
+        <h2>WAIT / HOLD</h2>
+        <div id="spxCreditWait" class="empty">—</div>
+      </div>
+      <p class="lede" id="spxCreditRules" style="font-size:.72rem"></p>
     </section>
 
     <section class="tabpane" id="tab-powerhour">
@@ -1074,7 +1100,7 @@ PAGE = r"""
       <p class="pc-why"><strong>EXIT:</strong> ${t.planOut}</p>`;
     }
 
-    const NOW_DESK_ORDER = ["0DTE", "1 Week", "Swing 1–3M", "Levels", "Explosive", "ML6", "Challenge", "0DTE $1K", "Options"];
+    const NOW_DESK_ORDER = ["0DTE", "1 Week", "Swing 1–3M", "Levels", "Explosive", "ML6", "Challenge", "0DTE $1K", "SPX Credit", "Options"];
 
     function horizonDesk(row, fallback) {
       const b = String(row.dte_bucket || row.horizon || row.hold_style || row.style || "").toLowerCase();
@@ -1148,6 +1174,9 @@ PAGE = r"""
       const k1 = DATA.odte_1k || {};
       (k1.put_now || k1.entry || k1.in || []).forEach(r => add(Object.assign({}, r, { action: r.alert_action || "BUY_NOW", right: r.right || "P" }), "BUY", "0DTE $1K"));
       (k1.exit_now || k1.exit || k1.out || []).forEach(r => add(Object.assign({}, r, { action: r.alert_action || "SELL_NOW" }), "SELL", "0DTE $1K"));
+      const ic = DATA.spx_credit || {};
+      (ic.sell_credit || ic.buy_now || []).forEach(r => add(Object.assign({}, r, { action: r.alert_action || "BUY_NOW", right: "IC" }), "BUY", "SPX Credit"));
+      (ic.exit_now || ic.sell_now || []).forEach(r => add(Object.assign({}, r, { action: r.alert_action || "SELL_NOW", right: "IC" }), "SELL", "SPX Credit"));
       const ac = DATA.action_cards || {};
       const histOk = (sym, hz) => {
         const w = winLookup(sym, hz);
@@ -1174,19 +1203,25 @@ PAGE = r"""
       const buy = r._side === "BUY";
       const wait = r._side === "WAIT";
       const setup = r._side === "SETUP";
-      const right = String(r.right || "C").toUpperCase() === "P" ? "PUT" : "CALL";
+      const rightRaw = String(r.right || "C").toUpperCase();
+      const right = rightRaw === "P" ? "PUT" : (rightRaw === "IC" ? "IC" : "CALL");
       const win = Number(r.win_pct ?? r.hist_win_pct);
       const n = Number(r.win_samples ?? r.hist_samples);
       const gated = buy && win >= 80 && (Number.isNaN(n) || n >= 3);
       const isRip = buy && String(r.action || "").includes("RIP");
       const isBeauty = buy && String(r.action || "").includes("BEAUTY");
       const isLevel = buy && String(r.action || "").includes("LEVEL");
-      const cls = buy ? (isRip || isBeauty || isLevel ? "long" : (gated ? "enter-now" : "long")) : (wait || setup ? "wait" : "short");
+      const isIc = String(r._desk || "") === "SPX Credit" || right === "IC";
+      const cls = buy ? (isRip || isBeauty || isLevel || isIc ? "long" : (gated ? "enter-now" : "long")) : (wait || setup ? "wait" : "short");
       const label = buy
-        ? (isLevel ? "BUY LEVEL" : (isBeauty ? "BUY BEAUTY" : (isRip ? "BUY RIP" : (gated ? "ENTER NOW" : "BUY NOW"))))
-        : (setup ? "SETUP · not BUY" : (wait ? "WAIT" : "SELL NOW"));
-      const strike = r.strike == null ? "—" : `${fmt(r.strike, Number(r.strike) % 1 ? 2 : 0)}${right === "PUT" ? "p" : "c"}`;
-      const px = buy ? (r.ask ?? r.entry_ask) : (r.bid ?? r.mark ?? r.ask ?? r.exit_bid);
+        ? (isIc ? "SELL CREDIT" : (isLevel ? "BUY LEVEL" : (isBeauty ? "BUY BEAUTY" : (isRip ? "BUY RIP" : (gated ? "ENTER NOW" : "BUY NOW")))))
+        : (setup ? "SETUP · not BUY" : (wait ? "WAIT" : (isIc ? "BUY TO CLOSE" : "SELL NOW")));
+      const strike = right === "IC"
+        ? `IC ${r.short_put == null ? "—" : fmt(r.short_put, 0) + "P"} / ${r.short_call == null ? "—" : fmt(r.short_call, 0) + "C"}`
+        : (r.strike == null ? "—" : `${fmt(r.strike, Number(r.strike) % 1 ? 2 : 0)}${right === "PUT" ? "p" : "c"}`);
+      const px = buy
+        ? (isIc ? (r.credit ?? r.ask ?? r.entry_ask) : (r.ask ?? r.entry_ask))
+        : (isIc ? (r.debit_to_close ?? r.bid ?? r.mark ?? r.ask) : (r.bid ?? r.mark ?? r.ask ?? r.exit_bid));
       const when = rowAskedAt(r);
       const entryWhen = r.entered_at_cst || (r.entered_at ? fmtCST(r.entered_at) : "");
       const showEntry = entryWhen && entryWhen !== "—" && entryWhen !== when;
@@ -1200,7 +1235,7 @@ PAGE = r"""
         <div class="ac-conf">${r._desk} · ${when && when !== "—" ? when : "time —"}${showEntry ? ` · entered ${entryWhen}` : ""}</div>
         <div class="ac-meta">
           <div>Strike / expiry<strong>${strike} · ${r.expiry || "—"}${r.dte != null ? ` (${r.dte}DTE)` : ""}</strong></div>
-          <div>${buy ? "Ask" : "Bid"}<strong>${px == null ? "—" : "$" + fmt(px, 2)}</strong></div>
+          <div>${isIc ? (buy ? "Credit" : "Debit") : (buy ? "Ask" : "Bid")}<strong>${px == null ? "—" : "$" + fmt(px, 2)}</strong></div>
           <div>Hist win<strong>${Number.isNaN(win) ? "—" : fmt(win, 0) + "%"}</strong></div>
           <div>Strike rate ≥1%<strong>${sr}</strong></div>
           ${levelsMeta(r)}
@@ -1727,6 +1762,84 @@ PAGE = r"""
         </div>
         <div class="why">${r.detail||""}</div>
       </div>`;
+    }
+
+    function spxCreditCard(r) {
+      if (!r) return "";
+      const enter = r.action === "SELL_CREDIT" || r.alert_action === "BUY_NOW";
+      const exit = r.action === "BUY_TO_CLOSE" || r.alert_action === "SELL_NOW";
+      const cls = enter ? "long" : (exit ? "short" : "wait");
+      const label = enter ? "SELL CREDIT" : (exit ? "BUY TO CLOSE" : (r.action || "WAIT"));
+      const credit = r.credit ?? r.ask ?? r.entry_ask;
+      const debit = r.debit_to_close ?? r.bid;
+      const when = rowAskedAt(r);
+      return `<article class="action-card ${cls}">
+        <div class="ac-top">
+          <div class="ac-sym">${r.symbol} <span class="tag">Iron Condor</span> <span class="tag">${r.dte != null ? r.dte + "DTE" : "0DTE"}</span></div>
+          <div class="ac-dir ${cls}">${label}</div>
+        </div>
+        <div class="ac-conf">${when && when !== "—" ? when : "time —"} · ${r.expiry || "—"}</div>
+        <div class="ac-meta">
+          <div>Spot<strong>${r.spot == null ? "—" : "$" + fmt(r.spot, 2)}</strong></div>
+          <div>Shorts<strong>${r.short_put == null ? "—" : fmt(r.short_put, 0) + "P"} / ${r.short_call == null ? "—" : fmt(r.short_call, 0) + "C"}</strong></div>
+          <div>Wings<strong>${r.long_put == null ? "—" : fmt(r.long_put, 0) + "P"} / ${r.long_call == null ? "—" : fmt(r.long_call, 0) + "C"} · ${r.wing_width == null ? "10" : fmt(r.wing_width, 0)}-wide</strong></div>
+          <div>Credit<strong class="up">${credit == null ? "—" : "$" + fmt(credit, 2)}</strong></div>
+          <div>Debit mark<strong class="down">${debit == null ? "—" : "$" + fmt(debit, 2)}</strong></div>
+          <div>Stop BTC<strong class="down">${r.stop_debit == null ? "$1.40" : "$" + fmt(r.stop_debit, 2)}</strong></div>
+        </div>
+        <p class="why" style="margin:.45rem 0 0">${r.exit_plan || r.detail || r.headline || ""}</p>
+      </article>`;
+    }
+
+    function renderSpxCredit(board) {
+      const ch = board || {};
+      const c = ch.counts || {};
+      const m = (k, v, cls = "") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
+      const metrics = document.getElementById("spxCreditMetrics");
+      if (metrics) {
+        metrics.innerHTML = [
+          m("SELL CREDIT", c.sell_credit || c.buy_now || 0, (c.sell_credit || c.buy_now || 0) ? "up" : ""),
+          m("BUY TO CLOSE", c.exit_now || c.sell_now || 0, (c.exit_now || c.sell_now || 0) ? "down" : ""),
+          m("WAIT", c.wait || 0),
+          m("HOLD", c.hold || 0),
+          m("Target credit", ch.target_credit == null ? "$0.90" : "$" + fmt(ch.target_credit, 2), "up"),
+          m("Stop debit", ch.stop_debit == null ? "$1.40" : "$" + fmt(ch.stop_debit, 2), "down"),
+        ].join("");
+      }
+      const primaryEl = document.getElementById("spxCreditPrimary");
+      if (primaryEl) {
+        primaryEl.innerHTML = ch.primary
+          ? `<div class="cards">${spxCreditCard(ch.primary)}</div>`
+          : `<div class="empty">${ch.lesson || "Waiting for SPX/XSP 0DTE chain near target credit."}</div>`;
+      }
+      const sellEl = document.getElementById("spxCreditSell");
+      if (sellEl) {
+        const rows = ch.sell_credit || ch.buy_now || [];
+        sellEl.innerHTML = rows.length
+          ? `<div class="cards">${rows.map(spxCreditCard).join("")}</div>`
+          : `<div class="empty">No SELL CREDIT — need ~$0.90 IC after 10:00 ET (skip trend days).</div>`;
+      }
+      const exitEl = document.getElementById("spxCreditExit");
+      if (exitEl) {
+        const rows = ch.exit_now || ch.sell_now || [];
+        exitEl.innerHTML = rows.length
+          ? `<div class="cards">${rows.map(spxCreditCard).join("")}</div>`
+          : `<div class="empty">No BUY TO CLOSE — stop $1.40 / bank ~50% / 15:45 ET clock.</div>`;
+      }
+      const waitEl = document.getElementById("spxCreditWait");
+      if (waitEl) {
+        const rows = [...(ch.wait || []), ...(ch.hold || [])];
+        waitEl.innerHTML = rows.length
+          ? `<div class="cards">${rows.map(spxCreditCard).join("")}</div>`
+          : `<div class="empty">Idle.</div>`;
+      }
+      const rulesEl = document.getElementById("spxCreditRules");
+      if (rulesEl) {
+        const rules = ch.rules || [];
+        rulesEl.innerHTML = rules.length
+          ? `<strong>Rules:</strong> ${rules.join(" · ")}${(ch.errors || []).length ? `<br/><span class="why">Chain: ${ch.errors.join("; ")}</span>` : ""}`
+          : "";
+      }
     }
 
     function renderRipRadar(rip) {
@@ -3634,6 +3747,7 @@ PAGE = r"""
       renderDarkpoolMini(DATA.echo || {});
       renderChallenge(DATA.challenge || {});
       renderOdte1k(DATA.odte_1k || {});
+      renderSpxCredit(DATA.spx_credit || {});
       renderPowerHour(DATA.power_hour || {});
       renderScreener(hz, DATA.market || {});
       renderInsights(DATA.insights);
@@ -4687,15 +4801,19 @@ def create_app(config_path: str | None = None) -> Flask:
         from odte_scanner.signals.radar import build_radar_board
 
         # Lottery / parabolic 0DTE–1DTE tickets (e.g. cheap calls that can 3×–100× on a rip)
-        explosive = build_explosive_board(
-            refreshed,
-            scores=scan.get("scores") or [],
-            quotes=quotes,
-            aliases=aliases,
-            enrich_live=False,  # live option enrich is too slow for interactive snapshot
-            per_symbol=2,
-            max_total=24,
-        )
+        try:
+            explosive = build_explosive_board(
+                refreshed,
+                scores=scan.get("scores") or [],
+                quotes=quotes,
+                aliases=aliases,
+                enrich_live=False,  # live option enrich is too slow for interactive snapshot
+                per_symbol=2,
+                max_total=24,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("explosive board unavailable: %s", exc)
+            explosive = []
 
         open_lottery_trades: list[dict] = []
         if journal is not None:
@@ -5088,6 +5206,81 @@ def create_app(config_path: str | None = None) -> Flask:
                     "cool": [],
                     "counts": {},
                     "note": "Level watch temporarily unavailable.",
+                }
+
+        # SPX 0DTE iron-condor credit (SuperLuckeee-style ~$0.90 / stop $1.40)
+        spx_credit: dict = {
+            "sell_credit": [],
+            "buy_now": [],
+            "wait": [],
+            "exit_now": [],
+            "sell_now": [],
+            "hold": [],
+            "counts": {},
+            "rules": [],
+        }
+        if actions_cfg.get("spx_credit_enabled", True):
+            try:
+                from odte_scanner.signals.spx_credit import build_spx_credit_board
+
+                ic_syms = actions_cfg.get("spx_credit_symbols") or ["SPX", "XSP"]
+                if isinstance(ic_syms, str):
+                    ic_syms = [s.strip().upper() for s in ic_syms.split(",") if s.strip()]
+                # Prefer live quotes; fall back to scan scores for spot
+                ic_quotes = dict(quotes or {})
+                for sym in ic_syms:
+                    su = str(sym).upper()
+                    if su in ic_quotes and ic_quotes[su].get("last"):
+                        continue
+                    for s in scan.get("scores") or []:
+                        if str(s.get("symbol") or "").upper() == su and s.get("last_price"):
+                            ic_quotes[su] = {
+                                **(ic_quotes.get(su) or {}),
+                                "last": s.get("last_price"),
+                                "session_change_pct": s.get("live_change_pct"),
+                            }
+                            break
+                open_ic = []
+                if journal is not None:
+                    for t in journal.book.trades:
+                        td = t.to_dict() if hasattr(t, "to_dict") else dict(t.__dict__)
+                        if str(td.get("status") or "").lower() != "open":
+                            continue
+                        if str(td.get("lane") or td.get("desk") or "").lower() in {
+                            "spx_credit",
+                            "iron_condor",
+                            "credit_ic",
+                        } or str(td.get("symbol") or "").upper() in {"SPX", "XSP"}:
+                            # Only treat as IC if structure tagged or composite contract
+                            if "IC:" in str(td.get("contract") or "") or td.get("structure") == "iron_condor":
+                                open_ic.append(td)
+                spx_credit = build_spx_credit_board(
+                    symbols=list(ic_syms),
+                    quotes=ic_quotes,
+                    open_trades=open_ic,
+                    wing_width=float(actions_cfg.get("spx_credit_wing_width", 10.0)),
+                    short_otm_pts=float(actions_cfg.get("spx_credit_otm_pts", 50.0)),
+                    target_credit=float(actions_cfg.get("spx_credit_target", 0.90)),
+                    min_credit=float(actions_cfg.get("spx_credit_min_credit", 0.70)),
+                    stop_debit=float(actions_cfg.get("spx_credit_stop", 1.40)),
+                    max_dte=int(actions_cfg.get("spx_credit_max_dte", 1)),
+                    fetch_live=bool(actions_cfg.get("spx_credit_fetch_live", True)),
+                    signal_store_path=str(
+                        ROOT / "outputs" / "spx_credit_signal_times.json"
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("spx credit board unavailable: %s", exc)
+                spx_credit = {
+                    "error": str(exc),
+                    "sell_credit": [],
+                    "buy_now": [],
+                    "wait": [],
+                    "exit_now": [],
+                    "sell_now": [],
+                    "hold": [],
+                    "counts": {},
+                    "note": "SPX credit temporarily unavailable.",
                 }
 
         from odte_scanner.challenge import build_challenge_board
@@ -6133,6 +6326,7 @@ def create_app(config_path: str | None = None) -> Flask:
                     "rip",
                     "beauty",
                     "level_watch",
+                    "spx_credit",
                     "odte_1k",
                     "challenge_ENTRY",
                 ],
@@ -6268,6 +6462,7 @@ def create_app(config_path: str | None = None) -> Flask:
                         "rip_radar": rip_radar,
                         "beauty_monthly": beauty_monthly,
                         "level_watch": level_watch,
+                        "spx_credit": spx_credit,
                     },
                     indent=2,
                     default=str,
@@ -6339,6 +6534,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 "rip_radar": rip_radar,
                 "beauty_monthly": beauty_monthly,
                 "level_watch": level_watch,
+                "spx_credit": spx_credit,
                 "echo": echo,
                 "challenge": challenge,
                 "tradier": tradier_status,
