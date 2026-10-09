@@ -26,12 +26,44 @@ from odte_scanner.time_cst import (
 
 ET = ZoneInfo("America/New_York")
 
+# Desk special-eye — always seed RIP / early options / UW focus.
+# Standing megas + session catalyst / premarket movers (merged dynamically too).
+DESK_SPECIAL_EYE: frozenset[str] = frozenset(
+    {
+        "HOOD",
+        "MSFT",
+        "INTC",
+        "PLTR",
+        "AMZN",
+        "MU",
+        "AVGO",
+        "GOOGL",
+        "GOOG",
+        "AMD",
+        # 2026-10-09 catalysts — SpaceX spectrum / MA stars / AAPL cut / AI rebound
+        "TMUS",
+        "T",
+        "VZ",
+        "CCI",
+        "AMT",
+        "SBAC",
+        "SPCX",
+        "HUM",
+        "ALHC",
+        "AAPL",
+        "ORCL",
+        "CRWV",
+        "NVDA",
+        "LITE",
+    }
+)
+
 # Liquid megas / China ADRs / semis the desk wants on RIP alerts
 MEGA_RIP_SYMBOLS = {
     "META", "GOOGL", "GOOG", "AMD", "BABA", "NVDA", "TSLA", "AAPL", "AMZN",
     "MSFT", "NFLX", "AVGO", "MU", "SMCI", "PLTR", "TSM", "QCOM", "ARM",
     "SPOT", "SHOP", "CRWD", "PANW", "ORCL", "IBM", "INTC", "SNDK",
-}
+} | set(DESK_SPECIAL_EYE)
 
 
 @dataclass

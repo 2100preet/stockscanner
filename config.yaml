@@ -61,6 +61,16 @@ tickers:
   - HYG
   - EEM
   - SPCX  # SpaceX — recent IPO; include for swing/earnings watch
+  # 2026-10-09 premarket catalysts — SpaceX spectrum / MA stars / optical
+  - TMUS  # T-Mobile — SpaceX spectrum competition fear
+  - T     # AT&T — SpaceX spectrum competition fear
+  - VZ    # Verizon — SpaceX spectrum competition fear
+  - CCI   # Crown Castle — tower bid on SpaceX densification
+  - AMT   # American Tower — tower bid
+  - SBAC  # SBA Communications — tower bid
+  - HUM   # Humana — CMS 2027 MA star ratings jump
+  - ALHC  # Alignment Healthcare — MA stars crater
+  - LITE  # Lumentum — capacity booked through early 2029
   - DDOG  # Datadog — liquid mid; promote to focus for options/earnings
   # Most-anticipated earnings darlings (week of Aug 10 2026)
   - CRWV  # CoreWeave
@@ -364,6 +374,36 @@ actions:
     - IWM
   gex_wall_buffer_pct: 0.15
   gex_block_into_call_wall: true
+  # Desk special-eye — standing megas + today's catalyst tape
+  desk_special_eye:
+    - HOOD
+    - MSFT
+    - INTC
+    - PLTR
+    - AMZN
+    - MU
+    - AVGO
+    - GOOGL
+    - AMD
+    - TMUS
+    - T
+    - VZ
+    - CCI
+    - AMT
+    - SBAC
+    - SPCX
+    - HUM
+    - ALHC
+    - AAPL
+    - ORCL
+    - CRWV
+    - NVDA
+    - LITE
+  # Premarket movers board — quote liquid+seeds, promote into session special-eye
+  premarket_movers_enabled: true
+  premarket_min_abs_pct: 1.5
+  premarket_min_price: 2.0
+  premarket_top_n: 12
   lottery_min_score: 62
   lottery_min_confirms: 4
   # Discord-style radar lane (cheap SPY/QQQ wings) — separate from BUY NOW
