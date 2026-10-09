@@ -203,7 +203,6 @@ PAGE = r"""
       <span class="status" id="counts"></span>
       <span class="status" id="updated">Loading…</span>
     </div>
-    <div id="mustTradeBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="loadNote" class="loading" style="display:none;margin-bottom:.6rem"></div>
     <div id="alertToasts" aria-live="assertive"></div>
 
@@ -232,6 +231,7 @@ PAGE = r"""
       <p class="lede">Live option BUY NOW / SELL NOW across 0DTE, weeklies, swing, Explosive, <strong>RIP/META</strong>, <strong>Levels</strong>, ML6, Challenge, and 0DTE $1K IN/OUT. Hist win ≥80% (n≥5) gates Options BUY NOW. Same losing OCC stays blocked; mega names can still BUY when tape is ripping (see RIP tab). SETUP rows are quality tape without a contract yet — not a buy.</p>
       <div class="metric-row" id="nowBoardMetrics"></div>
       <p class="lede" id="nowBoardNote" style="margin-top:0;font-size:.76rem"></p>
+      <div id="mustTradeBanner" class="pulse-banner" aria-live="polite"></div>
       <h2>BUY NOW</h2>
       <div id="nowBoardBuy" class="empty">—</div>
       <h2>SELL NOW</h2>
@@ -3824,11 +3824,24 @@ PAGE = r"""
           (DATA.liquid_size!=null ? ` · liquid ${DATA.liquid_size}` : "");
       }
       document.getElementById("updated").textContent = "Updated " + fmtCST(DATA.generated_at, true);
+      // Toolbar BUY/SELL = aggregated NOW board (all desks), not Options-only actions.counts
+      // (Options hist gate often shows BUY 0 while Challenge/Lottery/Levels still have tickets).
+      let boardBuys = 0, boardSells = 0, boardWaits = 0;
+      try {
+        const nb = collectNowBoard();
+        boardBuys = (nb.buys || []).length;
+        boardSells = (nb.sells || []).length;
+        boardWaits = (nb.waits || []).length;
+      } catch (_) {
+        boardBuys = ((acts.buy_now||[]).length + ((DATA.lottery||{}).buy_now||[]).length + ((DATA.challenge||{}).entry||[]).length);
+        boardSells = ((acts.sell_now||[]).length + ((DATA.lottery||{}).sell_now||[]).length + ((DATA.challenge||{}).exit||[]).length);
+        boardWaits = ((acts.wait||[]).length);
+      }
       const c = acts.counts || {};
       const lc = (DATA.lottery && DATA.lottery.counts) || {};
       const rc = (DATA.radar && DATA.radar.counts) || {};
       document.getElementById("counts").textContent =
-        `BUY ${c.buy_now||0} · SELL ${c.sell_now||0} · WAIT ${c.wait||0} · RIP ${(DATA.rip_radar&&DATA.rip_radar.counts&&DATA.rip_radar.counts.buy_rip)||0} · LOTTO B/S ${lc.buy_now||0}/${lc.sell_now||0} · ML6 B/S ${(DATA.ml6&&DATA.ml6.actions&&DATA.ml6.actions.counts&&DATA.ml6.actions.counts.buy_now)||0}/${(DATA.ml6&&DATA.ml6.actions&&DATA.ml6.actions.counts&&DATA.ml6.actions.counts.sell_now)||0} · RADAR HOT ${rc.hot||0}`;
+        `BUY ${boardBuys} · SELL ${boardSells} · WAIT ${boardWaits} · OPT ${c.buy_now||0}/${c.sell_now||0} · RIP ${(DATA.rip_radar&&DATA.rip_radar.counts&&DATA.rip_radar.counts.buy_rip)||0} · LOTTO B/S ${lc.buy_now||0}/${lc.sell_now||0} · ML6 B/S ${(DATA.ml6&&DATA.ml6.actions&&DATA.ml6.actions.counts&&DATA.ml6.actions.counts.buy_now)||0}/${(DATA.ml6&&DATA.ml6.actions&&DATA.ml6.actions.counts&&DATA.ml6.actions.counts.sell_now)||0} · RADAR HOT ${rc.hot||0}`;
       const gate = acts.hist_win_gate || DATA.hist_win_gate || {};
       const gateEl = document.getElementById("histWinGate");
       if (gateEl) {
@@ -3846,8 +3859,12 @@ PAGE = r"""
 
     async function loadAll() {
       const note = document.getElementById("loadNote");
-      note.style.display = "block";
-      note.textContent = "Refreshing…";
+      const hadData = !!(DATA && ((DATA.scores||[]).length || (DATA.actions||{}).buy_now || (DATA.challenge||{}).entry));
+      // Keep the painted board visible during poll refreshes — don't flash "Refreshing…".
+      if (!hadData) {
+        note.style.display = "block";
+        note.textContent = "Refreshing…";
+      }
       try {
         const ctrl = new AbortController();
         // Stale-serve should answer in seconds; keep a long abort only as a last resort.
@@ -3857,12 +3874,19 @@ PAGE = r"""
         if (!res.ok) throw new Error("HTTP " + res.status);
         DATA = await res.json();
         paint();
-        const buys = ((DATA.actions||{}).buy_now||[]).length
-          + ((DATA.lottery||{}).buy_now||[]).length
-          + ((DATA.challenge||{}).entry||[]).length;
-        const sells = ((DATA.actions||{}).sell_now||[]).length
-          + ((DATA.lottery||{}).sell_now||[]).length
-          + ((DATA.challenge||{}).exit||[]).length;
+        let buys = 0, sells = 0;
+        try {
+          const nb = collectNowBoard();
+          buys = (nb.buys || []).length;
+          sells = (nb.sells || []).length;
+        } catch (_) {
+          buys = ((DATA.actions||{}).buy_now||[]).length
+            + ((DATA.lottery||{}).buy_now||[]).length
+            + ((DATA.challenge||{}).entry||[]).length;
+          sells = ((DATA.actions||{}).sell_now||[]).length
+            + ((DATA.lottery||{}).sell_now||[]).length
+            + ((DATA.challenge||{}).exit||[]).length;
+        }
         const n = (DATA.scores||[]).length;
         const focus = DATA.focus_size ?? 0;
         if (!n && !focus && !buys && !sells) {
@@ -3876,6 +3900,7 @@ PAGE = r"""
         }
       } catch (e) {
         const msg = String(e.message||e);
+        note.style.display = "block";
         note.textContent = "Load failed: " + msg +
           (msg.includes("abort") || msg.includes("Abort")
             ? " — desk snapshot timed out; tap Reload (stale board should appear)."
@@ -4281,8 +4306,10 @@ def create_app(config_path: str | None = None) -> Flask:
             return jsonify(cached)
 
         def _bg_rebuild() -> None:
+            # Background threads have no Flask request/app context — jsonify() needs one.
             try:
-                _snapshot_build()
+                with app.app_context():
+                    _snapshot_build()
             except Exception as exc:  # noqa: BLE001
                 logger.exception("background snapshot rebuild failed: %s", exc)
             finally:
@@ -6797,14 +6824,19 @@ def create_app(config_path: str | None = None) -> Flask:
             }
         )
         _snap_memo["body"] = payload
-        _snap_memo["t"] = time.time()
+        _snap_memo["t"] = _snapshot_cache_time(payload) or time.time()
         try:
             outp = ROOT / "outputs" / "last_api_snapshot.json"
             outp.parent.mkdir(parents=True, exist_ok=True)
             outp.write_text(dumps_strict(payload, indent=2, default=str))
         except Exception:  # noqa: BLE001
             pass
-        return jsonify(payload)
+        # Prefer Response when an app context exists; fall back to raw payload for
+        # callers that already hold the memo (should not happen — bg uses app_context).
+        try:
+            return jsonify(payload)
+        except RuntimeError:
+            return payload
 
     def _challenge_tracker():
         from odte_scanner.challenge.tracker import ChallengeTracker
