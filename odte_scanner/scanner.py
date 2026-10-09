@@ -140,12 +140,22 @@ def run_scan(
     mega_per_bucket = int(opt_cfg.get("mega_per_bucket", 2))
     mega_min_em = float(opt_cfg.get("mega_call_min_expected_move_pct", 2.0))
 
-    from odte_scanner.signals.rip_radar import is_mega_rip_symbol
+    from odte_scanner.signals.rip_radar import MEGA_RIP_SYMBOLS, is_mega_rip_symbol
+
+    actions_cfg = cfg.get("actions") or {}
+    special_eye = {
+        str(s).upper()
+        for s in (actions_cfg.get("desk_special_eye") or [])
+        if s
+    }
+    special_eye |= {str(s).upper() for s in MEGA_RIP_SYMBOLS}
 
     # Options only for focus / high-score 0DTE+weekly (avoid blasting Yahoo on 100+ names)
     option_syms = set(focus)
     put_syms: set[str] = set()
     put_max_score = float(opt_cfg.get("put_max_bull_score", 48))
+    dump_from_high = float(opt_cfg.get("dump_put_from_high_pct", 2.0))
+    dump_put_syms: set[str] = set()
     for hz in ("0dte", "weekly"):
         for ts in by_horizon.get(hz, []):
             if ts.quality or ts.ensemble_score >= min_score:
@@ -154,9 +164,44 @@ def run_scan(
             # Always keep megas on the option universe so early call chains can load
             if is_mega_rip_symbol(ts.symbol) and len(option_syms) < 48:
                 option_syms.add(ts.symbol)
+            if str(ts.symbol).upper() in special_eye and len(option_syms) < 48:
+                option_syms.add(ts.symbol)
             if ts.ensemble_score <= put_max_score and len(put_syms) < 20:
                 put_syms.add(ts.symbol)
                 option_syms.add(ts.symbol)
+
+    # Intraday dump → PUT sleeve even when ensemble is still "bullish".
+    # HUM-class days: rip to HOD then dump 2%+ off the high — puts pay, bull score doesn't.
+    try:
+        from odte_scanner.data.live_quotes import fetch_live_quote
+
+        dump_candidates = sorted(
+            {str(s).upper() for s in (set(focus) | special_eye | set(option_syms)) if s}
+        )[:36]
+        for sym in dump_candidates:
+            try:
+                lq = fetch_live_quote(sym)
+            except Exception:  # noqa: BLE001
+                continue
+            if not lq:
+                continue
+            qd = lq.to_dict() if hasattr(lq, "to_dict") else dict(lq)
+            last = qd.get("last") or qd.get("price")
+            hi = qd.get("day_high") or qd.get("high")
+            try:
+                last_f = float(last) if last is not None else None
+                hi_f = float(hi) if hi is not None else None
+            except (TypeError, ValueError):
+                continue
+            if not last_f or not hi_f or hi_f <= 0:
+                continue
+            off_high = (hi_f - last_f) / hi_f * 100.0
+            if off_high >= dump_from_high:
+                dump_put_syms.add(sym)
+                put_syms.add(sym)
+                option_syms.add(sym)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("dump-put quote sweep skipped: %s", exc)
 
     candidates: list[CallCandidate] = []
     put_candidates: list[CallCandidate] = []
@@ -211,10 +256,17 @@ def run_scan(
                 )
                 candidates.extend(picked)
         # Bearish / weak sleeve → puts (score inverted for ranking)
-        # Megas with elevated EM still get calls above; puts remain available too.
-        if include_puts and (sym in put_syms or ts.ensemble_score <= put_max_score):
+        # Dump-from-HOD sleeve also pulls puts even when bull score is elevated.
+        if include_puts and (
+            sym in put_syms or ts.ensemble_score <= put_max_score or sym in dump_put_syms
+        ):
             put_score = max(float(min_score), 100.0 - float(ts.ensemble_score))
             reasons = list(ts.reasons) + [f"put_sleeve bull_score={ts.ensemble_score:.0f}"]
+            if sym in dump_put_syms:
+                put_score = max(put_score, float(min_score) + 8.0)
+                reasons = reasons + [
+                    f"dump_put ≥{dump_from_high:.1f}% off day-high — force put chain"
+                ]
             puts = select_puts(
                 ts.symbol,
                 ts.last_price,
@@ -225,6 +277,8 @@ def run_scan(
             )
             for p in puts:
                 p.score = put_score
+                if sym in dump_put_syms and getattr(p, "thesis", None):
+                    p.thesis = f"{p.thesis}; dump_put off day-high"
             put_candidates.extend(puts)
 
     candidates.sort(key=lambda c: (c.score, -c.dte), reverse=True)

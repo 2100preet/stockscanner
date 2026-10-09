@@ -375,6 +375,13 @@ def decide_entry(
             mom_boost = max(mom_boost, 8)
     else:
         # Puts: need weakness, not a bounce — block buying into rips (AMZN-class).
+        # Exception: dump-from-HOD (HUM 456→428) — session can still be green vs prior close
+        # while the tape is giving back ≥2% from the day high.
+        thesis_l = str(candidate.get("thesis") or candidate.get("detail") or "").lower()
+        dump_tagged = "dump_put" in thesis_l or bool(candidate.get("dump_put"))
+        off_hod = dist_high is not None and float(dist_high) <= -2.0
+        dump_from_hod = dump_tagged or off_hod
+
         if live is None:
             # Offline Pages: fall back to candidate session % when quote tape missing.
             cand_live = candidate.get("live_change_pct")
@@ -388,19 +395,19 @@ def decide_entry(
             else:
                 return _wait("No session tape — not buying puts blind (need red/weak tape).")
 
-        if mom5 is not None and mom5 >= 0.15:
+        if mom5 is not None and mom5 >= 0.15 and not dump_from_hod:
             return _wait(f"5m tape bouncing ({mom5:+.2f}%) — no BUY NOW put into a reclaim.")
 
-        if mom15 is not None and mom15 >= 0.25:
+        if mom15 is not None and mom15 >= 0.25 and not dump_from_hod:
             return _wait(f"15m momentum up ({mom15:+.2f}%) — wait for rollover for puts.")
 
-        if live >= 0.35 and bucket == "0DTE":
+        if live >= 0.35 and bucket == "0DTE" and not dump_from_hod:
             return _wait(f"Session green for 0DTE put ({live:+.2f}%) — need dump, not rip.")
 
-        if live >= 0.6 and bucket == "0DTE":
+        if live >= 0.6 and bucket == "0DTE" and not dump_from_hod:
             return _wait(f"Session firm for 0DTE put ({live:+.2f}%).")
 
-        if live >= 1.5:
+        if live >= 1.5 and not dump_from_hod:
             return _wait(f"Session strong ({live:+.2f}%). Let dump develop for puts.")
 
         if opt_pct is not None and opt_pct <= -25:
@@ -427,7 +434,7 @@ def decide_entry(
         if live is not None and live <= -chase_limit and score < eff_buy_score + 5:
             return _wait(f"Already down {live:+.2f}% this session — chase risk on puts.")
 
-        if tape_required and bucket == "0DTE":
+        if tape_required and bucket == "0DTE" and not dump_from_hod:
             if mom5 is None and mom15 is None:
                 return _wait("No 5m/15m tape — not buying 0DTE put blind off daily score alone.")
             if mom5 is not None and mom5 > -0.05 and (mom15 is None or mom15 > -0.05):
@@ -437,11 +444,16 @@ def decide_entry(
                     + ")."
                 )
 
-        if bucket == "0DTE":
+        if dump_from_hod:
+            # Off day-high dump confirms put tape even if session vs prior close is green.
+            tape_ok = True
+            mom_boost = 8
+        elif bucket == "0DTE":
             tape_ok = live < -0.05 and (mom5 is None or mom5 <= 0.0) and (mom15 is None or mom15 <= 0.10)
+            mom_boost = 5 if mom5 and mom5 < -0.1 else 0
         else:
             tape_ok = live < 0.20 and (mom5 is None or mom5 <= 0.10)
-        mom_boost = 5 if mom5 and mom5 < -0.1 else 0
+            mom_boost = 5 if mom5 and mom5 < -0.1 else 0
 
     # Puts use inverse score: weak ensemble OR explicit put_score
     eff_score = score
@@ -813,6 +825,11 @@ def apply_hist_win_gate(
     from odte_scanner.signals.rip_radar import is_mega_rip_symbol, mega_rip_tape_ok
 
     is_mega = is_mega_rip_symbol(sig.symbol)
+    # Intraday dump-from-HOD puts (special-eye / scanner dump_put tag): tape is the edge.
+    detail_l = str(sig.detail or "").lower()
+    if is_put and "dump_put" in detail_l:
+        sig.detail = f"{sig.detail} · dump_put hist soft-waive (HOD giveback tape)"
+        return sig
     target = float(min_hist_win_pct)
     if is_mega and mega_min_hist_win_pct is not None:
         target = min(target, float(mega_min_hist_win_pct))

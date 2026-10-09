@@ -35,6 +35,9 @@ _SELL_ACTIONS = {
     "EXIT",
     "SELL_PUT",
     "SELL_CALL",
+    "TAKE_PROFIT",
+    "APPROACH_WALL",
+    "WALL_TP",
 }
 
 
@@ -166,7 +169,12 @@ def collect_trade_alerts(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             if not any(x in act for x in ("BUY", "PUT_NOW", "CALL_NOW", "ENTRY", "HOT")):
                 return
         if side == "SELL" and act not in _SELL_ACTIONS and "SELL" not in act and act != "EXIT":
-            if "EXIT" not in act and "SELL" not in act:
+            if (
+                "EXIT" not in act
+                and "SELL" not in act
+                and "TAKE_PROFIT" not in act
+                and "WALL" not in act
+            ):
                 return
         key = _row_key(row, side, desk)
         if key in seen_local:
@@ -241,6 +249,34 @@ def collect_trade_alerts(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             "SELL",
             "0DTE $1K",
         )
+
+    # GEX / OI-wall take-profit + approach pings on open positions
+    try:
+        from odte_scanner.alerts.take_profit import collect_take_profit_alerts
+
+        acts_cfg = snapshot.get("actions") or {}
+        # Knobs may also live on snapshot host/config echo; fall back to defaults.
+        tp_pct = float(
+            (snapshot.get("risk") or {}).get("take_profit_pct")
+            or acts_cfg.get("take_profit_pct")
+            or 80.0
+        )
+        approach = float(acts_cfg.get("wall_tp_approach_pct") or 0.35)
+        buf = float(acts_cfg.get("wall_exit_buffer_usd") or 0.10)
+        for a in collect_take_profit_alerts(
+            snapshot,
+            approach_pct=approach,
+            take_profit_pct=tp_pct,
+            wall_buffer_usd=buf,
+        ):
+            # Already formatted — inject as SELL pulse
+            key = a["key"]
+            if key in seen_local:
+                continue
+            seen_local.add(key)
+            out.append(a)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("take-profit collect skipped: %s", exc)
 
     return out
 

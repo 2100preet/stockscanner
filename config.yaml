@@ -62,6 +62,8 @@ tickers:
   - EEM
   - SPCX  # SpaceX — recent IPO; include for swing/earnings watch
   - DDOG  # Datadog — liquid mid; promote to focus for options/earnings
+  - HUM   # Humana — CMS 2027 MA star ratings / catalyst tape
+  - ALHC  # Alignment Healthcare — MA stars peer
   # Most-anticipated earnings darlings (week of Aug 10 2026)
   - CRWV  # CoreWeave
   - CBRS  # Cerebras
@@ -355,6 +357,28 @@ actions:
   mega_rip_live_pct: 1.0
   lottery_min_score: 62
   lottery_min_confirms: 4
+  # Soft EXIT = GEX/OI wall ± buffer — Telegram TAKE_PROFIT / APPROACH_WALL
+  wall_exit_buffer_usd: 0.10
+  wall_tp_approach_pct: 0.35   # ping when spot within this % of soft EXIT
+  # Desk special-eye — standing megas + catalyst tape (always option + dump-put eligible)
+  desk_special_eye:
+    - HOOD
+    - MSFT
+    - INTC
+    - PLTR
+    - AMZN
+    - MU
+    - AVGO
+    - GOOGL
+    - AMD
+    - HUM
+    - ALHC
+    - AAPL
+    - ORCL
+    - CRWV
+    - NVDA
+    - DDOG
+    - SPCX
   # Discord-style radar lane (cheap SPY/QQQ wings) — separate from BUY NOW
   radar_enabled: true
   radar_focus:
@@ -505,6 +529,8 @@ options:
   # Put sleeve: names with bullish ensemble ≤ this get ATM/OTM puts
   include_puts: true
   put_max_bull_score: 48
+  # Also force puts when tape dumps this far off the day-high (HUM 456→428 class)
+  dump_put_from_high_pct: 2.0
 
 risk:
   max_contracts_per_trade: 1
