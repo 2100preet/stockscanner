@@ -5886,6 +5886,9 @@ def create_app(config_path: str | None = None) -> Flask:
                 sym = str(t.get("symbol") or "").upper()
                 if not sym or t.get("call_wall") is None and t.get("put_wall") is None:
                     continue
+                # Keep Gex Daddy index walls — challenge Yahoo OI can be stale/wrong magnitude
+                if walls_by_symbol.get(sym, {}).get("source") == "gex_daddy":
+                    continue
                 right = str(t.get("right") or "C").upper()
                 refreshed_w = wall_exit_levels(
                     right=right,
