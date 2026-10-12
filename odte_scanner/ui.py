@@ -39,6 +39,7 @@ PAGE = r"""
       --bg: #0c1210; --panel: rgba(18,28,24,.72); --ink: #eef4f0; --muted: #8b9e94;
       --line: rgba(238,244,240,.1); --long: #3ecf8e; --short: #ff6b5a; --wait: #e0b35a;
       --accent: #7ec8b8;
+      --sure-gold: #f0c14b; --sure-amber: #e8a83a; --sure-soft: #c9a06a;
     }
     * { box-sizing: border-box; }
     body {
@@ -122,6 +123,17 @@ PAGE = r"""
       box-shadow: 0 10px 28px rgba(0,0,0,.28);
     }
     .pulse-banner.active { display: block; animation: fade .3s ease; }
+    .pulse-banner.sure-active {
+      border-color: rgba(240,193,75,.55);
+      background:
+        linear-gradient(105deg, rgba(240,193,75,.22), rgba(18,28,24,.55) 48%, rgba(232,168,58,.14));
+      box-shadow: 0 10px 28px rgba(240,193,75,.12), 0 10px 28px rgba(0,0,0,.28);
+      animation: fade .3s ease, surePulse 2.8s ease-in-out infinite;
+    }
+    @keyframes surePulse {
+      0%, 100% { box-shadow: 0 10px 28px rgba(240,193,75,.10), 0 10px 28px rgba(0,0,0,.28); }
+      50% { box-shadow: 0 12px 36px rgba(240,193,75,.22), 0 10px 28px rgba(0,0,0,.28); }
+    }
     .pulse-banner .pb-head {
       display: flex; flex-wrap: wrap; gap: .45rem .75rem; align-items: baseline;
       justify-content: space-between; padding: .7rem 1rem .35rem;
@@ -131,6 +143,7 @@ PAGE = r"""
       font-family: "Instrument Serif", Georgia, serif; font-size: 1.35rem; letter-spacing: -.02em; margin: 0;
     }
     .pulse-banner .pb-title em { color: var(--long); font-style: italic; }
+    .pulse-banner.sure-active .pb-title em { color: var(--sure-gold); }
     .pulse-banner .pb-sub { color: var(--muted); font-size: .72rem; max-width: 36rem; }
     .pulse-banner .pb-grid {
       display: grid; gap: .55rem; padding: .75rem 1rem 1rem;
@@ -142,6 +155,51 @@ PAGE = r"""
     }
     .pulse-card.must { box-shadow: inset 3px 0 0 var(--long); }
     .pulse-card.exit { box-shadow: inset 3px 0 0 var(--short); }
+    .pulse-card.sure-max {
+      border-color: rgba(240,193,75,.45);
+      background: linear-gradient(160deg, rgba(240,193,75,.18), rgba(8,16,14,.75) 55%);
+      box-shadow: inset 4px 0 0 var(--sure-gold), 0 6px 18px rgba(240,193,75,.12);
+    }
+    .pulse-card.sure-high {
+      border-color: rgba(232,168,58,.4);
+      background: linear-gradient(160deg, rgba(232,168,58,.14), rgba(8,16,14,.75) 55%);
+      box-shadow: inset 4px 0 0 var(--sure-amber);
+    }
+    .pulse-card.sure-solid {
+      border-color: rgba(201,160,106,.35);
+      box-shadow: inset 4px 0 0 var(--sure-soft);
+    }
+    .pulse-card .pc-tag.sure-max { color: var(--sure-gold); }
+    .pulse-card .pc-tag.sure-high { color: var(--sure-amber); }
+    .pulse-card .pc-tag.sure-solid { color: var(--sure-soft); }
+    .badge.sure-max { background: rgba(240,193,75,.22); color: var(--sure-gold); }
+    .badge.sure-high { background: rgba(232,168,58,.2); color: var(--sure-amber); }
+    .badge.sure-solid { background: rgba(201,160,106,.18); color: var(--sure-soft); }
+    .action-card.sure-max {
+      border-color: rgba(240,193,75,.5);
+      background: linear-gradient(165deg, rgba(240,193,75,.24), rgba(8,16,14,.92) 52%);
+      box-shadow: inset 4px 0 0 var(--sure-gold), 0 8px 22px rgba(240,193,75,.12);
+      animation: sureCardIn .45s ease;
+    }
+    .action-card.sure-high {
+      border-color: rgba(232,168,58,.42);
+      background: linear-gradient(165deg, rgba(232,168,58,.18), rgba(8,16,14,.92) 52%);
+      box-shadow: inset 4px 0 0 var(--sure-amber), 0 6px 16px rgba(232,168,58,.08);
+      animation: sureCardIn .45s ease;
+    }
+    .action-card.sure-solid {
+      border-color: rgba(201,160,106,.35);
+      box-shadow: inset 4px 0 0 var(--sure-soft);
+    }
+    .action-card.sure-max .ac-dir, .action-card.sure-high .ac-dir { color: var(--sure-gold); font-weight: 600; }
+    @keyframes sureCardIn {
+      from { opacity: 0; transform: translateY(6px) scale(.98); }
+      to { opacity: 1; transform: none; }
+    }
+    .alert-toast.sure {
+      border-color: rgba(240,193,75,.45);
+      box-shadow: inset 3px 0 0 var(--sure-gold), 0 8px 28px rgba(0,0,0,.35);
+    }
     .pulse-card .pc-top { display: flex; justify-content: space-between; gap: .5rem; align-items: baseline; }
     .pulse-card .pc-sym { font-family: "Instrument Serif", Georgia, serif; font-size: 1.35rem; }
     .pulse-card .pc-tag {
@@ -229,7 +287,7 @@ PAGE = r"""
 
     <section class="tabpane active" id="tab-nowboard">
       <h2>BUY NOW / SELL NOW — all desks</h2>
-      <p class="lede">Live option BUY NOW / SELL NOW across 0DTE, weeklies, swing, Explosive, <strong>RIP/META</strong>, <strong>Patterns</strong> (double bottom/top · golden triangle), <strong>Levels</strong>, ML6, Challenge, and 0DTE $1K IN/OUT. Hist win ≥80% (n≥5) gates Options BUY NOW. Same losing OCC stays blocked; mega names can still BUY when tape is ripping (see RIP tab). SETUP rows are quality tape without a contract yet — not a buy.</p>
+      <p class="lede">Live option BUY NOW / SELL NOW across <strong>Sure Winner</strong> (1–2/day · MAX/HIGH/SOLID · gold/amber · GO HUGE sizing), 0DTE, weeklies, swing, Explosive, <strong>RIP/META</strong>, <strong>Patterns</strong> (double bottom/top · golden triangle), <strong>Levels</strong>, ML6, Challenge, and 0DTE $1K IN/OUT. Hist win ≥80% (n≥5) gates Options BUY NOW. Same losing OCC stays blocked; mega names can still BUY when tape is ripping (see RIP tab). SETUP rows are quality tape without a contract yet — not a buy.</p>
       <div class="metric-row" id="nowBoardMetrics"></div>
       <p class="lede" id="nowBoardNote" style="margin-top:0;font-size:.76rem"></p>
       <h2>BUY NOW</h2>
@@ -976,7 +1034,7 @@ PAGE = r"""
       <p class="pc-why"><strong>EXIT:</strong> ${t.planOut}</p>`;
     }
 
-    const NOW_DESK_ORDER = ["0DTE", "1 Week", "Swing 1–3M", "Patterns", "Levels", "Explosive", "ML6", "Challenge", "0DTE $1K", "Options"];
+    const NOW_DESK_ORDER = ["Sure Winner", "0DTE", "1 Week", "Swing 1–3M", "Patterns", "Levels", "Explosive", "ML6", "Challenge", "0DTE $1K", "Options", "RIP/META"];
 
     function horizonDesk(row, fallback) {
       const b = String(row.dte_bucket || row.horizon || row.hold_style || row.style || "").toLowerCase();
@@ -1018,6 +1076,8 @@ PAGE = r"""
         else setups.push(item);
       };
       const acts = DATA.actions || {};
+      const sure = DATA.sure_winners || DATA.sure || {};
+      (sure.winners || sure.buy_now || []).forEach(r => add(Object.assign({}, r, { action: r.action || "SURE_WINNER", sure_winner: true }), "BUY", "Sure Winner"));
       (acts.buy_now || []).forEach(r => add(r, "BUY", horizonDesk(r, "Options")));
       (acts.sell_now || []).forEach(r => add(r, "SELL", horizonDesk(r, "Options")));
       (acts.wait || []).slice(0, 16).forEach(r => add(r, "WAIT", horizonDesk(r, "Options")));
@@ -1084,29 +1144,42 @@ PAGE = r"""
       const isRip = buy && String(r.action || "").includes("RIP");
       const isBeauty = buy && String(r.action || "").includes("BEAUTY");
       const isLevel = buy && String(r.action || "").includes("LEVEL");
-      const cls = buy ? (isRip || isBeauty || isLevel ? "long" : (gated ? "enter-now" : "long")) : (wait || setup ? "wait" : "short");
+      const sureTier = String(r.confidence_tier || "").toUpperCase();
+      const isSure = !!(r.sure_winner || r._desk === "Sure Winner" || sureTier === "MAX" || sureTier === "HIGH" || String(r.action||"").includes("SURE"));
+      const sureCls = isSure
+        ? (sureTier === "MAX" || r.go_huge ? "sure-max" : (sureTier === "HIGH" ? "sure-high" : "sure-solid"))
+        : "";
+      const cls = buy
+        ? (sureCls || (isRip || isBeauty || isLevel ? "long" : (gated ? "enter-now" : "long")))
+        : (wait || setup ? "wait" : "short");
       const label = buy
-        ? (isLevel ? "BUY LEVEL" : (isBeauty ? "BUY BEAUTY" : (isRip ? "BUY RIP" : (gated ? "ENTER NOW" : "BUY NOW"))))
+        ? (isSure
+          ? `${sureTier || "SURE"} · ${r.size_label || (r.go_huge ? "GO HUGE" : "SIZE UP")}`
+          : (isLevel ? "BUY LEVEL" : (isBeauty ? "BUY BEAUTY" : (isRip ? "BUY RIP" : (gated ? "ENTER NOW" : "BUY NOW")))))
         : (setup ? "SETUP · not BUY" : (wait ? "WAIT" : "SELL NOW"));
       const strike = r.strike == null ? "—" : `${fmt(r.strike, Number(r.strike) % 1 ? 2 : 0)}${right === "PUT" ? "p" : "c"}`;
       const px = buy ? (r.ask ?? r.entry_ask) : (r.bid ?? r.mark ?? r.ask ?? r.exit_bid);
       const when = r.signaled_at_cst || fmtCST(r.signaled_at || r.recommended_at);
       const w = winLookup(r.symbol, r.dte_bucket || r.horizon || "0dte");
       const sr = w.hit1 == null ? "—" : `${fmt(w.hit1,0)}% ≥1%` + (w.hit2 == null ? "" : ` / ${fmt(w.hit2,0)}% ≥2%`);
+      const confLine = isSure
+        ? ` · conf ${r.confidence_pct != null ? fmt(r.confidence_pct,0)+"%" : "—"} · size ×${r.size_mult != null ? fmt(r.size_mult,1) : "—"}`
+        : "";
       return `<article class="action-card ${cls}">
         <div class="ac-top">
-          <div class="ac-sym">${r.symbol} <span class="tag">${r._desk}</span>${r.hold_style ? ` <span class="tag">${r.hold_style}</span>` : ""} <span class="tag">${right}</span></div>
-          <div class="ac-dir ${buy && gated ? "" : (buy ? "long" : (wait || setup ? "wait" : "short"))}">${label}</div>
+          <div class="ac-sym">${r.symbol} <span class="tag">${r._desk}</span>${isSure ? ` <span class="badge ${sureCls}">${sureTier || "SURE"}</span>` : ""}${r.hold_style ? ` <span class="tag">${r.hold_style}</span>` : ""} <span class="tag">${right}</span></div>
+          <div class="ac-dir ${isSure ? sureCls : (buy && gated ? "" : (buy ? "long" : (wait || setup ? "wait" : "short")))}">${label}</div>
         </div>
-        <div class="ac-conf">${r._desk} · ${when && when !== "—" ? when : "time —"}</div>
+        <div class="ac-conf">${r._desk} · ${when && when !== "—" ? when : "time —"}${confLine}</div>
         <div class="ac-meta">
           <div>Strike / expiry<strong>${strike} · ${r.expiry || "—"}${r.dte != null ? ` (${r.dte}DTE)` : ""}</strong></div>
           <div>${buy ? "Ask" : "Bid"}<strong>${px == null ? "—" : "$" + fmt(px, 2)}</strong></div>
           <div>Hist win<strong>${Number.isNaN(win) ? "—" : fmt(win, 0) + "%"}</strong></div>
           <div>Strike rate ≥1%<strong>${sr}</strong></div>
+          ${isSure ? `<div>Size plan<strong>${r.size_label || "—"} (×${r.size_mult != null ? fmt(r.size_mult,1) : "—"})</strong></div><div>Certainty<strong>${r.certainty_tier || "—"}</strong></div>` : ""}
           ${levelsMeta(r)}
         </div>
-        <p class="why" style="margin:.45rem 0 0">${r.detail || r.headline || r.exit_plan || r.recommend_reason || ""}</p>
+        <p class="why" style="margin:.45rem 0 0">${r.detail || r.headline || r.exit_plan || r.recommend_reason || ""}${isSure && r.size_hint ? ` · <strong>${r.size_hint}</strong>` : ""}</p>
         ${ticketHtml(r.symbol, r)}
       </article>`;
     }
@@ -3240,10 +3313,13 @@ PAGE = r"""
       const acts = DATA.actions || {};
       const lot = DATA.lottery || {};
       const ch = DATA.challenge || {};
+      const sureBoard = DATA.sure_winners || DATA.sure || {};
       const must = [];
+      const sure = [];
       const exits = [];
       const seenMust = new Set();
       const seenExit = new Set();
+      const seenSure = new Set();
 
       const pushMust = (row, desk) => {
         if (!row) return;
@@ -3270,11 +3346,57 @@ PAGE = r"""
           hit_1pct: hit1,
           hit_2pct: row.hit_2pct,
           certainty: row.certainty_tier,
+          confidence_tier: row.confidence_tier,
+          confidence_pct: row.confidence_pct,
+          size_mult: row.size_mult,
+          size_label: row.size_label,
+          size_hint: row.size_hint,
+          sure_winner: !!row.sure_winner,
+          go_huge: !!row.go_huge,
           score: row.score ?? row.ensemble_score ?? row.lottery_score ?? row.strength,
           detail: row.headline || row.detail || row.recommend_reason || row.thesis || "",
           exit_plan: row.exit_plan || "",
           right: row.right || "C",
           spot: row.spot ?? row.live_last ?? row.live_spot ?? row.entry_spot ?? row.last_price,
+          call_wall: row.call_wall,
+          put_wall: row.put_wall,
+          soft_exit: row.soft_exit,
+          wall_buffer_usd: row.wall_buffer_usd,
+        });
+      };
+      const pushSure = (row) => {
+        if (!row) return;
+        const sym = String(row.symbol || "").toUpperCase();
+        if (!sym) return;
+        const key = `${sym}|${row.strike}|${row.expiry || ""}|${row.contract || ""}`;
+        if (seenSure.has(key)) return;
+        seenSure.add(key);
+        seenMust.add(key);
+        sure.push({
+          desk: "Sure Winner",
+          symbol: sym,
+          strike: row.strike,
+          expiry: row.expiry || "—",
+          dte: row.dte,
+          ask: row.ask,
+          contract: row.contract,
+          win_pct: row.win_pct ?? row.hist_win_pct,
+          win_samples: row.win_samples ?? row.hist_samples,
+          hit_1pct: row.hit_1pct,
+          hit_2pct: row.hit_2pct,
+          certainty: row.certainty_tier,
+          confidence_tier: row.confidence_tier,
+          confidence_pct: row.confidence_pct,
+          size_mult: row.size_mult,
+          size_label: row.size_label,
+          size_hint: row.size_hint,
+          sure_winner: true,
+          go_huge: !!row.go_huge,
+          score: row.score ?? row.ensemble_score ?? row.strength,
+          detail: row.headline || row.detail || "",
+          exit_plan: row.exit_plan || "",
+          right: row.right || "C",
+          spot: row.spot ?? row.live_last,
           call_wall: row.call_wall,
           put_wall: row.put_wall,
           soft_exit: row.soft_exit,
@@ -3317,6 +3439,7 @@ PAGE = r"""
         });
       };
 
+      (sureBoard.winners || sureBoard.buy_now || []).forEach(r => pushSure(r));
       (acts.buy_now || []).filter(r => r.headline || r.exit_plan || r.detail).forEach(r => pushMust(r, "Options"));
       (lot.buy_now || []).forEach(r => pushMust(r, "Explosive"));
       (ch.entry || []).forEach(r => pushMust(r, "Challenge"));
@@ -3337,6 +3460,10 @@ PAGE = r"""
         if (tw) return tw;
         return (Number(b.hit_1pct) || 0) - (Number(a.hit_1pct) || 0);
       });
+      sure.sort((a, b) => {
+        const t = (x) => x === "MAX" ? 0 : x === "HIGH" ? 1 : 2;
+        return t(String(a.confidence_tier||"").toUpperCase()) - t(String(b.confidence_tier||"").toUpperCase());
+      });
 
       (acts.sell_now || []).forEach(r => pushExit(r, "Options"));
       (acts.just_exited || []).forEach(r => pushExit(r, "Options"));
@@ -3345,17 +3472,25 @@ PAGE = r"""
       (ch.exit || []).forEach(r => pushExit(r, "Challenge"));
       (ch.just_exited || []).forEach(r => pushExit(r, "Challenge"));
 
+      const topSure = sure.slice(0, 2);
       const topMust = must.slice(0, 4);
       const topExit = exits.slice(0, 4);
       const topRadar = radarHot.slice(0, 3);
-      if (!topMust.length && !topExit.length && !topRadar.length) {
-        el.classList.remove("active");
+      if (!topSure.length && !topMust.length && !topExit.length && !topRadar.length) {
+        el.classList.remove("active", "sure-active");
         el.innerHTML = "";
         return;
       }
 
       const card = (row, kind) => {
-        const tag = kind === "must" ? "MUST TRADE" : (kind === "radar" ? "RADAR HOT" : "EXIT NOW");
+        const sureTier = String(row.confidence_tier || "").toUpperCase();
+        const isSure = kind === "sure" || row.sure_winner;
+        const sureCls = isSure
+          ? (sureTier === "MAX" || row.go_huge ? "sure-max" : (sureTier === "HIGH" ? "sure-high" : "sure-solid"))
+          : "";
+        const tag = isSure
+          ? `${sureTier || "SURE"} · ${row.size_label || "GO HUGE"}`
+          : (kind === "must" ? "MUST TRADE" : (kind === "radar" ? "RADAR HOT" : "EXIT NOW"));
         const strikeTxt = row.strike == null ? "—" : `${Number(row.strike).toFixed(Number(row.strike) % 1 ? 2 : 0)}${(row.right || "C") === "P" ? "p" : "c"}`;
         const dteTxt = row.dte == null ? "" : ` · ${row.dte}DTE`;
         const winTxt = row.win_pct == null ? "—" : `${fmt(row.win_pct, 0)}%`;
@@ -3368,39 +3503,51 @@ PAGE = r"""
         const exitTime = kind === "exit" && row.exited_at
           ? `<div><span>Exited (CST)</span><br><strong>${fmtCST(row.exited_at)}</strong></div>`
           : "";
-        return `<div class="pulse-card ${kind === "radar" ? "must" : kind}">
+        const sizeLine = isSure
+          ? `<div><span>Size</span><br><strong>${row.size_label || "—"} ×${row.size_mult != null ? fmt(row.size_mult,1) : "—"}</strong></div>
+             <div><span>Confidence</span><br><strong>${row.confidence_pct != null ? fmt(row.confidence_pct,0)+"%" : "—"}</strong></div>`
+          : "";
+        const cardCls = isSure ? sureCls : (kind === "radar" ? "must" : kind);
+        const tagCls = isSure ? sureCls : (kind === "radar" ? "must" : kind);
+        return `<div class="pulse-card ${cardCls}">
           <div class="pc-top">
             <div class="pc-sym">${row.symbol}</div>
-            <div class="pc-tag ${kind === "radar" ? "must" : kind}">${tag} · ${row.desk}</div>
+            <div class="pc-tag ${tagCls}">${tag} · ${row.desk}</div>
           </div>
           <div class="pc-meta">
             <div><span>Strike</span><br><strong>${strikeTxt}</strong></div>
             <div><span>Expiry</span><br><strong>${row.expiry || "—"}${dteTxt}</strong></div>
             <div><span>${kind === "radar" ? "OTM %" : "Hist win"}</span><br><strong class="up">${kind === "radar" ? (row.moneyness_pct==null?"—":fmt(row.moneyness_pct,2)+"%") : winTxt}</strong><span>${kind === "radar" ? "" : nTxt}</span></div>
             <div><span>${kind === "radar" ? "~1% mult" : "Strike rate ≥1%"}</span><br><strong>${kind === "radar" ? (row.mult_at_1pct==null?"—":fmt(row.mult_at_1pct,1)+"×") : srTxt}</strong></div>
-            <div><span>${kind === "must" || kind === "radar" ? "Ask" : "Exit $"}</span><br><strong>${askTxt}</strong></div>
+            <div><span>${kind === "must" || kind === "radar" || isSure ? "Ask" : "Exit $"}</span><br><strong>${askTxt}</strong></div>
             <div><span>Contract</span><br><strong class="mono" style="font-size:.72rem">${row.contract || "—"}</strong></div>
+            ${sizeLine}
             ${pnlLine}${exitTime}
             ${levelsMeta(row)}
           </div>
-          <p class="pc-why">${row.detail || ""}${row.exit_plan && kind==="must" ? ` · <strong>EXIT:</strong> ${row.exit_plan}` : ""}</p>
+          <p class="pc-why">${row.detail || ""}${row.size_hint && isSure ? ` · <strong>${row.size_hint}</strong>` : ""}${row.exit_plan && (kind==="must" || isSure) ? ` · <strong>EXIT:</strong> ${row.exit_plan}` : ""}</p>
         </div>`;
       };
 
       const grid = [
+        ...topSure.map(r => card(r, "sure")),
         ...topMust.map(r => card(r, "must")),
         ...topRadar.map(r => card(r, "radar")),
         ...topExit.map(r => card(r, "exit")),
       ].join("");
 
       el.classList.add("active");
+      if (topSure.length) el.classList.add("sure-active");
+      else el.classList.remove("sure-active");
       el.innerHTML = `
         <div class="pb-head">
           <div>
-            <h2 class="pb-title">Must trade <em>sure-shot</em> + exits</h2>
-            <div class="pb-sub">Hist-gated tickets with strike, strike-rate, and expiry up top. EXIT cards are live positions/tickets the desk says leave now. Hist edge ≠ guaranteed future profit.</div>
+            <h2 class="pb-title">${topSure.length ? `Sure winner <em>${topSure[0].size_label || "GO HUGE"}</em> · 1–2/day` : "Must trade <em>sure-shot</em> + exits"}</h2>
+            <div class="pb-sub">${topSure.length
+              ? (sureBoard.note || "Gold/amber = capped high-conviction tickets. MAX = GO HUGE (×3), HIGH = SIZE UP (×2). Hist edge ≠ guaranteed profit.")
+              : "Hist-gated tickets with strike, strike-rate, and expiry up top. EXIT cards are live positions/tickets the desk says leave now. Hist edge ≠ guaranteed future profit."}</div>
           </div>
-          <div class="status">MUST ${topMust.length} · EXIT ${topExit.length}</div>
+          <div class="status">SURE ${topSure.length} · MUST ${topMust.length} · EXIT ${topExit.length}</div>
         </div>
         <div class="pb-grid">${grid}</div>`;
     }
@@ -3582,8 +3729,9 @@ PAGE = r"""
       const c = acts.counts || {};
       const lc = (DATA.lottery && DATA.lottery.counts) || {};
       const rc = (DATA.radar && DATA.radar.counts) || {};
+      const sc = (DATA.sure_winners && DATA.sure_winners.counts) || {};
       document.getElementById("counts").textContent =
-        `BUY ${c.buy_now||0} · SELL ${c.sell_now||0} · WAIT ${c.wait||0} · RIP ${(DATA.rip_radar&&DATA.rip_radar.counts&&DATA.rip_radar.counts.buy_rip)||0} · LOTTO B/S ${lc.buy_now||0}/${lc.sell_now||0} · ML6 B/S ${(DATA.ml6&&DATA.ml6.actions&&DATA.ml6.actions.counts&&DATA.ml6.actions.counts.buy_now)||0}/${(DATA.ml6&&DATA.ml6.actions&&DATA.ml6.actions.counts&&DATA.ml6.actions.counts.sell_now)||0} · RADAR HOT ${rc.hot||0}`;
+        `SURE ${sc.winners||0} · BUY ${c.buy_now||0} · SELL ${c.sell_now||0} · WAIT ${c.wait||0} · RIP ${(DATA.rip_radar&&DATA.rip_radar.counts&&DATA.rip_radar.counts.buy_rip)||0} · LOTTO B/S ${lc.buy_now||0}/${lc.sell_now||0} · ML6 B/S ${(DATA.ml6&&DATA.ml6.actions&&DATA.ml6.actions.counts&&DATA.ml6.actions.counts.buy_now)||0}/${(DATA.ml6&&DATA.ml6.actions&&DATA.ml6.actions.counts&&DATA.ml6.actions.counts.sell_now)||0} · RADAR HOT ${rc.hot||0}`;
       const gate = acts.hist_win_gate || DATA.hist_win_gate || {};
       const gateEl = document.getElementById("histWinGate");
       if (gateEl) {
@@ -3783,6 +3931,27 @@ PAGE = r"""
         });
       };
       const acts = DATA.actions || {};
+      const sure = DATA.sure_winners || DATA.sure || {};
+      (sure.winners || sure.buy_now || []).forEach(r => {
+        const tier = String(r.confidence_tier || "SURE").toUpperCase();
+        const size = r.size_label || (r.go_huge ? "GO HUGE" : "SIZE UP");
+        const right = String(r.right || "C").toUpperCase() === "P" ? "PUT" : "CALL";
+        const key = ["SURE", tier, String(r.symbol||"").toUpperCase(), right, r.contract||"", r.expiry||"", r.strike??""].join("|");
+        out.push({
+          key,
+          kind: "sure",
+          title: `${tier} · ${size} ${r.symbol} ${right}`,
+          body: [
+            "Sure Winner",
+            r.source_desk || null,
+            r.expiry || null,
+            r.strike != null ? `${Number(r.strike)}${right === "PUT" ? "p" : "c"}` : null,
+            r.ask != null ? `@ $${Number(r.ask).toFixed(2)}` : null,
+            r.confidence_pct != null ? `conf ${Number(r.confidence_pct).toFixed(0)}%` : null,
+            r.size_hint || r.detail || r.headline || "",
+          ].filter(Boolean).join(" · "),
+        });
+      });
       (acts.buy_now || []).forEach(r => push(r, "BUY", "Options"));
       (acts.sell_now || []).forEach(r => push(r, "SELL", "Options"));
       (acts.just_exited || []).forEach(r => push({...r, action: "SELL_NOW"}, "SELL", "Options"));
@@ -3805,7 +3974,7 @@ PAGE = r"""
       const host = document.getElementById("alertToasts");
       if (!host) return;
       const el = document.createElement("div");
-      el.className = `alert-toast ${alert.kind || "buy"}`;
+      el.className = `alert-toast ${alert.kind === "sure" ? "sure" : (alert.kind || "buy")}`;
       el.innerHTML = `<strong>${alert.title}</strong><div>${alert.body || ""}</div><div class="at-meta">Signal Desk · keep tab open for alerts</div>`;
       host.prepend(el);
       setTimeout(() => el.remove(), 12000);
@@ -3819,7 +3988,7 @@ PAGE = r"""
         const o = ctx.createOscillator();
         const g = ctx.createGain();
         o.type = "sine";
-        o.frequency.value = kind === "sell" ? 440 : 660;
+        o.frequency.value = kind === "sell" ? 440 : (kind === "sure" ? 880 : 660);
         g.gain.value = 0.04;
         o.connect(g); g.connect(ctx.destination);
         o.start();
@@ -6122,6 +6291,53 @@ def create_app(config_path: str | None = None) -> Flask:
             if offline and tradier_live and len(quotes) == 0 and not poly_ok:
                 actions["data_confidence"]["pct"] = max(55, int(actions["data_confidence"]["pct"]) - 8)
                 actions["data_confidence"]["note"] = "Tradier token set but no equity quotes in snapshot"
+
+        # Sure-winner desk — cap 1–2/day high-conviction tickets (GO HUGE / SIZE UP)
+        sure_winners: dict = {
+            "winners": [],
+            "buy_now": [],
+            "counts": {},
+            "note": "Sure-winner desk off or unavailable.",
+        }
+        if bool(actions_cfg.get("sure_winners_enabled", True)):
+            try:
+                from odte_scanner.signals.sure_winners import build_sure_winner_board
+
+                sw_path = Path(
+                    actions_cfg.get("sure_winners_store_path") or "outputs/sure_winners_day.json"
+                )
+                if not sw_path.is_absolute():
+                    sw_path = ROOT / sw_path
+                sure_board = build_sure_winner_board(
+                    actions=actions if isinstance(actions, dict) else None,
+                    challenge=challenge if isinstance(challenge, dict) else None,
+                    rip_radar=rip_radar if isinstance(rip_radar, dict) else None,
+                    max_per_day=int(actions_cfg.get("sure_winners_max_per_day", 2)),
+                    min_ask=float(actions_cfg.get("sure_winners_min_ask", 0.15)),
+                    max_ask=float(actions_cfg.get("sure_winners_max_ask", 5.0)),
+                    allow_solid=bool(actions_cfg.get("sure_winners_allow_solid", True)),
+                    store_path=sw_path,
+                )
+                # Re-bind annotated source desks so color flags land on BUY NOW cards
+                if isinstance(sure_board.get("actions"), dict):
+                    actions = sure_board["actions"]
+                if isinstance(sure_board.get("challenge"), dict):
+                    challenge = sure_board["challenge"]
+                sure_winners = {
+                    k: v
+                    for k, v in sure_board.items()
+                    if k not in {"actions", "challenge", "store"}
+                }
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("sure winners unavailable: %s", exc)
+                sure_winners = {
+                    "error": str(exc),
+                    "winners": [],
+                    "buy_now": [],
+                    "counts": {},
+                    "note": "Sure-winner desk temporarily unavailable.",
+                }
+
         cache_path = ROOT / "outputs" / "ui_snapshot_cache.json"
         try:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -6139,6 +6355,7 @@ def create_app(config_path: str | None = None) -> Flask:
                         "beauty_monthly": beauty_monthly,
                         "level_watch": level_watch,
                         "chart_patterns": chart_patterns,
+                        "sure_winners": sure_winners,
                     },
                     indent=2,
                     default=str,
@@ -6210,6 +6427,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 "beauty_monthly": beauty_monthly,
                 "level_watch": level_watch,
                 "chart_patterns": chart_patterns,
+                "sure_winners": sure_winners,
                 "echo": echo,
                 "challenge": challenge,
                 "tradier": tradier_status,

@@ -388,6 +388,13 @@ actions:
   chart_patterns_near_break_pct: 1.0
   chart_patterns_double_tol_pct: 1.8
   chart_patterns_fetch_bars: true
+  # Sure-winner desk — 1–2/day high-conviction tickets (GO HUGE / SIZE UP)
+  sure_winners_enabled: true
+  sure_winners_max_per_day: 2
+  sure_winners_min_ask: 0.15
+  sure_winners_max_ask: 5.0
+  sure_winners_allow_solid: true
+  sure_winners_store_path: outputs/sure_winners_day.json
   # Sticky TA level-watch (manual support/breakout setups)
   level_watch_enabled: true
   level_near_breakout_pct: 1.5
