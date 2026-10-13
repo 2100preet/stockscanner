@@ -4661,6 +4661,14 @@ def create_app(config_path: str | None = None) -> Flask:
                             )
                             if not picked or not picked.get("ask"):
                                 continue
+                            picked_dte = int(
+                                picked.get("dte") if picked.get("dte") is not None else 99
+                            )
+                            # Never stamp mega_short_dte onto another monthly
+                            if picked_dte > int(actions_cfg.get("mega_short_dte_max_weekly", 7)):
+                                continue
+                            if picked_dte >= dte_i and ask_i > 0 and ask_i <= max_ask_mega:
+                                continue
                             refreshed[i] = {
                                 **row,
                                 **picked,
@@ -5363,6 +5371,139 @@ def create_app(config_path: str | None = None) -> Flask:
                     rip_radar = _uw_annotate_board(
                         rip_radar, keys=("buy_rip", "buy_now", "watch"), hard_block=False
                     )
+                    # Push RIP 0–1 DTE (or weekly fallback) onto Options board so META/MSFT
+                    # are not stuck on fat beauty monthlies after RIP already found a short ask.
+                    try:
+                        rip_tickets = list(rip_radar.get("buy_rip") or []) + list(
+                            rip_radar.get("watch") or []
+                        )
+                        short_by_sym: dict[str, dict] = {}
+                        for t in rip_tickets:
+                            if not isinstance(t, dict):
+                                continue
+                            sym = str(t.get("symbol") or "").upper()
+                            if not sym or not t.get("ask") or not t.get("strike"):
+                                continue
+                            dte_t = int(t.get("dte") if t.get("dte") is not None else 99)
+                            if dte_t > 14:
+                                continue
+                            prev = short_by_sym.get(sym)
+                            if prev is None or dte_t < int(
+                                prev.get("dte") if prev.get("dte") is not None else 99
+                            ):
+                                short_by_sym[sym] = t
+                        if short_by_sym:
+                            replaced = 0
+                            for i, row in enumerate(refreshed):
+                                sym = str(row.get("symbol") or "").upper()
+                                t = short_by_sym.get(sym)
+                                if not t:
+                                    continue
+                                dte_row = int(
+                                    row.get("dte") if row.get("dte") is not None else 99
+                                )
+                                ask_row = float(row.get("ask") or 0)
+                                if dte_row <= 1 and 0 < ask_row <= float(
+                                    actions_cfg.get("mega_short_dte_max_ask", 8.0)
+                                ):
+                                    continue
+                                refreshed[i] = {
+                                    **row,
+                                    "strike": t.get("strike"),
+                                    "expiry": t.get("expiry"),
+                                    "dte": t.get("dte"),
+                                    "dte_bucket": t.get("dte_bucket")
+                                    or ("0dte" if int(t.get("dte") or 99) <= 1 else "weekly"),
+                                    "ask": t.get("ask"),
+                                    "bid": t.get("bid"),
+                                    "contract": t.get("contract"),
+                                    "moneyness_pct": t.get("moneyness_pct"),
+                                    "volume": t.get("volume"),
+                                    "open_interest": t.get("open_interest"),
+                                    "spot": t.get("spot") or row.get("spot"),
+                                    "live_change_pct": t.get("live_change_pct")
+                                    or row.get("live_change_pct"),
+                                    "right": "C",
+                                    "mega_short_dte": True,
+                                    "from_rip": True,
+                                }
+                                replaced += 1
+                            have = {str(r.get("symbol") or "").upper() for r in refreshed}
+                            for sym, t in short_by_sym.items():
+                                if sym in have:
+                                    continue
+                                refreshed.append(
+                                    {
+                                        "symbol": sym,
+                                        "strike": t.get("strike"),
+                                        "expiry": t.get("expiry"),
+                                        "dte": t.get("dte"),
+                                        "dte_bucket": t.get("dte_bucket")
+                                        or ("0dte" if int(t.get("dte") or 99) <= 1 else "weekly"),
+                                        "ask": t.get("ask"),
+                                        "bid": t.get("bid"),
+                                        "contract": t.get("contract"),
+                                        "moneyness_pct": t.get("moneyness_pct"),
+                                        "score": t.get("ensemble_score") or t.get("score"),
+                                        "live_change_pct": t.get("live_change_pct"),
+                                        "spot": t.get("spot"),
+                                        "right": "C",
+                                        "mega_short_dte": True,
+                                        "from_rip": True,
+                                    }
+                                )
+                                replaced += 1
+                            if replaced:
+                                refreshed.sort(
+                                    key=lambda c: float(c.get("score") or 0), reverse=True
+                                )
+                                actions = build_action_board(
+                                    candidates=refreshed,
+                                    scores=scan.get("scores") or [],
+                                    quotes=quotes,
+                                    ledger=ledger if isinstance(ledger, dict) else None,
+                                    journal_opens=journal_opens,
+                                    buy_score=pages_buy_score,
+                                    wait_score=float(actions_cfg.get("wait_score", 62)),
+                                    weekly_buy_score=weekly_buy_score,
+                                    sell_score=float(actions_cfg.get("sell_score", 48)),
+                                    stop_loss_pct=float(risk.get("stop_loss_pct", 50)),
+                                    take_profit_pct=float(risk.get("take_profit_pct", 80)),
+                                    max_chase_pct=float(actions_cfg.get("max_chase_pct", 2.5)),
+                                    win_rate_table=win_table,
+                                    min_hist_win_pct=float(
+                                        actions_cfg.get("min_hist_win_pct", 80)
+                                    ),
+                                    min_hist_win_samples=int(
+                                        actions_cfg.get("min_hist_win_samples", 5)
+                                    ),
+                                    require_hist_win=bool(
+                                        actions_cfg.get("require_hist_win", True)
+                                    ),
+                                    mega_min_hist_win_pct=(
+                                        float(actions_cfg["mega_min_hist_win_pct"])
+                                        if actions_cfg.get("mega_min_hist_win_pct") is not None
+                                        else 50.0
+                                    ),
+                                    mega_rip_live_pct=float(
+                                        actions_cfg.get("mega_rip_live_pct", 1.0)
+                                    ),
+                                    weekly_max_hold_days=int(
+                                        actions_cfg.get("weekly_max_hold_days", 7)
+                                    ),
+                                    odte_flatten_et=str(
+                                        actions_cfg.get("odte_flatten_et") or "15:45"
+                                    ),
+                                    require_live_confirm=not offline,
+                                    red_flag=red_flag_snapshot,
+                                    **flow_board_kw,
+                                    **loss_board_kw,
+                                    market_tide=market_tide
+                                    if isinstance(market_tide, dict)
+                                    else None,
+                                )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("rip→options short-DTE overlay skipped: %s", exc)
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("rip radar unavailable: %s", exc)
                     rip_radar = {
