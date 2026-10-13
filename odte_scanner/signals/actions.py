@@ -743,21 +743,27 @@ def apply_hist_win_gate(
     target = float(min_hist_win_pct)
     if is_mega and mega_min_hist_win_pct is not None:
         target = min(target, float(mega_min_hist_win_pct))
+    # Megas rarely print n≥5 on every bucket; short-dated sleeve can clear at n≥3
+    need_n = int(min_hist_win_samples)
+    dte_b = str(sig.dte_bucket or "").lower()
+    dte_n = int(sig.dte) if sig.dte is not None else None
+    if is_mega and (dte_b in {"0dte", "1dte"} or (dte_n is not None and dte_n <= 1)):
+        need_n = min(need_n, 3)
 
     if win is None:
         sig.action = "WAIT"
         sig.headline = sig.headline.replace("BUY NOW", "WAIT", 1)
         sig.detail = (
             f"{sig.detail} · blocked: no hist win backtest yet "
-            f"(need ≥{target:.0f}% over n≥{min_hist_win_samples})"
+            f"(need ≥{target:.0f}% over n≥{need_n})"
         )
         sig.strength = min(sig.strength, 45.0)
         return sig
-    if n < min_hist_win_samples:
+    if n < need_n:
         sig.action = "WAIT"
         sig.headline = sig.headline.replace("BUY NOW", "WAIT", 1)
         sig.detail = (
-            f"{sig.detail} · blocked: hist n={n} < {min_hist_win_samples} "
+            f"{sig.detail} · blocked: hist n={n} < {need_n} "
             f"(need ≥{target:.0f}% win)"
         )
         sig.strength = min(sig.strength, 48.0)
