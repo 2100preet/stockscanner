@@ -4355,11 +4355,25 @@ def create_app(config_path: str | None = None) -> Flask:
                 disk.get("scores") or disk.get("actions") or disk.get("sure_winners") is not None
             ):
                 cached = disk
-                cached_t = time.time()
+                # Age from payload time — do not stamp time.time() or a Pages seed
+                # looks fresh for SNAPSHOT_CACHE_SEC after every machine restart.
+                cached_t = 0.0
+                try:
+                    from datetime import datetime as _dt
+
+                    ga = str(disk.get("generated_at") or "").strip()
+                    if ga:
+                        cached_t = _dt.fromisoformat(ga.replace("Z", "+00:00")).timestamp()
+                except Exception:  # noqa: BLE001
+                    cached_t = 0.0
                 _snap_memo["body"] = disk
                 _snap_memo["t"] = cached_t
         age = (time.time() - cached_t) if cached is not None and cached_t else 1e9
-        if (not force) and cached is not None and age < ttl:
+        # Never TTL-serve a pre-sure-winner / Pages-seed board on the live Fly host
+        stale_shape = isinstance(cached, dict) and (
+            "sure_winners" not in cached or cached.get("host") == "github-pages"
+        )
+        if (not force) and cached is not None and age < ttl and not stale_shape:
             return jsonify(cached)
 
         got_lock = _snap_gate.acquire(blocking=False)
@@ -4376,7 +4390,10 @@ def create_app(config_path: str | None = None) -> Flask:
             cached = _snap_memo.get("body")
             cached_t = float(_snap_memo.get("t") or 0.0)
             age = (time.time() - cached_t) if cached is not None and cached_t else 1e9
-            if (not force) and cached is not None and age < ttl:
+            stale_shape = isinstance(cached, dict) and (
+                "sure_winners" not in cached or cached.get("host") == "github-pages"
+            )
+            if (not force) and cached is not None and age < ttl and not stale_shape:
                 return jsonify(cached)
 
             def _build_snapshot_payload():
