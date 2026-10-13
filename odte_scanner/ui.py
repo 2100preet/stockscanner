@@ -5374,8 +5374,11 @@ def create_app(config_path: str | None = None) -> Flask:
                     # Push RIP 0–1 DTE (or weekly fallback) onto Options board so META/MSFT
                     # are not stuck on fat beauty monthlies after RIP already found a short ask.
                     try:
-                        rip_tickets = list(rip_radar.get("buy_rip") or []) + list(
-                            rip_radar.get("watch") or []
+                        rip_tickets = (
+                            list(rip_radar.get("buy_rip") or [])
+                            + list(rip_radar.get("watch") or [])
+                            + list(rip_radar.get("cool") or [])
+                            + list(rip_radar.get("all") or [])
                         )
                         short_by_sym: dict[str, dict] = {}
                         for t in rip_tickets:
