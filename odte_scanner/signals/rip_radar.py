@@ -594,15 +594,20 @@ def _needs_rip_weekly_fallback(act: RipAction) -> bool:
 
     META Oct 13 miss: 1DTE existed but ~4.3% OTM sat just over the old 4% cap —
     re-pick a nearer 0–1 DTE (or weekly) instead of dying on WATCH_RIP.
+
+    ORCL Oct 13 miss: RIP_COOL with ask $0 because quotes were empty — once tape
+    is stamped, treat missing ask as a chain-fallback case too.
     """
-    if act.action != "WATCH_RIP":
-        return False
     detail = str(act.detail or "").lower()
-    return (
-        "no liquid call ask" in detail
-        or "too far otm" in detail
-        or "prefer nearer strikes" in detail
-    )
+    if act.action == "WATCH_RIP":
+        return (
+            "no liquid call ask" in detail
+            or "too far otm" in detail
+            or "prefer nearer strikes" in detail
+        )
+    if act.action == "RIP_COOL":
+        return "ask $0.00" in detail or "outside rip band" in detail
+    return False
 
 
 def build_rip_board(
@@ -650,7 +655,7 @@ def build_rip_board(
         if str(c.get("right") or "C").upper() == "P":
             continue
         seen.add(sym)
-        q = quotes.get(sym) or {}
+        q = dict(quotes.get(sym) or {})
         # Stamp tape onto the ticket so decide_rip_entry still works when the
         # quotes map missed a mega (Pages only refreshes a short quote_syms set).
         if c.get("live_change_pct") is None:
@@ -659,6 +664,32 @@ def build_rip_board(
                 live_pct = q.get("change_pct")
             if live_pct is not None:
                 c = {**c, "live_change_pct": live_pct}
+        # ORCL-class: empty quotes map → pull one live print before deciding COOL
+        if is_mega_rip_symbol(sym) and (
+            not q
+            or (
+                q.get("session_change_pct") is None
+                and q.get("change_pct") is None
+                and c.get("live_change_pct") is None
+            )
+        ):
+            try:
+                from odte_scanner.data.live_quotes import fetch_live_quote
+
+                lq = fetch_live_quote(sym)
+                if lq is not None:
+                    qd = lq.to_dict() if hasattr(lq, "to_dict") else dict(lq)
+                    q = {**q, **qd}
+                    quotes[sym] = q
+                    live_pct = q.get("session_change_pct")
+                    if live_pct is None:
+                        live_pct = q.get("change_pct")
+                    if live_pct is not None and c.get("live_change_pct") is None:
+                        c = {**c, "live_change_pct": live_pct}
+                    if q.get("last") and not c.get("spot"):
+                        c = {**c, "spot": q.get("last")}
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("rip live quote %s: %s", sym, exc)
         act = decide_rip_entry(
             c,
             quote=q or None,
@@ -671,7 +702,7 @@ def build_rip_board(
             max_otm_pct=max_otm_pct,
             now=now,
         )
-        # AVGO-class: tape OK but 0–1 DTE ask thin → real weekly chain fallback
+        # AVGO/ORCL-class: tape OK but 0–1 DTE ask thin → real weekly chain fallback
         if allow_chain_fallback and _needs_rip_weekly_fallback(act):
             spot = float(
                 act.spot

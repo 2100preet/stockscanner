@@ -378,6 +378,7 @@ actions:
   mega_short_dte_max_fetch: 6
   mega_short_dte_max_ask: 8.0
   mega_short_dte_max_weekly: 7
+  mega_quote_max: 24          # always refresh mega session % (even when option fan-out skipped)
   # Chase / high-convexity lane — far-OTM or already-ripping wings (MU-style)
   # Separate bucket: BUY — BIT RISKY / WATCH CONVEX (not hist-gated BUY NOW)
   chase_radar_enabled: true

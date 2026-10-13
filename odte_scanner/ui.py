@@ -4514,22 +4514,24 @@ def create_app(config_path: str | None = None) -> Flask:
                     if not live_marks
                     else sorted(set(syms[:8]) | set(challenge_syms[:12]) | set(dram_syms))
                 )
-                # Always refresh CORE mega tape — RIP/BUY NOW was missing session % for INTC/GOOGL
+                # Always refresh CORE mega tape — even when default polls skip option fan-out.
+                # ORCL Oct 13 miss: +4.4% session but quotes empty → RIP_COOL / no chain fallback.
                 try:
                     from odte_scanner.signals.rip_radar import MEGA_RIP_SYMBOLS
 
-                    if live_marks:
-                        mega_on_board = {
-                            str(c.get("symbol") or "").upper()
-                            for c in board_rows
-                            if str(c.get("symbol") or "").upper() in MEGA_RIP_SYMBOLS
-                        }
-                        mega_on_board |= {
-                            str(s.get("symbol") or "").upper()
-                            for s in (scan.get("scores") or [])
-                            if str(s.get("symbol") or "").upper() in MEGA_RIP_SYMBOLS
-                        }
-                        quote_syms = sorted(set(quote_syms) | mega_on_board)
+                    mega_on_board = {
+                        str(c.get("symbol") or "").upper()
+                        for c in board_rows
+                        if str(c.get("symbol") or "").upper() in MEGA_RIP_SYMBOLS
+                    }
+                    mega_on_board |= {
+                        str(s.get("symbol") or "").upper()
+                        for s in (scan.get("scores") or [])
+                        if str(s.get("symbol") or "").upper() in MEGA_RIP_SYMBOLS
+                    }
+                    # Cap mega quote fan-out (full MEGA set is ~30 names)
+                    mega_cap = int(actions_cfg.get("mega_quote_max", 24))
+                    quote_syms = sorted(set(quote_syms) | set(sorted(mega_on_board)[:mega_cap]))
                 except Exception:  # noqa: BLE001
                     pass
                 for s in quote_syms:

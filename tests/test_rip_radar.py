@@ -424,6 +424,74 @@ def test_pick_rip_falls_back_to_nearest_weekly_call(monkeypatch):
     assert 1 in calls and any(c > 1 for c in calls)
 
 
+def test_orcl_empty_quotes_fetches_live_and_chain_fallback(monkeypatch):
+    """Oct 13 ORCL miss: +4% day but quotes map empty → RIP_COOL ask $0, no BUY."""
+
+    class _Q:
+        def to_dict(self):
+            return {
+                "last": 143.39,
+                "prev_close": 137.39,
+                "change_pct": 4.37,
+                "session_change_pct": 4.37,
+                "day_low": 135.56,
+                "day_high": 143.79,
+                "mom_5m_pct": None,
+                "mom_15m_pct": None,
+            }
+
+    def fake_pick(symbol, spot, **kwargs):
+        assert symbol == "ORCL"
+        assert spot > 140
+        return {
+            "symbol": "ORCL",
+            "strike": 145.0,
+            "expiry": "2026-10-14",
+            "dte": 1,
+            "dte_bucket": "0dte",
+            "ask": 1.85,
+            "bid": 1.75,
+            "contract": "ORCL261014C00145000",
+            "volume": 1500,
+            "open_interest": 3000,
+            "moneyness_pct": 1.1,
+            "right": "C",
+            "source": "tradier",
+        }
+
+    monkeypatch.setattr(
+        "odte_scanner.data.live_quotes.fetch_live_quote",
+        lambda *a, **k: _Q(),
+    )
+    monkeypatch.setattr(
+        "odte_scanner.signals.rip_radar.pick_rip_continuation_call",
+        fake_pick,
+    )
+    board = build_rip_board(
+        candidates=[
+            {
+                "symbol": "ORCL",
+                "ask": 0.0,
+                "bid": 0.0,
+                "score": 43.6,
+                "right": "C",
+                # no live_change_pct — must come from fetched quote
+            }
+        ],
+        scores=[{"symbol": "ORCL", "ensemble_score": 43.6}],
+        quotes={},  # empty map — the miss
+        now=_MORNING,
+        signal_times_path=None,
+    )
+    buys = board.get("buy_rip") or []
+    assert buys, "expected ORCL BUY_RIP after live quote + chain fallback"
+    row = buys[0]
+    assert row["symbol"] == "ORCL"
+    assert row["dte"] == 1
+    assert row["contract"] == "ORCL261014C00145000"
+    assert float(row.get("live_change_pct") or 0) >= 1.0
+
+
 def test_meta_far_otm_1dte_repicks_nearer_strike(monkeypatch):
     """Oct 13 META miss: 1DTE ~4.3% OTM sat on WATCH — re-pick nearer → BUY_RIP."""
 
