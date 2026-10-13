@@ -370,6 +370,14 @@ actions:
   rip_min_live_pct: 1.0
   rip_min_mom_5m: 0.05
   rip_max_tickets: 12
+  rip_max_otm_pct: 5.5          # was 4% — META 1DTE ~4.3% OTM was dying on WATCH
+  rip_max_weekly_dte: 14        # AVGO-class: fall back to liquid weekly when 0–1 DTE thin
+  rip_allow_chain_fallback: true
+  # Prefer 0–1 DTE (else ≤7 DTE) over fat beauty monthlies on Options board for megas
+  mega_prefer_short_dte: true
+  mega_short_dte_max_fetch: 6
+  mega_short_dte_max_ask: 8.0
+  mega_short_dte_max_weekly: 7
   # Chase / high-convexity lane — far-OTM or already-ripping wings (MU-style)
   # Separate bucket: BUY — BIT RISKY / WATCH CONVEX (not hist-gated BUY NOW)
   chase_radar_enabled: true

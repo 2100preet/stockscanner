@@ -4606,6 +4606,120 @@ def create_app(config_path: str | None = None) -> Flask:
 
                 refreshed.sort(key=lambda c: float(c.get("score") or 0), reverse=True)
 
+                # Mega 0–1 DTE prefer: Options board was attaching fat monthlies (META/MSFT
+                # Nov $15–$28 asks) while 1DTE near-money existed — replace when DTE>1 or ask fat.
+                if bool(actions_cfg.get("mega_prefer_short_dte", True)):
+                    try:
+                        from odte_scanner.signals.rip_radar import (
+                            MEGA_RIP_SYMBOLS,
+                            pick_rip_continuation_call,
+                        )
+
+                        max_mega_fetch = int(actions_cfg.get("mega_short_dte_max_fetch", 6))
+                        max_ask_mega = float(actions_cfg.get("mega_short_dte_max_ask", 8.0))
+                        fetched_m = 0
+                        by_sym: dict[str, int] = {}
+                        for i, row in enumerate(refreshed):
+                            sym = str(row.get("symbol") or "").upper()
+                            if sym not in MEGA_RIP_SYMBOLS:
+                                continue
+                            if str(row.get("right") or "C").upper() == "P":
+                                continue
+                            dte_i = int(row.get("dte") if row.get("dte") is not None else 99)
+                            ask_i = float(row.get("ask") or 0)
+                            bucket = str(row.get("dte_bucket") or "").lower()
+                            needs = (
+                                dte_i > 1
+                                or ask_i <= 0
+                                or ask_i > max_ask_mega
+                                or bucket in {"monthly", "swing"}
+                            )
+                            if not needs:
+                                continue
+                            if fetched_m >= max_mega_fetch:
+                                break
+                            if sym in by_sym:
+                                continue
+                            q = quotes.get(sym) or {}
+                            spot = float(q.get("last") or row.get("spot") or row.get("live_last") or 0)
+                            if spot <= 0:
+                                for srow in scan.get("scores") or []:
+                                    if str(srow.get("symbol") or "").upper() == sym:
+                                        spot = float(srow.get("last_price") or srow.get("entry") or 0)
+                                        break
+                            if spot <= 0:
+                                continue
+                            aliases.setdefault(sym, resolve_yahoo_symbol(sym, cfg))
+                            picked = pick_rip_continuation_call(
+                                sym,
+                                spot,
+                                yahoo_symbol=aliases.get(sym),
+                                max_weekly_dte=int(actions_cfg.get("mega_short_dte_max_weekly", 7)),
+                                min_ask=float(actions_cfg.get("sure_winners_min_ask", 0.15)),
+                                max_ask=max_ask_mega,
+                                max_otm_pct=float(actions_cfg.get("rip_max_otm_pct", 5.5)),
+                            )
+                            if not picked or not picked.get("ask"):
+                                continue
+                            refreshed[i] = {
+                                **row,
+                                **picked,
+                                "score": row.get("score") or row.get("ensemble_score"),
+                                "live_change_pct": row.get("live_change_pct")
+                                or q.get("session_change_pct")
+                                or q.get("change_pct"),
+                                "spot": spot,
+                                "mega_short_dte": True,
+                            }
+                            by_sym[sym] = i
+                            fetched_m += 1
+                        # Also inject megas that have scores but no board row yet
+                        have = {str(r.get("symbol") or "").upper() for r in refreshed}
+                        for srow in scan.get("scores") or []:
+                            if fetched_m >= max_mega_fetch:
+                                break
+                            sym = str(srow.get("symbol") or "").upper()
+                            if sym not in MEGA_RIP_SYMBOLS or sym in have or sym in by_sym:
+                                continue
+                            ens = float(srow.get("ensemble_score") or 0)
+                            if ens < float(actions_cfg.get("wait_score", 62)):
+                                continue
+                            q = quotes.get(sym) or {}
+                            spot = float(q.get("last") or srow.get("last_price") or srow.get("entry") or 0)
+                            if spot <= 0:
+                                continue
+                            aliases.setdefault(sym, resolve_yahoo_symbol(sym, cfg))
+                            picked = pick_rip_continuation_call(
+                                sym,
+                                spot,
+                                yahoo_symbol=aliases.get(sym),
+                                max_weekly_dte=int(actions_cfg.get("mega_short_dte_max_weekly", 7)),
+                                min_ask=float(actions_cfg.get("sure_winners_min_ask", 0.15)),
+                                max_ask=max_ask_mega,
+                                max_otm_pct=float(actions_cfg.get("rip_max_otm_pct", 5.5)),
+                            )
+                            if not picked or not picked.get("ask"):
+                                continue
+                            refreshed.append(
+                                {
+                                    **picked,
+                                    "score": ens,
+                                    "ensemble_score": ens,
+                                    "live_change_pct": q.get("session_change_pct") or q.get("change_pct"),
+                                    "spot": spot,
+                                    "mega_short_dte": True,
+                                    "right": "C",
+                                }
+                            )
+                            have.add(sym)
+                            fetched_m += 1
+                        if fetched_m:
+                            refreshed.sort(
+                                key=lambda c: float(c.get("score") or 0), reverse=True
+                            )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("mega short-DTE prefer skipped: %s", exc)
+
                 jcfg = cfg.get("journal") or {}
                 insights = None
                 journal_sync = None
@@ -5239,6 +5353,11 @@ def create_app(config_path: str | None = None) -> Flask:
                         loss_cooldown_contracts=loss_cooldown_cts,
                         min_live_pct=float(actions_cfg.get("rip_min_live_pct", 1.0)),
                         min_mom5=float(actions_cfg.get("rip_min_mom_5m", 0.05)),
+                        max_otm_pct=float(actions_cfg.get("rip_max_otm_pct", 5.5)),
+                        max_weekly_dte=int(actions_cfg.get("rip_max_weekly_dte", 14)),
+                        allow_chain_fallback=bool(
+                            actions_cfg.get("rip_allow_chain_fallback", True)
+                        ),
                         max_tickets=int(actions_cfg.get("rip_max_tickets", 12)),
                     )
                     rip_radar = _uw_annotate_board(
