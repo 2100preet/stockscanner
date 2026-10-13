@@ -37,4 +37,10 @@ jobs:
             echo "::error::FLY_API_TOKEN secret is not set — add it in repo Settings → Secrets (fly tokens create)"
             exit 1
           fi
-          flyctl deploy --remote-only -a stockscanner
+          echo "Volumes:"
+          flyctl volumes list -a stockscanner || true
+          # Prefer config mounts; if volume name mismatches, --yes replaces the machine.
+          if ! flyctl deploy --remote-only -a stockscanner; then
+            echo "Deploy with mounts failed — retrying with --yes to replace machine"
+            flyctl deploy --remote-only -a stockscanner --yes
+          fi

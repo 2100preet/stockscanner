@@ -1,7 +1,7 @@
 # ZeroLoss live desk on Fly.io
 # Deploy: fly deploy -a stockscanner
 # Scale:  fly scale memory 2048 -a stockscanner
-# redeploy-nudge: 2026-10-13T00:34Z
+# redeploy-nudge: 2026-10-13T00:35Z
 
 app = "stockscanner"
 primary_region = "iad"
@@ -35,6 +35,6 @@ primary_region = "iad"
 
 # Persist paper ledgers / signal times across deploys
 [mounts]
-  source = "stockscanner_data"
+  source = "desk_outputs"
   destination = "/app/outputs"
 
