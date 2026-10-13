@@ -353,6 +353,8 @@ actions:
   # Liquid megas (AAPL/GOOGL/MSFT/INTC/…) rarely clear 80% hist — soft floor + session rip override
   mega_min_hist_win_pct: 50
   mega_rip_live_pct: 1.0
+  # Recent IPOs (SPCX…) have null hist — tape rip clears BUY NOW so weeklies are not stuck WAIT
+  ipo_thin_hist_live_pct: 1.5
   lottery_min_score: 62
   lottery_min_confirms: 4
   # Discord-style radar lane (cheap SPY/QQQ wings) — separate from BUY NOW
@@ -376,6 +378,8 @@ actions:
   chase_min_ask: 0.20
   chase_max_ask: 12.00       # allow richer premium than Discord radar
   chase_otm_pct_max: 8.0     # widen past action/lottery ATM band (~3%)
+  chase_ipo_otm_pct_max: 10.0  # SPCX 172.5 was ~9.5% OTM on Friday — allow IPO weekly wings
+  chase_ipo_max_dte: 7         # IPO chase may use Friday weeklies (not 0DTE-only)
   chase_min_mult_at_3pct: 3.5
   chase_min_mom_5m: 0.08     # still need impulse; extension alone + flat 5m OK
   chase_enrich_live: true    # live chain sweep on top ripping names (capped)

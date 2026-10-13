@@ -85,3 +85,42 @@ def test_board_partitions():
     assert board["counts"]["all"] == 2
     assert "hist-win" in board["note"].lower() or "BUY NOW" in board["note"]
     assert "ensemble" in board["score_note"].lower() or "0DTE" in board["score_note"]
+
+
+def test_ipo_weekly_wing_not_vetoed_for_dte():
+    """SPCX 10/9 172.5 was ~9.5% OTM / 7 DTE — chase used to veto DTE>1."""
+    sig = decide_chase_entry(
+        _ticket(
+            symbol="SPCX",
+            contract="SPCX261009C00172500",
+            expiry="2026-10-09",
+            dte=7,
+            strike=172.5,
+            spot=157.5,
+            ask=0.39,
+            bid=0.35,
+            moneyness_pct=9.52,
+            mult_at_3pct=8.0,
+            mult_at_5pct=15.0,
+            best_mult=15.0,
+            lottery_score=75,
+        ),
+        quote={"last": 157.5, "session_change_pct": 3.2, "mom_5m_pct": 0.12},
+        ensemble_score=65,
+        max_otm_pct=10.0,
+        max_dte=7,
+    )
+    assert sig.action == "BUY_RISKY"
+    assert not any("DTE" in v for v in (sig.vetoes or []))
+
+
+def test_ipo_weekly_still_vetoed_for_non_ipo():
+    """Non-IPO names keep the 0DTE/1DTE chase window."""
+    sig = decide_chase_entry(
+        _ticket(symbol="MU", dte=7, moneyness_pct=4.0),
+        quote={"last": 970, "session_change_pct": 3.5, "mom_5m_pct": 0.12},
+        ensemble_score=64,
+        max_dte=1,
+    )
+    assert sig.action == "CHASE_COOL"
+    assert any("DTE" in v for v in sig.vetoes)

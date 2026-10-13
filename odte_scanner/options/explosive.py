@@ -455,6 +455,8 @@ def _pick_chase_symbols(
     min_ensemble: float = 55.0,
 ) -> list[str]:
     """Prefer names that are already ripping or scoring soft-bullish for chase wings."""
+    from odte_scanner.data.universe import is_thin_hist_ipo
+
     quotes = quotes or {}
     ranked: list[tuple[float, str]] = []
     for s in scores or []:
@@ -472,9 +474,13 @@ def _pick_chase_symbols(
         if live is None:
             live = q.get("change_pct")
         live_f = float(live) if live is not None else 0.0
-        if ens < min_ensemble and live_f < 1.2 and rs < 2.5:
+        ipo = is_thin_hist_ipo(sym)
+        # IPO/thin-hist: softer score floor so SPCX-class weeklies still get a chain sweep
+        if ens < min_ensemble and live_f < 1.2 and rs < 2.5 and not (ipo and live_f >= 0.8):
             continue
         chase_rank = ens + live_f * 4.0 + max(0.0, rs) * 0.6
+        if ipo:
+            chase_rank += 20.0  # prefer weekly wing scan on new listings
         ranked.append((chase_rank, sym))
     ranked.sort(key=lambda x: x[0], reverse=True)
     out: list[str] = []
@@ -499,6 +505,9 @@ def build_chase_wing_board(
     min_ask: float = 0.20,
     max_ask: float = 12.0,
     otm_pct_max: float = 8.0,
+    ipo_otm_pct_max: float = 10.0,
+    max_dte: int = 1,
+    ipo_max_dte: int = 7,
     itm_pct_max: float = 0.5,
     per_symbol: int = 2,
     max_total: int = 16,
@@ -506,6 +515,8 @@ def build_chase_wing_board(
     max_live_symbols: int = 8,
 ) -> list[dict[str, Any]]:
     """Far-OTM / richer-ask convex wings for the chase-aware lane (MU-style runners)."""
+    from odte_scanner.data.universe import is_thin_hist_ipo
+
     aliases = aliases or {}
     quotes = quotes or {}
     score_map = {
@@ -523,11 +534,14 @@ def build_chase_wing_board(
         ask = float(c.get("ask") or 0)
         if ask < min_ask or ask > max_ask:
             continue
+        ipo = is_thin_hist_ipo(sym)
+        eff_max_dte = int(ipo_max_dte if ipo else max_dte)
+        eff_otm = float(ipo_otm_pct_max if ipo else otm_pct_max)
         dte = c.get("dte")
-        if dte is not None and int(dte) > 1:
+        if dte is not None and int(dte) > eff_max_dte:
             continue
         mny = c.get("moneyness_pct")
-        if mny is not None and float(mny) > otm_pct_max:
+        if mny is not None and float(mny) > eff_otm:
             continue
         ec = build_explosive_from_candidate(
             {**c, "symbol": sym},
@@ -563,6 +577,7 @@ def build_chase_wing_board(
                         break
             if spot <= 0:
                 continue
+            ipo = is_thin_hist_ipo(sym)
             found = find_explosive_calls(
                 sym,
                 spot,
@@ -570,7 +585,8 @@ def build_chase_wing_board(
                 yahoo_symbol=aliases.get(sym),
                 min_ask=min_ask,
                 max_ask=max_ask,
-                otm_pct_max=otm_pct_max,
+                max_dte=int(ipo_max_dte if ipo else max_dte),
+                otm_pct_max=float(ipo_otm_pct_max if ipo else otm_pct_max),
                 itm_pct_max=itm_pct_max,
                 limit=per_symbol,
                 min_best_mult=3.5,
