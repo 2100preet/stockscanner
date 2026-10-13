@@ -893,6 +893,116 @@ def test_500k_epoch_unpauses_after_three_losses(tmp_path):
     assert tr2.open_trades()[0].symbol == "NVDA"
 
 
+def test_quality_only_resume_after_pause_days(tmp_path):
+    """After 3L pause, wait pause_resume_days then enter perfect/elite (not snipers)."""
+    from datetime import datetime, timedelta, timezone
+
+    ledger = tmp_path / "ch_pause.json"
+    tr = ChallengeTracker(ledger, starting_cash=1000, epoch="pause-test")
+    for sym in ("AAA", "BBB", "CCC"):
+        t = tr.enter(
+            {
+                "action": "ENTRY",
+                "symbol": sym,
+                "right": "C",
+                "ask": 0.50,
+                "contract": f"{sym}261002C00100000",
+                "expiry": "2026-10-02",
+                "strike": 100,
+                "ensemble_score": 70,
+                "volume": 200,
+            },
+            max_consecutive_losses=3,
+            max_cash_frac=0.30,
+            min_ask=0.20,
+            max_ask=2.50,
+        )
+        assert t is not None
+        tr.exit_trade(t.id, exit_bid=0.10, reason="stop")
+    assert tr.consecutive_losses() == 3
+    assert tr.auto_enter_mode(max_consecutive_losses=3, pause_resume_days=2) == "paused"
+
+    tickets = [
+        {
+            "action": "RADAR_HOT",
+            "symbol": "SPY",
+            "right": "C",
+            "ask": 0.40,
+            "contract": "SPY261013C00500000",
+            "expiry": "2026-10-13",
+            "strike": 500,
+            "sniper": True,
+            "volume": 900,
+        },
+        {
+            "action": "ENTRY",
+            "symbol": "NVDA",
+            "right": "C",
+            "ask": 1.10,
+            "contract": "NVDA261017C00140000",
+            "expiry": "2026-10-17",
+            "strike": 140,
+            "certainty_tier": "perfect",
+            "hist_win_pct": 100,
+            "hist_samples": 5,
+            "ensemble_score": 72,
+            "volume": 500,
+        },
+    ]
+    # Still paused same day — sniper + quality both blocked
+    sync = tr.sync_from_tickets(
+        tickets,
+        max_consecutive_losses=3,
+        pause_resume_days=2,
+        max_cash_frac=0.30,
+        min_ask=0.20,
+        max_ask=2.50,
+        loss_cooldown_days=0,
+    )
+    assert sync.get("paused") is True
+    assert sync.get("entered") == []
+
+    # Age the losing exits past pause_resume_days
+    old = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
+    for t in tr.book.trades:
+        if t.status == "closed":
+            t.exited_at = old
+    tr.save()
+    assert tr.auto_enter_mode(max_consecutive_losses=3, pause_resume_days=2) == "quality_only"
+
+    sync2 = tr.sync_from_tickets(
+        tickets,
+        max_consecutive_losses=3,
+        pause_resume_days=2,
+        max_cash_frac=0.30,
+        min_ask=0.20,
+        max_ask=2.50,
+        loss_cooldown_days=0,
+        prefer_core_megas=True,
+        min_ensemble=60,
+        mega_min_ensemble=55,
+    )
+    assert sync2.get("paused") is not True
+    assert sync2.get("enter_mode") == "quality_only"
+    assert sync2.get("entered")
+    assert tr.open_trades()[0].symbol == "NVDA"
+    # Sniper must not win the quality-only resume (sorted after perfect hist)
+    assert all(t.symbol != "SPY" for t in tr.open_trades())
+    # Direct enter still blocks snipers in quality-only flags
+    spy_try = tr.enter(
+        tickets[0],
+        max_open=2,
+        require_quality=True,
+        block_snipers=True,
+        max_consecutive_losses=3,
+        max_cash_frac=0.30,
+        min_ask=0.20,
+        max_ask=2.50,
+        loss_cooldown_days=0,
+    )
+    assert spy_try is None
+
+
 def test_time_boxed_path_1mo_500k_sprint():
     pace = time_boxed_path(
         start_usd=1000,

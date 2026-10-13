@@ -562,16 +562,15 @@ PAGE = r"""
     <section class="tabpane" id="tab-challenge">
       <h2>$1,000 → $100,000 challenge</h2>
       <p class="lede">
-        Goal: <strong>$1k → $100k by Oct 31, 2026</strong> via <strong>same-day index sniper</strong> flips on
-        <strong>SPY / QQQ / IWM</strong> (SPX→SPY) 0–1 DTE wings — buy &amp; sell same session, bank
-        <strong>+20%</strong>, flatten by ~<strong>4h / EOD</strong>. Paper sleeve starts at
-        <strong>$1,000 real cash</strong>. Path math: ~+20%/flip × ~26 sessions (100×). Lottery midcaps blocked;
-        loss-cooldown survives epoch rebuilds.
-        Sure-shot hist filter (prefer <strong>100% hist win</strong>, else ≥80% n≥5).
+        Goal: <strong>$1k → $100k by Oct 31, 2026</strong> via quality hist flips + <strong>same-day index sniper</strong>
+        (SPY/QQQ/IWM). Paper sleeve starts at <strong>$1,000 real cash</strong>.
+        After <strong>3 consecutive losses</strong> auto-enter pauses, then resumes in <strong>quality-only</strong>
+        (perfect/elite hist, snipers blocked) so the sleeve cannot freeze near $900 for days.
         Status: <strong>ENTRY · HOLD · EXIT</strong>. After each Paper ENTER/EXIT the sleeve
         <strong>cash &amp; equity balance</strong> updates so you know where you are.
         <em>Hist 100% ≠ guaranteed future wins — options can go to zero.</em>
       </p>
+      <div id="challengePauseBanner" class="empty" style="display:none;margin:0 0 .85rem;padding:.75rem 1rem;border-radius:.75rem;border:1px solid rgba(224,179,90,.45);background:linear-gradient(105deg,rgba(224,179,90,.16),rgba(18,28,24,.55))"></div>
       <div class="metric-row" id="challengeMetrics"></div>
       <div class="cards" id="challengePrimary"></div>
       <div class="panel">
@@ -2062,6 +2061,23 @@ PAGE = r"""
         if (src==="scan") return `<span class="badge skip">SCAN</span>`;
         return `<span class="badge sell">NO SPOT</span>`;
       };
+      const enterMode = ch.enter_mode || sync.enter_mode || (sync.paused || ch.paused ? "paused" : "ok");
+      const pauseBanner = document.getElementById("challengePauseBanner");
+      if (pauseBanner) {
+        if (enterMode === "paused" || enterMode === "quality_only" || sync.paused || ch.paused) {
+          const reason = ch.pause_reason || sync.pause_reason || "Auto-enter gated after consecutive losses";
+          const modeTxt = enterMode === "quality_only" ? "QUALITY-ONLY RESUME" : "AUTO-ENTER PAUSED";
+          const cls = enterMode === "quality_only" ? "up" : "down";
+          pauseBanner.style.display = "block";
+          pauseBanner.innerHTML = `<strong class="${cls}">${modeTxt}</strong>
+            · Sleeve equity <strong>$${Number(book.equity!=null?book.equity:(book.cash||0)).toLocaleString(undefined,{maximumFractionDigits:0})}</strong>
+            · ${reason}
+            <div class="why" style="margin:.35rem 0 0">Closed ${book.flips_closed||0} flips (W${book.wins||0}/L${book.losses||0}). ENTRY tickets can still list while paper enter is gated — that is why equity can sit near $900 for days.</div>`;
+        } else {
+          pauseBanner.style.display = "none";
+          pauseBanner.innerHTML = "";
+        }
+      }
       if (metrics) {
         const tgt = book.target_usd!=null?book.target_usd:(ch.target_usd||100000);
         const startCash = book.starting_cash!=null?book.starting_cash:(ch.start_usd||1000);
@@ -2075,7 +2091,8 @@ PAGE = r"""
         metrics.innerHTML = [
           m("Start → target", `$${Number(startCash).toLocaleString(undefined,{maximumFractionDigits:0})} → $${Number(tgt).toLocaleString(undefined,{maximumFractionDigits:0})}`),
           m("Sleeve cash", book.cash!=null?`$${Number(book.cash).toLocaleString(undefined,{maximumFractionDigits:0})}`:"—"),
-          m("Sleeve equity", book.equity!=null?`$${Number(book.equity).toLocaleString(undefined,{maximumFractionDigits:0})}`:`$${Number(startCash).toLocaleString()}`),
+          m("Sleeve equity", book.equity!=null?`$${Number(book.equity).toLocaleString(undefined,{maximumFractionDigits:0})}`:`$${Number(startCash).toLocaleString()}`, enterMode==="paused"?"down":""),
+          m("Enter mode", String(enterMode).replace("_"," ").toUpperCase(), enterMode==="ok"?"up":(enterMode==="quality_only"?"":"down")),
           m("→ $100k", book.progress_pct!=null?`${fmt(book.progress_pct,3)}%`:(book.milestone_100k_pct!=null?`${fmt(book.milestone_100k_pct,3)}%`:"—"), "up"),
           m("Days to Oct 31", daysLeft, "up"),
           m("Same-day bank", `+${fmt(bankPct,0)}% / ${fmt(flatH,0)}h flat`, "up"),
@@ -2204,6 +2221,9 @@ PAGE = r"""
         const equity = book.equity!=null?book.equity:cash;
         const syncNote = (sync.entered&&sync.entered.length)?` · paper entered ${sync.entered.join(", ")}`:"";
         const syncExit = (sync.exited&&sync.exited.length)?` · paper exited ${sync.exited.join(", ")}`:"";
+        const modeNote = (enterMode && enterMode!=="ok")
+          ? ` · <strong class="${enterMode==="paused"?"down":""}">${String(enterMode).replace("_"," ").toUpperCase()}</strong>${(ch.pause_reason||sync.pause_reason)?` — ${ch.pause_reason||sync.pause_reason}`:""}`
+          : "";
         bookEl.innerHTML = `
           <div class="ac-meta" style="margin-bottom:.5rem">
             <div>Start<strong>$${Number(book.starting_cash!=null?book.starting_cash:(ch.start_usd||1000)).toLocaleString(undefined,{maximumFractionDigits:0})}</strong></div>
@@ -2215,7 +2235,7 @@ PAGE = r"""
             <div>Win/Loss<strong>${book.wins||0}/${book.losses||0}</strong></div>
             <div>Same-day bank<strong>+${fmt(book.sniper_bank_pct!=null?book.sniper_bank_pct:20,0)}% / ${fmt(book.sniper_flatten_hours!=null?book.sniper_flatten_hours:4,0)}h</strong></div>
           </div>
-          <p class="why" style="margin:.2rem 0 .55rem">Sleeve ledger · epoch ${book.epoch||"—"} · deadline ${ch.deadline||"2026-10-31"}${syncNote}${syncExit || " · refresh after Paper ENTER"}</p>
+          <p class="why" style="margin:.2rem 0 .55rem">Sleeve ledger · epoch ${book.epoch||"—"} · deadline ${ch.deadline||"2026-10-31"}${syncNote}${syncExit || " · refresh after Paper ENTER"}${modeNote}</p>
           ${open.length?open.map(t=>{
             const tgtPct = t.target_profit_pct!=null?t.target_profit_pct:(t.target_premium_mult!=null?((t.target_premium_mult-1)*100):null);
             const tgtAsk = t.target_ask!=null?t.target_ask:(t.entry_ask!=null&&t.target_premium_mult!=null?t.entry_ask*t.target_premium_mult:null);
@@ -5371,9 +5391,13 @@ def create_app(config_path: str | None = None) -> Flask:
                     else 2.50
                 ),
                 max_consecutive_losses=int(actions_cfg.get("challenge_max_consecutive_losses", 3)),
+                pause_resume_days=float(actions_cfg.get("challenge_pause_resume_days", 2)),
             )
             challenge["sync"] = sync
             challenge["book"] = sync.get("book") or tracker.book.to_dict()
+            challenge["paused"] = bool(sync.get("paused"))
+            challenge["enter_mode"] = sync.get("enter_mode") or ("paused" if sync.get("paused") else "ok")
+            challenge["pause_reason"] = sync.get("pause_reason")
             challenge["deadline"] = deadline
             challenge["oct_end_pace"] = oct_end_pace_note(
                 equity=float(tracker.book.equity or tracker.book.cash or 1000),

@@ -409,6 +409,74 @@ class ChallengeTracker:
                 break
         return n
 
+    def days_since_last_closed_loss(self) -> float | None:
+        """Calendar days since the most recent closed losing flip (current book)."""
+        last: datetime | None = None
+        for t in self.book.trades:
+            if t.status != "closed":
+                continue
+            lost = (t.pnl_usd is not None and float(t.pnl_usd) < 0) or (
+                t.profit_pct is not None and float(t.profit_pct) < 0
+            )
+            if not lost or not t.exited_at:
+                continue
+            try:
+                exited = datetime.fromisoformat(str(t.exited_at).replace("Z", "+00:00"))
+            except Exception:  # noqa: BLE001
+                continue
+            if last is None or exited > last:
+                last = exited
+        if last is None:
+            return None
+        return (datetime.now(timezone.utc) - last).total_seconds() / 86400.0
+
+    def auto_enter_mode(
+        self,
+        *,
+        max_consecutive_losses: int = 3,
+        pause_resume_days: float = 2.0,
+    ) -> str:
+        """Return enter mode: ok | paused | quality_only.
+
+        After N consecutive losses the sleeve pauses, then after
+        ``pause_resume_days`` resumes in quality_only (perfect/elite hist,
+        no index snipers) so a 3L sniper spiral cannot freeze the desk forever.
+        """
+        n = self.consecutive_losses()
+        if n < int(max_consecutive_losses):
+            return "ok"
+        days = self.days_since_last_closed_loss()
+        if days is not None and days >= float(pause_resume_days):
+            return "quality_only"
+        return "paused"
+
+    @staticmethod
+    def ticket_is_quality(ticket: dict[str, Any]) -> bool:
+        """Perfect/elite hist certainty — used for post-pause quality_only resumes."""
+        cert = str(ticket.get("certainty_tier") or "").lower()
+        if cert in {"perfect", "elite"}:
+            return True
+        win = ticket.get("hist_win_pct")
+        if win is None:
+            win = ticket.get("win_pct")
+        n = ticket.get("hist_samples")
+        if n is None:
+            n = ticket.get("win_samples")
+        try:
+            return float(win or 0) >= 85.0 and int(n or 0) >= 5
+        except (TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def ticket_is_sniper(ticket: dict[str, Any]) -> bool:
+        sym = str(ticket.get("symbol") or "").upper()
+        return bool(
+            sym in INDEX_SNIPERS
+            or str(ticket.get("action") or "") in {"RADAR_HOT", "SNIPER"}
+            or ticket.get("from_radar")
+            or ticket.get("sniper")
+        )
+
     def enter(
         self,
         ticket: dict[str, Any],
@@ -424,6 +492,8 @@ class ChallengeTracker:
         max_ask: float | None = None,
         prefer_core_megas: bool = False,
         max_consecutive_losses: int = 3,
+        require_quality: bool = False,
+        block_snipers: bool = False,
     ) -> ChallengeTrade | None:
         if ticket.get("action") not in {"ENTRY", "BUY_NOW", "BUY_RIP", "RADAR_HOT", "SNIPER"}:
             return None
@@ -454,18 +524,24 @@ class ChallengeTracker:
             return None
         if len(self.open_trades()) >= max_open:
             return None
-        if self.consecutive_losses() >= int(max_consecutive_losses):
+        # Hard pause is enforced by sync_from_tickets; enter() still respects
+        # consecutive-loss freeze unless quality_only resume flags are set.
+        if (
+            self.consecutive_losses() >= int(max_consecutive_losses)
+            and not require_quality
+            and not block_snipers
+        ):
             return None
         # Do not chase the same loser immediately (e.g. SLV put loop)
         if symbol.upper() in self.recent_loss_symbols(cooldown_days=loss_cooldown_days):
             return None
         if symbol.upper() in self.lifetime_loss_symbols(min_losses=2):
             return None
-        is_sniper = (
-            symbol in INDEX_SNIPERS
-            or str(ticket.get("action") or "") in {"RADAR_HOT", "SNIPER"}
-            or bool(ticket.get("from_radar") or ticket.get("sniper"))
-        )
+        is_sniper = self.ticket_is_sniper({**ticket, "symbol": symbol})
+        if block_snipers and is_sniper:
+            return None
+        if require_quality and not self.ticket_is_quality(ticket):
+            return None
         is_mega = symbol in CORE_MEGAS or is_sniper
         if prefer_core_megas and not is_mega and str(ticket.get("action") or "") != "BUY_RIP":
             # Non-mega ENTRY still allowed, but RIP/mega/sniper path is preferred upstream
@@ -933,7 +1009,6 @@ class ChallengeTracker:
         return marks
 
     def sync_from_tickets(
-
         self,
         tickets: list[dict[str, Any]],
         *,
@@ -953,6 +1028,7 @@ class ChallengeTracker:
         min_ask: float = 0.0,
         max_ask: float | None = None,
         max_consecutive_losses: int = 3,
+        pause_resume_days: float = 2.0,
     ) -> dict[str, Any]:
         quotes = quotes or {}
         live_marks = live_marks or {}
@@ -1030,19 +1106,48 @@ class ChallengeTracker:
                     exited.append(out.id)
 
         # Auto-enter top ENTRY ticket if flat (skip recent losers / illiquid / too-rich)
+        enter_mode = "ok"
+        pause_reason: str | None = None
         if auto_enter and len(self.open_trades()) < max_open:
-            if self.consecutive_losses() >= int(max_consecutive_losses):
+            enter_mode = self.auto_enter_mode(
+                max_consecutive_losses=max_consecutive_losses,
+                pause_resume_days=pause_resume_days,
+            )
+            if enter_mode == "paused":
+                days = self.days_since_last_closed_loss()
+                left = (
+                    max(0.0, float(pause_resume_days) - float(days))
+                    if days is not None
+                    else float(pause_resume_days)
+                )
+                pause_reason = (
+                    f"{max_consecutive_losses}+ consecutive losses — auto-enter paused "
+                    f"(~{left:.1f}d until quality-only resume)"
+                )
+                self.save()
                 return {
                     "entered": entered,
                     "exited": exited,
                     "holds": holds,
                     "open_evals": holds,
+                    "skipped": skipped[:12],
                     "cash": round(self.book.cash, 2),
                     "equity": self.book.equity,
                     "paused": True,
-                    "pause_reason": f"{max_consecutive_losses}+ consecutive losses — auto-enter paused",
+                    "enter_mode": "paused",
+                    "pause_reason": pause_reason,
+                    "pause_resume_days": float(pause_resume_days),
+                    "days_since_last_loss": days,
                     "book": self.book.to_dict(),
                 }
+
+            quality_only = enter_mode == "quality_only"
+            if quality_only:
+                pause_reason = (
+                    f"{max_consecutive_losses}+ consecutive losses cooled — "
+                    "quality-only resume (perfect/elite hist, snipers blocked)"
+                )
+
             blocked = self.recent_loss_symbols(cooldown_days=loss_cooldown_days) | self.lifetime_loss_symbols(
                 min_losses=2
             )
@@ -1050,20 +1155,14 @@ class ChallengeTracker:
             max_cost = float(self.book.cash) * frac
             ordered = list(tickets)
 
-            def _is_sniper_tk(tk: dict[str, Any]) -> bool:
-                return bool(
-                    str(tk.get("symbol") or "").upper() in INDEX_SNIPERS
-                    or str(tk.get("action") or "") in {"RADAR_HOT", "SNIPER"}
-                    or tk.get("from_radar")
-                    or tk.get("sniper")
-                )
-
             ordered = sorted(
                 ordered,
                 key=lambda tk: (
-                    0 if _is_sniper_tk(tk) else 1,
+                    # After a death spiral: prefer quality hist, bury snipers
+                    (0 if self.ticket_is_quality(tk) else 1) if quality_only else 0,
+                    (1 if self.ticket_is_sniper(tk) else 0) if quality_only else (0 if self.ticket_is_sniper(tk) else 1),
                     # Among snipers: cheapest liquid wing first (SPY $0.34 before QQQ $0.71)
-                    float(tk.get("ask") or 99.0) if _is_sniper_tk(tk) else 0.0,
+                    float(tk.get("ask") or 99.0) if self.ticket_is_sniper(tk) else 0.0,
                     0 if str(tk.get("right") or "C").upper() == "C" else 1 if prefer_calls else 0,
                     0
                     if (
@@ -1103,6 +1202,12 @@ class ChallengeTracker:
                     if not tk.get("right"):
                         occ = str(tk.get("contract") or "")
                         tk["right"] = occ[-9] if len(occ) >= 15 and occ[-9] in {"C", "P"} else "C"
+                if quality_only and self.ticket_is_sniper(tk):
+                    skipped.append({"symbol": tk.get("symbol"), "reason": "quality_only_blocks_sniper"})
+                    continue
+                if quality_only and not self.ticket_is_quality(tk):
+                    skipped.append({"symbol": tk.get("symbol"), "reason": "quality_only_needs_perfect_elite"})
+                    continue
                 if not tk.get("contract") or tk.get("ask") in (None, 0):
                     continue
                 ask = float(tk.get("ask") or 0)
@@ -1131,6 +1236,8 @@ class ChallengeTracker:
                     min_ask=min_ask,
                     max_ask=max_ask,
                     max_consecutive_losses=max_consecutive_losses,
+                    require_quality=quality_only,
+                    block_snipers=quality_only,
                 )
                 if tr:
                     entered.append(tr.id)
@@ -1146,5 +1253,9 @@ class ChallengeTracker:
             "book": self.book.to_dict(),
             "cash": round(self.book.cash, 2),
             "equity": self.book.equity,
-            "paused": False,
+            "paused": enter_mode == "paused",
+            "enter_mode": enter_mode,
+            "pause_reason": pause_reason,
+            "pause_resume_days": float(pause_resume_days),
+            "days_since_last_loss": self.days_since_last_closed_loss(),
         }

@@ -387,10 +387,12 @@ actions:
   challenge_target_usd: 100000
   challenge_flips: 26          # ~+20%/flip × ~26 sessions → ~100× ($1k→$100k)
   challenge_max_tickets: 12
-  # Epoch: archive prior $500/$938 books; reseed $1k for $100k same-day path
-  challenge_epoch: "2026-10-02-1k-to-100k"
+  # Epoch: archive 0W/3L sniper spiral stuck at ~$935 (paused forever); reseed $1k
+  challenge_epoch: "2026-10-13-quality-resume"
   challenge_rebuild_seed_usd: 1000
-  challenge_rebuild_reason: "$1k→$100k same-day sniper reset — bank +20%/flip by Oct 31"
+  challenge_rebuild_reason: "$1k→$100k resume — archive 3L SPY/IWM/QQQ sniper pause; quality hist flips first"
+  # After N consecutive losses, pause then resume in quality-only (no snipers) after this many days
+  challenge_pause_resume_days: 2
   # Sprint desk: 0DTE / 1DTE liquid flips only (same-day in/out)
   challenge_sprint_desk: true
   challenge_min_dte: 0
