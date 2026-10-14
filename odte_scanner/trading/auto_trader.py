@@ -517,6 +517,13 @@ class AutoTrader:
                 budget -= 1
             else:
                 skipped.append(d)
+                # A rejected HTTP call still hit Webull. Count it, or one cycle
+                # will fire every golden row and trip TOO_MANY_REQUESTS.
+                if intent.status == "rejected":
+                    budget -= 1
+                    err = str(intent.error or "").upper()
+                    if "ACCOUNT_ACCESS_DENIED" in err or "INVALID ACCOUNT" in err:
+                        budget = 0
 
         # --- Lottery (0DTE convex calls) ---
         if lottery and budget > 0:
