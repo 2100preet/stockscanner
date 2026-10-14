@@ -169,13 +169,27 @@ def _to_et(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def compute_vwap(bars_1m: pd.DataFrame | None) -> float | None:
+def _session_day(now: datetime | None):
+    """Calendar day of the decision clock in US/Eastern.
+
+    Live calls omit ``now`` and use the wall clock. Replay and tests pass the
+    same ``now`` as ``decide_power_hour`` so yesterday's (or synthetic) bars
+    are not thrown away just because the process date has moved on.
+    """
+    if now is None:
+        return datetime.now(ET).date()
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=ET)
+    return now.astimezone(ET).date()
+
+
+def compute_vwap(bars_1m: pd.DataFrame | None, *, now: datetime | None = None) -> float | None:
     if bars_1m is None or bars_1m.empty:
         return None
     df = _to_et(bars_1m)
     # Session-day only — Tradier lookback can span 2 days; don't blend VWAP
     try:
-        today = datetime.now(ET).date()
+        today = _session_day(now)
         df = df.loc[df.index.date == today]
     except Exception:  # noqa: BLE001
         pass
@@ -197,12 +211,12 @@ def compute_vwap(bars_1m: pd.DataFrame | None) -> float | None:
     return float((typ * vol).sum() / vol.sum())
 
 
-def resample_15m(bars_1m: pd.DataFrame | None) -> pd.DataFrame | None:
+def resample_15m(bars_1m: pd.DataFrame | None, *, now: datetime | None = None) -> pd.DataFrame | None:
     if bars_1m is None or bars_1m.empty:
         return None
     df = _to_et(bars_1m)
     try:
-        today = datetime.now(ET).date()
+        today = _session_day(now)
         df = df.loc[df.index.date == today]
     except Exception:  # noqa: BLE001
         pass
@@ -368,10 +382,10 @@ def decide_power_hour(
     day_high = float(q["day_high"]) if q.get("day_high") is not None else None
     mom15 = float(q["mom_15m_pct"]) if q.get("mom_15m_pct") is not None else None
 
-    vwap = compute_vwap(bars_1m) if bars_1m is not None else None
+    vwap = compute_vwap(bars_1m, now=now) if bars_1m is not None else None
     if vwap is None:
         vwap = _quote_vwap_proxy(q)
-    bars_15 = resample_15m(bars_1m) if bars_1m is not None else None
+    bars_15 = resample_15m(bars_1m, now=now) if bars_1m is not None else None
     st = _structure_from_15m(bars_15)
 
     vs_vwap = None
@@ -740,7 +754,7 @@ def build_power_hour_board(
             bars_map[s] = fetch_intraday_1m(s, yahoo_symbol=aliases.get(s))  # type: ignore[assignment]
 
     qqq_bars = bars_map.get("QQQ")
-    qqq_vwap = compute_vwap(qqq_bars) if qqq_bars is not None else _quote_vwap_proxy(quotes.get("QQQ"))
+    qqq_vwap = compute_vwap(qqq_bars, now=now) if qqq_bars is not None else _quote_vwap_proxy(quotes.get("QQQ"))
 
     signals: list[PowerHourSignal] = []
     for sym in symbols:

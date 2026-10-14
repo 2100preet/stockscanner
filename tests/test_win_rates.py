@@ -1,5 +1,6 @@
 from odte_scanner.backtest.win_rates import _stats_from_returns, lookup_win_stats
 from odte_scanner.signals.actions import build_action_board
+from tests.session_clock import iso_day, session_et
 
 
 def test_stats_from_returns():
@@ -63,7 +64,7 @@ def test_board_includes_win_pct():
                 "symbol": "SPY",
                 "score": 80,
                 "strike": 770,
-                "expiry": "2026-08-05",
+                "expiry": iso_day(session_et(11, 0)),
                 "ask": 1.5,
                 "bid": 1.4,
                 "contract": "SPY260805C00770000",
@@ -87,6 +88,7 @@ def test_board_includes_win_pct():
         require_hist_win=True,
         min_hist_win_pct=80,
         min_hist_win_samples=5,
+        now=session_et(11, 0),
     )
     assert board["buy_now_0dte"]
     assert board["buy_now_0dte"][0]["win_pct"] == 82.0

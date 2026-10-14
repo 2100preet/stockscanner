@@ -1,5 +1,6 @@
 from odte_scanner.options.selector import select_calls
 from odte_scanner.signals.actions import build_action_board, decide_entry
+from tests.session_clock import iso_day, session_et
 
 
 def test_pltr_uses_real_weekly_not_synthetic():
@@ -48,13 +49,15 @@ def test_synthetic_never_buy_now():
 
 
 def test_board_splits_0dte_and_weekly():
+    morning = session_et(11, 0)
+    weekly = session_et(11, 0, weekday_offset=2)
     board = build_action_board(
         candidates=[
             {
                 "symbol": "SPY",
                 "score": 80,
                 "strike": 770,
-                "expiry": "2026-08-05",
+                "expiry": iso_day(morning),
                 "ask": 1.5,
                 "bid": 1.4,
                 "contract": "SPY260805C00770000",
@@ -65,11 +68,11 @@ def test_board_splits_0dte_and_weekly():
                 "symbol": "PLTR",
                 "score": 78,
                 "strike": 165,
-                "expiry": "2026-08-07",
+                "expiry": iso_day(weekly),
                 "ask": 2.16,
                 "bid": 2.13,
                 "contract": "PLTR260807C00165000",
-                "dte": 2,
+                "dte": (weekly.date() - morning.date()).days,
                 "dte_bucket": "weekly",
             },
         ],
@@ -87,7 +90,7 @@ def test_board_splits_0dte_and_weekly():
         ledger=None,
         buy_score=70,
         require_hist_win=False,
-        now=__import__("datetime").datetime(2026, 8, 11, 11, 0, tzinfo=__import__("zoneinfo").ZoneInfo("America/New_York")),
+        now=morning,
     )
     assert board["counts"]["buy_now_0dte"] == 1
     assert board["counts"]["buy_now_weekly"] == 1

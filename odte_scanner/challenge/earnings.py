@@ -362,6 +362,7 @@ def earnings_map_for(
     max_fetch: int = 24,
     cache_path: str | Path | None = None,
     force: bool = False,
+    as_of: date | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Build symbol → classified earnings for a candidate list."""
     aliases = aliases or {}
@@ -380,7 +381,7 @@ def earnings_map_for(
             fetched += 1
             cache = _load_cache(path)
         row = merge_curated_earnings(key, row)
-        out[key] = classify_earnings(row)
+        out[key] = classify_earnings(row, as_of=as_of)
         out[key]["raw"] = row
         out[key]["symbol"] = key
         if row and row.get("darling"):
@@ -401,10 +402,16 @@ def scan_earnings_calendar(
     within_pre_days: int = PRE_EARNINGS_DAYS,
     within_post_days: int = POST_EARNINGS_DAYS,
     within_soon_days: int = SOON_EARNINGS_DAYS,
+    as_of: date | None = None,
 ) -> list[dict[str, Any]]:
     """Return near-term earnings rows sorted: today → this week → next week → post → soon."""
     emap = earnings_map_for(
-        symbols, aliases=aliases, fetch=fetch, max_fetch=max_fetch, force=False
+        symbols,
+        aliases=aliases,
+        fetch=fetch,
+        max_fetch=max_fetch,
+        force=False,
+        as_of=as_of,
     )
     bucket_rank = {"today": 0, "this_week": 1, "next_week": 2, "post": 3, "soon": 4}
     rows: list[dict[str, Any]] = []

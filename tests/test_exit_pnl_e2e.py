@@ -5,6 +5,9 @@ from odte_scanner.config import load_config
 from odte_scanner.data.universe import FOCUS_DEFAULT, earnings_darlings_universe, liquid_universe
 from odte_scanner.signals.actions import build_action_board, decide_exit
 from odte_scanner.trading.journal import SignalJournal
+from tests.session_clock import iso_day, session_et
+
+_EXPIRY = iso_day(session_et(11, 0))
 
 
 def test_user_named_tickers_are_scannable():
@@ -27,7 +30,7 @@ def test_e2e_exit_shows_time_and_pnl(tmp_path):
             "action": "BUY_NOW",
             "symbol": "CRWV",
             "contract": "CRWV260814C00100000",
-            "expiry": "2026-08-14",
+            "expiry": _EXPIRY,
             "strike": 100,
             "ask": 2.50,
             "score": 80,
@@ -91,7 +94,7 @@ def test_take_profit_exit_pnl(tmp_path):
             "action": "BUY_NOW",
             "symbol": "NBIS",
             "contract": "NBIS260814C00050000",
-            "expiry": "2026-08-14",
+            "expiry": _EXPIRY,
             "strike": 50,
             "ask": 1.0,
             "score": 75,

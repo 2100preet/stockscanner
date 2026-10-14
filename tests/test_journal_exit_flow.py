@@ -1,15 +1,16 @@
 """Regression: offline Pages must still enter/exit paper trades with EXIT plans."""
 from __future__ import annotations
 
-from datetime import datetime
-from zoneinfo import ZoneInfo
-
 from odte_scanner.signals.actions import build_action_board
 from odte_scanner.trading.journal import SignalJournal
+from tests.session_clock import iso_day, session_et
 
-ET = ZoneInfo("America/New_York")
-_MORNING = datetime(2026, 8, 12, 11, 0, tzinfo=ET)
-_LATE = datetime(2026, 8, 12, 15, 50, tzinfo=ET)
+_MORNING = session_et(11, 0)
+_LATE = session_et(15, 50)
+_EXPIRY = iso_day(_MORNING)
+_WEEKLY_AT = session_et(11, 0, weekday_offset=2)
+_WEEKLY = iso_day(_WEEKLY_AT)
+_WEEKLY_DTE = (_WEEKLY_AT.date() - _MORNING.date()).days
 
 
 def test_offline_board_can_buy_without_live_tape():
@@ -19,11 +20,11 @@ def test_offline_board_can_buy_without_live_tape():
                 "symbol": "MSFT",
                 "score": 82,
                 "strike": 420,
-                "expiry": "2026-08-14",
+                "expiry": _WEEKLY,
                 "ask": 2.0,
                 "bid": 1.9,
                 "contract": "MSFT260814C00420000",
-                "dte": 2,
+                "dte": _WEEKLY_DTE,
                 "dte_bucket": "weekly",
                 "right": "C",
             }
@@ -50,7 +51,7 @@ def test_journal_enter_then_time_stop_exit(tmp_path):
                 "symbol": "SPY",
                 "score": 80,
                 "strike": 560,
-                "expiry": "2026-08-12",
+                "expiry": _EXPIRY,
                 "ask": 1.5,
                 "bid": 1.4,
                 "contract": "SPY260812C00560000",
@@ -126,7 +127,7 @@ def test_sync_skips_raw_candidates_without_headline(tmp_path):
                     "ask": 2.0,
                     "contract": "NVDA260812C00100000",
                     "strike": 100,
-                    "expiry": "2026-08-12",
+                    "expiry": _EXPIRY,
                     # no headline/detail/exit_plan — polluted scan row
                 }
             ],

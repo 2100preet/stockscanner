@@ -11,6 +11,7 @@ from odte_scanner.echo.flow_deltas import attach_deltas_to_ladder, diff_ladders
 from odte_scanner.signals.actions import ActionSignal, build_action_board
 from odte_scanner.signals.flow_gate import apply_flow_gate
 from odte_scanner.trading.journal import SignalJournal
+from tests.session_clock import iso_day, session_et
 
 
 def _bullish_ladder(symbol: str = "NVDA", *, spot: float = 120.0) -> dict:
@@ -206,7 +207,7 @@ def test_build_action_board_flow_gate_demotes_misaligned_put():
                 "score": 75,
                 "right": "P",
                 "strike": 175,
-                "expiry": "2026-09-05",
+                "expiry": iso_day(session_et(11, 0)),
                 "ask": 0.81,
                 "dte": 0,
                 "dte_bucket": "0dte",
@@ -220,6 +221,7 @@ def test_build_action_board_flow_gate_demotes_misaligned_put():
         require_live_confirm=False,
         flow_leaders=leaders,
         require_flow_confirm=True,
+        now=session_et(11, 0),
     )
     assert board["counts"]["buy_now"] == 0
     assert board["counts"]["wait"] >= 1
@@ -243,7 +245,7 @@ def test_journal_skips_enter_on_hard_flow_block(tmp_path):
         "action": "BUY_NOW",
         "symbol": "AMZN",
         "contract": "AMZN260905P00175000",
-        "expiry": "2026-09-05",
+        "expiry": iso_day(session_et(11, 0)),
         "strike": 175,
         "ask": 0.81,
         "score": 72,

@@ -1,5 +1,8 @@
 from odte_scanner.trading.insights import build_insights
 from odte_scanner.trading.journal import SignalJournal
+from tests.session_clock import iso_day, session_et
+
+_EXPIRY = iso_day(session_et(11, 0))
 
 
 def test_journal_enter_exit_profit_pct(tmp_path):
@@ -10,7 +13,7 @@ def test_journal_enter_exit_profit_pct(tmp_path):
             "action": "BUY_NOW",
             "symbol": "QQQ",
             "contract": "QQQ260805C00722000",
-            "expiry": "2026-08-05",
+            "expiry": _EXPIRY,
             "strike": 722,
             "ask": 2.0,
             "bid": 1.9,
@@ -71,7 +74,7 @@ def test_sync_from_actions(tmp_path):
                 "action": "BUY_NOW",
                 "symbol": "SPY",
                 "contract": "SPY260805C00770000",
-                "expiry": "2026-08-05",
+                "expiry": _EXPIRY,
                 "strike": 770,
                 "ask": 1.5,
                 "score": 80,
@@ -123,7 +126,7 @@ def test_journal_reload_preserves_balance_fields(tmp_path):
             "action": "BUY_NOW",
             "symbol": "IWM",
             "contract": "IWM260805C00250000",
-            "expiry": "2026-08-05",
+            "expiry": _EXPIRY,
             "strike": 250,
             "ask": 1.0,
             "score": 70,
@@ -146,7 +149,7 @@ def test_exit_prefers_mark_over_entry_ask_on_signal(tmp_path):
             "action": "BUY_NOW",
             "symbol": "SPY",
             "contract": "SPY260811C00770000",
-            "expiry": "2026-08-11",
+            "expiry": _EXPIRY,
             "strike": 770,
             "ask": 2.0,
             "score": 80,
@@ -181,7 +184,7 @@ def test_exit_parses_live_ask_from_reason_when_signal_pinned_to_entry(tmp_path):
             "action": "BUY_NOW",
             "symbol": "MU",
             "contract": "MU260811P00100000",
-            "expiry": "2026-08-11",
+            "expiry": _EXPIRY,
             "strike": 100,
             "ask": 0.81,
             "score": 70,
@@ -214,7 +217,7 @@ def test_reprice_flat_exits_from_live_ask_reason(tmp_path):
             "action": "BUY_NOW",
             "symbol": "ASTS",
             "contract": "ASTS260811P00020000",
-            "expiry": "2026-08-11",
+            "expiry": _EXPIRY,
             "strike": 20,
             "ask": 0.50,
             "score": 70,

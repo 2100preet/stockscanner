@@ -93,8 +93,9 @@ def test_vwap_chop_dead_zone():
 
 def test_nu_long_above_vwap():
     now = datetime(2026, 8, 14, 15, 20, tzinfo=ET)
-    # Synthetic 1m bars above VWAP with rising close
-    idx = pd.date_range("2026-08-14 14:00", periods=60, freq="1min", tz=ET)
+    # Bars follow the decision clock, not the wall-clock session.
+    start = now.replace(hour=14, minute=0, second=0, microsecond=0)
+    idx = pd.date_range(start, periods=60, freq="1min")
     closes = [10 + i * 0.01 for i in range(60)]
     df = pd.DataFrame(
         {
