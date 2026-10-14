@@ -35,9 +35,45 @@ DEFAULT_LEDGER = ROOT / "outputs" / "webull_orders.json"
 SANDBOX_TRADE_HOST = "api.sandbox.webull.com"
 PRODUCTION_TRADE_HOST = "api.webull.com"
 
+# Sandbox Individual Cash account number. The order API wants Webull's internal
+# account_id from get_account_list, not this number.
+CASH_ACCOUNT_NUMBER = "DEA32RD3"
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def find_account_id(payload: Any, account_number: str) -> str | None:
+    """Return the internal account_id whose account number matches.
+
+    Walks a get_account_list payload. A match that is only the account number
+    itself is ignored — that value is not the id the order API accepts.
+    """
+    target = str(account_number or "").strip().upper()
+    if not target:
+        return None
+    found: list[str] = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            number = str(
+                node.get("account_number")
+                or node.get("accountNumber")
+                or node.get("account_no")
+                or ""
+            ).strip().upper()
+            aid = str(node.get("account_id") or node.get("accountId") or "").strip()
+            if number == target and aid and aid.upper() != target:
+                found.append(aid)
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(payload)
+    return found[0] if found else None
 
 
 @dataclass
@@ -481,6 +517,7 @@ class WebullBroker:
         sandbox: bool = True,
         paper: bool = False,
         account_id: str | None = None,
+        account_id_2: str | None = None,
         app_key: str | None = None,
         app_secret: str | None = None,
         ledger_path: str | Path | None = None,
@@ -502,6 +539,7 @@ class WebullBroker:
         self.sandbox = True
         self.paper = True
         self.account_id = account_id or os.environ.get("WEBULL_ACCOUNT_ID")
+        self.account_id_2 = account_id_2 or os.environ.get("WEBULL_ACCOUNT_ID_2")
         self.app_key = app_key or os.environ.get("WEBULL_APP_KEY")
         self.app_secret = app_secret or os.environ.get("WEBULL_APP_SECRET")
         self.path = Path(ledger_path) if ledger_path else DEFAULT_LEDGER
@@ -573,6 +611,7 @@ class WebullBroker:
             "has_app_key": bool(self.app_key),
             "has_app_secret": bool(self.app_secret),
             "has_account_id": bool(self.account_id),
+            "has_account_id_2": bool(self.account_id_2),
             "sdk_available": sdk,
             "ready_submit": bool(
                 self.enabled
@@ -832,8 +871,55 @@ class WebullBroker:
         self._assert_sandbox()
         return self._call_with_backoff(lambda: self._post_option(intent))
 
+    def _order_account(self, intent: WebullOrderIntent | None = None) -> str:
+        """Sandbox account for this order. Per-order meta overrides the primary id."""
+        if intent is not None:
+            chosen = str((intent.meta or {}).get("account_id") or "").strip()
+            if chosen:
+                return chosen
+        return str(self.account_id or "")
+
+    def lookup_account_id(self, account_number: str = CASH_ACCOUNT_NUMBER) -> str | None:
+        """Resolve an account number to Webull's internal id via get_account_list.
+
+        Returns None when sandbox credentials are missing or the number is not
+        in the list. Does not print the app key or secret.
+        """
+        if not (self.app_key and self.app_secret):
+            return None
+        self._assert_sandbox()
+        self._trade_api()
+        trade = getattr(self, "_trade", None)
+        account = getattr(trade, "account_v2", None) or getattr(trade, "account", None)
+        meth = getattr(account, "get_account_list", None) if account is not None else None
+        if not callable(meth):
+            return None
+        res = meth()
+        payload: Any
+        if isinstance(res, (dict, list)):
+            payload = res
+        elif hasattr(res, "json"):
+            try:
+                payload = res.json()
+            except Exception:  # noqa: BLE001
+                payload = getattr(res, "text", None)
+        else:
+            payload = getattr(res, "text", None)
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except Exception:  # noqa: BLE001
+                return None
+        return find_account_id(payload, account_number)
+
     def _post_option(self, intent: WebullOrderIntent) -> str:
         order = build_option_place_order(intent)
+        account_id = self._order_account(intent)
+        if not account_id or account_id.upper() == CASH_ACCOUNT_NUMBER:
+            raise RuntimeError(
+                "Webull account_id missing or still the account number. "
+                "Use the internal id from get_account_list."
+            )
         intent.meta["host"] = SANDBOX_TRADE_HOST
         intent.meta["openapi_order"] = {
             "symbol": order["symbol"],
@@ -849,9 +935,9 @@ class WebullBroker:
             if not callable(meth):
                 continue
             if meth_name == "place_option":
-                res = meth(self.account_id, [order])
+                res = meth(account_id, [order])
             else:
-                res = meth(account_id=self.account_id, new_orders=[order])
+                res = meth(account_id=account_id, new_orders=[order])
             break
         if res is None:
             raise RuntimeError(
@@ -864,7 +950,7 @@ class WebullBroker:
             raise WebullRateLimit(f"Webull HTTP {status or 429}: {text}"[:500])
         return _broker_order_id(res, intent.id)
 
-    def list_option_positions(self) -> list[dict[str, Any]] | None:
+    def list_option_positions(self, account_id: str | None = None) -> list[dict[str, Any]] | None:
         """Long option positions on the sandbox account.
 
         ``None`` means the positions call failed and the caller should trust
@@ -873,16 +959,17 @@ class WebullBroker:
         """
         if self.dry_run or not self.enabled:
             return []
-        if not (self.app_key and self.app_secret and self.account_id):
+        acct = str(account_id or self.account_id or "")
+        if not (self.app_key and self.app_secret and acct):
             return None
         try:
-            payload = self._fetch_positions()
+            payload = self._fetch_positions(acct)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Webull positions failed: %s", exc)
             return None
         return parse_option_positions(payload)
 
-    def _fetch_positions(self) -> Any:
+    def _fetch_positions(self, account_id: str | None = None) -> Any:
         def _once() -> Any:
             self._assert_sandbox()
             self._trade_api()
@@ -895,7 +982,7 @@ class WebullBroker:
                 )
             if not callable(meth):
                 raise RuntimeError("Installed Webull SDK does not expose get_account_position")
-            res = meth(self.account_id)
+            res = meth(str(account_id or self.account_id or ""))
             status = _response_status(res)
             text = _response_text(res)
             if _looks_like_rate_limit(status, text):
@@ -961,7 +1048,7 @@ class WebullBroker:
             meth = getattr(api, "get_order_detail", None) or getattr(api, "query_order_detail", None)
             if not callable(meth):
                 raise RuntimeError("Installed Webull SDK does not expose get_order_detail")
-            res = meth(self.account_id, intent.id)
+            res = meth(self._order_account(intent), intent.id)
             status = _response_status(res)
             text = _response_text(res)
             if _looks_like_rate_limit(status, text):
@@ -1013,7 +1100,7 @@ class WebullBroker:
             meth = getattr(api, "cancel_option", None)
             if not callable(meth):
                 raise RuntimeError("Installed Webull SDK does not expose cancel_option")
-            res = meth(self.account_id, intent.id)
+            res = meth(self._order_account(intent), intent.id)
             status = _response_status(res)
             text = _response_text(res)
             if _looks_like_rate_limit(status, text):

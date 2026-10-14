@@ -572,9 +572,12 @@ live_trading:
   dry_run: true           # log + deep-link only until an explicit submit switch
   sandbox: true           # paper host api.sandbox.webull.com (ignored when paper is on — paper forces sandbox)
   paper: true             # Webull OpenAPI paper/sandbox account. WEBULL_LIVE cannot override this.
-  # Auto-trade only Sure Winner cards the desk renders gold (MAX and HIGH).
-  # Golden unusual-flow stays on the board and is not sent.
+  # Auto-trade gold Sure Winner cards on WEBULL_ACCOUNT_ID, and the second
+  # desk below on WEBULL_ACCOUNT_ID_2 (sandbox cash account DEA32RD3).
+  # The env value must be Webull's internal account_id from get_account_list,
+  # not the account number. Golden unusual-flow stays on the board.
   golden_only: true
+  second_desk: challenge
   # Pre-change golden-flow sandbox positions are left open unless this is true.
   close_legacy_positions: false
   # Stage golden BUY/SELL into webull_orders.json on each snapshot / watch (safe with dry_run)
@@ -600,6 +603,37 @@ live_trading:
   # Golden BUY cap for one sync. Sells and cancels do not count, so one tape
   # burst cannot open five positions before the next pass.
   max_golden_buys_per_sync: 2
+  # Exit study (docs/exit_study.md). premium uses the percents. eod turns the
+  # premium target and stop off and leaves the 15:45 ET clock in place.
+  exits:
+    sure_winner:
+      mode: premium
+      take_profit_pct: 80
+      stop_loss_pct: 50
+    odte:
+      mode: eod
+      take_profit_pct: 80
+      stop_loss_pct: 50
+    weekly:
+      mode: premium
+      take_profit_pct: 100
+      stop_loss_pct: 50
+    swing:
+      mode: premium
+      take_profit_pct: 80
+      stop_loss_pct: 50
+    lottery:
+      mode: premium
+      take_profit_pct: 80
+      stop_loss_pct: 50
+    challenge:
+      mode: premium
+      take_profit_pct: 100
+      stop_loss_pct: 50
+    rip:
+      mode: premium
+      take_profit_pct: 30
+      stop_loss_pct: 50
   desks:
     lottery: true         # 0DTE/1DTE convex BUY/SELL NOW
     odte: true

@@ -196,12 +196,16 @@ class ChallengeTracker:
         rebuild_seed_usd: float | None = None,
         rebuild_reason: str | None = None,
         target_usd: float | None = None,
+        exit_rule: str | None = None,
     ):
         self.path = Path(path) if path else DEFAULT_PATH
         self.epoch = str(epoch or "").strip()
         self.rebuild_seed_usd = rebuild_seed_usd
         self.rebuild_reason = rebuild_reason
         self.target_usd = float(target_usd) if target_usd is not None else 100_000.0
+        # ``tp100`` is the exit study's challenge rule: hold for +100% and −50%,
+        # and do not bank the sprint at +40% or cut it at −25%.
+        self.exit_rule = str(exit_rule or "").strip().lower()
         self.book = ChallengeBook(
             starting_cash=starting_cash,
             cash=starting_cash,
@@ -614,10 +618,8 @@ class ChallengeTracker:
             if contracts < 1 or cost <= 0 or cost > self.book.cash:
                 return None
 
-        mult = float(
-            ticket.get("target_premium_mult")
-            or (SNIPER_TARGET_MULT if is_sniper else 1.75)
-        )
+        default_mult = SNIPER_TARGET_MULT if is_sniper else (2.0 if self.exit_rule == "tp100" else 1.75)
+        mult = float(ticket.get("target_premium_mult") or default_mult)
         # Snipers bank ~+20% same day; other sprint tickets still aim ~40–100%
         if is_sniper:
             mult = max(1.15, min(1.60, mult))
@@ -631,7 +633,8 @@ class ChallengeTracker:
         if is_sniper:
             stop_pct = float(ticket.get("stop_loss_pct") or SNIPER_STOP_PCT)
         else:
-            stop_pct = float(ticket.get("stop_loss_pct") or (35.0 if hp.get("style") == "sprint" else 45.0))
+            default_stop = 50.0 if self.exit_rule == "tp100" else (35.0 if hp.get("style") == "sprint" else 45.0)
+            stop_pct = float(ticket.get("stop_loss_pct") or default_stop)
         side = "CALL" if right == "C" else "PUT"
         lane = "SNIPER" if is_sniper else "CHALLENGE"
         enter_plan = ticket.get("enter_plan") or (
@@ -751,6 +754,13 @@ class ChallengeTracker:
         trade.unrealized_pct = round(unreal, 2) if unreal is not None else None
 
         target_pct = (trade.target_premium_mult - 1.0) * 100.0
+        pure_tp100 = self.exit_rule == "tp100" and not (
+            str(trade.symbol or "").upper() in INDEX_SNIPERS
+            or str(trade.certainty_tier or "").lower() == "sniper"
+            or "SNIPER" in str(trade.entry_reason or "").upper()
+        )
+        if pure_tp100:
+            target_pct = max(target_pct, 100.0)
         mom5 = quote.get("mom_5m_pct") if quote else None
         live = None
         if quote:
@@ -793,15 +803,19 @@ class ChallengeTracker:
             )
         # Other sprint: bank +40% to free capital for next flip
         elif (
-            unreal is not None
+            not pure_tp100
+            and unreal is not None
             and unreal >= 40.0
             and days >= max(0.05, float(trade.hold_min_days or 0) * 0.25)
         ):
             action = "EXIT"
             reasons.append(f"bank sprint +{unreal:.0f}% (≥40%) — free capital for next flip")
-        if unreal is not None and unreal <= -trade.stop_loss_pct:
+        stop_line = 50.0 if pure_tp100 else float(trade.stop_loss_pct)
+        if unreal is not None and unreal <= -stop_line:
             action = "EXIT"
             reasons.append(f"stop −{abs(unreal):.0f}%")
+            if pure_tp100:
+                reasons[-1] = f"stop −{abs(unreal):.0f}% ≤ −{stop_line:.0f}%"
         # Sniper early cut — don't wait for full stop if already −12% after ~1h
         elif (
             is_sniper
@@ -813,7 +827,8 @@ class ChallengeTracker:
             reasons.append(f"sniper early cut −{abs(unreal):.0f}%")
         # Early sprint cut — don't wait for full −35/−45 if already −25% after min hold
         elif (
-            unreal is not None
+            not pure_tp100
+            and unreal is not None
             and unreal <= -25.0
             and days >= max(0.15, float(trade.hold_min_days or 0) * 0.5)
             and str(trade.horizon or "").lower() in {"sprint", "weekly", "fast", "1-3d"}

@@ -470,6 +470,7 @@ def decide_exit(
     weekly_max_hold_days: int = 7,
     odte_flatten_et: str = "15:45",
     now: datetime | None = None,
+    exit_mode: str = "premium",
 ) -> ActionSignal | None:
     if str(trade.get("status") or "open") != "open":
         return None
@@ -512,13 +513,15 @@ def decide_exit(
         strength = max(strength, 96.0)
         reasons.append(clock)
 
-    # Premium take-profit / stop-loss (config risk knobs — were previously unused)
-    if unreal is not None and unreal >= float(take_profit_pct):
+    # Premium take-profit / stop-loss. ``eod`` holds those and lets the clock
+    # flatten (15:45 ET on a 0DTE-style bucket) be the exit.
+    premium_exit = str(exit_mode or "premium").lower() != "eod"
+    if premium_exit and unreal is not None and unreal >= float(take_profit_pct):
         sell = True
         strength = max(strength, 92.0)
         reasons.append(f"take profit {unreal:+.0f}% ≥ +{take_profit_pct:.0f}%")
 
-    if unreal is not None and unreal <= -abs(float(stop_loss_pct)):
+    if premium_exit and unreal is not None and unreal <= -abs(float(stop_loss_pct)):
         sell = True
         strength = max(strength, 95.0)
         reasons.append(f"stop loss {unreal:+.0f}% ≤ −{abs(float(stop_loss_pct)):.0f}%")
@@ -858,6 +861,7 @@ def build_action_board(
     flow_min_net_score: float = 8.0,
     flow_min_tier: str = "aggressive",
     flow_require_vol_gt_oi: bool = False,
+    exit_rules: dict | None = None,
     loss_cooldown_symbols: set[str] | list[str] | None = None,
     loss_cooldown_contracts: set[str] | list[str] | None = None,
     market_tide: dict[str, Any] | None = None,
@@ -879,16 +883,27 @@ def build_action_board(
     sells: list[ActionSignal] = []
 
     for t in open_trades:
+        trade_tp = take_profit_pct
+        trade_sl = stop_loss_pct
+        trade_mode = "premium"
+        if exit_rules:
+            from odte_scanner.signals.exit_rules import rule_for_bucket
+
+            rule = rule_for_bucket(exit_rules, t.get("dte_bucket"))
+            trade_tp = rule.take_profit_pct
+            trade_sl = rule.stop_loss_pct
+            trade_mode = rule.mode
         sig = decide_exit(
             t,
             quote=quotes.get(str(t.get("symbol"))),
             score_by_symbol=score_by_symbol,
-            stop_loss_pct=stop_loss_pct,
-            take_profit_pct=take_profit_pct,
+            stop_loss_pct=trade_sl,
+            take_profit_pct=trade_tp,
             sell_score=sell_score,
             weekly_max_hold_days=weekly_max_hold_days,
             odte_flatten_et=odte_flatten_et,
             now=now,
+            exit_mode=trade_mode,
         )
         if not sig:
             continue

@@ -171,7 +171,7 @@ Data file: `outputs/signal_journal.json`
 
 ## Webull paper bridge (golden signals only)
 
-The auto-trade bridge stages Sure Winner cards the desk renders in gold (`sure-max` and `sure-high`: confidence tiers MAX and HIGH). SOLID cards and Golden unusual-flow prints stay on the board and are not sent.
+The auto-trade bridge stages Sure Winner cards the desk renders in gold (`sure-max` and `sure-high`: confidence tiers MAX and HIGH) on `WEBULL_ACCOUNT_ID`. The exit study's second sleeve, challenge, stages on `WEBULL_ACCOUNT_ID_2` when that internal account id is set. SOLID cards and Golden unusual-flow prints stay on the board and are not sent.
 
 `live_trading.dry_run` stays `true` and `live_trading.enabled` stays `false`. Keys in the environment do not submit anything.
 
@@ -183,7 +183,8 @@ On Fly (secrets, not the repo):
 |-----|----------|--------|
 | `WEBULL_APP_KEY` | yes, to submit | Sandbox app key |
 | `WEBULL_APP_SECRET` | yes, to submit | Sandbox app secret |
-| `WEBULL_ACCOUNT_ID` | yes, to submit | Sandbox account id (`get_account_list` on the sandbox host) |
+| `WEBULL_ACCOUNT_ID` | yes, to submit | Sandbox margin account id for gold Sure Winner (`get_account_list`) |
+| `WEBULL_ACCOUNT_ID_2` | for the second desk | Internal id of sandbox cash account `DEA32RD3`, not the account number |
 | `WEBULL_PAPER_ACCOUNT_ID` | optional | Overrides `WEBULL_ACCOUNT_ID` while paper mode is on |
 | `WEBULL_PAPER_SUBMIT=1` | yes, to submit | Enables submit and turns dry-run off, still on the sandbox host |
 | `WEBULL_GOLDEN_ONLY=0` | optional | Route every desk again (default is golden-only) |
