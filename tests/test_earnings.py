@@ -226,6 +226,8 @@ def test_scan_earnings_calendar_sort_order(tmp_path, monkeypatch):
 
 
 def test_iv_move_earnings_week_curated():
+    from datetime import date
+
     from odte_scanner.challenge.earnings import CURATED_EARNINGS, scan_earnings_calendar
     from odte_scanner.data.universe import FOCUS_DEFAULT
 
@@ -239,7 +241,11 @@ def test_iv_move_earnings_week_curated():
         assert sym in CURATED_EARNINGS, sym
         assert float(CURATED_EARNINGS[sym]["iv_move_pct"]) == iv
         assert sym in FOCUS_DEFAULT, f"{sym} missing from focus"
-    rows = scan_earnings_calendar(list(must), fetch=False, max_fetch=0)
+    # Curated Sep 2026 prints are a fixed calendar. Freeze the scan to that
+    # week so "this week / today / next week" does not rot after the print.
+    rows = scan_earnings_calendar(
+        list(must), fetch=False, max_fetch=0, as_of=date(2026, 9, 1)
+    )
     by = {r["symbol"]: r for r in rows}
     assert by["MDB"]["iv_move_pct"] == 20.6
     assert by["AVGO"]["bucket"] in {"this_week", "today", "next_week"}

@@ -4,18 +4,16 @@ Mirrors production bugs: SELL reason cited live ask while exit_bid stayed at ent
 """
 from __future__ import annotations
 
-from datetime import datetime
-from zoneinfo import ZoneInfo
-
 import pytest
 
 from odte_scanner.signals.actions import build_action_board, decide_exit
 from odte_scanner.signals.lottery import build_lottery_board, decide_lottery_exit
 from odte_scanner.trading.journal import SignalJournal, _parse_live_exit_from_reason
+from tests.session_clock import iso_day, session_et
 
-ET = ZoneInfo("America/New_York")
-_SESSION = datetime(2026, 8, 12, 11, 0, tzinfo=ET)
-_LATE = datetime(2026, 8, 12, 15, 50, tzinfo=ET)
+_SESSION = session_et(11, 0)
+_LATE = session_et(15, 50)
+_EXPIRY = iso_day(_SESSION)
 
 # Closed trades that were flat on live Pages before the fix (subset with live-ask reasons)
 _LIVE_FLAT_CASES = [
@@ -41,7 +39,7 @@ def _enter(
             "action": "BUY_NOW",
             "symbol": symbol,
             "contract": contract or f"{symbol}260812{'P' if right == 'P' else 'C'}00100000",
-            "expiry": "2026-08-12",
+            "expiry": _EXPIRY,
             "strike": 100,
             "ask": entry,
             "score": 72,
@@ -74,7 +72,7 @@ def test_live_flat_case_exit_from_signal_not_zero(tmp_path, symbol, entry, exit_
             "action": "BUY_NOW",
             "symbol": symbol,
             "contract": f"{symbol}260812{'P' if right == 'P' else 'C'}00100000",
-            "expiry": "2026-08-12",
+            "expiry": _EXPIRY,
             "strike": 100,
             "ask": entry,
             "score": 72,
@@ -144,7 +142,7 @@ def test_lottery_board_to_journal_nonzero_pnl(tmp_path):
             "action": "BUY_NOW",
             "symbol": "MU",
             "contract": "MU260812P00100000",
-            "expiry": "2026-08-12",
+            "expiry": _EXPIRY,
             "strike": 100,
             "ask": 0.81,
             "score": 70,
@@ -166,7 +164,7 @@ def test_lottery_board_to_journal_nonzero_pnl(tmp_path):
     ticket = {
         "symbol": "MU",
         "contract": "MU260812P00100000",
-        "expiry": "2026-08-12",
+        "expiry": _EXPIRY,
         "strike": 100,
         "dte": 0,
         "ask": 0.26,
@@ -203,7 +201,7 @@ def test_actions_stop_loss_board_to_journal(tmp_path):
             "action": "BUY_NOW",
             "symbol": "SPY",
             "contract": "SPY260812C00560000",
-            "expiry": "2026-08-12",
+            "expiry": _EXPIRY,
             "strike": 560,
             "ask": 2.50,
             "score": 80,
@@ -253,7 +251,7 @@ def test_take_profit_winner_pnl(tmp_path):
             "action": "BUY_NOW",
             "symbol": "NVDA",
             "contract": "NVDA260812C00100000",
-            "expiry": "2026-08-12",
+            "expiry": _EXPIRY,
             "strike": 100,
             "ask": 1.0,
             "score": 75,
@@ -293,7 +291,7 @@ def test_clock_exit_without_live_mark_stays_flat(tmp_path):
             "action": "BUY_NOW",
             "symbol": "SPY",
             "contract": "SPY260812C00560000",
-            "expiry": "2026-08-12",
+            "expiry": _EXPIRY,
             "strike": 560,
             "ask": 1.5,
             "score": 80,
@@ -335,7 +333,7 @@ def test_mixed_session_cash_integrity(tmp_path):
     j = SignalJournal(tmp_path / "mixed.json", starting_cash=5000)
     # Winner
     j.enter_from_signal(
-        {"action": "BUY_NOW", "symbol": "QQQ", "contract": "Q1", "expiry": "2026-08-12", "strike": 400, "ask": 1.0, "score": 80, "dte_bucket": "0dte", "detail": "b"}
+        {"action": "BUY_NOW", "symbol": "QQQ", "contract": "Q1", "expiry": _EXPIRY, "strike": 400, "ask": 1.0, "score": 80, "dte_bucket": "0dte", "detail": "b"}
     )
     j.exit_from_signal({"action": "SELL_NOW", "symbol": "QQQ", "bid": 1.8, "detail": "tp"})
     # Loser via live ask reason

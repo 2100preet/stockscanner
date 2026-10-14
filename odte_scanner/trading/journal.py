@@ -193,6 +193,7 @@ class SignalJournal:
         max_open: int = 5,
         max_per_day: int = 5,
         require_flow_gate: bool = False,
+        now: datetime | None = None,
     ) -> JournalTrade | None:
         if signal.get("action") != "BUY_NOW":
             return None
@@ -209,7 +210,7 @@ class SignalJournal:
             return None
         from odte_scanner.signals.hold_rules import contract_expired
 
-        if contract_expired(signal.get("expiry")):
+        if contract_expired(signal.get("expiry"), now):
             logger.info("Journal skip expired contract %s %s", symbol, signal.get("expiry"))
             return None
         if symbol in self.open_symbols():
@@ -630,6 +631,7 @@ class SignalJournal:
         require_flow_gate: bool = False,
         lottery: dict[str, Any] | None = None,
         ml6: dict[str, Any] | None = None,
+        now: datetime | None = None,
     ) -> dict[str, Any]:
         """Apply BUY NOW / SELL NOW from the action board (+ lottery / ML6) to the journal."""
         entered, exited = [], []
@@ -660,6 +662,7 @@ class SignalJournal:
                     sig,
                     max_risk_usd=max_risk_usd,
                     require_flow_gate=require_flow_gate,
+                    now=now,
                 )
                 if t:
                     entered.append(t.to_dict())

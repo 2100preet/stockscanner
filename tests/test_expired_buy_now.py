@@ -64,6 +64,31 @@ def test_decide_entry_blocks_same_day_after_1500_offline():
     assert "15:00" in sig.detail or "Past 15:00" in sig.detail
 
 
+def test_journal_expiry_follows_session_clock(tmp_path):
+    """Replay clock, not the wall clock, decides whether a contract is expired."""
+    session = datetime(2026, 9, 9, 11, 0, tzinfo=ET)
+    later = datetime(2026, 9, 10, 11, 0, tzinfo=ET)
+    signal = {
+        "action": "BUY_NOW",
+        "symbol": "MU",
+        "contract": "MU260909C01025000",
+        "expiry": "2026-09-09",
+        "strike": 1025,
+        "ask": 1.00,
+        "right": "C",
+        "headline": "BUY NOW",
+        "detail": "same-day ticket",
+        "exit_plan": "TP",
+    }
+    opened = SignalJournal(tmp_path / "open.json", starting_cash=5000)
+    trade = opened.enter_from_signal(signal, now=session)
+    assert trade is not None
+    assert trade.expiry == "2026-09-09"
+
+    skipped = SignalJournal(tmp_path / "skip.json", starting_cash=5000)
+    assert skipped.enter_from_signal(signal, now=later) is None
+
+
 def test_journal_skips_expired_contract(tmp_path):
     j = SignalJournal(tmp_path / "j.json", starting_cash=5000)
     t = j.enter_from_signal(
