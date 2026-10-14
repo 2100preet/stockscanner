@@ -187,16 +187,19 @@ def run_watch(
                     # Stage Webull BUY/SELL from the same action board
                     lt = cfg.get("live_trading") or {}
                     if bool(lt.get("auto_sync", True)):
+                        from odte_scanner.live_desk import resolve_webull_live_flags
                         from odte_scanner.trading.auto_trader import AutoTrader
                         from odte_scanner.trading.webull import WebullBroker
 
+                        flags = resolve_webull_live_flags(lt)
                         ledger = Path(lt.get("ledger_path", "outputs/webull_orders.json"))
                         broker = WebullBroker(
-                            enabled=bool(lt.get("enabled", False)),
-                            dry_run=bool(lt.get("dry_run", True)),
+                            enabled=bool(flags["enabled"]),
+                            dry_run=bool(flags["dry_run"]),
                             region=str(lt.get("region") or "us"),
-                            sandbox=bool(lt.get("sandbox", True)),
-                            account_id=lt.get("account_id"),
+                            sandbox=bool(flags["sandbox"]),
+                            paper=bool(flags["paper"]),
+                            account_id=flags.get("account_id") or lt.get("account_id"),
                             app_key=lt.get("app_key"),
                             app_secret=lt.get("app_secret"),
                             ledger_path=ledger,
@@ -209,8 +212,21 @@ def run_watch(
                             desks=dict(lt.get("desks") or {}) or None,
                             max_contracts=int(lt.get("max_contracts", 1)),
                             max_orders_per_sync=int(lt.get("max_orders_per_sync", 3)),
+                            golden_only=bool(flags.get("golden_only", True)),
                         )
-                        wb = trader.sync(actions=actions, lottery=None, challenge=None)
+                        sure_rows = None
+                        try:
+                            from odte_scanner.signals.sure_winners import build_sure_winner_board
+
+                            sure_rows = build_sure_winner_board(actions=actions)
+                        except Exception as exc:  # noqa: BLE001
+                            logger.debug("watch sure winners skipped: %s", exc)
+                        wb = trader.sync(
+                            actions=actions,
+                            lottery=None,
+                            challenge=None,
+                            sure_winners=sure_rows,
+                        )
                         snapshot["webull_sync"] = {
                             "submitted_n": wb.get("submitted_n"),
                             "skipped_n": wb.get("skipped_n"),

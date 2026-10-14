@@ -52,14 +52,17 @@ Env knobs:
 | `LIVE_DESK_EXTENDED=1` | Wider weekday window |
 | `LIVE_DESK_ALWAYS=1` | Run even outside RTH |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | Telegram |
-| `WEBULL_APP_KEY` / `WEBULL_APP_SECRET` / `WEBULL_ACCOUNT_ID` | Broker API |
-| `WEBULL_LIVE=1` | **Real submits** (enabled + dry_run off). Without this, orders are staged/dry-run only |
+| `WEBULL_APP_KEY` / `WEBULL_APP_SECRET` / `WEBULL_ACCOUNT_ID` | Sandbox app key, secret, and paper account id |
+| `WEBULL_PAPER_ACCOUNT_ID` | Optional paper account id override |
+| `WEBULL_PAPER_SUBMIT=1` | Submit golden orders to the sandbox paper account (dry-run off). Requires the three secrets |
+| `WEBULL_LIVE=1` | Production host only, and only when `live_trading.paper` is false. Ignored while paper mode is on |
+| `WEBULL_GOLDEN_ONLY=0` | Optional. Default routes Sure Winner gold + Golden flow only |
 
 ## Webull
 
 - Every live snapshot with `auto_sync: true` runs the AutoTrader.
-- Default config: `live_trading.enabled: false`, `dry_run: true` → **ledger / deep-link only**.
-- Set secrets + `WEBULL_LIVE=1` for instantaneous *submit attempts* on the same cycle a BUY/SELL appears (still gated by hist-win / desk rules — not every alert becomes an order).
+- Default config: `enabled: false`, `dry_run: true`, `paper: true`, `golden_only: true` → **ledger / deep-link only**, and only for Sure Winner gold (MAX) and Golden unusual-flow prints.
+- Paper submits use Webull's official sandbox (`api.sandbox.webull.com`) via `WEBULL_PAPER_SUBMIT=1` plus sandbox keys. That account is isolated from production. `WEBULL_LIVE=1` is the production host and does not override paper mode.
 
 ## What “instantaneous” means here
 
@@ -67,4 +70,4 @@ Env knobs:
 |-------------|---------|
 | Tick → UI in &lt;1s | Not supported on Pages; live host still waits for scan |
 | Signal → Telegram / Webull as soon as scan decides | Yes on live host; ~10m batch on Pages Actions |
-| Webull fill without keys / WEBULL_LIVE | No — staging only |
+| Webull fill without sandbox keys / WEBULL_PAPER_SUBMIT | No — dry-run staging only |

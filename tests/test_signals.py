@@ -86,6 +86,9 @@ def test_config_loads():
     assert "SPY" in cfg["tickers"]
     assert cfg["paper_trading"]["enabled"] is True
     assert cfg["live_trading"]["enabled"] is False
+    assert cfg["live_trading"]["dry_run"] is True
+    assert cfg["live_trading"]["paper"] is True
+    assert cfg["live_trading"]["golden_only"] is True
     assert "universe" in cfg
 
 

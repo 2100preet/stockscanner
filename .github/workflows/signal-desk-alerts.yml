@@ -115,7 +115,7 @@ jobs:
             echo "TELEGRAM configured=NO"
           fi
           if [ -n "${WEBULL_APP_KEY:-}" ] && [ -n "${WEBULL_APP_SECRET:-}" ]; then
-            echo "WEBULL keys configured=yes (live submit still needs live_trading.enabled + dry_run false)"
+            echo "WEBULL keys configured=yes (paper submit needs WEBULL_PAPER_SUBMIT=1; production needs paper off + WEBULL_LIVE=1)"
           else
             echo "WEBULL keys configured=NO — auto_sync still stages dry-run ledger on each export"
           fi

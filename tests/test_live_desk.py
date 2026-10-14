@@ -15,6 +15,17 @@ def test_webull_live_env_enables_submit(monkeypatch):
     assert flags["keys_ok"] is True
 
 
+def test_webull_live_does_not_override_paper(monkeypatch):
+    monkeypatch.setenv("WEBULL_APP_KEY", "k")
+    monkeypatch.setenv("WEBULL_APP_SECRET", "s")
+    monkeypatch.setenv("WEBULL_ACCOUNT_ID", "acct")
+    monkeypatch.setenv("WEBULL_LIVE", "1")
+    flags = resolve_webull_live_flags({"enabled": False, "dry_run": True, "paper": True})
+    assert flags["dry_run"] is True
+    assert flags["sandbox"] is True
+    assert flags["host"] == "api.sandbox.webull.com"
+
+
 def test_webull_keys_alone_stay_dry_run(monkeypatch):
     monkeypatch.setenv("WEBULL_APP_KEY", "k")
     monkeypatch.setenv("WEBULL_APP_SECRET", "s")

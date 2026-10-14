@@ -31,7 +31,7 @@ as soon as each focus scan finishes, deploy the Docker UI:
 
 1. [Railway](https://railway.app/new) or [Render](https://render.com/) → this repo  
 2. Set secrets: Tradier / UW / Telegram / Webull as needed  
-3. Optional: `WEBULL_LIVE=1` for real Webull submits (otherwise dry-run staging)  
+3. Webull paper (sandbox) submits: set the sandbox key, secret, and account id, then `WEBULL_PAPER_SUBMIT=1`  
 4. Open the service URL — background **live desk worker** scans continuously in RTH  
 
 See [`docs/HOW_SIGNALS_WORK.md`](docs/HOW_SIGNALS_WORK.md).
@@ -169,15 +169,31 @@ The UI tracks **suggested entries and exits**:
 Data file: `outputs/signal_journal.json`
 
 
-## Live trading
+## Webull paper bridge (golden signals only)
 
-Live order routing is **disabled**. To go live you must:
+The auto-trade bridge stages orders for two rows only. Everything else stays on the board and is not sent:
 
-1. Implement a broker adapter under `odte_scanner/trading/`  
-2. Set credentials via environment variables  
-3. Flip `live_trading.enabled: true`  
+- Sure Winner **gold** tier (`confidence_tier: MAX`, color gold)
+- Unusual options flow tape rows with tier **golden**
 
-Until then, only paper trades are recorded.
+`live_trading.dry_run` stays `true` and `live_trading.enabled` stays `false`. Keys in the environment do not submit anything.
+
+Webull's official OpenAPI paper account is the **sandbox** trading environment (`api.sandbox.webull.com`), labeled "Using OpenAPI service in Paper Trading" in the developer portal. It uses the same options order (`order_v2.place_option` / `POST /trading/orders/place`, `instrument_type: OPTION`). Sandbox keys and the sandbox account id are separate from production, and sandbox fills do not land in the live brokerage account. The in-app paper center at `act.webullbroker.com` is not this API.
+
+On Fly (secrets, not the repo):
+
+| Env | Required | Effect |
+|-----|----------|--------|
+| `WEBULL_APP_KEY` | yes, to submit | Sandbox app key |
+| `WEBULL_APP_SECRET` | yes, to submit | Sandbox app secret |
+| `WEBULL_ACCOUNT_ID` | yes, to submit | Sandbox account id (`get_account_list` on the sandbox host) |
+| `WEBULL_PAPER_ACCOUNT_ID` | optional | Overrides `WEBULL_ACCOUNT_ID` while paper mode is on |
+| `WEBULL_PAPER_SUBMIT=1` | yes, to submit | Enables submit and turns dry-run off, still on the sandbox host |
+| `WEBULL_GOLDEN_ONLY=0` | optional | Route every desk again (default is golden-only) |
+
+Do not set `WEBULL_LIVE=1` for this. That flag targets production `api.webull.com` and is ignored while `live_trading.paper: true` (the default). Production also requires `paper: false`.
+
+Until `WEBULL_PAPER_SUBMIT=1` and the three sandbox values are set, golden signals are dry-run rows in `outputs/webull_orders.json` only.
 
 ## Tests
 

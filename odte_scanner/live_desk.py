@@ -130,25 +130,68 @@ def start_live_desk_worker(config_path: str | None = None) -> bool:
 
 
 def resolve_webull_live_flags(lt: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Merge config + env for Webull enable/dry_run.
+    """Merge config + env for Webull enable/dry_run/paper.
 
-    WEBULL_LIVE=1 with APP_KEY+SECRET → enabled and dry_run=False (real submits).
-    Keys alone → enabled for staging, dry_run stays config default (usually True).
+    Safety:
+      • dry_run stays at the config default (true) unless a submit switch is explicit.
+      • WEBULL_LIVE=1 with keys submits to production (api.webull.com) only when
+        paper mode is off.
+      • Paper mode (config ``paper: true`` or WEBULL_PAPER=1) always uses the
+        sandbox host. WEBULL_LIVE does not override it.
+      • WEBULL_PAPER_SUBMIT=1 with keys and an account id submits to that
+        sandbox/paper account and leaves dry_run false.
+      • Keys alone never disable dry_run.
     """
     lt = dict(lt or {})
     key = (os.environ.get("WEBULL_APP_KEY") or lt.get("app_key") or "").strip()
     secret = (os.environ.get("WEBULL_APP_SECRET") or lt.get("app_secret") or "").strip()
     keys_ok = bool(key and secret)
     live = _env_flag("WEBULL_LIVE", False)
+    paper_env = _env_flag("WEBULL_PAPER", False)
+    paper_submit = _env_flag("WEBULL_PAPER_SUBMIT", False)
+    paper = bool(lt.get("paper", False)) or paper_env or paper_submit
+    paper_acct = (os.environ.get("WEBULL_PAPER_ACCOUNT_ID") or "").strip()
+    account_id = (os.environ.get("WEBULL_ACCOUNT_ID") or str(lt.get("account_id") or "")).strip()
+    if paper and paper_acct:
+        account_id = paper_acct
+    account_id = account_id or None
+    acct_ok = bool(account_id)
+
+    golden_env = (os.environ.get("WEBULL_GOLDEN_ONLY") or "").strip()
+    if golden_env:
+        golden_only = _env_flag("WEBULL_GOLDEN_ONLY", True)
+    else:
+        golden_only = bool(lt.get("golden_only", True))
+
     enabled = bool(lt.get("enabled", False))
-    if live and keys_ok:
-        enabled = True
     dry_run = bool(lt.get("dry_run", True))
-    if live and keys_ok:
+    cfg_submit = enabled and not dry_run
+    if paper:
+        # Paper/sandbox wins over WEBULL_LIVE so a paper flag cannot hit production.
+        sandbox = True
+        if (paper_submit or cfg_submit) and keys_ok and acct_ok:
+            enabled = True
+            dry_run = False
+        else:
+            enabled = bool(lt.get("enabled", False))
+            dry_run = bool(lt.get("dry_run", True))
+    elif live and keys_ok:
+        enabled = True
         dry_run = False
+        sandbox = False
+    else:
+        sandbox = bool(lt.get("sandbox", True))
+
     return {
         "enabled": enabled,
         "dry_run": dry_run,
         "keys_ok": keys_ok,
+        "account_ok": acct_ok,
+        "account_id": account_id,
         "webull_live_env": live,
+        "paper": paper,
+        "paper_submit_env": paper_submit,
+        "sandbox": sandbox,
+        "golden_only": golden_only,
+        "host": "api.sandbox.webull.com" if sandbox else "api.webull.com",
     }
