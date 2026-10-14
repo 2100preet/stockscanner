@@ -159,6 +159,9 @@ def run_watch(
                             paper = None
                     risk = cfg.get("risk") or {}
                     actions_cfg = cfg.get("actions") or {}
+                    from odte_scanner.signals.exit_rules import load_exit_rules
+
+                    _exit_rules = load_exit_rules((cfg.get("live_trading") or {}).get("exits"))
                     actions = build_action_board(
                         candidates=report.get("call_candidates") or [],
                         scores=report.get("scores") or [],
@@ -171,6 +174,7 @@ def run_watch(
                         sell_score=float(actions_cfg.get("sell_score", 48)),
                         stop_loss_pct=float(risk.get("stop_loss_pct", 50)),
                         take_profit_pct=float(risk.get("take_profit_pct", 80)),
+                        exit_rules=_exit_rules,
                         win_rate_table=report.get("win_rates"),
                     )
                     sync = journal.sync_from_actions(
@@ -216,6 +220,8 @@ def run_watch(
                             max_golden_buys_per_sync=int(lt.get("max_golden_buys_per_sync", 2)),
                             golden_only=bool(flags.get("golden_only", True)),
                             close_legacy_positions=bool(lt.get("close_legacy_positions", False)),
+                            second_desk=str(lt.get("second_desk") or "challenge"),
+                            exit_rules=_exit_rules,
                         )
                         sure_rows = None
                         try:

@@ -190,6 +190,8 @@ class AutoTrader:
         max_golden_buys_per_sync: int = 2,
         golden_only: bool = True,
         close_legacy_positions: bool = False,
+        second_desk: str = "challenge",
+        exit_rules: dict | None = None,
     ):
         self.broker = broker
         self.require_perfect_hist = bool(require_perfect_hist)
@@ -199,7 +201,12 @@ class AutoTrader:
         # Off by default. Golden-flow positions opened before the gold-card
         # rule are not sold or flattened unless this is explicitly on.
         self.close_legacy_positions = bool(close_legacy_positions)
+        # Second sandbox account. Gold stays on WEBULL_ACCOUNT_ID. This desk
+        # goes to WEBULL_ACCOUNT_ID_2 and is not sent when that id is missing.
+        self.second_desk = str(second_desk or "").strip().lower()
+        self.exit_rules = exit_rules
         self._now: datetime | None = None
+        self._position_accounts: set[str] = set()
         self._positions_by_contract: dict[str, dict[str, Any]] | None = None
         merged = {
             "lottery": True,
@@ -274,6 +281,8 @@ class AutoTrader:
         Sure Winner gold orders always. Older golden-flow orders only when
         ``close_legacy_positions`` is on, so a deploy does not flatten them.
         """
+        if order.desk == self.second_desk:
+            return True
         kind = str((order.meta or {}).get("golden_kind") or "")
         if kind == "sure_winner_gold":
             return True
@@ -282,10 +291,24 @@ class AutoTrader:
         return kind == "golden_flow" or order.desk in {"golden_flow", "sure_winner"}
 
     def _open_golden_buys(self) -> list[WebullOrderIntent]:
-        return [o for o in self.broker.orders if self._is_position_buy(o) and self._tracks_exit(o)]
+        return [
+            o
+            for o in self.broker.orders
+            if self._is_position_buy(o) and self._tracks_exit(o) and o.desk != self.second_desk
+        ]
 
     def _working_golden_buys(self) -> list[WebullOrderIntent]:
-        return [o for o in self.broker.orders if self._is_working_buy(o) and self._tracks_exit(o)]
+        return [
+            o
+            for o in self.broker.orders
+            if self._is_working_buy(o) and self._tracks_exit(o) and o.desk != self.second_desk
+        ]
+
+    def _open_desk_buys(self, desk: str) -> list[WebullOrderIntent]:
+        return [o for o in self.broker.orders if self._is_position_buy(o) and o.desk == desk]
+
+    def _working_desk_buys(self, desk: str) -> list[WebullOrderIntent]:
+        return [o for o in self.broker.orders if self._is_working_buy(o) and o.desk == desk]
 
     def _golden_buy_matching(
         self,
@@ -358,6 +381,14 @@ class AutoTrader:
     def _held_qty(self, order: WebullOrderIntent) -> float:
         """Contracts still long. A live positions snapshot overrides the ledger."""
         book = self._positions_by_contract
+        acct = str((order.meta or {}).get("account_id") or self.broker.account_id or "")
+        if book is not None and acct and self._position_accounts and acct not in self._position_accounts:
+            if self._is_position_buy(order):
+                filled = _f((order.meta or {}).get("filled_qty"))
+                if filled is not None and filled > 0:
+                    return filled
+                return float(order.quantity or 1)
+            return 0.0
         if book is not None:
             pos = book.get(str(order.contract or ""))
             if pos is not None:
@@ -375,6 +406,30 @@ class AutoTrader:
             return float(order.quantity or 1)
         return 0.0
 
+    def _managed_positions(self) -> list[dict[str, Any]] | None:
+        """Positions on the margin account, plus the second account when it is set.
+
+        ``None`` from the primary call means the book is unknown. A failed
+        second-account call is left out of the book so those lots keep the ledger.
+        """
+        primary = self.broker.list_option_positions()
+        if primary is None:
+            return None
+        rows: list[dict[str, Any]] = []
+        for pos in primary:
+            item = dict(pos)
+            item.setdefault("account_id", self.broker.account_id)
+            rows.append(item)
+        second_id = str(getattr(self.broker, "account_id_2", "") or "")
+        if second_id and second_id != str(self.broker.account_id or ""):
+            second = self.broker.list_option_positions(second_id)
+            if second is not None:
+                for pos in second:
+                    item = dict(pos)
+                    item["account_id"] = second_id
+                    rows.append(item)
+        return rows
+
     def _reconcile_positions(self, positions: list[dict[str, Any]] | None) -> None:
         """Mark ledger buys filled when the sandbox account actually holds them.
 
@@ -382,13 +437,21 @@ class AutoTrader:
         """
         if positions is None:
             self._positions_by_contract = None
+            self._position_accounts = set()
             return
         book: dict[str, dict[str, Any]] = {}
+        accounts: set[str] = set()
         for pos in positions:
             occ = str(pos.get("contract") or "")
             if occ:
                 book[occ] = pos
+            acct = str(pos.get("account_id") or self.broker.account_id or "")
+            if acct:
+                accounts.add(acct)
+        if not accounts and self.broker.account_id:
+            accounts.add(str(self.broker.account_id))
         self._positions_by_contract = book
+        self._position_accounts = accounts
         changed = False
         for order in self.broker.orders:
             if order.action != "BUY" or order.status in {"rejected", "cancelled", "skipped"}:
@@ -463,7 +526,11 @@ class AutoTrader:
         if not past_odte_flatten(now):
             return []
         rows: list[dict[str, Any]] = []
-        resting = self._open_golden_buys() + self._working_golden_buys()
+        resting = [
+            o
+            for o in self.broker.orders
+            if self._tracks_exit(o) and (self._is_position_buy(o) or self._is_working_buy(o))
+        ]
         for order in resting:
             probe = {
                 "symbol": order.symbol,
@@ -538,7 +605,24 @@ class AutoTrader:
             self._note_filtered(row, blocked)
             return None
         kind = golden_signal_kind(row)
-        if self.golden_only:
+        second = bool(self.golden_only and desk == self.second_desk)
+        if second:
+            account_2 = str(getattr(self.broker, "account_id_2", "") or "").strip()
+            if not account_2:
+                self._note_filtered(row, "WEBULL_ACCOUNT_ID_2 is not set")
+                return None
+            if account_2.upper() == "DEA32RD3":
+                self._note_filtered(
+                    row,
+                    "WEBULL_ACCOUNT_ID_2 is the account number, not the internal account_id",
+                )
+                return None
+            ready_row, missing = _row_has_option_fields(row, price_key, "ask", "mid", "mark")
+            if not ready_row:
+                self._note_filtered(row, missing)
+                return None
+            kind = None
+        elif self.golden_only:
             if kind is None:
                 self._note_filtered(row, "not a golden signal")
                 return None
@@ -558,6 +642,8 @@ class AutoTrader:
         ok, why = (True, "gate off")
         if self.golden_only and kind:
             ok, why = True, f"golden gate: {kind}"
+        elif second:
+            ok, why = True, "second desk sleeve"
         elif self.require_perfect_hist:
             ok, why = clears_perfect_hist_win(
                 row,
@@ -599,7 +685,12 @@ class AutoTrader:
             reason=str(row.get("detail") or row.get("headline") or row.get("thesis") or why),
             hist_win_pct=_f(row.get("hist_win_pct") if row.get("hist_win_pct") is not None else row.get("win_pct")),
             hist_samples=_i(row.get("hist_samples") or row.get("win_samples") or row.get("hist_win_samples")),
-            meta={"gate": "passed", "gate_reason": why, "golden_kind": kind},
+            meta={
+                "gate": "passed",
+                "gate_reason": why,
+                "golden_kind": kind,
+                **({"account_id": str(self.broker.account_id_2)} if second else {}),
+            },
             )
         ready, missing = _option_order_ready(intent)
         if not ready:
@@ -634,14 +725,21 @@ class AutoTrader:
         contract = str(row.get("contract") or "") or None
         expiry = str(row.get("expiry") or "") or None
         strike = _f(row.get("strike"))
+        second = bool(self.golden_only and desk == self.second_desk)
         if self.golden_only:
             # A golden label on the sell row is not enough. Only close a buy
             # this bridge already staged, and sell that exact contract.
-            opened = self._find_open_golden(row, right)
-            if opened is None:
+            if second:
+                opened = self._golden_buy_matching(row, right, self._open_desk_buys(self.second_desk))
+                working = self._golden_buy_matching(row, right, self._working_desk_buys(self.second_desk))
+                miss = f"sell only closes an open {self.second_desk} order"
+            else:
+                opened = self._find_open_golden(row, right)
                 working = self._find_working_golden(row, right)
+                miss = "sell only closes an open golden order"
+            if opened is None:
                 if working is None:
-                    self._note_filtered(row, "sell only closes an open golden order")
+                    self._note_filtered(row, miss)
                     return None
                 return self._cancel_unfilled(working, row)
             if self._sell_already_working(row, right):
@@ -663,7 +761,8 @@ class AutoTrader:
             if held >= 1:
                 quantity = max(1, int(held))
             sym = opened.symbol or sym
-            desk = "golden_exit"
+            if not second:
+                desk = "golden_exit"
         elif not self.desks.get(desk, False):
             return None
         intent = self.broker.stage(
@@ -682,9 +781,14 @@ class AutoTrader:
             meta={
                 "gate": "exit",
                 "gate_reason": "exit signals bypass entry hist gate",
-                "golden_kind": "golden_exit" if self.golden_only else kind,
+                "golden_kind": None if second else ("golden_exit" if self.golden_only else kind),
                 "limit_source": limit_source,
                 "closes_order_id": opened.id if opened is not None else None,
+                **(
+                    {"account_id": str((opened.meta or {}).get("account_id") or self.broker.account_id_2)}
+                    if second and opened is not None
+                    else {}
+                ),
             },
         )
         ready, missing = _option_order_ready(intent)
@@ -773,7 +877,7 @@ class AutoTrader:
         self._now = now
         self._closed_contracts = set()
         self.broker.refresh_working_buys()
-        self._reconcile_positions(self.broker.list_option_positions())
+        self._reconcile_positions(self._managed_positions())
 
         # --- Lottery (0DTE convex calls) ---
         if lottery and budget > 0:
@@ -818,7 +922,10 @@ class AutoTrader:
                 _take(self._route_buy(desk=desk, row=row, right=right))
 
         # --- Challenge sleeve (calls & puts) ---
-        if challenge and budget > 0:
+        # When the second sleeve is challenge, gold buys run first and this
+        # walk happens after them so the margin account keeps its budget.
+        defer_challenge = bool(self.golden_only and self.second_desk == "challenge")
+        if challenge and budget > 0 and not defer_challenge:
             for row in challenge.get("exit") or []:
                 if budget <= 0:
                     break
@@ -896,6 +1003,36 @@ class AutoTrader:
                 _take(self._route_buy(desk="sure_winner", row=row, right=right))
             for row in _flow_rows(option_flow):
                 self._note_filtered(row, "unusual flow is not auto-traded")
+
+        if defer_challenge and challenge and budget > 0:
+            for row in challenge.get("exit") or []:
+                if budget <= 0:
+                    break
+                if isinstance(row, dict):
+                    _take(
+                        self._route_sell(
+                            desk="challenge",
+                            row=row,
+                            right=str(row.get("right") or "C"),
+                        )
+                    )
+            for row in list(challenge.get("entry") or []) + [
+                t
+                for t in (challenge.get("tickets") or [])
+                if isinstance(t, dict) and str(t.get("action") or "").upper() == "ENTRY"
+            ]:
+                if budget <= 0:
+                    break
+                if not isinstance(row, dict):
+                    continue
+                _take(
+                    self._route_buy(
+                        desk="challenge",
+                        row=row,
+                        right=str(row.get("right") or "C"),
+                        price_key="ask",
+                    )
+                )
 
         return {
             "broker": self.broker.status(),

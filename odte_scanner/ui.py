@@ -5035,6 +5035,9 @@ def create_app(config_path: str | None = None) -> Flask:
                     loss_cooldown_contracts=loss_cooldown_cts,
                 )
 
+                from odte_scanner.signals.exit_rules import challenge_uses_tp100, load_exit_rules
+
+                _exit_rules = load_exit_rules((cfg.get("live_trading") or {}).get("exits"))
                 actions = build_action_board(
                     candidates=refreshed,
                     scores=scan.get("scores") or [],
@@ -5047,6 +5050,7 @@ def create_app(config_path: str | None = None) -> Flask:
                     sell_score=float(actions_cfg.get("sell_score", 48)),
                     stop_loss_pct=float(risk.get("stop_loss_pct", 50)),
                     take_profit_pct=float(risk.get("take_profit_pct", 80)),
+                    exit_rules=_exit_rules,
                     max_chase_pct=float(actions_cfg.get("max_chase_pct", 2.5)),
                     win_rate_table=win_table,
                     min_hist_win_pct=float(actions_cfg.get("min_hist_win_pct", 80)),
@@ -5843,6 +5847,7 @@ def create_app(config_path: str | None = None) -> Flask:
                         ),
                         rebuild_reason=str(actions_cfg.get("challenge_rebuild_reason") or "") or None,
                         target_usd=float(actions_cfg.get("challenge_target_usd", 100_000)),
+                        exit_rule="tp100" if challenge_uses_tp100(_exit_rules) else "",
                     )
                     # Live option marks BEFORE evaluate/EXIT — otherwise exits book at entry ($0 P&L)
                     fetch_ch_contracts = bool(actions_cfg.get("challenge_fetch_contracts", True)) and (
@@ -7069,6 +7074,9 @@ def create_app(config_path: str | None = None) -> Flask:
         ch_path = Path(actions_cfg.get("challenge_ledger_path", "outputs/challenge_ledger.json"))
         if not ch_path.is_absolute():
             ch_path = ROOT / ch_path
+        from odte_scanner.signals.exit_rules import challenge_uses_tp100, load_exit_rules
+
+        _exit_rules = load_exit_rules((cfg.get("live_trading") or {}).get("exits"))
         return ChallengeTracker(
             ch_path,
             starting_cash=float(actions_cfg.get("challenge_start_usd", 1000)),
@@ -7080,6 +7088,7 @@ def create_app(config_path: str | None = None) -> Flask:
             ),
             rebuild_reason=str(actions_cfg.get("challenge_rebuild_reason") or "") or None,
             target_usd=float(actions_cfg.get("challenge_target_usd", 100_000)),
+            exit_rule="tp100" if challenge_uses_tp100(_exit_rules) else "",
         )
 
     @app.post("/api/challenge/enter")
@@ -7332,6 +7341,7 @@ def create_app(config_path: str | None = None) -> Flask:
 
     def _webull_bundle():
         from odte_scanner.live_desk import resolve_webull_live_flags
+        from odte_scanner.signals.exit_rules import load_exit_rules
         from odte_scanner.trading.auto_trader import AutoTrader
         from odte_scanner.trading.webull import WebullBroker
 
@@ -7372,6 +7382,8 @@ def create_app(config_path: str | None = None) -> Flask:
             max_golden_buys_per_sync=int(lt.get("max_golden_buys_per_sync", 2)),
             golden_only=bool(flags.get("golden_only", True)),
             close_legacy_positions=bool(lt.get("close_legacy_positions", False)),
+            second_desk=str(lt.get("second_desk") or "challenge"),
+            exit_rules=load_exit_rules(lt.get("exits")),
         )
         return broker, trader
 

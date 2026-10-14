@@ -678,7 +678,7 @@ def test_weekly_golden_is_not_flattened_at_the_close(tmp_path: Path):
 @pytest.fixture(autouse=True)
 def _positions_follow_the_ledger(monkeypatch):
     """Don't hit the sandbox positions endpoint from unit tests."""
-    monkeypatch.setattr(WebullBroker, "list_option_positions", lambda self: None)
+    monkeypatch.setattr(WebullBroker, "list_option_positions", lambda self, account_id=None: None)
 
 
 def _sure_card(symbol: str, strike: float, *, right: str = "C", expiry: str = "2026-10-16", tier: str = "HIGH") -> dict:

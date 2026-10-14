@@ -92,6 +92,10 @@ def test_config_loads():
     assert cfg["live_trading"]["submit_interval_sec"] == 1.5
     assert cfg["live_trading"]["max_golden_buys_per_sync"] == 2
     assert cfg["live_trading"]["close_legacy_positions"] is False
+    assert cfg["live_trading"]["second_desk"] == "challenge"
+    assert cfg["live_trading"]["exits"]["challenge"]["take_profit_pct"] == 100
+    assert cfg["live_trading"]["exits"]["odte"]["mode"] == "eod"
+    assert cfg["live_trading"]["exits"]["sure_winner"]["take_profit_pct"] == 80
     assert "universe" in cfg
 
 
