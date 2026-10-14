@@ -837,7 +837,7 @@ PAGE = r"""
       <div class="panel">
         <h2>Webull auto-trade bridge</h2>
         <p class="lede" style="margin-top:0;font-size:.76rem">
-          Routes <strong>Sure Winner gold</strong> (MAX) and <strong>Golden</strong> unusual-flow prints only.
+          Routes Sure Winner cards rendered <strong>gold</strong> (MAX and HIGH). Golden unusual-flow stays on the board.
           Everything else stays on the board and is not sent. Dry-run by default.
           Paper mode uses Webull's sandbox host <code>api.sandbox.webull.com</code>.
           Set sandbox <code>WEBULL_APP_KEY</code> / <code>WEBULL_APP_SECRET</code> / <code>WEBULL_ACCOUNT_ID</code>
@@ -873,6 +873,7 @@ PAGE = r"""
     </footer>
   </div>
   <script>
+/*SURE_WINNER_CARD_JS*/
     let DATA = {};
     const fmt = (n, d=2) => (n==null || Number.isNaN(Number(n))) ? "—" : Number(n).toFixed(d);
     const pctClass = (n) => (n||0) >= 0 ? "up" : "down";
@@ -1272,11 +1273,9 @@ PAGE = r"""
       const isRip = buy && String(r.action || "").includes("RIP");
       const isBeauty = buy && String(r.action || "").includes("BEAUTY");
       const isLevel = buy && String(r.action || "").includes("LEVEL");
+      const sureCls = sureWinnerCardClass(r);
+      const isSure = !!sureCls;
       const sureTier = String(r.confidence_tier || "").toUpperCase();
-      const isSure = !!(r.sure_winner || r._desk === "Sure Winner" || sureTier === "MAX" || sureTier === "HIGH" || String(r.action||"").includes("SURE"));
-      const sureCls = isSure
-        ? (sureTier === "MAX" || r.go_huge ? "sure-max" : (sureTier === "HIGH" ? "sure-high" : "sure-solid"))
-        : "";
       const cls = buy
         ? (sureCls || (isRip || isBeauty || isLevel ? "long" : (gated ? "enter-now" : "long")))
         : (wait || setup ? "wait" : "short");
@@ -3685,10 +3684,8 @@ PAGE = r"""
 
       const card = (row, kind) => {
         const sureTier = String(row.confidence_tier || "").toUpperCase();
-        const isSure = kind === "sure" || row.sure_winner;
-        const sureCls = isSure
-          ? (sureTier === "MAX" || row.go_huge ? "sure-max" : (sureTier === "HIGH" ? "sure-high" : "sure-solid"))
-          : "";
+        const isSure = kind === "sure" || !!row.sure_winner || !!sureWinnerCardClass(row);
+        const sureCls = isSure ? (sureWinnerCardClass(row) || "sure-solid") : "";
         const tag = isSure
           ? `${sureTier || "SURE"} · ${row.size_label || "GO HUGE"}`
           : (kind === "must" ? "MUST TRADE" : (kind === "radar" ? "RADAR HOT" : "EXIT NOW"));
@@ -4258,6 +4255,10 @@ PAGE = r"""
 </body>
 </html>
 """
+
+from odte_scanner.trading.golden import SURE_WINNER_CARD_JS
+
+PAGE = PAGE.replace("/*SURE_WINNER_CARD_JS*/", SURE_WINNER_CARD_JS)
 
 
 def _read_json(path: Path) -> dict | list | None:
@@ -7370,6 +7371,7 @@ def create_app(config_path: str | None = None) -> Flask:
             max_orders_per_sync=int(lt.get("max_orders_per_sync", 3)),
             max_golden_buys_per_sync=int(lt.get("max_golden_buys_per_sync", 2)),
             golden_only=bool(flags.get("golden_only", True)),
+            close_legacy_positions=bool(lt.get("close_legacy_positions", False)),
         )
         return broker, trader
 

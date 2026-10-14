@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from dataclasses import asdict, dataclass, field, fields
@@ -105,6 +106,137 @@ def webull_trade_host(*, sandbox: bool) -> str:
     return SANDBOX_TRADE_HOST if sandbox else PRODUCTION_TRADE_HOST
 
 
+_OCC_RE = re.compile(r"([A-Z]{1,6})(\d{6})([CP])(\d{8})$")
+
+
+def parse_occ_contract(contract: str | None) -> dict[str, Any] | None:
+    """Split an OCC option symbol into symbol, expiry, right, and strike.
+
+    ``IREN261016P00030000`` is the IREN 2026-10-16 30 put. A leading ``O:``
+    is ignored. Returns None when the string is not an OCC symbol.
+    """
+    raw = str(contract or "").upper().replace("O:", "").strip()
+    match = _OCC_RE.search(raw)
+    if not match:
+        return None
+    root, yymmdd, right, strike_raw = match.groups()
+    expiry = f"{2000 + int(yymmdd[:2]):04d}-{yymmdd[2:4]}-{yymmdd[4:6]}"
+    strike = int(strike_raw) / 1000.0
+    return {
+        "symbol": root,
+        "expiry": expiry,
+        "right": right,
+        "strike": strike,
+        "contract": f"{root}{yymmdd}{right}{strike_raw}",
+    }
+
+
+def parse_option_positions(payload: Any) -> list[dict[str, Any]]:
+    """Pull long option positions out of a Webull positions payload.
+
+    Each row has contract, symbol, right, expiry, strike, and quantity.
+    Short or zero quantities are dropped. An OCC symbol on the row wins
+    over a conflicting right or expiry field.
+    """
+    found: list[dict[str, Any]] = []
+
+    def walk(node: Any, depth: int = 0) -> None:
+        if depth > 8:
+            return
+        if isinstance(node, list):
+            for item in node:
+                walk(item, depth + 1)
+            return
+        if not isinstance(node, dict):
+            return
+        ident = _position_identity(node)
+        if ident is not None:
+            found.append(ident)
+        for value in node.values():
+            if isinstance(value, (dict, list)):
+                walk(value, depth + 1)
+
+    walk(payload)
+    by_contract: dict[str, dict[str, Any]] = {}
+    for row in found:
+        key = str(row.get("contract") or "")
+        if not key:
+            key = f"{row.get('symbol')}|{row.get('right')}|{row.get('expiry')}|{row.get('strike')}"
+        prev = by_contract.get(key)
+        if prev is None or float(row["quantity"]) > float(prev["quantity"]):
+            by_contract[key] = row
+    return list(by_contract.values())
+
+
+def _position_identity(node: dict[str, Any]) -> dict[str, Any] | None:
+    contract = None
+    for key in ("contract", "symbol", "instrument_id", "option_symbol", "occ_symbol"):
+        parsed = parse_occ_contract(str(node.get(key) or ""))
+        if parsed:
+            contract = parsed
+            break
+    option_type = str(node.get("option_type") or node.get("optionType") or "").upper()
+    right = str(node.get("right") or "").upper()
+    if right in {"CALL", "C"} or option_type == "CALL":
+        right = "C"
+    elif right in {"PUT", "P"} or option_type == "PUT":
+        right = "P"
+    else:
+        right = ""
+    expiry = str(node.get("option_expire_date") or node.get("expiry") or node.get("expire_date") or "")[:10]
+    strike = _coerce_qty(node.get("strike_price") if node.get("strike_price") is not None else node.get("strike"))
+    qty = None
+    for key in ("quantity", "position", "position_quantity", "qty"):
+        parsed_qty = _coerce_qty(node.get(key))
+        if parsed_qty is not None:
+            qty = parsed_qty
+            break
+    instrument = str(node.get("instrument_type") or node.get("instrumentType") or "").upper()
+    looks_option = bool(contract) or instrument == "OPTION" or option_type in {"CALL", "PUT"} or right in {"C", "P"}
+    if not looks_option or qty is None or qty <= 0:
+        return None
+    if contract:
+        return {
+            "contract": contract["contract"],
+            "symbol": contract["symbol"],
+            "right": contract["right"],
+            "expiry": contract["expiry"],
+            "strike": contract["strike"],
+            "quantity": qty,
+        }
+    if not right or strike is None or len(expiry) < 10:
+        return None
+    symbol = str(node.get("underlying_symbol") or node.get("symbol") or "").upper()
+    if not symbol or parse_occ_contract(symbol):
+        return None
+    return {
+        "contract": "",
+        "symbol": symbol,
+        "right": right,
+        "expiry": expiry,
+        "strike": float(strike),
+        "quantity": qty,
+    }
+
+
+def apply_occ_identity(intent: WebullOrderIntent) -> WebullOrderIntent:
+    """Overwrite right/expiry/strike from the OCC symbol when one is present.
+
+    Production rows kept a CALL right and a later expiry on the signal while
+    the OCC contract was the put or the earlier date. The contract is the
+    order.
+    """
+    ident = parse_occ_contract(intent.contract)
+    if not ident:
+        return intent
+    intent.symbol = str(ident["symbol"])
+    intent.right = str(ident["right"])
+    intent.expiry = str(ident["expiry"])
+    intent.strike = float(ident["strike"])
+    intent.contract = str(ident["contract"])
+    return intent
+
+
 def build_option_place_order(intent: WebullOrderIntent) -> dict[str, Any]:
     """Single-leg option body for ``order_v2.place_option``.
 
@@ -112,8 +244,10 @@ def build_option_place_order(intent: WebullOrderIntent) -> dict[str, Any]:
     ``instrument_type=OPTION`` and a ``legs`` array. The same body is sent to
     ``api.sandbox.webull.com`` (paper) or ``api.webull.com`` (production).
     Options do not accept MARKET orders — a positive limit is required.
-    Sell-side time in force is DAY.
+    Sell-side time in force is DAY. When ``intent.contract`` is an OCC symbol
+    it wins over a conflicting right or expiry on the row.
     """
+    apply_occ_identity(intent)
     side = "BUY" if str(intent.action or "").upper() == "BUY" else "SELL"
     if str(intent.action or "").upper() not in {"BUY", "SELL"}:
         raise ValueError(f"unsupported side {intent.action}")
@@ -377,6 +511,7 @@ class WebullBroker:
         # One TradeClient for the life of this broker. A new client per submit
         # was opening a fresh HTTP stack on every golden buy.
         self._client = None
+        self._trade = None
         self._order_api = None
         self.submit_interval_sec = max(0.0, float(submit_interval_sec))
         self.rate_limit_attempts = max(1, int(rate_limit_attempts))
@@ -473,8 +608,8 @@ class WebullBroker:
                 if o.status in ("staged", "dry_run", "submitted", "deferred", "partial")
             ),
             "disclaimer": (
-                "Webull routing is golden-only by default: Sure Winner gold (MAX) and "
-                "Golden unusual-flow prints. Other board rows never route. "
+                "Webull routing is golden-only by default: Sure Winner cards rendered "
+                "gold (MAX and HIGH). Unusual-flow prints stay on the board. "
                 "Paper mode uses the official sandbox host api.sandbox.webull.com "
                 "(Webull OpenAPI Paper Trading) — not the production account. "
                 "dry_run stays on until sandbox keys and WEBULL_PAPER_SUBMIT=1 "
@@ -689,6 +824,7 @@ class WebullBroker:
         if order_api is None:
             raise RuntimeError("TradeClient has no order API in this SDK version")
         self._client = client
+        self._trade = trade
         return order_api
 
     def _place_via_openapi(self, intent: WebullOrderIntent) -> str:
@@ -727,6 +863,48 @@ class WebullBroker:
         if _looks_like_rate_limit(status, text):
             raise WebullRateLimit(f"Webull HTTP {status or 429}: {text}"[:500])
         return _broker_order_id(res, intent.id)
+
+    def list_option_positions(self) -> list[dict[str, Any]] | None:
+        """Long option positions on the sandbox account.
+
+        ``None`` means the positions call failed and the caller should trust
+        the ledger. An empty list means the sandbox account has no option
+        position. Dry-run never calls the network.
+        """
+        if self.dry_run or not self.enabled:
+            return []
+        if not (self.app_key and self.app_secret and self.account_id):
+            return None
+        try:
+            payload = self._fetch_positions()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Webull positions failed: %s", exc)
+            return None
+        return parse_option_positions(payload)
+
+    def _fetch_positions(self) -> Any:
+        def _once() -> Any:
+            self._assert_sandbox()
+            self._trade_api()
+            trade = getattr(self, "_trade", None)
+            account = getattr(trade, "account_v2", None) or getattr(trade, "account", None)
+            meth = None
+            if account is not None:
+                meth = getattr(account, "get_account_position", None) or getattr(
+                    account, "get_account_positions", None
+                )
+            if not callable(meth):
+                raise RuntimeError("Installed Webull SDK does not expose get_account_position")
+            res = meth(self.account_id)
+            status = _response_status(res)
+            text = _response_text(res)
+            if _looks_like_rate_limit(status, text):
+                raise WebullRateLimit(f"Webull HTTP {status or 429}: {text}"[:500])
+            if status is not None and status not in {200, 201}:
+                raise RuntimeError(f"Webull positions HTTP {status}: {text}")
+            return _response_body(res)
+
+        return self._call_with_backoff(_once)
 
     def refresh_working_buys(self) -> list[WebullOrderIntent]:
         """Update submitted/partial buys from order detail. Dry-run rows stay simulated."""
@@ -879,7 +1057,7 @@ class WebullBroker:
             },
             "how_to_verify": [
                 "1. Run a live Flask host (not GitHub Pages) — Pages is read-only.",
-                "1. Only Sure Winner gold (MAX) and Golden unusual-flow prints are staged. Other rows stay on the board.",
+                "1. Only Sure Winner cards rendered gold (MAX and HIGH) are staged. Golden flow stays on the board.",
                 "2. Keep dry_run: true until sandbox keys are set. Nothing is sent by default.",
                 "3. Paper account: generate keys under Webull Developer → Paper Trading / Sandbox, then set WEBULL_APP_KEY, WEBULL_APP_SECRET, and WEBULL_ACCOUNT_ID (or WEBULL_PAPER_ACCOUNT_ID). Host is api.sandbox.webull.com.",
                 "4. Submit to that paper account with WEBULL_PAPER_SUBMIT=1 (keys required). WEBULL_LIVE cannot place a production order.",

@@ -215,6 +215,7 @@ def run_watch(
                             max_orders_per_sync=int(lt.get("max_orders_per_sync", 3)),
                             max_golden_buys_per_sync=int(lt.get("max_golden_buys_per_sync", 2)),
                             golden_only=bool(flags.get("golden_only", True)),
+                            close_legacy_positions=bool(lt.get("close_legacy_positions", False)),
                         )
                         sure_rows = None
                         try:

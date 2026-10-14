@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from odte_scanner.trading.webull import parse_occ_contract
+
 
 def _vol_oi_ratio(vol: int, oi: int) -> float | None:
     if oi <= 0:
@@ -88,13 +90,23 @@ def build_option_flow(
                 premium = mid * 100 * vol
                 if vol < min_volume and premium < min_premium:
                     continue
-                scored = score_flow_print({**row, "premium_notional": premium}, spot=spot)
+                stamped = dict(row)
+                if not stamped.get("right"):
+                    stamped["right"] = "P" if side == "puts" else "C"
+                ident = parse_occ_contract(stamped.get("contract"))
+                if ident:
+                    stamped["right"] = ident["right"]
+                    stamped["expiry"] = ident["expiry"]
+                    stamped["strike"] = ident["strike"]
+                    stamped["contract"] = ident["contract"]
+                scored = score_flow_print({**stamped, "premium_notional": premium}, spot=spot)
                 scored.update(
                     {
                         "symbol": sym,
-                        "expiry": expiry,
+                        "expiry": stamped.get("expiry") or expiry,
                         "dte": dte,
                         "spot": spot,
+                        "right": stamped.get("right"),
                         "delta_volume": int(row.get("delta_volume") or 0),
                         "delta_oi": int(row.get("delta_oi") or 0),
                         "premium_delta": float(row.get("premium_delta") or 0),
