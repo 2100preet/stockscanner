@@ -133,11 +133,11 @@ def resolve_webull_live_flags(lt: dict[str, Any] | None = None) -> dict[str, Any
     """Merge config + env for Webull enable/dry_run/paper.
 
     Safety:
-      • dry_run stays at the config default (true) unless a submit switch is explicit.
-      • WEBULL_LIVE=1 with keys submits to production (api.webull.com) only when
-        paper mode is off.
-      • Paper mode (config ``paper: true`` or WEBULL_PAPER=1) always uses the
-        sandbox host. WEBULL_LIVE does not override it.
+      • dry_run stays at the config default (true) unless a paper submit switch
+        is explicit.
+      • The production host is never selected. WEBULL_LIVE cannot place live orders.
+      • Paper mode (config ``paper: true``, WEBULL_PAPER=1, or the default) uses
+        api.sandbox.webull.com.
       • WEBULL_PAPER_SUBMIT=1 with keys and an account id submits to that
         sandbox/paper account and leaves dry_run false.
       • Keys alone never disable dry_run.
@@ -166,21 +166,19 @@ def resolve_webull_live_flags(lt: dict[str, Any] | None = None) -> dict[str, Any
     enabled = bool(lt.get("enabled", False))
     dry_run = bool(lt.get("dry_run", True))
     cfg_submit = enabled and not dry_run
-    if paper:
-        # Paper/sandbox wins over WEBULL_LIVE so a paper flag cannot hit production.
-        sandbox = True
-        if (paper_submit or cfg_submit) and keys_ok and acct_ok:
-            enabled = True
-            dry_run = False
-        else:
-            enabled = bool(lt.get("enabled", False))
-            dry_run = bool(lt.get("dry_run", True))
-    elif live and keys_ok:
+    # Production (api.webull.com) is not selectable. WEBULL_LIVE is recorded
+    # and ignored so a leftover Fly secret cannot place a live order.
+    sandbox = True
+    if not paper:
+        paper = True
+    if (paper_submit or cfg_submit) and keys_ok and acct_ok:
         enabled = True
         dry_run = False
-        sandbox = False
     else:
-        sandbox = bool(lt.get("sandbox", True))
+        enabled = bool(lt.get("enabled", False))
+        dry_run = True if not cfg_submit else bool(lt.get("dry_run", True))
+        if not (keys_ok and acct_ok):
+            dry_run = True
 
     return {
         "enabled": enabled,

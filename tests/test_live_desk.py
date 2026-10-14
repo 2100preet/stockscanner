@@ -5,13 +5,17 @@ from __future__ import annotations
 from odte_scanner.live_desk import resolve_webull_live_flags, run_live_desk_cycle
 
 
-def test_webull_live_env_enables_submit(monkeypatch):
+def test_webull_live_env_cannot_arm_production(monkeypatch):
     monkeypatch.setenv("WEBULL_APP_KEY", "k")
     monkeypatch.setenv("WEBULL_APP_SECRET", "s")
+    monkeypatch.setenv("WEBULL_ACCOUNT_ID", "live-acct")
     monkeypatch.setenv("WEBULL_LIVE", "1")
-    flags = resolve_webull_live_flags({"enabled": False, "dry_run": True})
-    assert flags["enabled"] is True
-    assert flags["dry_run"] is False
+    monkeypatch.delenv("WEBULL_PAPER_SUBMIT", raising=False)
+    flags = resolve_webull_live_flags({"enabled": False, "dry_run": True, "paper": False})
+    assert flags["enabled"] is False
+    assert flags["dry_run"] is True
+    assert flags["sandbox"] is True
+    assert flags["host"] == "api.sandbox.webull.com"
     assert flags["keys_ok"] is True
 
 

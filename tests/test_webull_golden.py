@@ -83,6 +83,8 @@ def test_golden_kind_classifier():
     assert golden_signal_kind({"confidence_tier": "MAX"}) == "sure_winner_gold"
     assert golden_signal_kind({"color": "gold"}) == "sure_winner_gold"
     assert golden_signal_kind(_amber_winner()) is None
+    assert golden_signal_kind({"confidence_tier": "HIGH", "color": "gold"}) is None
+    assert golden_signal_kind({"confidence_tier": "SOLID", "go_huge": True}) is None
     assert golden_signal_kind({"confidence_tier": "SOLID", "color": "soft-amber"}) is None
     assert golden_signal_kind(_golden_flow()) == "golden_flow"
     assert golden_signal_kind({"flags": ["golden"]}) == "golden_flow"
@@ -262,6 +264,90 @@ def test_option_order_body_matches_openapi_shape():
     )
     with pytest.raises(ValueError, match="limit"):
         build_option_place_order(naked)
+
+
+def test_sell_without_open_golden_is_not_staged(tmp_path: Path):
+    broker = WebullBroker(enabled=True, dry_run=True, ledger_path=tmp_path / "wb.json")
+    trader = AutoTrader(broker, golden_only=True)
+    out = trader.sync(
+        actions={
+            "buy_now": [],
+            "sell_now": [
+                {
+                    "symbol": "NVDA",
+                    "right": "C",
+                    "confidence_tier": "MAX",
+                    "color": "gold",
+                    "bid": 1.8,
+                    "contract": "NVDA260821C00120000",
+                    "expiry": "2026-08-21",
+                    "strike": 120,
+                }
+            ],
+        }
+    )
+    assert out["submitted_n"] == 0
+    assert broker.orders == []
+    assert any("closes" in r["reason"] for r in out["filtered"])
+
+
+def test_sell_does_not_close_a_different_contract(tmp_path: Path):
+    broker = WebullBroker(enabled=True, dry_run=True, ledger_path=tmp_path / "wb.json")
+    trader = AutoTrader(broker, golden_only=True, max_orders_per_sync=4)
+    assert trader.sync(sure_winners={"winners": [_gold_winner()]})["submitted_n"] == 1
+    out = trader.sync(
+        actions={
+            "buy_now": [],
+            "sell_now": [
+                {
+                    "symbol": "NVDA",
+                    "right": "C",
+                    "bid": 0.4,
+                    "contract": "NVDA260821C00130000",
+                    "expiry": "2026-08-21",
+                    "strike": 130,
+                }
+            ],
+        }
+    )
+    assert [o for o in out["submitted"] if o["action"] == "SELL"] == []
+    assert all(o.action != "SELL" for o in broker.orders)
+
+
+def test_duplicate_golden_sell_is_not_restaged(tmp_path: Path):
+    broker = WebullBroker(enabled=True, dry_run=True, ledger_path=tmp_path / "wb.json")
+    trader = AutoTrader(broker, golden_only=True, max_orders_per_sync=4)
+    trader.sync(sure_winners={"winners": [_gold_winner()]})
+    sell = {
+        "symbol": "NVDA",
+        "right": "C",
+        "bid": 1.8,
+        "contract": "NVDA260821C00120000",
+        "expiry": "2026-08-21",
+        "strike": 120,
+    }
+    first = trader.sync(actions={"buy_now": [], "sell_now": [sell]})
+    second = trader.sync(actions={"buy_now": [], "sell_now": [sell]})
+    assert len([o for o in first["submitted"] if o["action"] == "SELL"]) == 1
+    assert [o for o in second["submitted"] if o["action"] == "SELL"] == []
+    assert len([o for o in broker.orders if o.action == "SELL"]) == 1
+
+
+def test_broker_refuses_production_host(tmp_path: Path):
+    broker = WebullBroker(
+        enabled=True,
+        dry_run=False,
+        sandbox=False,
+        paper=False,
+        app_key="k",
+        app_secret="s",
+        account_id="acct",
+        ledger_path=tmp_path / "wb.json",
+    )
+    assert broker.sandbox is True
+    assert broker.paper is True
+    assert broker.status()["host"] == SANDBOX_TRADE_HOST
+    assert broker.status()["ready_live"] is False
 
 
 def test_paper_mode_stays_on_sandbox_even_if_webull_live(monkeypatch):

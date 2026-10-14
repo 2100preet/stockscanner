@@ -221,8 +221,15 @@ class WebullBroker:
         self.enabled = bool(enabled)
         self.dry_run = bool(dry_run) or not enabled
         self.region = region or "us"
-        self.sandbox = bool(sandbox) or bool(paper)
-        self.paper = bool(paper) or self.sandbox
+        # Production placement is disabled. A caller that asks for the live host
+        # still stays on the paper sandbox.
+        if not (bool(sandbox) or bool(paper)):
+            logger.warning(
+                "Webull production host requested; forcing paper sandbox %s",
+                SANDBOX_TRADE_HOST,
+            )
+        self.sandbox = True
+        self.paper = True
         self.account_id = account_id or os.environ.get("WEBULL_ACCOUNT_ID")
         self.app_key = app_key or os.environ.get("WEBULL_APP_KEY")
         self.app_secret = app_secret or os.environ.get("WEBULL_APP_SECRET")
@@ -385,7 +392,7 @@ class WebullBroker:
                     "Preview only (live_trading.enabled is false). "
                     "Paper submits need sandbox keys plus WEBULL_PAPER_SUBMIT=1 "
                     "(or enabled: true and dry_run: false). "
-                    "WEBULL_LIVE=1 is production and is ignored while paper mode is on."
+                    "WEBULL_LIVE cannot place a production order."
                     if self.paper
                     else (
                         "Preview only (live_trading.enabled is false). "
@@ -449,7 +456,15 @@ class WebullBroker:
         return intent
 
     def _place_via_openapi(self, intent: WebullOrderIntent) -> str:
-        """Place a single-leg option order on the paper sandbox or production host."""
+        """Place a single-leg option order on the paper sandbox host only."""
+        if not self.sandbox:
+            raise RuntimeError(
+                "Refusing production Webull host api.webull.com. "
+                "This bridge only places paper-sandbox orders."
+            )
+        host = webull_trade_host(sandbox=True)
+        if host != SANDBOX_TRADE_HOST:
+            raise RuntimeError(f"Refusing non-sandbox Webull host {host}")
         try:
             from webull.core.client import ApiClient
             from webull.trade.trade_client import TradeClient
@@ -460,7 +475,6 @@ class WebullBroker:
             ) from exc
 
         order = build_option_place_order(intent)
-        host = webull_trade_host(sandbox=self.sandbox)
         intent.meta["host"] = host
         intent.meta["openapi_order"] = {
             "symbol": order["symbol"],
@@ -531,7 +545,7 @@ class WebullBroker:
                 "1. Only Sure Winner gold (MAX) and Golden unusual-flow prints are staged. Other rows stay on the board.",
                 "2. Keep dry_run: true until sandbox keys are set. Nothing is sent by default.",
                 "3. Paper account: generate keys under Webull Developer → Paper Trading / Sandbox, then set WEBULL_APP_KEY, WEBULL_APP_SECRET, and WEBULL_ACCOUNT_ID (or WEBULL_PAPER_ACCOUNT_ID). Host is api.sandbox.webull.com.",
-                "4. Submit to that paper account with WEBULL_PAPER_SUBMIT=1 (keys required). Do not set WEBULL_LIVE — that is the production host and is ignored while paper mode is on.",
+                "4. Submit to that paper account with WEBULL_PAPER_SUBMIT=1 (keys required). WEBULL_LIVE cannot place a production order.",
                 "5. Statuses: dry_run = logged only; submitted = accepted by OpenAPI; skipped = gate/off. Confirm the sandbox account, not the live brokerage account.",
             ],
         }

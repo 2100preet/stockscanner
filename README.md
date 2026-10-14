@@ -191,7 +191,7 @@ On Fly (secrets, not the repo):
 | `WEBULL_PAPER_SUBMIT=1` | yes, to submit | Enables submit and turns dry-run off, still on the sandbox host |
 | `WEBULL_GOLDEN_ONLY=0` | optional | Route every desk again (default is golden-only) |
 
-Do not set `WEBULL_LIVE=1` for this. That flag targets production `api.webull.com` and is ignored while `live_trading.paper: true` (the default). Production also requires `paper: false`.
+`WEBULL_LIVE=1` does not place production orders. The bridge refuses `api.webull.com` and stays on the paper sandbox. A sell is staged only when it closes a golden buy this bridge already opened.
 
 Until `WEBULL_PAPER_SUBMIT=1` and the three sandbox values are set, golden signals are dry-run rows in `outputs/webull_orders.json` only.
 

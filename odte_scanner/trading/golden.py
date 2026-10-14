@@ -21,10 +21,14 @@ def is_sure_winner_gold(row: dict[str, Any] | None) -> bool:
         return False
     tier = str(row.get("confidence_tier") or "").strip().upper()
     color = str(row.get("color") or "").strip().lower()
-    if tier in SURE_WINNER_GOLD_TIERS or color in SURE_WINNER_GOLD_COLORS:
+    # An explicit lower tier wins over a stray gold color or GO HUGE flag.
+    if tier and tier not in SURE_WINNER_GOLD_TIERS:
+        return False
+    if tier in SURE_WINNER_GOLD_TIERS:
         return True
-    # GO HUGE is only stamped on MAX. Ignore it when a lower tier is explicit.
-    if bool(row.get("go_huge")) and tier in {"", "MAX"} and color in {"", "gold"}:
+    if color in SURE_WINNER_GOLD_COLORS:
+        return True
+    if bool(row.get("go_huge")) and color in {"", "gold"}:
         return True
     return False
 

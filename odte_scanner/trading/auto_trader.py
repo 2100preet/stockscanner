@@ -189,16 +189,54 @@ class AutoTrader:
         return out
 
     def _matches_open_golden(self, row: dict[str, Any], right: str) -> bool:
+        """True only when this sell closes a specific open golden buy.
+
+        A contract match is required when either side has an OCC symbol.
+        Otherwise symbol, right, expiry, and strike must all agree.
+        """
         sym = str(row.get("symbol") or "").upper()
         contract = str(row.get("contract") or "")
         right_u = str(right or "C").upper()
+        if right_u not in {"C", "P"}:
+            right_u = "C"
+        strike = _f(row.get("strike"))
+        expiry = str(row.get("expiry") or "")[:10]
         for o in self._open_golden_buys():
-            if o.symbol != sym:
+            if o.symbol != sym or o.right != right_u:
+                continue
+            if contract or o.contract:
+                if contract and o.contract and contract == o.contract:
+                    return True
+                continue
+            if strike is None or o.strike is None or abs(float(strike) - float(o.strike)) > 1e-6:
+                continue
+            if not expiry or not o.expiry or expiry != str(o.expiry)[:10]:
+                continue
+            return True
+        return False
+
+    def _sell_already_working(self, row: dict[str, Any], right: str) -> bool:
+        """Skip a second SELL while one for the same option is still open."""
+        sym = str(row.get("symbol") or "").upper()
+        contract = str(row.get("contract") or "")
+        right_u = str(right or "C").upper()
+        strike = _f(row.get("strike"))
+        expiry = str(row.get("expiry") or "")[:10]
+        for o in self.broker.orders:
+            if o.action != "SELL" or o.status not in ("staged", "dry_run", "submitted"):
                 continue
             if contract and o.contract and contract == o.contract:
                 return True
-            if o.right == right_u and not (contract and o.contract and contract != o.contract):
-                if not contract or not o.contract:
+            if o.symbol == sym and o.right == right_u:
+                if contract or o.contract:
+                    continue
+                same_strike = (
+                    strike is not None
+                    and o.strike is not None
+                    and abs(float(strike) - float(o.strike)) <= 1e-6
+                )
+                same_expiry = bool(expiry and o.expiry and expiry == str(o.expiry)[:10])
+                if same_strike and same_expiry:
                     return True
         return False
 
@@ -291,9 +329,9 @@ class AutoTrader:
             quantity=self.max_contracts,
             limit_price=_f(row.get(price_key) or row.get("ask") or row.get("mid") or row.get("mark")),
             reason=str(row.get("detail") or row.get("headline") or row.get("thesis") or why),
-                hist_win_pct=_f(row.get("hist_win_pct") if row.get("hist_win_pct") is not None else row.get("win_pct")),
-                hist_samples=_i(row.get("hist_samples") or row.get("win_samples") or row.get("hist_win_samples")),
-                meta={"gate": "passed", "gate_reason": why, "golden_kind": kind},
+            hist_win_pct=_f(row.get("hist_win_pct") if row.get("hist_win_pct") is not None else row.get("win_pct")),
+            hist_samples=_i(row.get("hist_samples") or row.get("win_samples") or row.get("hist_win_samples")),
+            meta={"gate": "passed", "gate_reason": why, "golden_kind": kind},
             )
         ready, missing = _option_order_ready(intent)
         if not ready:
@@ -315,21 +353,20 @@ class AutoTrader:
         if not sym:
             return None
         kind = golden_signal_kind(row)
-        if self.golden_only and kind is None and not self._matches_open_golden(row, right):
-            self._note_filtered(row, "not a golden signal")
-            return None
         if self.golden_only:
+            # A golden label on the sell row is not enough. Only close a buy
+            # this bridge already staged.
+            if not self._matches_open_golden(row, right):
+                self._note_filtered(row, "sell only closes an open golden order")
+                return None
+            if self._sell_already_working(row, right):
+                return None
             ready_row, missing = _row_has_option_fields(row, "bid", "ask", "mid", "mark")
             if not ready_row:
                 self._note_filtered(row, missing)
                 return None
-        if self.golden_only and kind == "sure_winner_gold":
-            desk = "sure_winner"
-        elif self.golden_only and kind == "golden_flow":
-            desk = "golden_flow"
-        elif self.golden_only:
             desk = "golden_exit"
-        if desk != "golden_exit" and not self.desks.get(desk, False):
+        elif not self.desks.get(desk, False):
             return None
         intent = self.broker.stage(
             desk=desk,
@@ -347,7 +384,7 @@ class AutoTrader:
             meta={
                 "gate": "exit",
                 "gate_reason": "exit signals bypass entry hist gate",
-                "golden_kind": kind or ("golden_exit" if self.golden_only else None),
+                "golden_kind": "golden_exit" if self.golden_only else kind,
             },
         )
         ready, missing = _option_order_ready(intent)
