@@ -14,8 +14,38 @@ from odte_scanner.trading.webull import (
     WebullBroker,
     WebullOrderIntent,
     build_option_place_order,
+    classify_broker_order,
     webull_trade_host,
 )
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.t = 0.0
+        self.sleeps: list[float] = []
+
+    def now(self) -> float:
+        return self.t
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.t += seconds
+
+
+def _live_broker(tmp_path: Path, clock: _Clock | None = None) -> WebullBroker:
+    kwargs: dict = {
+        "enabled": True,
+        "dry_run": False,
+        "app_key": "k",
+        "app_secret": "s",
+        "account_id": "acct",
+        "ledger_path": tmp_path / "wb.json",
+        "submit_interval_sec": 1.5,
+    }
+    if clock is not None:
+        kwargs["sleeper"] = clock.sleep
+        kwargs["clock"] = clock.now
+    return WebullBroker(**kwargs)
 
 
 def _gold_winner() -> dict:
@@ -695,6 +725,303 @@ def test_rejected_orders_still_honor_the_sync_cap(tmp_path: Path, monkeypatch):
         }
     )
     assert calls == ["SPY", "QQQ"]
+
+
+def test_live_submits_are_spaced(tmp_path: Path, monkeypatch):
+    clock = _Clock()
+    broker = _live_broker(tmp_path, clock)
+    monkeypatch.setattr(broker, "_post_option", lambda intent: intent.id)
+
+    def _stage(symbol: str, strike: float) -> WebullOrderIntent:
+        return broker.stage(
+            desk="golden_flow",
+            action="BUY",
+            symbol=symbol,
+            right="C",
+            contract=f"{symbol}261016C{int(strike * 1000):08d}",
+            expiry="2026-10-16",
+            strike=strike,
+            quantity=1,
+            limit_price=1.0,
+        )
+
+    broker.submit(_stage("SPY", 500))
+    assert clock.sleeps == []
+    broker.submit(_stage("QQQ", 480))
+    assert clock.sleeps == [1.5]
+
+
+def test_one_webull_client_is_reused(tmp_path: Path, monkeypatch):
+    from webull.core.http.initializer.client_initializer import ClientInitializer
+
+    monkeypatch.setattr(ClientInitializer, "initializer", staticmethod(lambda _client: None))
+    broker = _live_broker(tmp_path)
+    first = broker._trade_api()
+    second = broker._trade_api()
+    assert first is second
+    log = Path("webull_trade_sdk.log")
+    if log.exists():
+        log.unlink()
+
+
+def test_rate_limit_retries_the_same_client_order(tmp_path: Path, monkeypatch):
+    clock = _Clock()
+    broker = _live_broker(tmp_path, clock)
+    seen: list[str] = []
+
+    def post(intent: WebullOrderIntent) -> str:
+        seen.append(intent.id)
+        if len(seen) == 1:
+            raise RuntimeError("HTTP Status: 429, Code: TOO_MANY_REQUESTS")
+        return "WB-1"
+
+    monkeypatch.setattr(broker, "_post_option", post)
+    intent = broker.stage(
+        desk="golden_flow",
+        action="BUY",
+        symbol="SPY",
+        right="C",
+        contract="SPY261016C00500000",
+        expiry="2026-10-16",
+        strike=500,
+        quantity=1,
+        limit_price=1.0,
+    )
+    broker.submit(intent)
+    assert seen == [intent.id, intent.id]
+    assert intent.status == "submitted"
+    assert intent.broker_order_id == "WB-1"
+    assert len([o for o in broker.orders if o.action == "BUY"]) == 1
+    assert clock.sleeps == [1.5]
+
+
+def test_exhausted_rate_limit_retries_the_same_row(tmp_path: Path, monkeypatch):
+    clock = _Clock()
+    broker = _live_broker(tmp_path, clock)
+    seen: list[str] = []
+
+    def post(intent: WebullOrderIntent) -> str:
+        seen.append(intent.id)
+        raise RuntimeError("HTTP 429 TOO_MANY_REQUESTS")
+
+    monkeypatch.setattr(broker, "_post_option", post)
+    trader = AutoTrader(broker, golden_only=True, max_orders_per_sync=5, max_golden_buys_per_sync=2)
+    flow = _flow("SPY", 500)
+    trader.sync(option_flow={"prints": [flow]})
+    buys = [o for o in broker.orders if o.action == "BUY"]
+    assert len(buys) == 1
+    assert buys[0].status == "deferred"
+    assert seen == [buys[0].id, buys[0].id, buys[0].id]
+
+    def post_ok(intent: WebullOrderIntent) -> str:
+        seen.append(intent.id)
+        return "WB-OK"
+
+    monkeypatch.setattr(broker, "_post_option", post_ok)
+    trader.sync(option_flow={"prints": [flow]})
+    buys = [o for o in broker.orders if o.action == "BUY"]
+    assert len(buys) == 1
+    assert buys[0].status == "submitted"
+    assert buys[0].broker_order_id == "WB-OK"
+    assert seen[-1] == buys[0].id
+    assert seen.count(buys[0].id) == 4
+
+
+def test_golden_buy_cap_limits_one_burst(tmp_path: Path):
+    broker = WebullBroker(enabled=True, dry_run=True, ledger_path=tmp_path / "wb.json")
+    trader = AutoTrader(broker, golden_only=True, max_orders_per_sync=5, max_golden_buys_per_sync=2)
+    trader.sync(
+        option_flow={
+            "prints": [_flow("SPY", 500), _flow("QQQ", 480), _flow("IWM", 220), _flow("AAPL", 200)]
+        }
+    )
+    buys = [o for o in broker.orders if o.action == "BUY"]
+    assert len(buys) == 2
+    assert {o.symbol for o in buys} == {"SPY", "QQQ"}
+
+
+def test_golden_cap_does_not_block_an_exit(tmp_path: Path):
+    broker = WebullBroker(enabled=True, dry_run=True, ledger_path=tmp_path / "wb.json")
+    trader = AutoTrader(broker, golden_only=True, max_orders_per_sync=5, max_golden_buys_per_sync=1)
+    assert trader.sync(sure_winners={"winners": [_gold_winner()]})["submitted_n"] == 1
+    out = trader.sync(
+        actions={"buy_now": [], "sell_now": [_sell_row(_gold_winner(), bid=2.0, detail="take profit")]},
+        option_flow={"prints": [_golden_flow()]},
+    )
+    assert [o for o in out["submitted"] if o["action"] == "SELL" and o["symbol"] == "NVDA"]
+    assert [o for o in out["submitted"] if o["action"] == "BUY" and o["symbol"] == "SPY"]
+
+
+def _arm_live_buy(broker: WebullBroker, row: dict, *, quantity: int = 1) -> WebullOrderIntent:
+    intent = broker.stage(
+        desk="golden_flow",
+        action="BUY",
+        symbol=row["symbol"],
+        right=row["right"],
+        contract=row["contract"],
+        expiry=row["expiry"],
+        strike=row["strike"],
+        quantity=quantity,
+        limit_price=1.0,
+        meta={"golden_kind": "golden_flow", "fill_state": "working"},
+    )
+    intent.status = "submitted"
+    broker.save()
+    return intent
+
+
+def test_unfilled_limit_is_cancelled_not_sold(tmp_path: Path, monkeypatch):
+    broker = _live_broker(tmp_path, _Clock())
+    trader = AutoTrader(broker, golden_only=True, max_orders_per_sync=4)
+    flow = _flow("SPY", 500)
+    intent = _arm_live_buy(broker, flow)
+    cancelled: list[str] = []
+    placed: list[str] = []
+    monkeypatch.setattr(
+        broker,
+        "_fetch_order_detail",
+        lambda order: {"order_status": "SUBMITTED", "filled_quantity": "0", "quantity": "1"},
+    )
+
+    def cancel(order: WebullOrderIntent) -> None:
+        cancelled.append(order.id)
+
+    monkeypatch.setattr(broker, "_cancel_via_openapi", cancel)
+    monkeypatch.setattr(broker, "_place_via_openapi", lambda order: placed.append(order.action) or order.id)
+    trader.sync(
+        actions={
+            "buy_now": [],
+            "sell_now": [_sell_row(flow, bid=0.4, detail="stop loss -71% ≤ −50%")],
+        }
+    )
+    assert cancelled == [intent.id]
+    assert placed == []
+    assert intent.status == "cancelled"
+    assert [o for o in broker.orders if o.action == "SELL"] == []
+
+
+def test_filled_limit_is_sold(tmp_path: Path, monkeypatch):
+    broker = _live_broker(tmp_path, _Clock())
+    trader = AutoTrader(broker, golden_only=True, max_orders_per_sync=4)
+    flow = _flow("SPY", 500)
+    intent = _arm_live_buy(broker, flow)
+    placed: list[WebullOrderIntent] = []
+    monkeypatch.setattr(
+        broker,
+        "_fetch_order_detail",
+        lambda order: {"order_status": "FILLED", "filled_quantity": "1", "quantity": "1"},
+    )
+    monkeypatch.setattr(broker, "_cancel_via_openapi", lambda order: (_ for _ in ()).throw(AssertionError("cancel")))
+    monkeypatch.setattr(broker, "_place_via_openapi", lambda order: placed.append(order) or "SELL-1")
+    trader.sync(
+        actions={
+            "buy_now": [],
+            "sell_now": [_sell_row(flow, bid=1.8, detail="take profit +86% ≥ +80%")],
+        }
+    )
+    assert intent.status == "filled"
+    assert len(placed) == 1
+    assert placed[0].action == "SELL"
+    assert placed[0].contract == flow["contract"]
+    body = build_option_place_order(placed[0])
+    assert body["position_intent"] == "SELL_TO_CLOSE"
+    assert body["client_order_id"] == placed[0].id
+
+
+def test_partial_fill_sells_the_filled_contracts_and_cancels_the_rest(tmp_path: Path, monkeypatch):
+    broker = _live_broker(tmp_path, _Clock())
+    trader = AutoTrader(broker, golden_only=True, max_orders_per_sync=4)
+    flow = _flow("SPY", 500)
+    intent = _arm_live_buy(broker, flow, quantity=2)
+    cancelled: list[str] = []
+    placed: list[WebullOrderIntent] = []
+    monkeypatch.setattr(
+        broker,
+        "_fetch_order_detail",
+        lambda order: {"order_status": "PARTIAL FILLED", "filled_quantity": "1", "quantity": "2"},
+    )
+    monkeypatch.setattr(broker, "_cancel_via_openapi", lambda order: cancelled.append(order.id))
+    monkeypatch.setattr(broker, "_place_via_openapi", lambda order: placed.append(order) or "SELL-1")
+    trader.sync(
+        actions={"buy_now": [], "sell_now": [_sell_row(flow, bid=1.2, detail="take profit")]},
+    )
+    assert len(placed) == 1
+    assert placed[0].action == "SELL"
+    assert placed[0].quantity == 1
+    assert placed[0].contract == flow["contract"]
+    assert cancelled == [intent.id]
+
+
+def test_flatten_cancels_a_working_0dte_and_sells_a_fill(tmp_path: Path, monkeypatch):
+    from tests.session_clock import iso_day, session_et
+
+    late = session_et(15, 50)
+    expiry = iso_day(late)
+    broker = _live_broker(tmp_path, _Clock())
+    trader = AutoTrader(broker, golden_only=True, max_orders_per_sync=4)
+
+    def _occ(symbol: str, strike: float) -> dict:
+        yymmdd = f"{expiry[2:4]}{expiry[5:7]}{expiry[8:10]}"
+        return {
+            "symbol": symbol,
+            "right": "C",
+            "contract": f"{symbol}{yymmdd}C{int(strike * 1000):08d}",
+            "expiry": expiry,
+            "strike": strike,
+        }
+
+    working_row = _occ("SPY", 500)
+    filled_row = _occ("QQQ", 480)
+    working = _arm_live_buy(broker, working_row)
+    filled = _arm_live_buy(broker, filled_row)
+    cancelled: list[str] = []
+    placed: list[WebullOrderIntent] = []
+
+    def detail(order: WebullOrderIntent) -> dict:
+        if order.id == filled.id:
+            return {"order_status": "FILLED", "filled_quantity": "1", "quantity": "1"}
+        return {"order_status": "SUBMITTED", "filled_quantity": "0", "quantity": "1"}
+
+    monkeypatch.setattr(broker, "_fetch_order_detail", detail)
+    monkeypatch.setattr(broker, "_cancel_via_openapi", lambda order: cancelled.append(order.id))
+    monkeypatch.setattr(broker, "_place_via_openapi", lambda order: placed.append(order) or "SELL-1")
+    trader.sync(actions={"buy_now": [], "sell_now": []}, sure_winners={"winners": []}, now=late)
+    assert working.status == "cancelled"
+    assert cancelled == [working.id]
+    assert filled.status == "filled"
+    assert len(placed) == 1
+    assert placed[0].action == "SELL"
+    assert placed[0].contract == filled.contract
+    assert placed[0].limit_price == 0.01
+
+
+def test_classify_broker_order_states():
+    assert classify_broker_order({"order_status": "FILLED", "filled_quantity": "1", "quantity": "1"})[
+        "fill_state"
+    ] == "filled"
+    working = classify_broker_order(
+        {"data": {"order_status": "SUBMITTED", "filled_quantity": "0", "quantity": "1"}}
+    )
+    assert working["fill_state"] == "working"
+    assert working["filled_qty"] == 0
+    partial = classify_broker_order({"order_status": "PARTIAL FILLED", "filled_qty": 1, "quantity": 2})
+    assert partial["fill_state"] == "partial"
+    assert classify_broker_order({"order_status": "CANCELLED", "filled_quantity": "0"})["fill_state"] == "cancelled"
+    covered = classify_broker_order({"order_status": "SUBMITTED", "filled_quantity": "2", "quantity": "2"})
+    assert covered["fill_state"] == "filled"
+
+
+def test_order_detail_failure_stays_working(tmp_path: Path, monkeypatch):
+    broker = _live_broker(tmp_path, _Clock())
+    intent = _arm_live_buy(broker, _flow("SPY", 500))
+
+    def boom(_order: WebullOrderIntent) -> dict:
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(broker, "_fetch_order_detail", boom)
+    broker.refresh_fill(intent)
+    assert intent.status == "submitted"
+    assert intent.meta["fill_state"] == "working"
 
 
 def test_paper_submit_without_keys_stays_dry(monkeypatch):

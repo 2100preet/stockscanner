@@ -172,6 +172,7 @@ class AutoTrader:
         desks: dict[str, bool] | None = None,
         max_contracts: int = 1,
         max_orders_per_sync: int = 3,
+        max_golden_buys_per_sync: int = 2,
         golden_only: bool = True,
     ):
         self.broker = broker
@@ -193,7 +194,35 @@ class AutoTrader:
         self.desks = merged
         self.max_contracts = max(1, int(max_contracts))
         self.max_orders_per_sync = max(1, int(max_orders_per_sync))
+        # Separate from the HTTP budget so sells/cancels still run when buys are capped.
+        self.max_golden_buys_per_sync = max(0, int(max_golden_buys_per_sync))
         self.filtered: list[dict[str, Any]] = []
+        self._closed_contracts: set[str] = set()
+
+    @staticmethod
+    def _is_position_buy(order: WebullOrderIntent) -> bool:
+        """A buy we can sell: a fill, a partial, or a simulated dry-run/staged row.
+
+        A live SUBMITTED limit with no fill is not a position.
+        """
+        if order.action != "BUY":
+            return False
+        if order.status in {"filled", "partial", "dry_run", "staged"}:
+            return True
+        if order.status == "submitted":
+            return str((order.meta or {}).get("fill_state") or "") in {"filled", "partial"}
+        return False
+
+    @staticmethod
+    def _is_working_buy(order: WebullOrderIntent) -> bool:
+        """Resting unfilled limit, or a deferred submit that must not be duplicated."""
+        if order.action != "BUY":
+            return False
+        if order.status == "deferred":
+            return True
+        if order.status != "submitted":
+            return False
+        return str((order.meta or {}).get("fill_state") or "working") not in {"filled", "partial"}
 
     def _already_open(
         self,
@@ -204,8 +233,9 @@ class AutoTrader:
     ) -> bool:
         sym = symbol.upper()
         occ = str(contract or "")
+        blocking = {"staged", "dry_run", "submitted", "deferred", "filled", "partial"}
         for o in self.broker.orders:
-            if o.status not in ("staged", "dry_run", "submitted"):
+            if o.status not in blocking:
                 continue
             if o.action != "BUY":
                 continue
@@ -218,15 +248,25 @@ class AutoTrader:
         return False
 
     def _open_golden_buys(self) -> list[WebullOrderIntent]:
-        out: list[WebullOrderIntent] = []
-        for o in self.broker.orders:
-            if o.action != "BUY" or o.status not in ("staged", "dry_run", "submitted"):
-                continue
-            if (o.meta or {}).get("golden_kind"):
-                out.append(o)
-        return out
+        return [
+            o
+            for o in self.broker.orders
+            if self._is_position_buy(o) and (o.meta or {}).get("golden_kind")
+        ]
 
-    def _find_open_golden(self, row: dict[str, Any], right: str) -> WebullOrderIntent | None:
+    def _working_golden_buys(self) -> list[WebullOrderIntent]:
+        return [
+            o
+            for o in self.broker.orders
+            if self._is_working_buy(o) and (o.meta or {}).get("golden_kind")
+        ]
+
+    def _golden_buy_matching(
+        self,
+        row: dict[str, Any],
+        right: str,
+        orders: list[WebullOrderIntent],
+    ) -> WebullOrderIntent | None:
         """The open golden buy this sell closes, or None.
 
         A contract match is required when either side has an OCC symbol.
@@ -239,7 +279,7 @@ class AutoTrader:
             right_u = "C"
         strike = _f(row.get("strike"))
         expiry = str(row.get("expiry") or "")[:10]
-        for o in self._open_golden_buys():
+        for o in orders:
             if o.symbol != sym or o.right != right_u:
                 continue
             if contract or o.contract:
@@ -252,6 +292,14 @@ class AutoTrader:
                 continue
             return o
         return None
+
+    def _find_open_golden(self, row: dict[str, Any], right: str) -> WebullOrderIntent | None:
+        """Filled, partial, or simulated golden buy this sell can close."""
+        return self._golden_buy_matching(row, right, self._open_golden_buys())
+
+    def _find_working_golden(self, row: dict[str, Any], right: str) -> WebullOrderIntent | None:
+        """Unfilled golden limit. Exit cancels it instead of selling it."""
+        return self._golden_buy_matching(row, right, self._working_golden_buys())
 
     def _matches_open_golden(self, row: dict[str, Any], right: str) -> bool:
         return self._find_open_golden(row, right) is not None
@@ -293,7 +341,8 @@ class AutoTrader:
         if not past_odte_flatten(now):
             return []
         rows: list[dict[str, Any]] = []
-        for order in self._open_golden_buys():
+        resting = self._open_golden_buys() + self._working_golden_buys()
+        for order in resting:
             probe = {
                 "symbol": order.symbol,
                 "right": order.right,
@@ -362,7 +411,10 @@ class AutoTrader:
                 return None
         if not self.desks.get(desk, False):
             return None
-        if self._already_open(sym, desk, right, str(row.get("contract") or "") or None):
+        contract_id = str(row.get("contract") or "")
+        if contract_id and contract_id in self._closed_contracts:
+            return None
+        if self._already_open(sym, desk, right, contract_id or None):
             return None
 
         ok, why = (True, "gate off")
@@ -443,8 +495,11 @@ class AutoTrader:
             # this bridge already staged, and sell that exact contract.
             opened = self._find_open_golden(row, right)
             if opened is None:
-                self._note_filtered(row, "sell only closes an open golden order")
-                return None
+                working = self._find_working_golden(row, right)
+                if working is None:
+                    self._note_filtered(row, "sell only closes an open golden order")
+                    return None
+                return self._cancel_unfilled(working, row)
             if self._sell_already_working(row, right):
                 return None
             limit_price, limit_source = _exit_limit(row, opened)
@@ -457,6 +512,10 @@ class AutoTrader:
             strike = opened.strike if opened.strike is not None else strike
             right = str(opened.right or right or "C").upper()
             quantity = max(1, int(opened.quantity or self.max_contracts))
+            if opened.status == "partial":
+                filled_qty = _f((opened.meta or {}).get("filled_qty"))
+                if filled_qty is not None and filled_qty >= 1:
+                    quantity = max(1, int(filled_qty))
             sym = opened.symbol or sym
             desk = "golden_exit"
         elif not self.desks.get(desk, False):
@@ -489,7 +548,31 @@ class AutoTrader:
             intent.updated_at = intent.created_at
             self.broker.save()
             return intent
-        return self.broker.submit(intent)
+        sold = self.broker.submit(intent)
+        if (
+            opened is not None
+            and opened.status == "partial"
+            and sold.status in {"dry_run", "submitted", "staged"}
+        ):
+            self.broker.cancel(opened)
+        return sold
+
+    def _cancel_unfilled(self, order: WebullOrderIntent, row: dict[str, Any]) -> WebullOrderIntent:
+        """Pull a resting limit. If detail now says it filled, sell that fill instead."""
+        reason = str(row.get("detail") or row.get("headline") or row.get("exit_plan") or "cancel unfilled")
+        order.meta["cancel_reason"] = reason[:320]
+        order.reason = reason[:320]
+        result = self.broker.cancel(order)
+        if result.status == "cancelled":
+            return result
+        self.broker.refresh_fill(order)
+        if self._is_position_buy(order):
+            return self._route_sell(
+                desk="golden_exit",
+                row=row,
+                right=str(order.right or "C"),
+            ) or result
+        return result
 
     def sync(
         self,
@@ -506,24 +589,42 @@ class AutoTrader:
         self.filtered = []
         seen: set[str] = set()
         budget = self.max_orders_per_sync
+        golden_buys = 0
 
         def _take(intent: WebullOrderIntent | None) -> None:
-            nonlocal budget
+            nonlocal budget, golden_buys
             if intent is None:
                 return
             d = intent.to_dict()
-            if intent.status in ("dry_run", "submitted", "staged"):
+            if intent.status in ("dry_run", "submitted", "staged", "cancelled", "filled", "partial"):
                 submitted.append(d)
                 budget -= 1
             else:
                 skipped.append(d)
-                # A rejected HTTP call still hit Webull. Count it, or one cycle
-                # will fire every golden row and trip TOO_MANY_REQUESTS.
-                if intent.status == "rejected":
+                # A rejected or still-deferred HTTP call still hit Webull. Count
+                # it, or one cycle will fire every golden row and trip 429s.
+                if intent.status in ("rejected", "deferred"):
                     budget -= 1
                     err = str(intent.error or "").upper()
                     if "ACCOUNT_ACCESS_DENIED" in err or "INVALID ACCOUNT" in err:
                         budget = 0
+            if (
+                intent.action == "BUY"
+                and (intent.meta or {}).get("golden_kind")
+                and intent.status in ("dry_run", "submitted", "staged", "deferred", "rejected", "filled")
+            ):
+                golden_buys += 1
+            # An exit this pass closes the contract. Do not open it again
+            # because the golden print is still on the tape.
+            if intent.contract and (
+                intent.action == "SELL"
+                or (intent.action == "BUY" and intent.status == "cancelled")
+            ):
+                self._closed_contracts.add(str(intent.contract))
+
+        # Fill state first, so an exit sells a fill and cancels a resting limit.
+        self._closed_contracts = set()
+        self.broker.refresh_working_buys()
 
         # --- Lottery (0DTE convex calls) ---
         if lottery and budget > 0:
@@ -608,11 +709,28 @@ class AutoTrader:
                     right = "C"
                 _take(self._route_sell(desk="golden_exit", row=row, right=right))
 
-        if self.golden_only:
-            for row in _golden_rows(sure_winners, option_flow):
+        # Retry 429s after exits so a flatten can cancel a deferred id first.
+        # The same client_order_id is submitted again. Golden buy retries stop
+        # at the per-sync cap; a deferred sell is not held back by that cap.
+        if budget > 0:
+            for intent in [o for o in self.broker.orders if o.status == "deferred"]:
                 if budget <= 0:
                     break
+                if (
+                    intent.action == "BUY"
+                    and (intent.meta or {}).get("golden_kind")
+                    and golden_buys >= self.max_golden_buys_per_sync
+                ):
+                    continue
+                _take(self.broker.submit(intent))
+
+        if self.golden_only:
+            for row in _golden_rows(sure_winners, option_flow):
                 if not isinstance(row, dict):
+                    continue
+                if budget <= 0 or golden_buys >= self.max_golden_buys_per_sync:
+                    if golden_signal_kind(row) is None:
+                        self._note_filtered(row, "not a golden signal")
                     continue
                 right = str(row.get("right") or "C").upper()
                 if right not in {"C", "P"}:
@@ -627,6 +745,7 @@ class AutoTrader:
             "min_hist_win_samples": self.min_hist_win_samples,
             "desks": self.desks,
             "golden_only": self.golden_only,
+            "max_golden_buys_per_sync": self.max_golden_buys_per_sync,
             "filtered": self.filtered[:40],
             "filtered_n": len(self.filtered),
             "submitted": submitted,
