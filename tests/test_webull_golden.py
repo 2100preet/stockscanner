@@ -384,6 +384,250 @@ def test_paper_submit_env_arms_sandbox_only(monkeypatch):
     assert flags["host"] == SANDBOX_TRADE_HOST
 
 
+def test_webull_openapi_sdk_is_importable():
+    """Production submit imports these modules. A missing package rejects every order."""
+    from webull.core.client import ApiClient
+    from webull.trade.trade_client import TradeClient
+
+    assert ApiClient is not None
+    assert TradeClient is not None
+
+
+def _buy_gold(tmp_path: Path, winner: dict | None = None) -> tuple[WebullBroker, AutoTrader, dict]:
+    broker = WebullBroker(enabled=True, dry_run=True, ledger_path=tmp_path / "wb.json")
+    trader = AutoTrader(broker, golden_only=True, max_orders_per_sync=4)
+    row = dict(winner or _gold_winner())
+    opened = trader.sync(sure_winners={"winners": [row]})
+    assert opened["submitted_n"] == 1
+    assert opened["submitted"][0]["action"] == "BUY"
+    assert opened["submitted"][0]["contract"] == row["contract"]
+    return broker, trader, row
+
+
+def _sell_row(winner: dict, **overrides) -> dict:
+    row = {
+        "symbol": winner["symbol"],
+        "right": winner["right"],
+        "contract": winner["contract"],
+        "expiry": winner["expiry"],
+        "strike": winner["strike"],
+        "dte_bucket": "0dte",
+    }
+    row.update(overrides)
+    return row
+
+
+def test_take_profit_sells_the_open_contract(tmp_path: Path):
+    _broker, trader, winner = _buy_gold(tmp_path)
+    out = trader.sync(
+        actions={
+            "buy_now": [],
+            "sell_now": [_sell_row(winner, bid=2.6, detail="take profit +86% ≥ +80%")],
+        },
+        sure_winners={"winners": []},
+    )
+    sells = [o for o in out["submitted"] if o["action"] == "SELL"]
+    assert len(sells) == 1
+    assert sells[0]["contract"] == winner["contract"]
+    assert sells[0]["limit_price"] == 2.6
+    assert sells[0]["desk"] == "golden_exit"
+    assert sells[0]["meta"]["golden_kind"] == "golden_exit"
+    body = build_option_place_order(
+        next(o for o in trader.broker.orders if o.action == "SELL")
+    )
+    assert body["position_intent"] == "SELL_TO_CLOSE"
+    assert body["legs"][0]["strike_price"] == "120.00"
+    assert body["legs"][0]["option_expire_date"] == winner["expiry"]
+
+
+def test_stop_and_reclaim_sell_the_same_contract(tmp_path: Path):
+    _broker, trader, winner = _buy_gold(tmp_path)
+    stop = trader.sync(
+        actions={
+            "buy_now": [],
+            "sell_now": [_sell_row(winner, bid=0.4, detail="stop loss -71% ≤ −50%")],
+        }
+    )
+    sells = [o for o in stop["submitted"] if o["action"] == "SELL"]
+    assert len(sells) == 1
+    assert sells[0]["contract"] == winner["contract"]
+    assert sells[0]["limit_price"] == 0.4
+
+    broker2 = WebullBroker(enabled=True, dry_run=True, ledger_path=tmp_path / "wb2.json")
+    trader2 = AutoTrader(broker2, golden_only=True, max_orders_per_sync=4)
+    again = dict(winner)
+    assert trader2.sync(sure_winners={"winners": [again]})["submitted_n"] == 1
+    reclaim = trader2.sync(
+        actions={
+            "buy_now": [],
+            "sell_now": [
+                _sell_row(
+                    again,
+                    bid=1.1,
+                    detail="5m dump -0.40% — exit 0DTE call risk",
+                )
+            ],
+        },
+        sure_winners={"winners": []},
+    )
+    sold = [o for o in reclaim["submitted"] if o["action"] == "SELL"]
+    assert len(sold) == 1
+    assert sold[0]["contract"] == again["contract"]
+    assert sold[0]["limit_price"] == 1.1
+
+
+def test_flatten_missing_bid_still_sells(tmp_path: Path):
+    _broker, trader, winner = _buy_gold(tmp_path)
+    out = trader.sync(
+        actions={
+            "buy_now": [],
+            "sell_now": [
+                _sell_row(
+                    winner,
+                    detail="0DTE time-stop — flatten by 15:45 ET (no gamma into the close)",
+                )
+            ],
+        }
+    )
+    sells = [o for o in out["submitted"] if o["action"] == "SELL"]
+    assert len(sells) == 1
+    assert sells[0]["contract"] == winner["contract"]
+    assert sells[0]["limit_price"] == 0.01
+    assert sells[0]["meta"]["limit_source"] == "flatten_floor"
+    assert sells[0]["status"] == "dry_run"
+
+
+def test_flatten_stale_entry_bid_is_marketable(tmp_path: Path):
+    _broker, trader, winner = _buy_gold(tmp_path)
+    out = trader.sync(
+        actions={
+            "buy_now": [],
+            "sell_now": [
+                _sell_row(
+                    winner,
+                    bid=winner["ask"],
+                    detail="0DTE time-stop — flatten by 15:45 ET; live ask $0.26 vs entry $1.40",
+                )
+            ],
+        }
+    )
+    sells = [o for o in out["submitted"] if o["action"] == "SELL"]
+    assert len(sells) == 1
+    # The reason names a live print, so that price wins over the stale entry echo.
+    assert sells[0]["limit_price"] == 0.26
+    assert sells[0]["meta"]["limit_source"] == "live_reason"
+    assert sells[0]["contract"] == winner["contract"]
+
+
+def test_flatten_stale_bid_without_live_print_uses_floor(tmp_path: Path):
+    _broker, trader, winner = _buy_gold(tmp_path)
+    out = trader.sync(
+        actions={
+            "buy_now": [],
+            "sell_now": [
+                _sell_row(
+                    winner,
+                    bid=winner["ask"],
+                    detail="0DTE time-stop — flatten by 15:45 ET",
+                )
+            ],
+        }
+    )
+    sells = [o for o in out["submitted"] if o["action"] == "SELL"]
+    assert len(sells) == 1
+    assert sells[0]["limit_price"] == 0.01
+    assert sells[0]["meta"]["limit_source"] == "flatten_floor"
+    assert sells[0]["contract"] == winner["contract"]
+
+
+def test_priced_flatten_keeps_the_live_bid(tmp_path: Path):
+    _broker, trader, winner = _buy_gold(tmp_path)
+    out = trader.sync(
+        actions={
+            "buy_now": [],
+            "sell_now": [
+                _sell_row(winner, bid=0.55, detail="0DTE time-stop — flatten by 15:45 ET")
+            ],
+        }
+    )
+    sells = [o for o in out["submitted"] if o["action"] == "SELL"]
+    assert len(sells) == 1
+    assert sells[0]["limit_price"] == 0.55
+    assert sells[0]["meta"]["limit_source"] == "bid"
+
+
+def test_take_profit_without_a_price_is_not_a_blind_flatten(tmp_path: Path):
+    _broker, trader, winner = _buy_gold(tmp_path)
+    out = trader.sync(
+        actions={
+            "buy_now": [],
+            "sell_now": [_sell_row(winner, detail="take profit +86% ≥ +80%")],
+        }
+    )
+    assert [o for o in out["submitted"] if o["action"] == "SELL"] == []
+    assert any("limit price" in r["reason"] for r in out["filtered"])
+
+
+def test_clock_flatten_when_golden_signal_leaves_the_board(tmp_path: Path):
+    from tests.session_clock import iso_day, session_et
+
+    late = session_et(15, 50)
+    expiry = iso_day(late)
+    winner = _gold_winner()
+    winner["expiry"] = expiry
+    winner["contract"] = f"NVDA{expiry[2:4]}{expiry[5:7]}{expiry[8:10]}C00120000"
+    _broker, trader, row = _buy_gold(tmp_path, winner)
+    out = trader.sync(
+        actions={"buy_now": [], "sell_now": []},
+        sure_winners={"winners": []},
+        option_flow={"prints": []},
+        now=late,
+    )
+    sells = [o for o in out["submitted"] if o["action"] == "SELL"]
+    assert len(sells) == 1
+    assert sells[0]["contract"] == row["contract"]
+    assert sells[0]["expiry"] == expiry
+    assert sells[0]["strike"] == 120
+    assert sells[0]["limit_price"] == 0.01
+    assert sells[0]["meta"]["limit_source"] == "flatten_floor"
+    assert "left the board" in sells[0]["reason"]
+
+
+def test_open_golden_is_not_flattened_before_1545(tmp_path: Path):
+    from tests.session_clock import iso_day, session_et
+
+    morning = session_et(11, 0)
+    expiry = iso_day(morning)
+    winner = _gold_winner()
+    winner["expiry"] = expiry
+    winner["contract"] = f"NVDA{expiry[2:4]}{expiry[5:7]}{expiry[8:10]}C00120000"
+    _broker, trader, _row = _buy_gold(tmp_path, winner)
+    out = trader.sync(
+        actions={"buy_now": [], "sell_now": []},
+        sure_winners={"winners": []},
+        now=morning,
+    )
+    assert [o for o in out["submitted"] if o["action"] == "SELL"] == []
+
+
+def test_weekly_golden_is_not_flattened_at_the_close(tmp_path: Path):
+    from tests.session_clock import iso_day, session_et
+
+    late = session_et(15, 50)
+    weekly = session_et(11, 0, weekday_offset=2)
+    expiry = iso_day(weekly)
+    winner = _gold_winner()
+    winner["expiry"] = expiry
+    winner["contract"] = f"NVDA{expiry[2:4]}{expiry[5:7]}{expiry[8:10]}C00120000"
+    _broker, trader, _row = _buy_gold(tmp_path, winner)
+    out = trader.sync(
+        actions={"buy_now": [], "sell_now": []},
+        sure_winners={"winners": []},
+        now=late,
+    )
+    assert [o for o in out["submitted"] if o["action"] == "SELL"] == []
+
+
 def test_paper_submit_without_keys_stays_dry(monkeypatch):
     monkeypatch.delenv("WEBULL_APP_KEY", raising=False)
     monkeypatch.delenv("WEBULL_APP_SECRET", raising=False)

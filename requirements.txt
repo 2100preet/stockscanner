@@ -10,3 +10,4 @@ pyarrow>=14.0
 flask>=3.0
 lxml>=5.0
 requests>=2.31
+webull-openapi-python-sdk>=3.0.3
