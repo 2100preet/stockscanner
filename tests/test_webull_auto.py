@@ -29,7 +29,9 @@ def test_auto_trader_skips_without_perfect_hist(tmp_path: Path):
         dry_run=True,
         ledger_path=tmp_path / "wb.json",
     )
-    trader = AutoTrader(broker, require_perfect_hist=True, min_hist_win_samples=3)
+    trader = AutoTrader(
+        broker, require_perfect_hist=True, min_hist_win_samples=3, golden_only=False
+    )
     out = trader.sync(
         lottery={
             "buy_now": [
@@ -58,7 +60,9 @@ def test_auto_trader_dry_run_submits_perfect(tmp_path: Path):
         dry_run=True,
         ledger_path=tmp_path / "wb.json",
     )
-    trader = AutoTrader(broker, require_perfect_hist=True, min_hist_win_samples=3)
+    trader = AutoTrader(
+        broker, require_perfect_hist=True, min_hist_win_samples=3, golden_only=False
+    )
     out = trader.sync(
         challenge={
             "entry": [
@@ -88,7 +92,7 @@ def test_auto_trader_dry_run_submits_perfect(tmp_path: Path):
 
 def test_routes_lottery_vs_odte(tmp_path: Path):
     broker = WebullBroker(enabled=True, dry_run=True, ledger_path=tmp_path / "wb.json")
-    trader = AutoTrader(broker, require_perfect_hist=True)
+    trader = AutoTrader(broker, require_perfect_hist=True, golden_only=False)
     out = trader.sync(
         lottery={
             "buy_now": [
@@ -128,7 +132,9 @@ def test_routes_lottery_vs_odte(tmp_path: Path):
 def test_preview_logs_when_bridge_disabled(tmp_path: Path):
     """enabled=false + dry_run=true still writes BUY/SELL history for verification."""
     broker = WebullBroker(enabled=False, dry_run=True, ledger_path=tmp_path / "wb.json")
-    trader = AutoTrader(broker, require_perfect_hist=True, min_hist_win_samples=3)
+    trader = AutoTrader(
+        broker, require_perfect_hist=True, min_hist_win_samples=3, golden_only=False
+    )
     out = trader.sync(
         actions={
             "buy_now": [
@@ -171,7 +177,7 @@ def test_preview_logs_when_bridge_disabled(tmp_path: Path):
 
 def test_put_buy_routes_with_right(tmp_path: Path):
     broker = WebullBroker(enabled=True, dry_run=True, ledger_path=tmp_path / "wb.json")
-    trader = AutoTrader(broker, require_perfect_hist=False)
+    trader = AutoTrader(broker, require_perfect_hist=False, golden_only=False)
     out = trader.sync(
         actions={
             "buy_now": [

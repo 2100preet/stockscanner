@@ -567,14 +567,20 @@ watch:
   output_dir: outputs/watch
 
 live_trading:
-  enabled: false          # master switch — or set WEBULL_LIVE=1 with API keys for live submits
+  enabled: false          # master switch — never implied by the presence of API keys
   broker: webull
-  dry_run: true           # log + deep-link only; WEBULL_LIVE=1 forces dry_run false when keys set
-  sandbox: true           # Webull OpenAPI sandbox host when not WEBULL_LIVE
-  # Stage BUY/SELL into webull_orders.json on each snapshot / watch (safe with dry_run)
+  dry_run: true           # log + deep-link only until an explicit submit switch
+  sandbox: true           # paper host api.sandbox.webull.com (ignored when paper is on — paper forces sandbox)
+  paper: true             # Webull OpenAPI paper/sandbox account. WEBULL_LIVE cannot override this.
+  # Only Sure Winner gold (MAX) + Golden unusual-flow prints are staged. Board still shows the rest.
+  golden_only: true
+  # Stage golden BUY/SELL into webull_orders.json on each snapshot / watch (safe with dry_run)
   auto_sync: true
   region: us
   # Credentials via env (preferred): WEBULL_APP_KEY, WEBULL_APP_SECRET, WEBULL_ACCOUNT_ID
+  # Paper account id override: WEBULL_PAPER_ACCOUNT_ID
+  # Paper submit (sandbox only): WEBULL_PAPER_SUBMIT=1
+  # Production submit (requires paper: false): WEBULL_LIVE=1
   app_key: null
   app_secret: null
   account_id: null

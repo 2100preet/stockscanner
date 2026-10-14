@@ -837,11 +837,11 @@ PAGE = r"""
       <div class="panel">
         <h2>Webull auto-trade bridge</h2>
         <p class="lede" style="margin-top:0;font-size:.76rem">
-          Routes lottery / 0DTE / weekly / swing / challenge option tickets to Webull by desk type.
-          Live gate: <strong>100% hist-win</strong> (n≥3) — historical filter only, <em>not</em> a future guarantee.
-          With <code>auto_sync: true</code>, each refresh stages BUY/SELL into the order ledger (preview/dry-run by default).
-          Set env <code>WEBULL_APP_KEY</code> / <code>WEBULL_APP_SECRET</code> / <code>WEBULL_ACCOUNT_ID</code>
-          and <code>live_trading.enabled</code> + <code>dry_run: false</code> for OpenAPI submits.
+          Routes <strong>Sure Winner gold</strong> (MAX) and <strong>Golden</strong> unusual-flow prints only.
+          Everything else stays on the board and is not sent. Dry-run by default.
+          Paper mode uses Webull's sandbox host <code>api.sandbox.webull.com</code>.
+          Set sandbox <code>WEBULL_APP_KEY</code> / <code>WEBULL_APP_SECRET</code> / <code>WEBULL_ACCOUNT_ID</code>
+          and <code>WEBULL_PAPER_SUBMIT=1</code> to submit to that paper account.
         </p>
         <div class="toolbar" style="margin:.4rem 0">
           <button type="button" class="primary" id="btnWebullSync">Sync → Webull (dry-run / live)</button>
@@ -3312,9 +3312,10 @@ PAGE = r"""
       const act = wb.activity || {};
       const counts = act.counts || {};
       metrics.innerHTML = [
-        m("Bridge", st.enabled ? (st.dry_run?"DRY-RUN":"LIVE") : (st.dry_run?"PREVIEW":"OFF"), st.enabled?(st.dry_run?"wait":"up"):"down"),
+        m("Bridge", st.enabled ? (st.dry_run?"DRY-RUN":(st.paper?"PAPER":"LIVE")) : (st.dry_run?"PREVIEW":"OFF"), st.enabled?(st.dry_run?"wait":"up"):"down"),
+        m("Route", wb.golden_only===false?"all desks":"golden only", wb.golden_only===false?"":"up"),
         m("Auto sync", wb.auto_sync?"on":"off", wb.auto_sync?"up":""),
-        m("Ready live", st.ready_live?"yes":"no", st.ready_live?"up":""),
+        m(st.paper?"Ready paper":"Ready live", (st.paper?st.ready_paper:st.ready_live)?"yes":"no", (st.paper?st.ready_paper:st.ready_live)?"up":""),
         m("SDK", st.sdk_available?"installed":"missing"),
         m("Keys", (st.has_app_key&&st.has_app_secret&&st.has_account_id)?"set":"env needed"),
         m("Perfect gate", wb.require_perfect_hist===false?"off":`${wb.min_hist_win_pct??100}% n≥${wb.min_hist_win_samples??3}`),
@@ -6952,6 +6953,7 @@ def create_app(config_path: str | None = None) -> Flask:
                                 "level_watch": level_watch,
                                 "chart_patterns": chart_patterns,
                                 "sure_winners": sure_winners,
+                                "option_flow": (echo.get("option_flow") if isinstance(echo, dict) else None),
                             },
                             indent=2,
                             default=str,
@@ -6970,6 +6972,8 @@ def create_app(config_path: str | None = None) -> Flask:
                             actions=actions,
                             lottery=lottery,
                             challenge=challenge,
+                            sure_winners=sure_winners if isinstance(sure_winners, dict) else None,
+                            option_flow=(echo.get("option_flow") if isinstance(echo, dict) else None),
                         )
                     except Exception as exc:  # noqa: BLE001
                         logger.warning("webull auto_sync failed: %s", exc)
@@ -7339,10 +7343,9 @@ def create_app(config_path: str | None = None) -> Flask:
             enabled=bool(flags["enabled"]),
             dry_run=bool(flags["dry_run"]),
             region=str(lt.get("region") or "us"),
-            sandbox=bool(lt.get("sandbox", True)) and not (
-                flags["webull_live_env"] and flags["keys_ok"]
-            ),
-            account_id=lt.get("account_id"),
+            sandbox=bool(flags["sandbox"]),
+            paper=bool(flags["paper"]),
+            account_id=flags.get("account_id") or lt.get("account_id"),
             app_key=lt.get("app_key"),
             app_secret=lt.get("app_secret"),
             ledger_path=ledger,
@@ -7364,6 +7367,7 @@ def create_app(config_path: str | None = None) -> Flask:
             desks=desk_cfg,
             max_contracts=int(lt.get("max_contracts", 1)),
             max_orders_per_sync=int(lt.get("max_orders_per_sync", 3)),
+            golden_only=bool(flags.get("golden_only", True)),
         )
         return broker, trader
 
@@ -7381,6 +7385,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 "min_hist_win_pct": trader.min_hist_win_pct,
                 "min_hist_win_samples": trader.min_hist_win_samples,
                 "desks": trader.desks,
+                "golden_only": trader.golden_only,
                 "recent": broker.recent(40),
                 "activity": act,
                 "how_to_verify": act.get("how_to_verify") or [],
@@ -7397,6 +7402,8 @@ def create_app(config_path: str | None = None) -> Flask:
         actions: dict | None = None,
         lottery: dict | None = None,
         challenge: dict | None = None,
+        sure_winners: dict | None = None,
+        option_flow: dict | None = None,
     ) -> dict:
         """Route current boards to Webull ledger (preview/dry-run/live)."""
         import copy
@@ -7418,13 +7425,24 @@ def create_app(config_path: str | None = None) -> Flask:
             lottery = {"buy_now": [], "sell_now": []}
         if not challenge:
             challenge = {"entry": [], "exit": [], "tickets": []}
+        if not isinstance(sure_winners, dict):
+            cached_sure = snap_cache.get("sure_winners")
+            sure_winners = cached_sure if isinstance(cached_sure, dict) else None
+        if not isinstance(option_flow, dict):
+            cached_flow = snap_cache.get("option_flow")
+            if not isinstance(cached_flow, dict) and isinstance(snap_cache.get("echo"), dict):
+                cached_flow = snap_cache["echo"].get("option_flow")
+            option_flow = cached_flow if isinstance(cached_flow, dict) else None
         try:
             from odte_scanner.backtest.win_rates import load_win_rate_table, lookup_win_stats
 
             wr = scan.get("win_rates") or load_win_rate_table() or {}
-            # Only enrich a *private* list for Webull when desk has no actionable BUY/SELL
+            # Only enrich a *private* list for Webull when desk has no actionable BUY/SELL.
+            # Golden-only mode must not invent orders from raw scan candidates.
             wb_actions = copy.deepcopy(actions)
-            if not (wb_actions.get("buy_now") or wb_actions.get("sell_now")):
+            if (not trader.golden_only) and not (
+                wb_actions.get("buy_now") or wb_actions.get("sell_now")
+            ):
                 for c in (scan.get("call_candidates_0dte") or [])[:8]:
                     stats = lookup_win_stats(wr, c.get("symbol"), "0dte")
                     wb_actions.setdefault("buy_now", []).append(
@@ -7462,7 +7480,13 @@ def create_app(config_path: str | None = None) -> Flask:
             logger.debug("webull sync enrich failed: %s", exc)
             wb_actions = actions
 
-        out = trader.sync(actions=wb_actions, lottery=lottery, challenge=challenge)
+        out = trader.sync(
+            actions=wb_actions,
+            lottery=lottery,
+            challenge=challenge,
+            sure_winners=sure_winners,
+            option_flow=option_flow,
+        )
         lt = cfg.get("live_trading") or {}
         out["auto_sync"] = bool(lt.get("auto_sync", True))
         out["status"] = out.get("broker") or out.get("status")
