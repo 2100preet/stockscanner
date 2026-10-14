@@ -628,6 +628,75 @@ def test_weekly_golden_is_not_flattened_at_the_close(tmp_path: Path):
     assert [o for o in out["submitted"] if o["action"] == "SELL"] == []
 
 
+def _flow(symbol: str, strike: float) -> dict:
+    expiry = "2026-10-16"
+    yymmdd = "261016"
+    occ = f"{symbol}{yymmdd}C{int(round(strike * 1000)):08d}"
+    return {
+        "symbol": symbol,
+        "right": "C",
+        "tier": "golden",
+        "ask": 1.0,
+        "contract": occ,
+        "expiry": expiry,
+        "strike": strike,
+    }
+
+
+def test_account_denial_stops_the_sync(tmp_path: Path, monkeypatch):
+    broker = WebullBroker(
+        enabled=True,
+        dry_run=False,
+        app_key="k",
+        app_secret="s",
+        account_id="acct",
+        ledger_path=tmp_path / "wb.json",
+    )
+    calls: list[str] = []
+
+    def deny(intent):
+        calls.append(intent.symbol)
+        raise RuntimeError(
+            "HTTP Status: 403, Code: ACCOUNT_ACCESS_DENIED, Msg: Invalid account or insufficient permissions."
+        )
+
+    monkeypatch.setattr(broker, "_place_via_openapi", deny)
+    trader = AutoTrader(broker, golden_only=True, max_orders_per_sync=3)
+    out = trader.sync(
+        option_flow={"prints": [_flow("SPY", 500), _flow("QQQ", 480), _flow("IWM", 220)]}
+    )
+    assert calls == ["SPY"]
+    assert out["skipped_n"] == 1
+    assert out["submitted_n"] == 0
+    assert broker.orders[0].status == "rejected"
+    assert "ACCOUNT_ACCESS_DENIED" in (broker.orders[0].error or "")
+
+
+def test_rejected_orders_still_honor_the_sync_cap(tmp_path: Path, monkeypatch):
+    broker = WebullBroker(
+        enabled=True,
+        dry_run=False,
+        app_key="k",
+        app_secret="s",
+        account_id="acct",
+        ledger_path=tmp_path / "wb.json",
+    )
+    calls: list[str] = []
+
+    def deny(intent):
+        calls.append(intent.symbol)
+        raise RuntimeError("HTTP Status: 400, Code: INVALID_ORDER, Msg: bad limit")
+
+    monkeypatch.setattr(broker, "_place_via_openapi", deny)
+    trader = AutoTrader(broker, golden_only=True, max_orders_per_sync=2)
+    trader.sync(
+        option_flow={
+            "prints": [_flow("SPY", 500), _flow("QQQ", 480), _flow("IWM", 220), _flow("AAPL", 200)]
+        }
+    )
+    assert calls == ["SPY", "QQQ"]
+
+
 def test_paper_submit_without_keys_stays_dry(monkeypatch):
     monkeypatch.delenv("WEBULL_APP_KEY", raising=False)
     monkeypatch.delenv("WEBULL_APP_SECRET", raising=False)
