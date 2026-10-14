@@ -20,6 +20,7 @@ When golden_only is false, the older desk router is unchanged:
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any
 
 from odte_scanner.trading.golden import golden_signal_kind
@@ -91,6 +92,43 @@ def _row_has_option_fields(row: dict[str, Any], *price_keys: str) -> tuple[bool,
     if price is None or price <= 0:
         return False, "limit price required (Webull options do not accept MARKET)"
     return True, ""
+
+
+# A sell limit at one cent is marketable: the exchange fills at the bid if the
+# bid is higher. Webull options reject MARKET, so this is the flatten when the
+# desk has no live bid (or only the entry price echoed back).
+FLATTEN_LIMIT = 0.01
+
+
+def _is_clock_flatten(row: dict[str, Any]) -> bool:
+    text = " ".join(
+        str(row.get(key) or "")
+        for key in ("detail", "headline", "reason", "exit_reason", "exit_plan")
+    ).lower()
+    return any(token in text for token in ("15:45", "time-stop", "time stop", "flatten"))
+
+
+def _exit_limit(row: dict[str, Any], opened: WebullOrderIntent | None) -> tuple[float | None, str]:
+    """Price a golden exit. Clock flattens still leave when the bid is missing or stale."""
+    from odte_scanner.trading.journal import _parse_live_exit_from_reason
+
+    parsed = _parse_live_exit_from_reason(
+        " ".join(str(row.get(key) or "") for key in ("detail", "reason", "headline"))
+    )
+    if parsed is not None and parsed > 0:
+        return parsed, "live_reason"
+    entry = _f(opened.limit_price) if opened is not None else None
+    clock = _is_clock_flatten(row)
+    for key in ("bid", "mark", "mid", "ask"):
+        price = _f(row.get(key))
+        if price is None or price <= 0:
+            continue
+        if clock and entry is not None and abs(price - entry) <= 1e-6:
+            return FLATTEN_LIMIT, "flatten_floor"
+        return price, key
+    if clock:
+        return FLATTEN_LIMIT, "flatten_floor"
+    return None, "limit price required (Webull options do not accept MARKET)"
 
 
 def _option_order_ready(intent: WebullOrderIntent) -> tuple[bool, str]:
@@ -188,8 +226,8 @@ class AutoTrader:
                 out.append(o)
         return out
 
-    def _matches_open_golden(self, row: dict[str, Any], right: str) -> bool:
-        """True only when this sell closes a specific open golden buy.
+    def _find_open_golden(self, row: dict[str, Any], right: str) -> WebullOrderIntent | None:
+        """The open golden buy this sell closes, or None.
 
         A contract match is required when either side has an OCC symbol.
         Otherwise symbol, right, expiry, and strike must all agree.
@@ -206,14 +244,17 @@ class AutoTrader:
                 continue
             if contract or o.contract:
                 if contract and o.contract and contract == o.contract:
-                    return True
+                    return o
                 continue
             if strike is None or o.strike is None or abs(float(strike) - float(o.strike)) > 1e-6:
                 continue
             if not expiry or not o.expiry or expiry != str(o.expiry)[:10]:
                 continue
-            return True
-        return False
+            return o
+        return None
+
+    def _matches_open_golden(self, row: dict[str, Any], right: str) -> bool:
+        return self._find_open_golden(row, right) is not None
 
     def _sell_already_working(self, row: dict[str, Any], right: str) -> bool:
         """Skip a second SELL while one for the same option is still open."""
@@ -239,6 +280,43 @@ class AutoTrader:
                 if same_strike and same_expiry:
                     return True
         return False
+
+    def _flatten_when_signal_leaves(self, now: datetime | None) -> list[dict[str, Any]]:
+        """Close an open golden 0DTE after 15:45 ET even if the buy row is gone.
+
+        Take-profit, stop, and reclaim still arrive as SELL NOW rows. This pass
+        only covers the clock: the contract is no longer on the board, so
+        nothing else will name it.
+        """
+        from odte_scanner.signals.hold_rules import expiry_is_today, past_odte_flatten
+
+        if not past_odte_flatten(now):
+            return []
+        rows: list[dict[str, Any]] = []
+        for order in self._open_golden_buys():
+            probe = {
+                "symbol": order.symbol,
+                "right": order.right,
+                "contract": order.contract,
+                "expiry": order.expiry,
+                "strike": order.strike,
+            }
+            if self._sell_already_working(probe, order.right or "C"):
+                continue
+            if not expiry_is_today(order.expiry, now):
+                continue
+            rows.append(
+                {
+                    **probe,
+                    "dte_bucket": "0dte",
+                    "headline": f"SELL NOW {order.symbol}",
+                    "detail": (
+                        "0DTE time-stop — flatten by 15:45 ET "
+                        "(open golden contract left the board)"
+                    ),
+                }
+            )
+        return rows
 
     @staticmethod
     def _order_key(row: dict[str, Any], right: str, action: str) -> str:
@@ -353,18 +431,33 @@ class AutoTrader:
         if not sym:
             return None
         kind = golden_signal_kind(row)
+        opened: WebullOrderIntent | None = None
+        limit_price = _f(row.get("bid") or row.get("ask") or row.get("mid") or row.get("mark"))
+        limit_source = "row"
+        quantity = self.max_contracts
+        contract = str(row.get("contract") or "") or None
+        expiry = str(row.get("expiry") or "") or None
+        strike = _f(row.get("strike"))
         if self.golden_only:
             # A golden label on the sell row is not enough. Only close a buy
-            # this bridge already staged.
-            if not self._matches_open_golden(row, right):
+            # this bridge already staged, and sell that exact contract.
+            opened = self._find_open_golden(row, right)
+            if opened is None:
                 self._note_filtered(row, "sell only closes an open golden order")
                 return None
             if self._sell_already_working(row, right):
                 return None
-            ready_row, missing = _row_has_option_fields(row, "bid", "ask", "mid", "mark")
-            if not ready_row:
-                self._note_filtered(row, missing)
+            limit_price, limit_source = _exit_limit(row, opened)
+            if limit_price is None:
+                self._note_filtered(row, limit_source)
                 return None
+            # The fill has to be the option we bought, not a nearby strike on the sell row.
+            contract = str(opened.contract or row.get("contract") or "") or None
+            expiry = str(opened.expiry or row.get("expiry") or "") or None
+            strike = opened.strike if opened.strike is not None else strike
+            right = str(opened.right or right or "C").upper()
+            quantity = max(1, int(opened.quantity or self.max_contracts))
+            sym = opened.symbol or sym
             desk = "golden_exit"
         elif not self.desks.get(desk, False):
             return None
@@ -373,11 +466,11 @@ class AutoTrader:
             action="SELL",
             symbol=sym,
             right=right,
-            contract=str(row.get("contract") or "") or None,
-            expiry=str(row.get("expiry") or "") or None,
-            strike=_f(row.get("strike")),
-            quantity=self.max_contracts,
-            limit_price=_f(row.get("bid") or row.get("ask") or row.get("mid") or row.get("mark")),
+            contract=contract,
+            expiry=expiry,
+            strike=strike,
+            quantity=quantity,
+            limit_price=limit_price,
             reason=str(row.get("detail") or row.get("headline") or row.get("exit_plan") or "SELL/EXIT"),
             hist_win_pct=_f(row.get("hist_win_pct") if row.get("hist_win_pct") is not None else row.get("win_pct")),
             hist_samples=_i(row.get("hist_samples") or row.get("win_samples")),
@@ -385,6 +478,8 @@ class AutoTrader:
                 "gate": "exit",
                 "gate_reason": "exit signals bypass entry hist gate",
                 "golden_kind": "golden_exit" if self.golden_only else kind,
+                "limit_source": limit_source,
+                "closes_order_id": opened.id if opened is not None else None,
             },
         )
         ready, missing = _option_order_ready(intent)
@@ -404,6 +499,7 @@ class AutoTrader:
         challenge: dict[str, Any] | None = None,
         sure_winners: dict[str, Any] | None = None,
         option_flow: dict[str, Any] | None = None,
+        now: datetime | None = None,
     ) -> dict[str, Any]:
         submitted: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
@@ -495,6 +591,15 @@ class AutoTrader:
                         price_key="ask",
                     )
                 )
+
+        if self.golden_only and budget > 0:
+            for row in self._flatten_when_signal_leaves(now):
+                if budget <= 0:
+                    break
+                right = str(row.get("right") or "C").upper()
+                if right not in {"C", "P"}:
+                    right = "C"
+                _take(self._route_sell(desk="golden_exit", row=row, right=right))
 
         if self.golden_only:
             for row in _golden_rows(sure_winners, option_flow):
