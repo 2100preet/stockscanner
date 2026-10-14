@@ -191,7 +191,7 @@ On Fly (secrets, not the repo):
 | `WEBULL_PAPER_SUBMIT=1` | yes, to submit | Enables submit and turns dry-run off, still on the sandbox host |
 | `WEBULL_GOLDEN_ONLY=0` | optional | Route every desk again (default is golden-only) |
 
-`WEBULL_LIVE=1` does not place production orders. The bridge refuses `api.webull.com` and stays on the paper sandbox. A sell is staged only when it closes a golden buy this bridge already opened.
+`WEBULL_LIVE=1` does not place production orders. The bridge refuses `api.webull.com` and stays on the paper sandbox. One Webull client is reused, and sandbox order calls are spaced by `live_trading.submit_interval_sec` (default 1.5s). A 429 is retried with backoff on the same client order id; if it still fails the row stays `deferred` and the next sync retries it instead of placing a second order. `live_trading.max_golden_buys_per_sync` (default 2) caps new golden buys in one pass. A sell is staged only for a filled or dry-run golden buy. A SUBMITTED limit that has not filled is cancelled at the exit or the 15:45 flatten, not sold.
 
 Until `WEBULL_PAPER_SUBMIT=1` and the three sandbox values are set, golden signals are dry-run rows in `outputs/webull_orders.json` only.
 

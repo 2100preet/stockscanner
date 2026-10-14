@@ -591,6 +591,12 @@ live_trading:
   min_hist_win_samples: 3
   max_contracts: 1
   max_orders_per_sync: 3
+  # Sandbox order calls share one client and wait at least this long between them.
+  # Webull paper returns HTTP 429 when golden buys land ~100ms apart.
+  submit_interval_sec: 1.5
+  # Golden BUY cap for one sync. Sells and cancels do not count, so one tape
+  # burst cannot open five positions before the next pass.
+  max_golden_buys_per_sync: 2
   desks:
     lottery: true         # 0DTE/1DTE convex BUY/SELL NOW
     odte: true

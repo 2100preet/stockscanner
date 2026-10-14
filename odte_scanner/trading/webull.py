@@ -15,11 +15,12 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 import uuid
 from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
@@ -57,7 +58,7 @@ class WebullOrderIntent:
     reason: str = ""
     hist_win_pct: float | None = None
     hist_samples: int | None = None
-    status: str = "staged"  # staged | dry_run | submitted | rejected | skipped
+    status: str = "staged"  # staged | dry_run | submitted | deferred | filled | partial | cancelled | rejected | skipped
     broker_order_id: str | None = None
     deep_link: str | None = None
     error: str | None = None
@@ -202,6 +203,138 @@ def _broker_order_id(res: Any, fallback: str) -> str:
     return str(getattr(res, "order_id", None) or fallback)
 
 
+class WebullRateLimit(RuntimeError):
+    """Sandbox rejected the call with HTTP 429 / TOO_MANY_REQUESTS."""
+
+
+_FILLED_STATUS = {"FILLED"}
+_PARTIAL_STATUS = {"PARTIAL FILLED", "PARTIALLY FILLED", "PARTIAL"}
+_WORKING_STATUS = {"SUBMITTED", "PENDING", "WORKING", "NEW", "PENDING SUBMIT"}
+_CANCELLED_STATUS = {"CANCELLED", "CANCELED", "FAILED", "REJECTED"}
+
+
+def _norm_order_status(value: Any) -> str | None:
+    raw = str(value or "").strip()
+    if not raw or raw.isdigit():
+        return None
+    return " ".join(raw.upper().replace("-", " ").replace("_", " ").split())
+
+
+def _coerce_qty(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def classify_broker_order(payload: Any) -> dict[str, Any]:
+    """Map a Webull order-detail payload to filled / partial / working / cancelled.
+
+    A resting SUBMITTED limit is working, not a position. FILLED, or a filled
+    quantity that covers the order size, is a position. PARTIAL FILLED is both:
+    the filled contracts can be sold and the remainder is still resting.
+    """
+    status: str | None = None
+    filled: float | None = None
+    qty: float | None = None
+
+    def walk(node: Any, depth: int = 0) -> None:
+        nonlocal status, filled, qty
+        if depth > 6:
+            return
+        if isinstance(node, list):
+            for item in node:
+                walk(item, depth + 1)
+            return
+        if not isinstance(node, dict):
+            return
+        if status is None:
+            for key in ("order_status", "orderStatus"):
+                token = _norm_order_status(node.get(key))
+                if token:
+                    status = token
+                    break
+            if status is None:
+                token = _norm_order_status(node.get("status"))
+                if token in _FILLED_STATUS | _PARTIAL_STATUS | _WORKING_STATUS | _CANCELLED_STATUS:
+                    status = token
+        if filled is None:
+            for key in ("filled_quantity", "filled_qty", "filledQuantity", "filledQty"):
+                parsed = _coerce_qty(node.get(key))
+                if parsed is not None:
+                    filled = parsed
+                    break
+        if qty is None:
+            for key in ("total_quantity", "quantity", "qty"):
+                parsed = _coerce_qty(node.get(key))
+                if parsed is not None:
+                    qty = parsed
+                    break
+        if status is None or filled is None or qty is None:
+            for value in node.values():
+                if isinstance(value, (dict, list)):
+                    walk(value, depth + 1)
+
+    walk(payload)
+    covered = filled is not None and qty is not None and qty > 0 and filled + 1e-9 >= qty
+    if covered or status in _FILLED_STATUS:
+        fill_state = "filled"
+    elif status in _CANCELLED_STATUS and not (filled is not None and filled > 0):
+        fill_state = "cancelled"
+    elif status in _PARTIAL_STATUS or (filled is not None and filled > 0):
+        fill_state = "partial"
+    elif status in _WORKING_STATUS:
+        fill_state = "working"
+    elif status in _CANCELLED_STATUS:
+        fill_state = "cancelled"
+    else:
+        fill_state = "unknown"
+    return {
+        "fill_state": fill_state,
+        "filled_qty": filled,
+        "quantity": qty,
+        "order_status": status,
+    }
+
+
+def _response_status(res: Any) -> int | None:
+    status = getattr(res, "status_code", None)
+    if status is None:
+        return None
+    try:
+        return int(status)
+    except (TypeError, ValueError):
+        return None
+
+
+def _response_text(res: Any) -> str:
+    return str(getattr(res, "text", "") or "")[:500]
+
+
+def _looks_like_rate_limit(status: int | None, text: str | None) -> bool:
+    if status == 429:
+        return True
+    blob = f"{text or ''}".upper()
+    return "TOO_MANY_REQUESTS" in blob or "RATE_LIMIT" in blob or "RATE LIMIT" in blob or "HTTP 429" in blob
+
+
+def _is_rate_limit_error(exc: BaseException) -> bool:
+    return isinstance(exc, WebullRateLimit) or _looks_like_rate_limit(None, str(exc))
+
+
+def _response_body(res: Any) -> Any:
+    if isinstance(res, (dict, list)):
+        return res
+    if hasattr(res, "json") and callable(res.json):
+        try:
+            return res.json()
+        except Exception:  # noqa: BLE001
+            pass
+    return {"raw": _response_text(res)}
+
+
 class WebullBroker:
     """Place option orders via Webull OpenAPI, or dry-run / deep-link only."""
 
@@ -217,6 +350,10 @@ class WebullBroker:
         app_key: str | None = None,
         app_secret: str | None = None,
         ledger_path: str | Path | None = None,
+        submit_interval_sec: float = 1.5,
+        rate_limit_attempts: int = 3,
+        sleeper: Callable[[float], None] | None = None,
+        clock: Callable[[], float] | None = None,
     ):
         self.enabled = bool(enabled)
         self.dry_run = bool(dry_run) or not enabled
@@ -237,7 +374,15 @@ class WebullBroker:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.orders: list[WebullOrderIntent] = []
         self._load()
+        # One TradeClient for the life of this broker. A new client per submit
+        # was opening a fresh HTTP stack on every golden buy.
         self._client = None
+        self._order_api = None
+        self.submit_interval_sec = max(0.0, float(submit_interval_sec))
+        self.rate_limit_attempts = max(1, int(rate_limit_attempts))
+        self._sleeper = sleeper or time.sleep
+        self._clock = clock or time.monotonic
+        self._last_api_at: float | None = None
 
     def _load(self) -> None:
         if not self.path.exists():
@@ -321,7 +466,12 @@ class WebullBroker:
                 and sdk
             ),
             "orders": len(self.orders),
-            "open_staged": sum(1 for o in self.orders if o.status in ("staged", "dry_run", "submitted")),
+            "submit_interval_sec": self.submit_interval_sec,
+            "open_staged": sum(
+                1
+                for o in self.orders
+                if o.status in ("staged", "dry_run", "submitted", "deferred", "partial")
+            ),
             "disclaimer": (
                 "Webull routing is golden-only by default: Sure Winner gold (MAX) and "
                 "Golden unusual-flow prints. Other board rows never route. "
@@ -448,6 +598,14 @@ class WebullBroker:
             intent.status = "submitted"
             intent.broker_order_id = broker_id
             intent.error = None
+            intent.meta["fill_state"] = "working"
+        except WebullRateLimit as exc:
+            # Same client_order_id is still the only order. The next sync
+            # retries this row instead of staging a second one.
+            logger.warning("Webull rate limit; deferring %s: %s", intent.id, exc)
+            intent.status = "deferred"
+            intent.error = str(exc)[:500]
+            intent.meta["fill_state"] = "deferred"
         except Exception as exc:  # noqa: BLE001
             logger.exception("Webull submit failed: %s", exc)
             intent.status = "rejected"
@@ -455,9 +613,19 @@ class WebullBroker:
         self.save()
         return intent
 
-    def _place_via_openapi(self, intent: WebullOrderIntent) -> str:
-        """Place a single-leg option order on the paper sandbox host only."""
-        if not self.sandbox:
+    def retry_deferred(self, limit: int | None = None) -> list[WebullOrderIntent]:
+        """Resubmit rows that exhausted 429 retries, keeping their client_order_id."""
+        out: list[WebullOrderIntent] = []
+        for intent in list(self.orders):
+            if intent.status != "deferred":
+                continue
+            if limit is not None and len(out) >= limit:
+                break
+            out.append(self.submit(intent))
+        return out
+
+    def _assert_sandbox(self) -> None:
+        if not self.sandbox or not self.paper:
             raise RuntimeError(
                 "Refusing production Webull host api.webull.com. "
                 "This bridge only places paper-sandbox orders."
@@ -465,6 +633,46 @@ class WebullBroker:
         host = webull_trade_host(sandbox=True)
         if host != SANDBOX_TRADE_HOST:
             raise RuntimeError(f"Refusing non-sandbox Webull host {host}")
+
+    def _throttle(self) -> None:
+        """Space sandbox calls. The first call in a process does not wait."""
+        interval = float(self.submit_interval_sec or 0)
+        now = self._clock()
+        if interval > 0 and self._last_api_at is not None:
+            wait = interval - (now - self._last_api_at)
+            if wait > 0:
+                self._sleeper(wait)
+                now = self._clock()
+        self._last_api_at = now
+
+    def _call_with_backoff(self, fn: Callable[[], Any]) -> Any:
+        """Run fn. On 429, sleep and retry the same request. Never mint a new order id."""
+        last: BaseException | None = None
+        attempts = self.rate_limit_attempts
+        for attempt in range(attempts):
+            self._throttle()
+            try:
+                return fn()
+            except Exception as exc:  # noqa: BLE001
+                if not _is_rate_limit_error(exc):
+                    raise
+                last = exc
+                if attempt + 1 >= attempts:
+                    break
+                delay = float(self.submit_interval_sec or 1.5) * (2 ** attempt)
+                self._sleeper(delay)
+        raise WebullRateLimit(str(last)[:500] if last else "TOO_MANY_REQUESTS")
+
+    def _trade_api(self) -> Any:
+        """SDK order API, built once and reused for place, detail, and cancel."""
+        if self._order_api is not None:
+            self._assert_sandbox()
+            return self._order_api
+        self._assert_sandbox()
+        self._order_api = self._build_trade_api()
+        return self._order_api
+
+    def _build_trade_api(self) -> Any:
         try:
             from webull.core.client import ApiClient
             from webull.trade.trade_client import TradeClient
@@ -473,9 +681,24 @@ class WebullBroker:
                 "webull-openapi-python-sdk not installed. "
                 "pip install webull-openapi-python-sdk"
             ) from exc
+        host = SANDBOX_TRADE_HOST
+        client = ApiClient(self.app_key, self.app_secret, self.region)
+        client.add_endpoint(self.region, host)
+        trade = TradeClient(client)
+        order_api = getattr(trade, "order_v2", None) or getattr(trade, "order", None)
+        if order_api is None:
+            raise RuntimeError("TradeClient has no order API in this SDK version")
+        self._client = client
+        return order_api
 
+    def _place_via_openapi(self, intent: WebullOrderIntent) -> str:
+        """Place a single-leg option order on the paper sandbox host only."""
+        self._assert_sandbox()
+        return self._call_with_backoff(lambda: self._post_option(intent))
+
+    def _post_option(self, intent: WebullOrderIntent) -> str:
         order = build_option_place_order(intent)
-        intent.meta["host"] = host
+        intent.meta["host"] = SANDBOX_TRADE_HOST
         intent.meta["openapi_order"] = {
             "symbol": order["symbol"],
             "side": order["side"],
@@ -483,14 +706,7 @@ class WebullBroker:
             "strike_price": order["legs"][0]["strike_price"],
             "option_expire_date": order["legs"][0]["option_expire_date"],
         }
-        client = ApiClient(self.app_key, self.app_secret, self.region)
-        client.add_endpoint(self.region, host)
-        trade = TradeClient(client)
-
-        order_api = getattr(trade, "order_v2", None) or getattr(trade, "order", None)
-        if order_api is None:
-            raise RuntimeError("TradeClient has no order API in this SDK version")
-
+        order_api = self._trade_api()
         res = None
         for meth_name in ("place_option", "place_option_order", "place_order"):
             meth = getattr(order_api, meth_name, None)
@@ -506,7 +722,128 @@ class WebullBroker:
                 "Installed Webull SDK does not expose place_option. "
                 "Update webull-openapi-python-sdk or use deep_link manual trading."
             )
+        status = _response_status(res)
+        text = _response_text(res)
+        if _looks_like_rate_limit(status, text):
+            raise WebullRateLimit(f"Webull HTTP {status or 429}: {text}"[:500])
         return _broker_order_id(res, intent.id)
+
+    def refresh_working_buys(self) -> list[WebullOrderIntent]:
+        """Update submitted/partial buys from order detail. Dry-run rows stay simulated."""
+        if self.dry_run or not self.enabled:
+            return []
+        out: list[WebullOrderIntent] = []
+        for intent in list(self.orders):
+            if intent.action != "BUY" or intent.status not in {"submitted", "partial"}:
+                continue
+            out.append(self.refresh_fill(intent))
+        return out
+
+    def refresh_fill(self, intent: WebullOrderIntent) -> WebullOrderIntent:
+        """Record whether a live limit actually filled. Failures stay working, not sold."""
+        if intent.status == "dry_run":
+            return intent
+        if intent.status not in {"submitted", "partial"}:
+            return intent
+        if self.dry_run or not self.enabled:
+            return intent
+        try:
+            payload = self._fetch_order_detail(intent)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Webull order detail failed for %s: %s", intent.id, exc)
+            intent.meta["fill_state"] = intent.meta.get("fill_state") or "working"
+            intent.updated_at = _now()
+            self.save()
+            return intent
+        self._apply_fill(intent, classify_broker_order(payload))
+        intent.updated_at = _now()
+        self.save()
+        return intent
+
+    def _apply_fill(self, intent: WebullOrderIntent, classified: dict[str, Any]) -> None:
+        state = str(classified.get("fill_state") or "unknown")
+        if state == "unknown":
+            state = "working"
+        intent.meta["fill_state"] = state
+        intent.meta["filled_qty"] = classified.get("filled_qty")
+        intent.meta["broker_status"] = classified.get("order_status")
+        if state == "filled":
+            intent.status = "filled"
+        elif state == "partial":
+            intent.status = "partial"
+        elif state == "cancelled":
+            intent.status = "cancelled"
+        else:
+            intent.status = "submitted"
+
+    def _fetch_order_detail(self, intent: WebullOrderIntent) -> Any:
+        def _once() -> Any:
+            self._assert_sandbox()
+            api = self._trade_api()
+            meth = getattr(api, "get_order_detail", None) or getattr(api, "query_order_detail", None)
+            if not callable(meth):
+                raise RuntimeError("Installed Webull SDK does not expose get_order_detail")
+            res = meth(self.account_id, intent.id)
+            status = _response_status(res)
+            text = _response_text(res)
+            if _looks_like_rate_limit(status, text):
+                raise WebullRateLimit(f"Webull HTTP {status or 429}: {text}"[:500])
+            if status is not None and status not in {200, 201}:
+                raise RuntimeError(f"Webull order detail HTTP {status}: {text}")
+            return _response_body(res)
+
+        return self._call_with_backoff(_once)
+
+    def cancel(self, intent: WebullOrderIntent) -> WebullOrderIntent:
+        """Cancel a resting limit. Dry-run rows are cancelled locally. Sandbox only."""
+        intent.updated_at = _now()
+        if intent.status in {"filled", "cancelled"}:
+            return intent
+        live = (
+            self.enabled
+            and not self.dry_run
+            and intent.status != "dry_run"
+            and self.app_key
+            and self.app_secret
+            and self.account_id
+        )
+        if not live:
+            intent.status = "cancelled"
+            intent.meta["fill_state"] = "cancelled"
+            intent.error = None
+            self.save()
+            return intent
+        try:
+            self._cancel_via_openapi(intent)
+            intent.status = "cancelled"
+            intent.meta["fill_state"] = "cancelled"
+            intent.error = None
+        except WebullRateLimit as exc:
+            logger.warning("Webull cancel rate limit for %s: %s", intent.id, exc)
+            intent.error = str(exc)[:500]
+            intent.meta["cancel_deferred"] = True
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Webull cancel failed: %s", exc)
+            intent.error = str(exc)[:500]
+        self.save()
+        return intent
+
+    def _cancel_via_openapi(self, intent: WebullOrderIntent) -> None:
+        def _once() -> None:
+            self._assert_sandbox()
+            api = self._trade_api()
+            meth = getattr(api, "cancel_option", None)
+            if not callable(meth):
+                raise RuntimeError("Installed Webull SDK does not expose cancel_option")
+            res = meth(self.account_id, intent.id)
+            status = _response_status(res)
+            text = _response_text(res)
+            if _looks_like_rate_limit(status, text):
+                raise WebullRateLimit(f"Webull HTTP {status or 429}: {text}"[:500])
+            if status is not None and status not in {200, 201}:
+                raise RuntimeError(f"Webull cancel_option HTTP {status}: {text}")
+
+        self._call_with_backoff(_once)
 
     def recent(self, limit: int = 30) -> list[dict[str, Any]]:
         return [o.to_dict() for o in self.orders[:limit]]
@@ -519,7 +856,7 @@ class WebullBroker:
         liveish = [
             r
             for r in rows
-            if str(r.get("status") or "") in {"dry_run", "submitted", "staged"}
+            if str(r.get("status") or "") in {"dry_run", "submitted", "staged", "deferred", "partial"}
         ]
         skipped = [r for r in rows if str(r.get("status") or "") == "skipped"]
         by_status: dict[str, int] = {}
@@ -546,6 +883,6 @@ class WebullBroker:
                 "2. Keep dry_run: true until sandbox keys are set. Nothing is sent by default.",
                 "3. Paper account: generate keys under Webull Developer → Paper Trading / Sandbox, then set WEBULL_APP_KEY, WEBULL_APP_SECRET, and WEBULL_ACCOUNT_ID (or WEBULL_PAPER_ACCOUNT_ID). Host is api.sandbox.webull.com.",
                 "4. Submit to that paper account with WEBULL_PAPER_SUBMIT=1 (keys required). WEBULL_LIVE cannot place a production order.",
-                "5. Statuses: dry_run = logged only; submitted = accepted by OpenAPI; skipped = gate/off. Confirm the sandbox account, not the live brokerage account.",
+                "5. Statuses: dry_run = logged only; submitted = accepted but not necessarily filled; filled = a position to sell; deferred = 429, same client_order_id retried next sync; cancelled = unfilled limit pulled. Confirm the sandbox account, not the live brokerage account.",
             ],
         }

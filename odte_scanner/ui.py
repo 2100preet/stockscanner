@@ -7349,6 +7349,7 @@ def create_app(config_path: str | None = None) -> Flask:
             app_key=lt.get("app_key"),
             app_secret=lt.get("app_secret"),
             ledger_path=ledger,
+            submit_interval_sec=float(lt.get("submit_interval_sec", 1.5)),
         )
         desk_cfg = dict(lt.get("desks") or {})
         if not desk_cfg:
@@ -7367,6 +7368,7 @@ def create_app(config_path: str | None = None) -> Flask:
             desks=desk_cfg,
             max_contracts=int(lt.get("max_contracts", 1)),
             max_orders_per_sync=int(lt.get("max_orders_per_sync", 3)),
+            max_golden_buys_per_sync=int(lt.get("max_golden_buys_per_sync", 2)),
             golden_only=bool(flags.get("golden_only", True)),
         )
         return broker, trader

@@ -5,6 +5,7 @@ __pycache__/
 .mypy_cache/
 data/cache/
 outputs/
+webull_trade_sdk.log
 *.parquet
 .DS_Store
 .env
