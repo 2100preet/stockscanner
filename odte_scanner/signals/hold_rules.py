@@ -119,6 +119,33 @@ def past_no_new_0dte_entries(now: datetime | None = None) -> bool:
     return et_session_hour(n) >= ODTE_NO_NEW_ENTRIES_ET_HOUR
 
 
+def entry_block_reason(
+    expiry: str | None,
+    now: datetime | None = None,
+    dte: int | None = None,
+) -> str | None:
+    """Why a new option entry is closed, or None when the session still allows it.
+
+    * Weekend: no new entries.
+    * At or after 15:45 ET: no new entries of any expiry. 0DTE flattens then;
+      2DTE and weeklies are held overnight but not opened into the close.
+    * 0DTE (expiry today): no new entries at or after 15:00 ET.
+    """
+    if is_weekend_et(now):
+        return "no new entries on the weekend"
+    if past_odte_flatten(now):
+        return "no new entries at or after 15:45 ET"
+    same_day = expiry_is_today(expiry, now)
+    if not same_day and dte is not None:
+        try:
+            same_day = int(dte) <= 0
+        except (TypeError, ValueError):
+            same_day = False
+    if same_day and past_no_new_0dte_entries(now):
+        return "no new 0DTE entries at or after 15:00 ET"
+    return None
+
+
 def parse_expiry_date(expiry: str | None):
     """Parse YYYY-MM-DD (or ISO) expiry to a date, else None."""
     if not expiry:

@@ -572,8 +572,11 @@ live_trading:
   dry_run: true           # log + deep-link only until an explicit submit switch
   sandbox: true           # paper host api.sandbox.webull.com (ignored when paper is on — paper forces sandbox)
   paper: true             # Webull OpenAPI paper/sandbox account. WEBULL_LIVE cannot override this.
-  # Only Sure Winner gold (MAX) + Golden unusual-flow prints are staged. Board still shows the rest.
+  # Auto-trade only Sure Winner cards the desk renders gold (MAX and HIGH).
+  # Golden unusual-flow stays on the board and is not sent.
   golden_only: true
+  # Pre-change golden-flow sandbox positions are left open unless this is true.
+  close_legacy_positions: false
   # Stage golden BUY/SELL into webull_orders.json on each snapshot / watch (safe with dry_run)
   auto_sync: true
   region: us

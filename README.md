@@ -171,10 +171,7 @@ Data file: `outputs/signal_journal.json`
 
 ## Webull paper bridge (golden signals only)
 
-The auto-trade bridge stages orders for two rows only. Everything else stays on the board and is not sent:
-
-- Sure Winner **gold** tier (`confidence_tier: MAX`, color gold)
-- Unusual options flow tape rows with tier **golden**
+The auto-trade bridge stages Sure Winner cards the desk renders in gold (`sure-max` and `sure-high`: confidence tiers MAX and HIGH). SOLID cards and Golden unusual-flow prints stay on the board and are not sent.
 
 `live_trading.dry_run` stays `true` and `live_trading.enabled` stays `false`. Keys in the environment do not submit anything.
 
@@ -191,7 +188,7 @@ On Fly (secrets, not the repo):
 | `WEBULL_PAPER_SUBMIT=1` | yes, to submit | Enables submit and turns dry-run off, still on the sandbox host |
 | `WEBULL_GOLDEN_ONLY=0` | optional | Route every desk again (default is golden-only) |
 
-`WEBULL_LIVE=1` does not place production orders. The bridge refuses `api.webull.com` and stays on the paper sandbox. One Webull client is reused, and sandbox order calls are spaced by `live_trading.submit_interval_sec` (default 1.5s). A 429 is retried with backoff on the same client order id; if it still fails the row stays `deferred` and the next sync retries it instead of placing a second order. `live_trading.max_golden_buys_per_sync` (default 2) caps new golden buys in one pass. A sell is staged only for a filled or dry-run golden buy. A SUBMITTED limit that has not filled is cancelled at the exit or the 15:45 flatten, not sold.
+`WEBULL_LIVE=1` does not place production orders. The bridge refuses `api.webull.com` and stays on the paper sandbox. One Webull client is reused, and sandbox order calls are spaced by `live_trading.submit_interval_sec` (default 1.5s). A 429 is retried with backoff on the same client order id; if it still fails the row stays `deferred` and the next sync retries it instead of placing a second order. `live_trading.max_golden_buys_per_sync` (default 2) caps new golden buys in one pass. The outgoing order uses the signal's OCC contract for right, expiry, and strike. New entries stop at 15:45 ET (0DTE stops at 15:00 ET). A sell is staged for a filled or dry-run gold Sure Winner, reconciled with sandbox positions. A SUBMITTED day order that has not filled is cancelled at the exit or at 15:45 ET. 2DTE and weeklies are not flattened at 15:45. Positions opened under the old golden-flow rule are left alone unless `live_trading.close_legacy_positions` is true.
 
 Until `WEBULL_PAPER_SUBMIT=1` and the three sandbox values are set, golden signals are dry-run rows in `outputs/webull_orders.json` only.
 

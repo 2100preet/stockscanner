@@ -109,19 +109,30 @@ def _unusual_flow() -> dict:
 
 
 def test_golden_kind_classifier():
+    from odte_scanner.trading.golden import sure_winner_card_class
+    from odte_scanner.ui import PAGE
+
     assert golden_signal_kind(_gold_winner()) == "sure_winner_gold"
     assert golden_signal_kind({"confidence_tier": "MAX"}) == "sure_winner_gold"
-    assert golden_signal_kind({"color": "gold"}) == "sure_winner_gold"
-    assert golden_signal_kind(_amber_winner()) is None
-    assert golden_signal_kind({"confidence_tier": "HIGH", "color": "gold"}) is None
+    assert sure_winner_card_class({"confidence_tier": "MAX"}) == "sure-max"
+    # HIGH is the gold sure-high card (DOCU / JPM on 2026-10-14).
+    assert golden_signal_kind(_amber_winner()) == "sure_winner_gold"
+    assert sure_winner_card_class(_amber_winner()) == "sure-high"
+    assert golden_signal_kind({"confidence_tier": "HIGH", "sure_winner": True}) == "sure_winner_gold"
+    # SOLID is sure-solid, not a gold card, even with a stray gold color.
+    assert golden_signal_kind({"confidence_tier": "SOLID", "sure_winner": True, "color": "gold"}) is None
+    assert sure_winner_card_class({"confidence_tier": "SOLID", "sure_winner": True}) == "sure-solid"
     assert golden_signal_kind({"confidence_tier": "SOLID", "go_huge": True}) is None
-    assert golden_signal_kind({"confidence_tier": "SOLID", "color": "soft-amber"}) is None
-    assert golden_signal_kind(_golden_flow()) == "golden_flow"
-    assert golden_signal_kind({"flags": ["golden"]}) == "golden_flow"
+    assert golden_signal_kind({"confidence_tier": "SOLID", "sure_winner": True, "go_huge": True}) == "sure_winner_gold"
+    # Flow-desk Golden stays on the board and does not auto-trade.
+    assert golden_signal_kind(_golden_flow()) is None
+    assert golden_signal_kind({"flags": ["golden"]}) is None
     assert golden_signal_kind(_unusual_flow()) is None
     assert golden_signal_kind({"tier": "aggressive"}) is None
-    # Chart-pattern golden triangle is not the flow tape.
     assert golden_signal_kind({"golden": True, "pattern": "ASCENDING_TRIANGLE"}) is None
+    assert "function sureWinnerCardClass" in PAGE
+    assert "sure-high" in PAGE
+    assert 'tier === "HIGH"' in PAGE
 
 
 def test_golden_only_routes_gold_and_drops_the_rest(tmp_path: Path):
@@ -162,30 +173,36 @@ def test_golden_only_routes_gold_and_drops_the_rest(tmp_path: Path):
         option_flow={"prints": [_golden_flow(), _unusual_flow()]},
     )
     symbols = {o["symbol"] for o in out["submitted"]}
-    assert symbols == {"NVDA", "SPY"}
+    assert symbols == {"NVDA", "AMD"}
     desks = {o["desk"] for o in out["submitted"]}
-    assert desks == {"sure_winner", "golden_flow"}
+    assert desks == {"sure_winner"}
+    assert "SPY" not in symbols
     assert all(o["status"] == "dry_run" for o in out["submitted"])
     assert all((o.get("meta") or {}).get("golden_kind") for o in out["submitted"])
     ledger_symbols = {o.symbol for o in broker.orders}
     assert "IWM" not in ledger_symbols
     assert "AAPL" not in ledger_symbols
-    assert "AMD" not in ledger_symbols
     assert "QQQ" not in ledger_symbols
+    assert "SPY" not in ledger_symbols
     assert out["filtered_n"] >= 4
     assert out["broker"]["dry_run"] is True
     assert out["broker"]["host"] == SANDBOX_TRADE_HOST
 
 
-def test_golden_flow_ignores_hist_gate(tmp_path: Path):
+def test_high_sure_winner_routes_and_golden_flow_does_not(tmp_path: Path):
     broker = WebullBroker(enabled=True, dry_run=True, ledger_path=tmp_path / "wb.json")
     trader = AutoTrader(broker, require_perfect_hist=True, min_hist_win_samples=3)
-    row = _golden_flow()
-    assert "hist_win_pct" not in row
-    out = trader.sync(option_flow={"golden": [row]})
+    high = _amber_winner()
+    assert "hist_win_pct" not in high
+    out = trader.sync(
+        sure_winners={"winners": [high]},
+        option_flow={"golden": [_golden_flow()]},
+    )
     assert out["submitted_n"] == 1
-    assert out["submitted"][0]["symbol"] == "SPY"
-    assert out["submitted"][0]["desk"] == "golden_flow"
+    assert out["submitted"][0]["symbol"] == "AMD"
+    assert out["submitted"][0]["desk"] == "sure_winner"
+    assert out["submitted"][0]["meta"]["golden_kind"] == "sure_winner_gold"
+    assert all(o.symbol != "SPY" for o in broker.orders)
 
 
 def test_incomplete_golden_flow_is_not_staged(tmp_path: Path):
@@ -205,7 +222,7 @@ def test_incomplete_golden_flow_is_not_staged(tmp_path: Path):
     )
     assert out["submitted_n"] == 0
     assert broker.orders == []
-    assert any("expiry" in r["reason"] or "strike" in r["reason"] for r in out["filtered"])
+    assert any("not auto-traded" in r["reason"] for r in out["filtered"])
 
 
 def test_golden_exit_routes_sell_of_open_gold(tmp_path: Path):
@@ -658,6 +675,28 @@ def test_weekly_golden_is_not_flattened_at_the_close(tmp_path: Path):
     assert [o for o in out["submitted"] if o["action"] == "SELL"] == []
 
 
+@pytest.fixture(autouse=True)
+def _positions_follow_the_ledger(monkeypatch):
+    """Don't hit the sandbox positions endpoint from unit tests."""
+    monkeypatch.setattr(WebullBroker, "list_option_positions", lambda self: None)
+
+
+def _sure_card(symbol: str, strike: float, *, right: str = "C", expiry: str = "2026-10-16", tier: str = "HIGH") -> dict:
+    yymmdd = f"{expiry[2:4]}{expiry[5:7]}{expiry[8:10]}"
+    occ = f"{symbol}{yymmdd}{right}{int(round(strike * 1000)):08d}"
+    return {
+        "symbol": symbol,
+        "right": right,
+        "confidence_tier": tier,
+        "sure_winner": True,
+        "desk": "Sure Winner",
+        "ask": 1.0,
+        "contract": occ,
+        "expiry": expiry,
+        "strike": strike,
+    }
+
+
 def _flow(symbol: str, strike: float) -> dict:
     expiry = "2026-10-16"
     yymmdd = "261016"
@@ -693,7 +732,7 @@ def test_account_denial_stops_the_sync(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(broker, "_place_via_openapi", deny)
     trader = AutoTrader(broker, golden_only=True, max_orders_per_sync=3)
     out = trader.sync(
-        option_flow={"prints": [_flow("SPY", 500), _flow("QQQ", 480), _flow("IWM", 220)]}
+        sure_winners={"winners": [_sure_card("SPY", 500), _sure_card("QQQ", 480), _sure_card("IWM", 220)]}
     )
     assert calls == ["SPY"]
     assert out["skipped_n"] == 1
@@ -720,8 +759,13 @@ def test_rejected_orders_still_honor_the_sync_cap(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(broker, "_place_via_openapi", deny)
     trader = AutoTrader(broker, golden_only=True, max_orders_per_sync=2)
     trader.sync(
-        option_flow={
-            "prints": [_flow("SPY", 500), _flow("QQQ", 480), _flow("IWM", 220), _flow("AAPL", 200)]
+        sure_winners={
+            "winners": [
+                _sure_card("SPY", 500),
+                _sure_card("QQQ", 480),
+                _sure_card("IWM", 220),
+                _sure_card("AAPL", 200),
+            ]
         }
     )
     assert calls == ["SPY", "QQQ"]
@@ -806,8 +850,8 @@ def test_exhausted_rate_limit_retries_the_same_row(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(broker, "_post_option", post)
     trader = AutoTrader(broker, golden_only=True, max_orders_per_sync=5, max_golden_buys_per_sync=2)
-    flow = _flow("SPY", 500)
-    trader.sync(option_flow={"prints": [flow]})
+    card = _sure_card("SPY", 500)
+    trader.sync(sure_winners={"winners": [card]})
     buys = [o for o in broker.orders if o.action == "BUY"]
     assert len(buys) == 1
     assert buys[0].status == "deferred"
@@ -818,7 +862,7 @@ def test_exhausted_rate_limit_retries_the_same_row(tmp_path: Path, monkeypatch):
         return "WB-OK"
 
     monkeypatch.setattr(broker, "_post_option", post_ok)
-    trader.sync(option_flow={"prints": [flow]})
+    trader.sync(sure_winners={"winners": [card]})
     buys = [o for o in broker.orders if o.action == "BUY"]
     assert len(buys) == 1
     assert buys[0].status == "submitted"
@@ -831,8 +875,13 @@ def test_golden_buy_cap_limits_one_burst(tmp_path: Path):
     broker = WebullBroker(enabled=True, dry_run=True, ledger_path=tmp_path / "wb.json")
     trader = AutoTrader(broker, golden_only=True, max_orders_per_sync=5, max_golden_buys_per_sync=2)
     trader.sync(
-        option_flow={
-            "prints": [_flow("SPY", 500), _flow("QQQ", 480), _flow("IWM", 220), _flow("AAPL", 200)]
+        sure_winners={
+            "winners": [
+                _sure_card("SPY", 500),
+                _sure_card("QQQ", 480),
+                _sure_card("IWM", 220),
+                _sure_card("AAPL", 200),
+            ]
         }
     )
     buys = [o for o in broker.orders if o.action == "BUY"]
@@ -846,15 +895,15 @@ def test_golden_cap_does_not_block_an_exit(tmp_path: Path):
     assert trader.sync(sure_winners={"winners": [_gold_winner()]})["submitted_n"] == 1
     out = trader.sync(
         actions={"buy_now": [], "sell_now": [_sell_row(_gold_winner(), bid=2.0, detail="take profit")]},
-        option_flow={"prints": [_golden_flow()]},
+        sure_winners={"winners": [_amber_winner()]},
     )
     assert [o for o in out["submitted"] if o["action"] == "SELL" and o["symbol"] == "NVDA"]
-    assert [o for o in out["submitted"] if o["action"] == "BUY" and o["symbol"] == "SPY"]
+    assert [o for o in out["submitted"] if o["action"] == "BUY" and o["symbol"] == "AMD"]
 
 
 def _arm_live_buy(broker: WebullBroker, row: dict, *, quantity: int = 1) -> WebullOrderIntent:
     intent = broker.stage(
-        desk="golden_flow",
+        desk="sure_winner",
         action="BUY",
         symbol=row["symbol"],
         right=row["right"],
@@ -863,7 +912,7 @@ def _arm_live_buy(broker: WebullBroker, row: dict, *, quantity: int = 1) -> Webu
         strike=row["strike"],
         quantity=quantity,
         limit_price=1.0,
-        meta={"golden_kind": "golden_flow", "fill_state": "working"},
+        meta={"golden_kind": "sure_winner_gold", "fill_state": "working"},
     )
     intent.status = "submitted"
     broker.save()
@@ -1022,6 +1071,273 @@ def test_order_detail_failure_stays_working(tmp_path: Path, monkeypatch):
     broker.refresh_fill(intent)
     assert intent.status == "submitted"
     assert intent.meta["fill_state"] == "working"
+
+
+def test_outgoing_order_matches_the_occ_contract():
+    """Puts logged as calls, and 10/14 contracts logged as 10/16, follow the OCC."""
+    put = WebullOrderIntent(
+        id="wb-iren",
+        desk="sure_winner",
+        action="BUY",
+        symbol="IREN",
+        right="C",
+        contract="IREN261016P00030000",
+        expiry="2026-10-16",
+        strike=30,
+        quantity=1,
+        limit_price=1.2,
+    )
+    body = build_option_place_order(put)
+    assert body["side"] == "BUY"
+    assert body["legs"][0]["option_type"] == "PUT"
+    assert body["legs"][0]["option_expire_date"] == "2026-10-16"
+    assert body["legs"][0]["strike_price"] == "30.00"
+    assert put.right == "P"
+
+    uso = WebullOrderIntent(
+        id="wb-uso",
+        desk="sure_winner",
+        action="BUY",
+        symbol="USO",
+        right="C",
+        contract="USO261014C00152000",
+        expiry="2026-10-16",
+        strike=152,
+        quantity=1,
+        limit_price=0.4,
+    )
+    body = build_option_place_order(uso)
+    assert body["legs"][0]["option_type"] == "CALL"
+    assert body["legs"][0]["option_expire_date"] == "2026-10-14"
+    assert body["legs"][0]["strike_price"] == "152.00"
+    assert uso.expiry == "2026-10-14"
+
+
+def test_routed_buy_uses_occ_when_the_row_fields_disagree(tmp_path: Path):
+    broker = WebullBroker(enabled=True, dry_run=True, ledger_path=tmp_path / "wb.json")
+    trader = AutoTrader(broker, golden_only=True)
+    row = _sure_card("WULF", 11.5, right="C", expiry="2026-10-16")
+    row["contract"] = "WULF261023P00011500"
+    row["right"] = "C"
+    row["expiry"] = "2026-10-16"
+    out = trader.sync(sure_winners={"winners": [row]})
+    assert out["submitted_n"] == 1
+    order = broker.orders[0]
+    body = build_option_place_order(order)
+    assert order.right == "P"
+    assert order.expiry == "2026-10-23"
+    assert order.strike == 11.5
+    assert body["legs"][0]["option_type"] == "PUT"
+    assert body["legs"][0]["option_expire_date"] == "2026-10-23"
+
+
+def test_no_new_entries_at_or_after_the_close(tmp_path: Path):
+    from tests.session_clock import iso_day, session_et
+
+    late = session_et(15, 48)
+    afternoon = session_et(15, 30)
+    expiry_today = iso_day(late)
+    weekly = iso_day(session_et(11, 0, weekday_offset=3))
+    broker = WebullBroker(enabled=True, dry_run=True, ledger_path=tmp_path / "wb.json")
+    trader = AutoTrader(broker, golden_only=True, max_orders_per_sync=4)
+    blocked = trader.sync(
+        sure_winners={
+            "winners": [
+                _sure_card("ANET", 200, expiry=weekly),
+                _sure_card("USO", 152, expiry=expiry_today),
+            ]
+        },
+        now=late,
+    )
+    assert blocked["submitted_n"] == 0
+    assert any("15:45" in r["reason"] for r in blocked["filtered"])
+
+    broker2 = WebullBroker(enabled=True, dry_run=True, ledger_path=tmp_path / "wb2.json")
+    trader2 = AutoTrader(broker2, golden_only=True, max_orders_per_sync=4)
+    odte_late = trader2.sync(
+        sure_winners={"winners": [_sure_card("USO", 152, expiry=expiry_today, tier="MAX")]},
+        now=afternoon,
+    )
+    assert odte_late["submitted_n"] == 0
+    assert any("0DTE" in r["reason"] for r in odte_late["filtered"])
+    weekly_ok = trader2.sync(
+        sure_winners={"winners": [_sure_card("AMAT", 450, expiry=weekly, tier="HIGH")]},
+        now=afternoon,
+    )
+    assert weekly_ok["submitted_n"] == 1
+    assert weekly_ok["submitted"][0]["symbol"] == "AMAT"
+
+
+def test_weekly_fill_is_not_flattened_but_unfilled_day_order_is_cancelled(tmp_path: Path, monkeypatch):
+    from tests.session_clock import iso_day, session_et
+
+    late = session_et(15, 50)
+    expiry = iso_day(session_et(11, 0, weekday_offset=2))
+    broker = _live_broker(tmp_path, _Clock())
+    trader = AutoTrader(broker, golden_only=True, max_orders_per_sync=4)
+    card = _sure_card("AMAT", 450, expiry=expiry)
+    filled = _arm_live_buy(broker, card)
+    working = _arm_live_buy(broker, _sure_card("ANET", 200, expiry=expiry))
+    cancelled: list[str] = []
+    placed: list[WebullOrderIntent] = []
+
+    def detail(order: WebullOrderIntent) -> dict:
+        if order.id == filled.id:
+            return {"order_status": "FILLED", "filled_quantity": "1", "quantity": "1"}
+        return {"order_status": "SUBMITTED", "filled_quantity": "0", "quantity": "1"}
+
+    monkeypatch.setattr(broker, "_fetch_order_detail", detail)
+    monkeypatch.setattr(broker, "_cancel_via_openapi", lambda order: cancelled.append(order.id))
+    monkeypatch.setattr(broker, "_place_via_openapi", lambda order: placed.append(order) or "SELL-1")
+    trader.sync(actions={"buy_now": [], "sell_now": []}, sure_winners={"winners": []}, now=late)
+    assert filled.status == "filled"
+    assert placed == []
+    assert working.status == "cancelled"
+    assert cancelled == [working.id]
+
+
+def test_legacy_flow_position_is_not_closed_without_the_switch(tmp_path: Path, monkeypatch):
+    from tests.session_clock import iso_day, session_et
+
+    late = session_et(15, 50)
+    expiry = iso_day(late)
+    broker = _live_broker(tmp_path, _Clock())
+    trader = AutoTrader(broker, golden_only=True, max_orders_per_sync=4, close_legacy_positions=False)
+    row = _sure_card("NBIS", 185, expiry=expiry)
+    intent = _arm_live_buy(broker, row)
+    intent.meta["golden_kind"] = "golden_flow"
+    intent.desk = "golden_flow"
+    broker.save()
+    placed: list[str] = []
+    monkeypatch.setattr(
+        broker,
+        "_fetch_order_detail",
+        lambda order: {"order_status": "FILLED", "filled_quantity": "1", "quantity": "1"},
+    )
+    monkeypatch.setattr(broker, "_place_via_openapi", lambda order: placed.append(order.action) or order.id)
+    monkeypatch.setattr(broker, "_cancel_via_openapi", lambda order: None)
+    trader.sync(actions={"buy_now": [], "sell_now": []}, sure_winners={"winners": []}, now=late)
+    assert placed == []
+    assert intent.status == "filled"
+
+
+def test_legacy_switch_closes_the_open_sandbox_lots(tmp_path: Path, monkeypatch):
+    broker = _live_broker(tmp_path, _Clock())
+    trader = AutoTrader(broker, golden_only=True, max_orders_per_sync=4, close_legacy_positions=True)
+    row = _sure_card("RKLB", 125, right="P", expiry="2026-10-16")
+    intent = _arm_live_buy(broker, row)
+    intent.meta["golden_kind"] = "golden_flow"
+    intent.desk = "golden_flow"
+    intent.status = "filled"
+    intent.meta["fill_state"] = "filled"
+    broker.save()
+    placed: list[WebullOrderIntent] = []
+    monkeypatch.setattr(broker, "_fetch_order_detail", lambda order: {"order_status": "FILLED"})
+    monkeypatch.setattr(broker, "_place_via_openapi", lambda order: placed.append(order) or "SELL-1")
+    trader.sync(actions={"buy_now": [], "sell_now": []}, sure_winners={"winners": []}, now=None)
+    assert len(placed) == 1
+    assert placed[0].action == "SELL"
+    assert placed[0].contract == row["contract"]
+    assert placed[0].right == "P"
+
+
+def test_position_snapshot_turns_a_submitted_limit_into_a_sell(tmp_path: Path, monkeypatch):
+    broker = _live_broker(tmp_path, _Clock())
+    trader = AutoTrader(broker, golden_only=True, max_orders_per_sync=4)
+    row = _sure_card("DOCU", 76, expiry="2026-10-16")
+    intent = _arm_live_buy(broker, row)
+    placed: list[WebullOrderIntent] = []
+    monkeypatch.setattr(
+        broker,
+        "_fetch_order_detail",
+        lambda order: {"order_status": "SUBMITTED", "filled_quantity": "0", "quantity": "1"},
+    )
+    monkeypatch.setattr(
+        broker,
+        "list_option_positions",
+        lambda: [
+            {
+                "contract": row["contract"],
+                "symbol": "DOCU",
+                "right": "C",
+                "expiry": "2026-10-16",
+                "strike": 76,
+                "quantity": 1,
+            }
+        ],
+    )
+    monkeypatch.setattr(broker, "_place_via_openapi", lambda order: placed.append(order) or "SELL-1")
+    monkeypatch.setattr(broker, "_cancel_via_openapi", lambda order: (_ for _ in ()).throw(AssertionError("cancel")))
+    trader.sync(
+        actions={
+            "buy_now": [],
+            "sell_now": [_sell_row(row, bid=1.5, detail="take profit +80%")],
+        }
+    )
+    assert intent.status == "filled"
+    assert intent.meta["position_source"] == "webull"
+    assert len(placed) == 1
+    assert placed[0].action == "SELL"
+    assert placed[0].contract == row["contract"]
+
+
+def test_flow_print_keeps_occ_put_and_expiry():
+    from odte_scanner.echo.flow import build_option_flow
+
+    board = build_option_flow(
+        [
+            {
+                "symbol": "IREN",
+                "spot": 40,
+                "expiry": "2026-10-16",
+                "dte": 2,
+                "calls": [],
+                "puts": [
+                    {
+                        "strike": 30,
+                        "volume": 20000,
+                        "open_interest": 100,
+                        "mid": 1.5,
+                        "contract": "IREN261016P00030000",
+                    }
+                ],
+            }
+        ],
+        min_volume=100,
+        min_premium=1000,
+    )
+    print_row = board["prints"][0]
+    assert print_row["right"] == "P"
+    assert print_row["expiry"] == "2026-10-16"
+    assert print_row["contract"] == "IREN261016P00030000"
+
+
+def test_parse_option_positions_reads_occ_and_option_fields():
+    from odte_scanner.trading.webull import parse_option_positions
+
+    rows = parse_option_positions(
+        {
+            "holdings": [
+                {"instrument_type": "OPTION", "symbol": "NBIS261016P00175000", "quantity": "1"},
+                {
+                    "instrument_type": "OPTION",
+                    "underlying_symbol": "AMAT",
+                    "option_type": "CALL",
+                    "option_expire_date": "2026-11-20",
+                    "strike_price": "450",
+                    "quantity": "1",
+                },
+                {"instrument_type": "EQUITY", "symbol": "SPY", "quantity": "10"},
+            ]
+        }
+    )
+    by_symbol = {row["symbol"]: row for row in rows}
+    assert by_symbol["NBIS"]["right"] == "P"
+    assert by_symbol["NBIS"]["expiry"] == "2026-10-16"
+    assert by_symbol["NBIS"]["strike"] == 175
+    assert by_symbol["AMAT"]["right"] == "C"
+    assert by_symbol["AMAT"]["expiry"] == "2026-11-20"
+    assert "SPY" not in by_symbol
 
 
 def test_paper_submit_without_keys_stays_dry(monkeypatch):

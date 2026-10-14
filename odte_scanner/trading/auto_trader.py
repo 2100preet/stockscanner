@@ -1,11 +1,10 @@
 """Route Signal Desk recommendations to Webull by trade type.
 
 Default (golden_only):
-  sure_winner → Sure Winner gold tier only (confidence MAX / color gold)
-  golden_flow → Unusual options flow tape rows with tier golden
+  sure_winner → Sure Winner cards the desk renders gold (MAX and HIGH)
 
-Other desks stay on the board and are not staged. HIGH/SOLID sure winners
-and aggressive/unusual flow prints are included in that exclusion.
+Other desks stay on the board and are not staged. SOLID sure winners and
+unusual-flow prints (including Flow-desk Golden) are included in that exclusion.
 
 When golden_only is false, the older desk router is unchanged:
   lottery  → 0DTE/1DTE BUY_NOW / SELL_NOW calls
@@ -23,8 +22,9 @@ import logging
 from datetime import datetime
 from typing import Any
 
+from odte_scanner.signals.hold_rules import entry_block_reason, expiry_is_today, past_odte_flatten
 from odte_scanner.trading.golden import golden_signal_kind
-from odte_scanner.trading.webull import WebullBroker, WebullOrderIntent
+from odte_scanner.trading.webull import WebullBroker, WebullOrderIntent, parse_occ_contract
 
 logger = logging.getLogger(__name__)
 
@@ -144,21 +144,36 @@ def _option_order_ready(intent: WebullOrderIntent) -> tuple[bool, str]:
 
 def _golden_rows(
     sure_winners: dict[str, Any] | None,
-    option_flow: dict[str, Any] | list[dict[str, Any]] | None,
+    option_flow: dict[str, Any] | list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Sure Winner tickets + unusual-flow prints. The golden gate filters these."""
+    """Sure Winner cards only. Unusual-flow prints stay on the board."""
+    del option_flow  # kept so older callers can still pass the tape
     rows: list[dict[str, Any]] = []
     if isinstance(sure_winners, dict):
         rows.extend([r for r in (sure_winners.get("winners") or []) if isinstance(r, dict)])
         rows.extend([r for r in (sure_winners.get("buy_now") or []) if isinstance(r, dict)])
+    return rows
+
+
+def _flow_rows(option_flow: dict[str, Any] | list[dict[str, Any]] | None) -> list[dict[str, Any]]:
     if isinstance(option_flow, dict):
         prints = option_flow.get("prints")
         if not prints:
-            prints = list(option_flow.get("golden") or [])
-        rows.extend([r for r in (prints or []) if isinstance(r, dict)])
-    elif isinstance(option_flow, list):
-        rows.extend([r for r in option_flow if isinstance(r, dict)])
-    return rows
+            prints = list(option_flow.get("golden") or []) + list(option_flow.get("unusual") or [])
+        return [r for r in (prints or []) if isinstance(r, dict)]
+    if isinstance(option_flow, list):
+        return [r for r in option_flow if isinstance(r, dict)]
+    return []
+
+
+def _with_occ(row: dict[str, Any]) -> dict[str, Any]:
+    """Copy a signal and let its OCC symbol override a drifted right or expiry."""
+    ident = parse_occ_contract(row.get("contract"))
+    if not ident:
+        return row
+    merged = dict(row)
+    merged.update(ident)
+    return merged
 
 
 class AutoTrader:
@@ -174,12 +189,18 @@ class AutoTrader:
         max_orders_per_sync: int = 3,
         max_golden_buys_per_sync: int = 2,
         golden_only: bool = True,
+        close_legacy_positions: bool = False,
     ):
         self.broker = broker
         self.require_perfect_hist = bool(require_perfect_hist)
         self.min_hist_win_pct = float(min_hist_win_pct)
         self.min_hist_win_samples = int(min_hist_win_samples)
         self.golden_only = bool(golden_only)
+        # Off by default. Golden-flow positions opened before the gold-card
+        # rule are not sold or flattened unless this is explicitly on.
+        self.close_legacy_positions = bool(close_legacy_positions)
+        self._now: datetime | None = None
+        self._positions_by_contract: dict[str, dict[str, Any]] | None = None
         merged = {
             "lottery": True,
             "odte": True,
@@ -247,19 +268,24 @@ class AutoTrader:
                 return True
         return False
 
+    def _tracks_exit(self, order: WebullOrderIntent) -> bool:
+        """Positions this bridge may sell or cancel.
+
+        Sure Winner gold orders always. Older golden-flow orders only when
+        ``close_legacy_positions`` is on, so a deploy does not flatten them.
+        """
+        kind = str((order.meta or {}).get("golden_kind") or "")
+        if kind == "sure_winner_gold":
+            return True
+        if not self.close_legacy_positions:
+            return False
+        return kind == "golden_flow" or order.desk in {"golden_flow", "sure_winner"}
+
     def _open_golden_buys(self) -> list[WebullOrderIntent]:
-        return [
-            o
-            for o in self.broker.orders
-            if self._is_position_buy(o) and (o.meta or {}).get("golden_kind")
-        ]
+        return [o for o in self.broker.orders if self._is_position_buy(o) and self._tracks_exit(o)]
 
     def _working_golden_buys(self) -> list[WebullOrderIntent]:
-        return [
-            o
-            for o in self.broker.orders
-            if self._is_working_buy(o) and (o.meta or {}).get("golden_kind")
-        ]
+        return [o for o in self.broker.orders if self._is_working_buy(o) and self._tracks_exit(o)]
 
     def _golden_buy_matching(
         self,
@@ -329,15 +355,111 @@ class AutoTrader:
                     return True
         return False
 
-    def _flatten_when_signal_leaves(self, now: datetime | None) -> list[dict[str, Any]]:
-        """Close an open golden 0DTE after 15:45 ET even if the buy row is gone.
+    def _held_qty(self, order: WebullOrderIntent) -> float:
+        """Contracts still long. A live positions snapshot overrides the ledger."""
+        book = self._positions_by_contract
+        if book is not None:
+            pos = book.get(str(order.contract or ""))
+            if pos is not None:
+                return float(pos.get("quantity") or 0)
+            if order.status == "dry_run":
+                return float(order.quantity or 1)
+            if str((order.meta or {}).get("position_source") or "") == "webull":
+                return 0.0
+            if order.status in {"filled", "partial"}:
+                return 0.0
+        if self._is_position_buy(order):
+            filled = _f((order.meta or {}).get("filled_qty"))
+            if filled is not None and filled > 0:
+                return filled
+            return float(order.quantity or 1)
+        return 0.0
 
-        Take-profit, stop, and reclaim still arrive as SELL NOW rows. This pass
-        only covers the clock: the contract is no longer on the board, so
-        nothing else will name it.
+    def _reconcile_positions(self, positions: list[dict[str, Any]] | None) -> None:
+        """Mark ledger buys filled when the sandbox account actually holds them.
+
+        ``None`` leaves the ledger alone (dry-run, or the positions call failed).
         """
-        from odte_scanner.signals.hold_rules import expiry_is_today, past_odte_flatten
+        if positions is None:
+            self._positions_by_contract = None
+            return
+        book: dict[str, dict[str, Any]] = {}
+        for pos in positions:
+            occ = str(pos.get("contract") or "")
+            if occ:
+                book[occ] = pos
+        self._positions_by_contract = book
+        changed = False
+        for order in self.broker.orders:
+            if order.action != "BUY" or order.status in {"rejected", "cancelled", "skipped"}:
+                continue
+            pos = book.get(str(order.contract or ""))
+            if not pos or float(pos.get("quantity") or 0) <= 0:
+                continue
+            qty = float(pos["quantity"])
+            order.meta["filled_qty"] = qty
+            order.meta["position_source"] = "webull"
+            if qty + 1e-9 >= float(order.quantity or 1):
+                order.meta["fill_state"] = "filled"
+                order.status = "filled"
+            else:
+                order.meta["fill_state"] = "partial"
+                order.status = "partial"
+            changed = True
+        if changed:
+            self.broker.save()
 
+    def _legacy_close_rows(self) -> list[dict[str, Any]]:
+        """Sell or cancel pre-gold-card positions when the switch is on.
+
+        These are not tied to 15:45. Turning the switch on closes them on the
+        next sync, including the 10/16 and 11/20 sandbox lots.
+        """
+        if not self.close_legacy_positions:
+            return []
+        rows: list[dict[str, Any]] = []
+        for order in self.broker.orders:
+            if order.action != "BUY" or not self._tracks_exit(order):
+                continue
+            if str((order.meta or {}).get("golden_kind") or "") == "sure_winner_gold":
+                continue
+            if self._is_position_buy(order) and self._held_qty(order) <= 0:
+                continue
+            if not self._is_position_buy(order) and not self._is_working_buy(order):
+                continue
+            probe = {
+                "symbol": order.symbol,
+                "right": order.right,
+                "contract": order.contract,
+                "expiry": order.expiry,
+                "strike": order.strike,
+            }
+            if self._sell_already_working(probe, order.right or "C"):
+                continue
+            detail = (
+                "close legacy non-golden position"
+                if self._is_position_buy(order)
+                else "cancel legacy unfilled order"
+            )
+            rows.append(
+                {
+                    **probe,
+                    "headline": f"SELL NOW {order.symbol}",
+                    "detail": detail,
+                    "bid": FLATTEN_LIMIT,
+                }
+            )
+        return rows
+
+    def _flatten_when_signal_leaves(self, now: datetime | None) -> list[dict[str, Any]]:
+        """After 15:45 ET, sell managed 0DTE fills and cancel unfilled day orders.
+
+        2DTE and weeklies are held overnight, so a fill is not flattened just
+        because the clock hit 15:45. A DAY limit that never filled is cancelled
+        at that cutoff for every expiry. Take-profit and stop still arrive as
+        SELL NOW rows. Legacy golden-flow positions are included only when
+        ``close_legacy_positions`` is on.
+        """
         if not past_odte_flatten(now):
             return []
         rows: list[dict[str, Any]] = []
@@ -352,7 +474,13 @@ class AutoTrader:
             }
             if self._sell_already_working(probe, order.right or "C"):
                 continue
-            if not expiry_is_today(order.expiry, now):
+            # Unfilled DAY orders are pulled at the close even when the option
+            # itself is a weekly. Filled weeklies and 2DTEs stay open.
+            if self._is_working_buy(order):
+                pass
+            elif not expiry_is_today(order.expiry, now):
+                continue
+            elif self._held_qty(order) <= 0:
                 continue
             rows.append(
                 {
@@ -396,8 +524,18 @@ class AutoTrader:
         right: str = "C",
         price_key: str = "ask",
     ) -> WebullOrderIntent | None:
+        row = _with_occ(row)
+        right = str(row.get("right") or right or "C").upper()
+        if right in {"PUT", "P"}:
+            right = "P"
+        elif right in {"CALL", "C"}:
+            right = "C"
         sym = str(row.get("symbol") or "").upper()
         if not sym:
+            return None
+        blocked = entry_block_reason(row.get("expiry"), self._now, dte=_i(row.get("dte")))
+        if blocked:
+            self._note_filtered(row, blocked)
             return None
         kind = golden_signal_kind(row)
         if self.golden_only:
@@ -479,6 +617,12 @@ class AutoTrader:
         row: dict[str, Any],
         right: str = "C",
     ) -> WebullOrderIntent | None:
+        row = _with_occ(row)
+        right = str(row.get("right") or right or "C").upper()
+        if right in {"PUT", "P"}:
+            right = "P"
+        elif right in {"CALL", "C"}:
+            right = "C"
         sym = str(row.get("symbol") or "").upper()
         if not sym:
             return None
@@ -511,11 +655,13 @@ class AutoTrader:
             expiry = str(opened.expiry or row.get("expiry") or "") or None
             strike = opened.strike if opened.strike is not None else strike
             right = str(opened.right or right or "C").upper()
+            held = self._held_qty(opened)
+            if held <= 0:
+                self._note_filtered(row, "sandbox position is already flat")
+                return None
             quantity = max(1, int(opened.quantity or self.max_contracts))
-            if opened.status == "partial":
-                filled_qty = _f((opened.meta or {}).get("filled_qty"))
-                if filled_qty is not None and filled_qty >= 1:
-                    quantity = max(1, int(filled_qty))
+            if held >= 1:
+                quantity = max(1, int(held))
             sym = opened.symbol or sym
             desk = "golden_exit"
         elif not self.desks.get(desk, False):
@@ -623,8 +769,11 @@ class AutoTrader:
                 self._closed_contracts.add(str(intent.contract))
 
         # Fill state first, so an exit sells a fill and cancels a resting limit.
+        # Positions from the sandbox account override a SUBMITTED ledger row.
+        self._now = now
         self._closed_contracts = set()
         self.broker.refresh_working_buys()
+        self._reconcile_positions(self.broker.list_option_positions())
 
         # --- Lottery (0DTE convex calls) ---
         if lottery and budget > 0:
@@ -700,6 +849,15 @@ class AutoTrader:
                     )
                 )
 
+        if self.golden_only and budget > 0 and self.close_legacy_positions:
+            for row in self._legacy_close_rows():
+                if budget <= 0:
+                    break
+                right = str(row.get("right") or "C").upper()
+                if right not in {"C", "P"}:
+                    right = "C"
+                _take(self._route_sell(desk="golden_exit", row=row, right=right))
+
         if self.golden_only and budget > 0:
             for row in self._flatten_when_signal_leaves(now):
                 if budget <= 0:
@@ -736,6 +894,8 @@ class AutoTrader:
                 if right not in {"C", "P"}:
                     right = "C"
                 _take(self._route_buy(desk="sure_winner", row=row, right=right))
+            for row in _flow_rows(option_flow):
+                self._note_filtered(row, "unusual flow is not auto-traded")
 
         return {
             "broker": self.broker.status(),
