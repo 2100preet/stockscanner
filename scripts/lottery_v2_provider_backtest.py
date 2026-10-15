@@ -2,22 +2,25 @@
 
 Equity bars: Tradier /markets/timesales (production, 5-minute). That is the
 same intraday feed the desk uses for ORB and power hour.
-Option bars: Polygon minute aggregates. Tradier timesales rejects OCC symbols
-(HTTP 400). Polygon historical option quotes return HTTP 403 on this key, so
-the 45% spread filter cannot be applied and the entry is the trade close.
+Option bars: Polygon minute aggregates, one daily flat file per session.
+Per-contract REST aggregates are capped near 5 calls/minute on this key, so
+they cannot cover the strike grid. Tradier timesales rejects OCC symbols
+(HTTP 400). Polygon historical option quotes return HTTP 403, so the 45%
+spread filter cannot be applied and the entry is the trade close.
 
 Writes outputs/lottery_v2_provider_backtest.json as it goes. Secrets are
 scrubbed from errors before anything is stored or printed.
 """
 from __future__ import annotations
 
+import csv
+import gzip
 import json
 import os
 import signal
-import threading
+import sys
 import time
 import traceback
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -42,12 +45,9 @@ SYMBOLS = [
     "AMD", "AMZN", "MSFT", "GOOGL", "NFLX", "AVGO", "PFE", "JNJ",
 ]
 POLY = "https://api.polygon.io"
-WORKERS = 8
-# A hung read must not stall the pool the way the first replay did.
+FLAT_HOSTS = ("https://files.polygon.io", "https://files.massive.com")
 socket_timeout = (5, 20)
-
-STATE: dict = {"fetches": 0, "errors": 0, "with_bars": 0}
-STOP = threading.Event()
+STOP = False
 
 
 def scrub(text: str) -> str:
@@ -321,28 +321,127 @@ def _write(payload: dict) -> None:
     tmp.replace(OUT)
 
 
-def fetch_option_day(occ_symbol: str, day: str) -> tuple[str, list[dict], str | None]:
-    """Polygon minute aggregates only. Tradier OCC timesales is a known 400."""
-    key = f"{occ_symbol}|{day}"
-    bars, err = polygon_aggs(occ_symbol, day, day, 1)
-    with threading.Lock():
-        STATE["fetches"] += 1
-        if err:
-            STATE["errors"] += 1
-        elif bars:
-            STATE["with_bars"] += 1
-        done = STATE["fetches"]
-    if done % 40 == 0:
-        print(
-            "fetch",
-            done,
-            "with_bars",
-            STATE["with_bars"],
-            "errors",
-            STATE["errors"],
-            flush=True,
+def _flat_path(host: str, day: str) -> str:
+    year, month, _rest = day.split("-")
+    return f"{host}/us_options_opra/minute_aggs_v1/{year}/{month}/{day}.csv.gz"
+
+
+def _flat_get(host: str, day: str, mode: str) -> requests.Response:
+    key = api_key_from_env() or ""
+    url = _flat_path(host, day)
+    if mode == "bearer":
+        return requests.get(
+            url,
+            headers={"Authorization": f"Bearer {key}"},
+            stream=True,
+            timeout=(20, 300),
         )
-    return key, bars, err
+    return requests.get(url, params={"apiKey": key}, stream=True, timeout=(20, 300))
+
+
+def open_flat(day: str) -> tuple[requests.Response | None, str, str, list[dict]]:
+    """Return an open 200 response, the host, the auth mode, and status notes."""
+    notes: list[dict] = []
+    if not api_key_from_env():
+        return None, "", "", [{"error": "POLYGON_API_KEY unset"}]
+    for host in FLAT_HOSTS:
+        for mode in ("query", "bearer"):
+            try:
+                response = _flat_get(host, day, mode)
+            except Exception as exc:  # noqa: BLE001
+                notes.append({"host": host, "auth": mode, "error": scrub(exc)})
+                continue
+            notes.append({
+                "host": host,
+                "auth": mode,
+                "status": response.status_code,
+                "bytes": response.headers.get("Content-Length"),
+            })
+            if response.status_code == 200:
+                return response, host, mode, notes
+            response.close()
+    return None, "", "", notes
+
+
+def _consume_flat(response: requests.Response, day: str, wanted: set[str], cache: dict[str, list[dict]]) -> int:
+    path = Path("/tmp") / f"lottery-flat-{day}.csv.gz"
+    written = 0
+    try:
+        with path.open("wb") as handle:
+            for chunk in response.iter_content(8 * 1024 * 1024):
+                if not chunk:
+                    continue
+                handle.write(chunk)
+                written += len(chunk)
+                if written // (40 * 1024 * 1024) != (written - len(chunk)) // (40 * 1024 * 1024):
+                    print("download", day, written, flush=True)
+    finally:
+        response.close()
+    print("downloaded", day, written, flush=True)
+    kept = 0
+    rows = 0
+    with path.open("rb") as raw:
+        magic = raw.read(2)
+    opener = gzip.open if magic == b"\x1f\x8b" else open
+    with opener(path, "rt", newline="") as handle:
+        reader = csv.reader(handle)
+        first = next(reader, None)
+        if not first:
+            path.unlink(missing_ok=True)
+            return 0
+        if first[0].lower() == "ticker":
+            header = [name.strip().lower() for name in first]
+            data_rows = reader
+        else:
+            header = ["ticker", "volume", "open", "close", "high", "low", "window_start", "transactions"]
+
+            def data_rows():  # type: ignore[no-redef]
+                yield first
+                yield from reader
+
+            data_rows = data_rows()
+        idx = {name: pos for pos, name in enumerate(header)}
+
+        def cell(row: list[str], name: str, default: int) -> str:
+            pos = idx.get(name, default)
+            if pos >= len(row):
+                return ""
+            return row[pos]
+
+        for row in data_rows:
+            rows += 1
+            if rows % 2_000_000 == 0:
+                print("parse", day, "rows", rows, "kept_contracts", len(cache), flush=True)
+            ticker = cell(row, "ticker", 0)
+            if ticker not in wanted:
+                continue
+            stamp = cell(row, "window_start", 6)
+            try:
+                stamp_val: object = int(stamp)
+            except ValueError:
+                stamp_val = stamp
+            raw = {
+                "t": stamp_val,
+                "o": cell(row, "open", 2),
+                "h": cell(row, "high", 4),
+                "l": cell(row, "low", 5),
+                "c": cell(row, "close", 3),
+                "v": cell(row, "volume", 1),
+            }
+            bar = _bar(raw)
+            if bar is None:
+                continue
+            occ_symbol = ticker[2:] if ticker.startswith("O:") else ticker
+            bucket = cache.setdefault(f"{occ_symbol}|{day}", [])
+            if not bucket:
+                kept += 1
+            bucket.append(bar)
+    path.unlink(missing_ok=True)
+    for key, bars in cache.items():
+        if key.endswith(f"|{day}"):
+            bars.sort(key=lambda item: item["ts"])
+    print("parsed", day, "rows", rows, "contracts", kept, flush=True)
+    return kept
 
 
 def score_signal(sig: dict, cache: dict[str, list[dict]], vix_bars: list[dict]) -> tuple[dict | None, str | None]:
@@ -520,35 +619,71 @@ def main() -> None:
                 seen.add(key)
                 jobs.append((symbol, sig["day"]))
     print("option_jobs", len(jobs), flush=True)
+    by_day_wanted: dict[str, set[str]] = {}
+    for occ_symbol, day in jobs:
+        by_day_wanted.setdefault(day, set()).add(f"O:{occ_symbol}")
 
     cache: dict[str, list[dict]] = {}
-    errors: dict[str, int] = {}
+    errors: dict[str, str] = {}
     started = time.time()
-    with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-        pending = {pool.submit(fetch_option_day, symbol, day) for symbol, day in jobs}
-        while pending and not STOP.is_set():
-            done, pending = wait(pending, timeout=30, return_when=FIRST_COMPLETED)
-            if not done:
-                print("alive", "fetches", STATE["fetches"], "pending", len(pending), flush=True)
-                continue
-            for fut in done:
-                try:
-                    key, bars, err = fut.result()
-                except Exception as exc:  # noqa: BLE001
-                    errors["worker"] = errors.get("worker", 0) + 1
-                    print("worker_error", scrub(exc), flush=True)
-                    continue
-                cache[key] = bars
-                if err:
-                    errors[err] = errors.get(err, 0) + 1
-            if STATE["fetches"] and STATE["fetches"] % 80 < len(done):
-                _checkpoint(
-                    probe, equity_source, equity, signals, cache, vix_bars, errors, vix_source, started, False,
-                )
+    days = sorted(by_day_wanted)
+    sample_day = days[-1] if days else END.isoformat()
+    response, host, mode, notes = open_flat(sample_day)
+    probe["polygon_flatfile"] = notes
+    print("flat_probe", json.dumps(notes), flush=True)
+    if response is None:
+        probe["option_source"] = "polygon_flatfile_unavailable"
+        payload = _base_payload(probe, equity_source, equity, signals, {}, complete=False)
+        payload["ok"] = False
+        payload["reason"] = "Polygon option flat files were not readable. REST aggregates are capped near 5 calls per minute."
+        payload["providers"]["vix"] = vix_source
+        _write(payload)
+        print("FLAT_FAIL", flush=True)
+        sys.exit(1)
 
+    probe["option_source"] = "polygon_flatfile_minute_aggs"
+    # The probe opened the last session. Parse it, then download the earlier days.
+    ordered = [sample_day] + [day for day in days if day != sample_day]
+    opened = {sample_day: response}
+    for day in ordered:
+        if STOP:
+            break
+        wanted = by_day_wanted.get(day) or set()
+        if not wanted:
+            continue
+        current = opened.pop(day, None)
+        if current is None:
+            try:
+                current = _flat_get(host, day, mode)
+            except Exception as exc:  # noqa: BLE001
+                errors[day] = scrub(exc)
+                print("flat_error", day, errors[day], flush=True)
+                continue
+            if current.status_code != 200:
+                errors[day] = f"flat {current.status_code}"
+                print("flat_status", day, current.status_code, flush=True)
+                current.close()
+                continue
+        try:
+            _consume_flat(current, day, wanted, cache)
+            errors[day] = "ok"
+        except Exception as exc:  # noqa: BLE001
+            errors[day] = scrub(exc)
+            print("flat_parse_error", day, errors[day], flush=True)
+        _checkpoint(
+            probe, equity_source, equity, signals, cache, vix_bars, errors, vix_source, started, False,
+        )
+
+    auth_failed = any(str(msg).startswith("flat 401") or str(msg).startswith("flat 403") for msg in errors.values())
+    every_day = bool(days) and all(errors.get(day) == "ok" for day in days) and not STOP and not auth_failed
     payload = _checkpoint(
-        probe, equity_source, equity, signals, cache, vix_bars, errors, vix_source, started, True,
+        probe, equity_source, equity, signals, cache, vix_bars, errors, vix_source, started, every_day,
     )
+    if not every_day:
+        payload["ok"] = False
+        payload["complete"] = False
+        payload["reason"] = "one or more Polygon option flat files failed"
+        _write(payload)
     print("SUMMARY", json.dumps(payload["summary"]), flush=True)
     print("CAPPED", json.dumps(payload["summary_max_3_per_day"]), flush=True)
 
@@ -570,7 +705,7 @@ def _base_payload(
         "providers": {
             "live_priority": ["tradier", "polygon", "yahoo", "cache"],
             "equity_bars": equity_source or "tradier",
-            "option_bars": "polygon_aggs",
+            "option_bars": probe.get("option_source") or "polygon_aggs",
             "nbbo": "unavailable" if not probe.get("polygon_nbbo", {}).get("ok") else "polygon",
             "spread_filter": "not_applied_nbbo_unavailable",
             "entry": "trade_close",
@@ -638,7 +773,8 @@ def _checkpoint(
 
 
 def _on_term(_signum: int, _frame: object) -> None:
-    STOP.set()
+    global STOP
+    STOP = True
     print("sigterm", flush=True)
 
 
