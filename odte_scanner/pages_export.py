@@ -195,4 +195,7 @@ def export_pages(
         "url_hint": "https://2100preet.github.io/stockscanner/",
     }
     (out / "meta.json").write_text(dumps_strict(meta, indent=2, default=str))
+    from odte_scanner.billing.site_export import write_subscribe_pages
+
+    write_subscribe_pages(out)
     return out

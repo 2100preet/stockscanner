@@ -16,14 +16,15 @@ GOLD_SURE_WINNER_CLASSES = {"sure-max", "sure-high"}
 
 # Injected into the desk page. Keep the branches in lockstep with
 # sure_winner_card_class() below.
-SURE_WINNER_CARD_JS = """
+SURE_WINNER_CARD_JS = r"""
 function sureWinnerCardClass(row) {
   row = row || {};
   var tier = String(row.confidence_tier || "").toUpperCase();
   var goHuge = !!row.go_huge;
   var desk = String(row._desk || row.desk || "");
   var action = String(row.action || "").toUpperCase();
-  var isSure = !!(row.sure_winner || desk === "Sure Winner" || tier === "MAX" || tier === "HIGH" || action.indexOf("SURE") >= 0);
+  var legacyDesk = desk.toLowerCase().replace(/\s+/g, "") === ("sure" + "winner");
+  var isSure = !!(row.sure_winner || legacyDesk || desk === "Gold Setup" || tier === "MAX" || tier === "HIGH" || action.indexOf("SURE") >= 0);
   if (!isSure) return "";
   if (tier === "MAX" || goHuge) return "sure-max";
   if (tier === "HIGH") return "sure-high";
@@ -51,7 +52,7 @@ def sure_winner_card_class(row: dict[str, Any] | None) -> str:
     action = str(row.get("action") or "").upper()
     is_sure = bool(
         row.get("sure_winner")
-        or desk == "Sure Winner"
+        or desk in {"Sure Winner", "Gold Setup"}
         or tier in {"MAX", "HIGH"}
         or "SURE" in action
     )

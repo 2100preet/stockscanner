@@ -125,6 +125,8 @@ def test_golden_kind_classifier():
     assert golden_signal_kind({"confidence_tier": "SOLID", "go_huge": True}) is None
     assert golden_signal_kind({"confidence_tier": "SOLID", "sure_winner": True, "go_huge": True}) == "sure_winner_gold"
     # Flow-desk Golden stays on the board and does not auto-trade.
+    assert golden_signal_kind({"desk": "Gold Setup", "sure_winner": True, "confidence_tier": "MAX"}) == "sure_winner_gold"
+    assert golden_signal_kind({"desk": "Gold Setup", "confidence_tier": "SOLID", "sure_winner": True}) is None
     assert golden_signal_kind(_golden_flow()) is None
     assert golden_signal_kind({"flags": ["golden"]}) is None
     assert golden_signal_kind(_unusual_flow()) is None
@@ -133,6 +135,8 @@ def test_golden_kind_classifier():
     assert "function sureWinnerCardClass" in PAGE
     assert "sure-high" in PAGE
     assert 'tier === "HIGH"' in PAGE
+    assert 'desk === "Gold Setup"' in PAGE
+    assert "Sure Winner" not in PAGE
 
 
 def test_golden_only_routes_gold_and_drops_the_rest(tmp_path: Path):

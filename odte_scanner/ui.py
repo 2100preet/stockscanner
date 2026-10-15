@@ -256,6 +256,7 @@ PAGE = r"""
       <button id="btnScanMl6">Scan ML6</button>
       <button id="btnRefresh">Reload</button>
       <button type="button" id="btnAlerts" title="Browser alerts for BUY/SELL call &amp; put recommendations">Enable alerts</button>
+      <a class="pill" href="subscribe/">Sparky Signals</a>
       <span class="pill" id="session">—</span>
       <span class="pill" id="universePill">—</span>
       <span class="status" id="counts"></span>
@@ -287,7 +288,7 @@ PAGE = r"""
 
     <section class="tabpane active" id="tab-nowboard">
       <h2>BUY NOW / SELL NOW — all desks</h2>
-      <p class="lede">Live option BUY NOW / SELL NOW across <strong>Sure Winner</strong> (1–2/day · MAX/HIGH/SOLID · gold/amber · GO HUGE sizing), 0DTE, weeklies, swing, Explosive, <strong>RIP/META</strong>, <strong>Patterns</strong> (double bottom/top · golden triangle), <strong>Levels</strong>, ML6, Challenge, and 0DTE $1K IN/OUT. Hist win ≥80% (n≥5) gates Options BUY NOW. Same losing OCC stays blocked; mega names can still BUY when tape is ripping (see RIP tab). SETUP rows are quality tape without a contract yet — not a buy.</p>
+      <p class="lede">Live option BUY NOW / SELL NOW across <strong>Gold Setup</strong> (1–2/day · MAX/HIGH/SOLID · gold/amber · GO HUGE sizing), 0DTE, weeklies, swing, Explosive, <strong>RIP/META</strong>, <strong>Patterns</strong> (double bottom/top · golden triangle), <strong>Levels</strong>, ML6, Challenge, and 0DTE $1K IN/OUT. Hist win ≥80% (n≥5) gates Options BUY NOW. Same losing OCC stays blocked; mega names can still BUY when tape is ripping (see RIP tab). SETUP rows are quality tape without a contract yet — not a buy.</p>
       <div class="metric-row" id="nowBoardMetrics"></div>
       <p class="lede" id="nowBoardNote" style="margin-top:0;font-size:.76rem"></p>
       <h2>BUY NOW</h2>
@@ -653,7 +654,7 @@ PAGE = r"""
         (perfect/elite hist, snipers blocked) so the sleeve cannot freeze near $900 for days.
         Status: <strong>ENTRY · HOLD · EXIT</strong>. After each Paper ENTER/EXIT the sleeve
         <strong>cash &amp; equity balance</strong> updates so you know where you are.
-        <em>Hist 100% ≠ guaranteed future wins — options can go to zero.</em>
+        <em>A historical hit rate is not a prediction — options can go to zero.</em>
       </p>
       <div id="challengePauseBanner" class="empty" style="display:none;margin:0 0 .85rem;padding:.75rem 1rem;border-radius:.75rem;border:1px solid rgba(224,179,90,.45);background:linear-gradient(105deg,rgba(224,179,90,.16),rgba(18,28,24,.55))"></div>
       <div class="metric-row" id="challengeMetrics"></div>
@@ -837,7 +838,7 @@ PAGE = r"""
       <div class="panel">
         <h2>Webull auto-trade bridge</h2>
         <p class="lede" style="margin-top:0;font-size:.76rem">
-          Routes Sure Winner cards rendered <strong>gold</strong> (MAX and HIGH). Golden unusual-flow stays on the board.
+          Routes Gold Setup cards rendered <strong>gold</strong> (MAX and HIGH). Golden unusual-flow stays on the board.
           Everything else stays on the board and is not sent. Dry-run by default.
           Paper mode uses Webull's sandbox host <code>api.sandbox.webull.com</code>.
           Set sandbox <code>WEBULL_APP_KEY</code> / <code>WEBULL_APP_SECRET</code> / <code>WEBULL_ACCOUNT_ID</code>
@@ -1159,7 +1160,7 @@ PAGE = r"""
       <p class="pc-why"><strong>EXIT:</strong> ${t.planOut}</p>`;
     }
 
-    const NOW_DESK_ORDER = ["Sure Winner", "0DTE", "1 Week", "Swing 1–3M", "Patterns", "Levels", "Explosive", "ML6", "Challenge", "0DTE $1K", "Options", "RIP/META"];
+    const NOW_DESK_ORDER = ["Gold Setup", "0DTE", "1 Week", "Swing 1–3M", "Patterns", "Levels", "Explosive", "ML6", "Challenge", "0DTE $1K", "Options", "RIP/META"];
 
     function horizonDesk(row, fallback) {
       const b = String(row.dte_bucket || row.horizon || row.hold_style || row.style || "").toLowerCase();
@@ -1206,7 +1207,7 @@ PAGE = r"""
       };
       const acts = DATA.actions || {};
       const sure = DATA.sure_winners || DATA.sure || {};
-      (sure.winners || sure.buy_now || []).forEach(r => add(Object.assign({}, r, { action: r.action || "SURE_WINNER", sure_winner: true }), "BUY", "Sure Winner"));
+      (sure.winners || sure.buy_now || []).forEach(r => add(Object.assign({}, r, { action: r.action || "SURE_WINNER", sure_winner: true }), "BUY", "Gold Setup"));
       (acts.buy_now || []).forEach(r => add(r, "BUY", horizonDesk(r, "Options")));
       (acts.sell_now || []).forEach(r => add(r, "SELL", horizonDesk(r, "Options")));
       (acts.wait || []).slice(0, 16).forEach(r => add(r, "WAIT", horizonDesk(r, "Options")));
@@ -2338,7 +2339,7 @@ PAGE = r"""
 
       const t0 = ch.primary;
       if (primaryEl) {
-        if (!t0) primaryEl.innerHTML = `<div class="empty">No sure-shot sprint ticket cleared the hist filter yet — run a scan.</div>`;
+        if (!t0) primaryEl.innerHTML = `<div class="empty">No sprint ticket cleared the hist filter yet — run a scan.</div>`;
         else {
           const tier = t0.certainty_tier||"strong";
           const act = t0.action||"WAIT";
@@ -3573,7 +3574,7 @@ PAGE = r"""
         seenSure.add(key);
         seenMust.add(key);
         sure.push({
-          desk: "Sure Winner",
+          desk: "Gold Setup",
           symbol: sym,
           strike: row.strike,
           expiry: row.expiry || "—",
@@ -3740,10 +3741,10 @@ PAGE = r"""
       el.innerHTML = `
         <div class="pb-head">
           <div>
-            <h2 class="pb-title">${topSure.length ? `Sure winner <em>${topSure[0].size_label || "GO HUGE"}</em> · 1–2/day` : "Must trade <em>sure-shot</em> + exits"}</h2>
+            <h2 class="pb-title">${topSure.length ? `Gold Setup <em>${topSure[0].size_label || "GO HUGE"}</em> · 1–2/day` : "Must trade <em>filtered setups</em> + exits"}</h2>
             <div class="pb-sub">${topSure.length
-              ? (sureBoard.note || "Gold/amber = capped high-conviction tickets. MAX = GO HUGE (×3), HIGH = SIZE UP (×2). Hist edge ≠ guaranteed profit.")
-              : "Hist-gated tickets with strike, strike-rate, and expiry up top. EXIT cards are live positions/tickets the desk says leave now. Hist edge ≠ guaranteed future profit."}</div>
+              ? (sureBoard.note || "Gold and amber cards are the capped high-conviction tickets. MAX and HIGH are published as Gold Setups. A historical hit rate is not a prediction.")
+              : "Hist-gated tickets with strike, strike-rate, and expiry up top. EXIT cards are live positions the desk says leave now. A historical hit rate is not a prediction."}</div>
           </div>
           <div class="status">SURE ${topSure.length} · MUST ${topMust.length} · EXIT ${topExit.length}</div>
         </div>
@@ -4140,7 +4141,7 @@ PAGE = r"""
           kind: "sure",
           title: `${tier} · ${size} ${r.symbol} ${right}`,
           body: [
-            "Sure Winner",
+            "Gold Setup",
             r.source_desk || null,
             r.expiry || null,
             r.strike != null ? `${Number(r.strike)}${right === "PUT" ? "p" : "c"}` : null,
@@ -6900,7 +6901,7 @@ def create_app(config_path: str | None = None) -> Flask:
                     "winners": [],
                     "buy_now": [],
                     "counts": {},
-                    "note": "Sure-winner desk off or unavailable.",
+                    "note": "Gold Setup desk off or unavailable.",
                 }
                 if bool(actions_cfg.get("sure_winners_enabled", True)):
                     try:
@@ -6938,7 +6939,7 @@ def create_app(config_path: str | None = None) -> Flask:
                             "winners": [],
                             "buy_now": [],
                             "counts": {},
-                            "note": "Sure-winner desk temporarily unavailable.",
+                            "note": "Gold Setup desk temporarily unavailable.",
                         }
 
                 cache_path = ROOT / "outputs" / "ui_snapshot_cache.json"
@@ -7517,6 +7518,9 @@ def create_app(config_path: str | None = None) -> Flask:
         """Route current lottery / actions / challenge tickets to Webull (dry-run by default)."""
         return jsonify(_run_webull_sync())
 
+    from odte_scanner.billing.routes import billing_bp
+
+    app.register_blueprint(billing_bp)
     return app
 
 

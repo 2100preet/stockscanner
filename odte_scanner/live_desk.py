@@ -47,11 +47,23 @@ def _in_rth_window(*, extended: bool = False) -> bool:
     return True
 
 
+def _morning_digest() -> dict[str, Any]:
+    """Weekday Morning Spark post. No-op outside the window or without a free channel."""
+    try:
+        from odte_scanner.alerts.subscription import maybe_publish_morning_digest
+
+        return maybe_publish_morning_digest()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("morning digest failed: %s", exc)
+        return {"ok": False, "error": str(exc)}
+
+
 def run_live_desk_cycle(config_path: str | None = None) -> dict[str, Any]:
     """One scan + Telegram/Webull pulse. Safe to call from a background thread."""
     from odte_scanner.alert_pulse import pulse_desk_alerts
     from odte_scanner.scanner import run_scan
 
+    digest_meta = _morning_digest()
     started = datetime.now(timezone.utc).isoformat()
     scan_err = None
     try:
@@ -72,6 +84,7 @@ def run_live_desk_cycle(config_path: str | None = None) -> dict[str, Any]:
         "finished_at": datetime.now(timezone.utc).isoformat(),
         "scan_error": scan_err,
         "desk_alerts": alert_meta,
+        "morning_spark": digest_meta,
     }
 
 
@@ -88,6 +101,7 @@ def _worker_loop(config_path: str | None) -> None:
     )
     while True:
         try:
+            _morning_digest()
             if always or _in_rth_window(extended=extended):
                 out = run_live_desk_cycle(config_path)
                 logger.info(

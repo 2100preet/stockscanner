@@ -50,7 +50,7 @@ class SureWinner:
     color: str
     headline: str
     detail: str
-    desk: str = "Sure Winner"
+    desk: str = "Gold Setup"
     source_desk: str = "Options"
     certainty_tier: str | None = None  # perfect | elite | strong
     right: str = "C"
@@ -330,7 +330,7 @@ def _to_sure_winner(row: dict[str, Any], *, day: str) -> SureWinner:
         f"({certainty} hist {float(win or 0):.0f}% n={int(n or 0)})"
     )
     detail_bits = [
-        f"Sure-winner #{tier}",
+        f"Gold Setup #{tier}",
         sizing["size_hint"],
         f"hist {float(win or 0):.0f}% n={int(n or 0)}",
         f"conf ~{conf:.0f}%",
@@ -559,12 +559,12 @@ def build_sure_winner_board(
 
     note = (
         f"Cap {max(1, min(max_per_day, 2))}/day · sticky CST day {day}. "
-        "MAX = GO HUGE (×3), HIGH = SIZE UP (×2), SOLID = FULL SIZE (×1.5). "
-        "Hist edge ≠ guaranteed profit."
+        "MAX and HIGH publish as Gold Setups. SOLID stays on the desk. "
+        "A historical hit rate is not a prediction."
     )
     if not winners:
         note = (
-            f"No sure-winner this snapshot — need perfect/elite hist + live contract/ask "
+            f"No Gold Setup this snapshot — the filter wants a strong historical hit rate plus a live contract "
             f"(cap {max(1, min(max_per_day, 2))}/day). {note}"
         )
 
