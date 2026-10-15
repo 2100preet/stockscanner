@@ -65,6 +65,12 @@ PAGE = r"""
     .tabs { display: flex; flex-wrap: wrap; gap: .35rem; border-bottom: 1px solid var(--line); padding-bottom: .55rem; margin-bottom: 1rem; }
     .tabs button { background: transparent; border: none; color: var(--muted); border-radius: .4rem; padding: .45rem .75rem; }
     .tabs button.active { color: var(--ink); background: rgba(255,255,255,.07); }
+    .tabs button[data-tab="scorecard"] { color: var(--sure-gold); }
+    .sc-input {
+      background: rgba(255,255,255,.03); color: var(--ink);
+      border: 1px solid var(--line); border-radius: .45rem; padding: .28rem .45rem;
+      font: 500 .8rem/1.2 "DM Sans", sans-serif;
+    }
     .tabpane { display: none; }
     .tabpane.active { display: block; animation: fade .25s ease; }
     .pinned-desk { border: 1px solid var(--line); border-radius: .85rem; padding: .85rem 1rem; margin: 0 0 .75rem; background: rgba(255,255,255,.025); }
@@ -285,6 +291,7 @@ PAGE = r"""
       <button data-tab="screener">Screener</button>
       <button data-tab="pnl">P&amp;L</button>
       <button data-tab="journal">Journal</button>
+      <button data-tab="scorecard">Scorecard</button>
     </nav>
 
     <section class="tabpane active" id="tab-nowboard">
@@ -881,6 +888,7 @@ PAGE = r"""
         <div id="recLogAll" class="empty">—</div>
       </div>
     </section>
+    <!--SCORECARD_SECTION-->
 
     <footer>
       Quality gates require score + multiple confirming algos before a signal counts — fewer trades, higher measured win rates.
@@ -3955,7 +3963,9 @@ PAGE = r"""
       }
     }
 
+/*SCORECARD_FN*/
     function paint() {
+      try { renderScorecard(); } catch (err) { console.error(err); }
       renderMustTradeBanner();
       renderNowBoard();
       maybeFireTradeAlerts();
@@ -4353,9 +4363,12 @@ PAGE = r"""
 </html>
 """
 
+from odte_scanner.scorecard.page import CLIENT_JS, SECTION_HTML
 from odte_scanner.trading.golden import SURE_WINNER_CARD_JS
 
 PAGE = PAGE.replace("/*SURE_WINNER_CARD_JS*/", SURE_WINNER_CARD_JS)
+PAGE = PAGE.replace("<!--SCORECARD_SECTION-->", SECTION_HTML)
+PAGE = PAGE.replace("/*SCORECARD_FN*/", CLIENT_JS)
 
 
 def _read_json(path: Path) -> dict | list | None:
@@ -4436,6 +4449,28 @@ def create_app(config_path: str | None = None) -> Flask:
     @app.get("/")
     def index():
         return render_template_string(PAGE)
+
+    @app.get("/scorecard")
+    @app.get("/scorecard.html")
+    def scorecard_page():
+        from odte_scanner.scorecard.page import render_scorecard_page
+        from odte_scanner.scorecard.service import public_view
+
+        return render_scorecard_page(live=True, initial=public_view())
+
+    @app.get("/api/scorecard")
+    def scorecard_api():
+        from odte_scanner.scorecard.service import public_view
+
+        return jsonify(public_view())
+
+    @app.get("/scorecard/ledger.jsonl")
+    def scorecard_ledger():
+        from flask import Response
+
+        from odte_scanner.scorecard.service import ledger_text
+
+        return Response(ledger_text(), mimetype="text/plain; charset=utf-8")
 
     @app.get("/api/snapshot")
     def snapshot():
@@ -7157,6 +7192,24 @@ def create_app(config_path: str | None = None) -> Flask:
                     logger.warning("daily_pnl build failed: %s", exc)
                     daily_pnl = {"error": str(exc), "totals": {}, "by_day": [], "closed": [], "open": []}
 
+                scorecard_public: dict = {}
+                try:
+                    from odte_scanner.scorecard.service import observe_snapshot
+
+                    scorecard_public = observe_snapshot(
+                        sure_winners=sure_winners if isinstance(sure_winners, dict) else None,
+                        option_flow=(echo.get("option_flow") if isinstance(echo, dict) else None),
+                        scores=scan.get("scores") or [],
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("scorecard observe failed: %s", exc)
+                    scorecard_public = {
+                        "error": str(exc),
+                        "rows": [],
+                        "summary": {},
+                        "chain": {"ok": False, "error": str(exc)},
+                    }
+
                 return sanitize_for_json(
                         {
                         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -7204,6 +7257,7 @@ def create_app(config_path: str | None = None) -> Flask:
                         "win_rates": win_table,
                         "rec_log": rec_log_payload,
                         "webull": webull_payload,
+                        "scorecard": scorecard_public,
                         }
                     )
 

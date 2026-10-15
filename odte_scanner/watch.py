@@ -241,6 +241,14 @@ def run_watch(
                             "skipped_n": wb.get("skipped_n"),
                             "activity_counts": (wb.get("activity") or {}).get("counts"),
                         }
+                        try:
+                            from odte_scanner.scorecard.service import observe_snapshot
+
+                            observe_snapshot(
+                                sure_winners=sure_rows if isinstance(sure_rows, dict) else None,
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            logger.debug("scorecard observe skipped: %s", exc)
             except Exception as exc:  # noqa: BLE001
                 logger.debug("journal sync skipped: %s", exc)
 

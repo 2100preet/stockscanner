@@ -158,6 +158,14 @@ def export_pages(
     (out / "index.html").write_text(_static_html(PAGE))
     (out / ".nojekyll").write_text("")
 
+    from odte_scanner.scorecard.page import render_scorecard_page
+    from odte_scanner.scorecard.service import ledger_text, public_view
+
+    scorecard = payload.get("scorecard") if isinstance(payload.get("scorecard"), dict) else public_view()
+    (data_dir / "scorecard.json").write_text(dumps_strict(scorecard, indent=2, default=str))
+    (data_dir / "scorecard_ledger.jsonl").write_text(ledger_text())
+    (out / "scorecard.html").write_text(render_scorecard_page(live=False, initial=scorecard))
+
     # Telegram / WhatsApp — skipped on Pages when fast alert loop owns delivery
     # (set SKIP_DESK_ALERTS=1 on Signal Desk Pages to avoid duplicate pings).
     alert_meta: dict = {"ok": False, "skipped": True}

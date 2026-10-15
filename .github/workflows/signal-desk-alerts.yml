@@ -15,7 +15,7 @@ on:
       - ".github/trigger-live-deploy"
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
@@ -60,6 +60,7 @@ jobs:
             outputs/whatsapp_alert_seen.json
             outputs/desk_alert_seen.json
             outputs/desk_alerts_last.json
+            outputs/scorecard_ledger.jsonl
           key: desk-ledgers-${{ github.run_id }}
           restore-keys: |
             desk-ledgers-
@@ -122,6 +123,8 @@ jobs:
           python -m odte_scanner export-pages --out site
           test -f site/index.html
           test -f site/data/snapshot.json
+          test -f site/scorecard.html
+          test -f site/data/scorecard.json
           mkdir -p site/data/ledgers
           for f in signal_journal.json recommendation_log.json challenge_ledger.json odte_1k_ledger.json paper_ledger.json webull_orders.json ui_snapshot_cache.json desk_alerts_last.json; do
             if [ -f "outputs/$f" ]; then cp "outputs/$f" "site/data/ledgers/$f"; fi
@@ -143,6 +146,23 @@ jobs:
               orders = book.get("orders") if isinstance(book, dict) else book
               print("webull_orders=", len(orders or []))
           PY
+
+      - name: Commit scorecard ledger
+        if: github.ref == 'refs/heads/main'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ ! -f scorecard/ledger.jsonl ]; then
+            echo "No scorecard ledger to commit"
+            exit 0
+          fi
+          git add scorecard/ledger.jsonl
+          if git diff --cached --quiet; then
+            echo "Scorecard ledger unchanged"
+            exit 0
+          fi
+          git commit -m "Record public scorecard ledger"
+          git push origin HEAD:main || echo "::warning::Could not push scorecard/ledger.jsonl to main. This deploy still publishes the ledger in the site artifact. Actions needs contents:write and permission to push to main."
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
