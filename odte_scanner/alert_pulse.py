@@ -44,6 +44,21 @@ def pulse_desk_alerts(
 
     payload = build_offline_snapshot(config_path)
     alert_meta = dispatch_snapshot_alerts(payload) or {"ok": False}
+    if isinstance(alert_meta, dict):
+        alert_meta = dict(alert_meta)
+        try:
+            from odte_scanner.alerts.subscription import dispatch_subscription_alerts
+
+            sub_meta = dispatch_subscription_alerts(payload) or {}
+            alert_meta["subscription"] = {
+                "ok": sub_meta.get("ok"),
+                "sent": sub_meta.get("sent"),
+                "skipped": sub_meta.get("skipped"),
+                "primed": sub_meta.get("primed"),
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("subscription alerts failed: %s", exc)
+            alert_meta["subscription"] = {"ok": False, "error": str(exc)}
 
     out = ROOT / "outputs"
     out.mkdir(parents=True, exist_ok=True)

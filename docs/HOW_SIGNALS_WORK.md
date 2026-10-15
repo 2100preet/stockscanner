@@ -56,12 +56,12 @@ Env knobs:
 | `WEBULL_PAPER_ACCOUNT_ID` | Optional paper account id override |
 | `WEBULL_PAPER_SUBMIT=1` | Submit golden orders to the sandbox paper account (dry-run off). Requires the three secrets |
 | `WEBULL_LIVE=1` | Ignored. The bridge does not place production orders |
-| `WEBULL_GOLDEN_ONLY=0` | Optional. Default routes Sure Winner gold + Golden flow only |
+| `WEBULL_GOLDEN_ONLY=0` | Optional. Default routes Gold Setup cards rendered gold (MAX and HIGH) only |
 
 ## Webull
 
 - Every live snapshot with `auto_sync: true` runs the AutoTrader.
-- Default config: `enabled: false`, `dry_run: true`, `paper: true`, `golden_only: true` → **ledger / deep-link only**, and only for Sure Winner gold (MAX) and Golden unusual-flow prints.
+- Default config: `enabled: false`, `dry_run: true`, `paper: true`, `golden_only: true` → **ledger / deep-link only**, and only for Gold Setup cards rendered gold (MAX and HIGH). Golden unusual-flow prints stay on the board.
 - Paper submits use Webull's official sandbox (`api.sandbox.webull.com`) via `WEBULL_PAPER_SUBMIT=1` plus sandbox keys. That account is isolated from production. `WEBULL_LIVE=1` cannot select `api.webull.com`.
 
 ## What “instantaneous” means here

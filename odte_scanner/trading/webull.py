@@ -647,7 +647,7 @@ class WebullBroker:
                 if o.status in ("staged", "dry_run", "submitted", "deferred", "partial")
             ),
             "disclaimer": (
-                "Webull routing is golden-only by default: Sure Winner cards rendered "
+                "Webull routing is golden-only by default: Gold Setup cards rendered "
                 "gold (MAX and HIGH). Unusual-flow prints stay on the board. "
                 "Paper mode uses the official sandbox host api.sandbox.webull.com "
                 "(Webull OpenAPI Paper Trading) — not the production account. "
@@ -1144,7 +1144,7 @@ class WebullBroker:
             },
             "how_to_verify": [
                 "1. Run a live Flask host (not GitHub Pages) — Pages is read-only.",
-                "1. Only Sure Winner cards rendered gold (MAX and HIGH) are staged. Golden flow stays on the board.",
+                "1. Only Gold Setup cards rendered gold (MAX and HIGH) are staged. Golden flow stays on the board.",
                 "2. Keep dry_run: true until sandbox keys are set. Nothing is sent by default.",
                 "3. Paper account: generate keys under Webull Developer → Paper Trading / Sandbox, then set WEBULL_APP_KEY, WEBULL_APP_SECRET, and WEBULL_ACCOUNT_ID (or WEBULL_PAPER_ACCOUNT_ID). Host is api.sandbox.webull.com.",
                 "4. Submit to that paper account with WEBULL_PAPER_SUBMIT=1 (keys required). WEBULL_LIVE cannot place a production order.",
