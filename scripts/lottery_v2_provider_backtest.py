@@ -339,6 +339,75 @@ def _flat_get(host: str, day: str, mode: str) -> requests.Response:
     return requests.get(url, params={"apiKey": key}, stream=True, timeout=(20, 300))
 
 
+def _s3_client(endpoint: str):
+    import boto3
+    from botocore.config import Config
+
+    key = api_key_from_env() or ""
+    return boto3.client(
+        "s3",
+        endpoint_url=endpoint,
+        aws_access_key_id=key,
+        aws_secret_access_key=key,
+        region_name="us-east-1",
+        config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
+    )
+
+
+def _flat_object_key(day: str) -> str:
+    year, month, _rest = day.split("-")
+    return f"us_options_opra/minute_aggs_v1/{year}/{month}/{day}.csv.gz"
+
+
+def open_s3(day: str) -> tuple[object | None, str, list[dict]]:
+    """Head the daily minute-aggregate object. Notes contain status codes only."""
+    notes: list[dict] = []
+    if not api_key_from_env():
+        return None, "", [{"error": "POLYGON_API_KEY unset"}]
+    from botocore.exceptions import ClientError
+
+    for endpoint in FLAT_HOSTS:
+        try:
+            client = _s3_client(endpoint)
+            head = client.head_object(Bucket="flatfiles", Key=_flat_object_key(day))
+        except ClientError as exc:
+            meta = (exc.response or {}).get("ResponseMetadata") or {}
+            err = (exc.response or {}).get("Error") or {}
+            notes.append({
+                "endpoint": endpoint,
+                "auth": "s3v4",
+                "status": meta.get("HTTPStatusCode"),
+                "error": err.get("Code"),
+            })
+            continue
+        except Exception as exc:  # noqa: BLE001
+            notes.append({"endpoint": endpoint, "auth": "s3v4", "error": scrub(exc)})
+            continue
+        notes.append({
+            "endpoint": endpoint,
+            "auth": "s3v4",
+            "status": 200,
+            "bytes": head.get("ContentLength"),
+        })
+        return client, endpoint, notes
+    return None, "", notes
+
+
+def download_s3(client: object, day: str) -> Path:
+    path = Path("/tmp") / f"lottery-flat-{day}.csv.gz"
+    seen = {"n": 0}
+
+    def hook(amount: int) -> None:
+        seen["n"] += int(amount)
+        step = 40 * 1024 * 1024
+        if seen["n"] // step != (seen["n"] - int(amount)) // step:
+            print("download", day, seen["n"], flush=True)
+
+    client.download_file("flatfiles", _flat_object_key(day), str(path), Callback=hook)  # type: ignore[attr-defined]
+    print("downloaded", day, path.stat().st_size, flush=True)
+    return path
+
+
 def open_flat(day: str) -> tuple[requests.Response | None, str, str, list[dict]]:
     """Return an open 200 response, the host, the auth mode, and status notes."""
     notes: list[dict] = []
@@ -378,6 +447,10 @@ def _consume_flat(response: requests.Response, day: str, wanted: set[str], cache
     finally:
         response.close()
     print("downloaded", day, written, flush=True)
+    return _parse_flat_path(path, day, wanted, cache)
+
+
+def _parse_flat_path(path: Path, day: str, wanted: set[str], cache: dict[str, list[dict]]) -> int:
     kept = 0
     rows = 0
     with path.open("rb") as raw:
@@ -628,10 +701,17 @@ def main() -> None:
     started = time.time()
     days = sorted(by_day_wanted)
     sample_day = days[-1] if days else END.isoformat()
-    response, host, mode, notes = open_flat(sample_day)
-    probe["polygon_flatfile"] = notes
-    print("flat_probe", json.dumps(notes), flush=True)
-    if response is None:
+    s3_client, s3_endpoint, s3_notes = open_s3(sample_day)
+    probe["polygon_flatfile_s3"] = s3_notes
+    print("flat_s3_probe", json.dumps(s3_notes), flush=True)
+    http_response = None
+    http_host = ""
+    http_mode = ""
+    if s3_client is None:
+        http_response, http_host, http_mode, http_notes = open_flat(sample_day)
+        probe["polygon_flatfile_http"] = http_notes
+        print("flat_http_probe", json.dumps(http_notes), flush=True)
+    if s3_client is None and http_response is None:
         probe["option_source"] = "polygon_flatfile_unavailable"
         payload = _base_payload(probe, equity_source, equity, signals, {}, complete=False)
         payload["ok"] = False
@@ -642,34 +722,32 @@ def main() -> None:
         sys.exit(1)
 
     probe["option_source"] = "polygon_flatfile_minute_aggs"
-    # The probe opened the last session. Parse it, then download the earlier days.
     ordered = [sample_day] + [day for day in days if day != sample_day]
-    opened = {sample_day: response}
+    opened_http = {sample_day: http_response} if http_response is not None else {}
     for day in ordered:
         if STOP:
             break
         wanted = by_day_wanted.get(day) or set()
         if not wanted:
             continue
-        current = opened.pop(day, None)
-        if current is None:
-            try:
-                current = _flat_get(host, day, mode)
-            except Exception as exc:  # noqa: BLE001
-                errors[day] = scrub(exc)
-                print("flat_error", day, errors[day], flush=True)
-                continue
-            if current.status_code != 200:
-                errors[day] = f"flat {current.status_code}"
-                print("flat_status", day, current.status_code, flush=True)
-                current.close()
-                continue
         try:
-            _consume_flat(current, day, wanted, cache)
+            if s3_client is not None:
+                saved = download_s3(s3_client, day)
+                _parse_flat_path(saved, day, wanted, cache)
+            else:
+                current = opened_http.pop(day, None)
+                if current is None:
+                    current = _flat_get(http_host, day, http_mode)
+                    if current.status_code != 200:
+                        errors[day] = f"flat {current.status_code}"
+                        print("flat_status", day, current.status_code, flush=True)
+                        current.close()
+                        continue
+                _consume_flat(current, day, wanted, cache)
             errors[day] = "ok"
         except Exception as exc:  # noqa: BLE001
             errors[day] = scrub(exc)
-            print("flat_parse_error", day, errors[day], flush=True)
+            print("flat_error", day, errors[day], flush=True)
         _checkpoint(
             probe, equity_source, equity, signals, cache, vix_bars, errors, vix_source, started, False,
         )
