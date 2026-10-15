@@ -1058,6 +1058,10 @@ def test_classify_broker_order_states():
     assert classify_broker_order({"order_status": "CANCELLED", "filled_quantity": "0"})["fill_state"] == "cancelled"
     covered = classify_broker_order({"order_status": "SUBMITTED", "filled_quantity": "2", "quantity": "2"})
     assert covered["fill_state"] == "filled"
+    filled = classify_broker_order(
+        {"order_status": "FILLED", "filled_quantity": "1", "quantity": "1", "avg_filled_price": "0.42"}
+    )
+    assert filled["fill_price"] == 0.42
 
 
 def test_order_detail_failure_stays_working(tmp_path: Path, monkeypatch):
@@ -1338,6 +1342,199 @@ def test_parse_option_positions_reads_occ_and_option_fields():
     assert by_symbol["AMAT"]["right"] == "C"
     assert by_symbol["AMAT"]["expiry"] == "2026-11-20"
     assert "SPY" not in by_symbol
+
+
+def test_parse_option_positions_reads_legs():
+    """Strike, expiry, and side live on legs; quantity and cost sit on the parent."""
+    from odte_scanner.trading.webull import parse_option_positions
+
+    rows = parse_option_positions(
+        {
+            "positions": [
+                {
+                    "instrument_type": "OPTION",
+                    "symbol": "IWM",
+                    "quantity": "1",
+                    "cost_price": "0.35",
+                    "legs": [
+                        {
+                            "symbol": "IWM261015C00272000",
+                            "side": "BUY",
+                            "option_type": "CALL",
+                            "strike_price": "272",
+                            "option_expire_date": "2026-10-15",
+                        }
+                    ],
+                },
+                {"instrument_type": "EQUITY", "symbol": "SPY", "quantity": "10"},
+            ]
+        }
+    )
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["contract"] == "IWM261015C00272000"
+    assert row["symbol"] == "IWM"
+    assert row["right"] == "C"
+    assert row["expiry"] == "2026-10-15"
+    assert row["strike"] == 272
+    assert row["quantity"] == 1
+    assert row["cost"] == 0.35
+
+
+def test_preopen_signal_is_queued_and_not_submitted(tmp_path: Path, monkeypatch):
+    from tests.session_clock import session_et
+
+    early = session_et(8, 15)
+    opened = session_et(9, 35)
+    broker = _live_broker(tmp_path, _Clock())
+    calls: list[str] = []
+    monkeypatch.setattr(broker, "_place_via_openapi", lambda intent: calls.append(intent.id) or "WB-1")
+    monkeypatch.setattr(broker, "list_option_positions", lambda account_id=None: [])
+    trader = AutoTrader(broker, golden_only=True, max_orders_per_sync=4)
+    card = _sure_card("IWM", 272)
+    trader.sync(sure_winners={"winners": [card]}, now=early)
+    buys = [o for o in broker.orders if o.action == "BUY"]
+    assert calls == []
+    assert len(buys) == 1
+    assert buys[0].status == "deferred"
+    assert buys[0].meta.get("queued_for_open") is True
+    trader.sync(sure_winners={"winners": [card]}, now=early)
+    assert calls == []
+    assert len([o for o in broker.orders if o.action == "BUY"]) == 1
+    trader.sync(sure_winners={"winners": [card]}, now=opened)
+    assert calls == [buys[0].id]
+    assert buys[0].status == "submitted"
+    assert buys[0].broker_order_id == "WB-1"
+
+
+def test_nonretryable_reject_is_not_submitted_again(tmp_path: Path, monkeypatch):
+    from tests.session_clock import session_et
+
+    broker = _live_broker(tmp_path, _Clock())
+    calls: list[str] = []
+
+    def deny(intent: WebullOrderIntent) -> str:
+        calls.append(intent.symbol)
+        raise RuntimeError(
+            "HTTP Status: 417, Code: OPENAPI_ETF_OPTION_CAN_NOT_TRADING, "
+            "Msg: ETF option can not trading, only trading in 09:30-16:15"
+        )
+
+    monkeypatch.setattr(broker, "_place_via_openapi", deny)
+    monkeypatch.setattr(broker, "list_option_positions", lambda account_id=None: [])
+    trader = AutoTrader(broker, golden_only=True, max_orders_per_sync=4)
+    card = _sure_card("IWM", 272)
+    trader.sync(sure_winners={"winners": [card]}, now=session_et(10, 0))
+    trader.sync(sure_winners={"winners": [card]}, now=session_et(10, 5))
+    buys = [o for o in broker.orders if o.action == "BUY"]
+    assert calls == ["IWM"]
+    assert len(buys) == 1
+    assert buys[0].status == "rejected"
+    assert buys[0].meta.get("retryable") is False
+
+
+def test_order_detail_records_the_fill_price(tmp_path: Path, monkeypatch):
+    broker = _live_broker(tmp_path, _Clock())
+    intent = _arm_live_buy(broker, _flow("SPY", 500))
+    monkeypatch.setattr(
+        broker,
+        "_fetch_order_detail",
+        lambda order: {
+            "order_status": "FILLED",
+            "filled_quantity": "1",
+            "quantity": "1",
+            "avg_filled_price": "0.42",
+        },
+    )
+    broker.refresh_fill(intent)
+    assert intent.status == "filled"
+    assert intent.fill_price == 0.42
+    assert intent.limit_price == 1.0
+
+
+def test_legs_position_cost_prices_the_exit(tmp_path: Path, monkeypatch):
+    from tests.session_clock import session_et
+
+    broker = _live_broker(tmp_path, _Clock())
+    trader = AutoTrader(broker, golden_only=True, max_orders_per_sync=4)
+    row = _sure_card("IWM", 272)
+    intent = _arm_live_buy(broker, row)
+    payload = {
+        "positions": [
+            {
+                "instrument_type": "OPTION",
+                "symbol": "IWM",
+                "quantity": "1",
+                "cost_price": "0.35",
+                "legs": [
+                    {
+                        "symbol": row["contract"],
+                        "side": "BUY",
+                        "option_type": "CALL",
+                        "strike_price": "272",
+                        "option_expire_date": row["expiry"],
+                    }
+                ],
+            }
+        ]
+    }
+    placed: list[WebullOrderIntent] = []
+    from odte_scanner.trading.webull import parse_option_positions
+
+    monkeypatch.setattr(
+        broker,
+        "list_option_positions",
+        lambda account_id=None: parse_option_positions(payload),
+    )
+    monkeypatch.setattr(
+        broker,
+        "_fetch_order_detail",
+        lambda order: {"order_status": "SUBMITTED", "filled_quantity": "0", "quantity": "1"},
+    )
+    monkeypatch.setattr(broker, "_place_via_openapi", lambda order: placed.append(order) or "SELL-1")
+    monkeypatch.setattr(broker, "_cancel_via_openapi", lambda order: (_ for _ in ()).throw(AssertionError("cancel")))
+    trader.sync(
+        actions={
+            "buy_now": [],
+            "sell_now": [_sell_row(row, bid=0.35, detail="0DTE time-stop — flatten by 15:45 ET")],
+        },
+        now=session_et(11, 0),
+    )
+    assert intent.status == "filled"
+    assert intent.fill_price == 0.35
+    assert intent.limit_price == 1.0
+    assert len(placed) == 1
+    assert placed[0].action == "SELL"
+    assert placed[0].limit_price == 0.01
+    assert placed[0].contract == row["contract"]
+
+
+def test_deferred_unfilled_is_cancelled_at_the_close(tmp_path: Path, monkeypatch):
+    from tests.session_clock import session_et
+
+    late = session_et(15, 50)
+    broker = _live_broker(tmp_path, _Clock())
+    trader = AutoTrader(broker, golden_only=True, max_orders_per_sync=4)
+    row = _sure_card("IWM", 272)
+    intent = _arm_live_buy(broker, row)
+    intent.status = "deferred"
+    intent.broker_order_id = None
+    intent.meta["fill_state"] = "deferred"
+    intent.meta["retryable"] = True
+    intent.meta["queued_for_open"] = True
+    broker.save()
+    placed: list[str] = []
+    cancelled_api: list[str] = []
+    monkeypatch.setattr(broker, "_place_via_openapi", lambda order: placed.append(order.action) or order.id)
+    monkeypatch.setattr(broker, "_cancel_via_openapi", lambda order: cancelled_api.append(order.id))
+    monkeypatch.setattr(broker, "_fetch_order_detail", lambda order: {"order_status": "SUBMITTED"})
+    monkeypatch.setattr(broker, "list_option_positions", lambda account_id=None: [])
+    trader.sync(sure_winners={"winners": [row]}, now=late)
+    assert intent.status == "cancelled"
+    assert placed == []
+    assert cancelled_api == []
+    buys = [o for o in broker.orders if o.action == "BUY"]
+    assert len(buys) == 1
 
 
 def test_paper_submit_without_keys_stays_dry(monkeypatch):

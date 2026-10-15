@@ -3443,7 +3443,7 @@ PAGE = r"""
         <td class="mono"><strong>${o.action||"—"}</strong></td>
         <td><strong>${o.symbol}</strong> ${o.right||"C"}</td>
         <td class="mono">${o.contract||((o.strike!=null?o.strike:"")+" "+(o.expiry||""))}</td>
-        <td class="mono">${o.limit_price==null?"—":"$"+fmt(o.limit_price,2)}</td>
+        <td class="mono">${o.limit_price==null?"—":"$"+fmt(o.limit_price,2)}${o.fill_price!=null?`<div class="why">fill $${fmt(o.fill_price,2)}</div>`:""}</td>
         <td class="mono">${o.hist_win_pct==null?"—":fmt(o.hist_win_pct,0)+"%"}${(o.hist_samples!=null?` n=${o.hist_samples}`:"")}</td>
         <td><span class="badge ${o.status==="dry_run"||o.status==="submitted"?"buy":(o.status==="skipped"?"wait":"skip")}">${o.status||"—"}</span>
           <div class="why">${o.error||o.reason||(o.meta&&o.meta.note)||""}</div></td>
