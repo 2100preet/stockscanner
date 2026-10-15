@@ -32,4 +32,4 @@ jobs:
           pip install -e .
 
       - name: Pytest
-        run: pytest -q --tb=line
+        run: python -m pytest -q --tb=line

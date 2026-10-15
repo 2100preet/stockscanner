@@ -28,3 +28,6 @@ include = ["odte_scanner*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# `pytest` (unlike `python -m pytest`) does not put the repo root on sys.path.
+# conftest imports `tests.session_clock`, so the root has to be importable.
+pythonpath = ["."]
