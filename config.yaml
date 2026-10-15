@@ -355,6 +355,24 @@ actions:
   mega_rip_live_pct: 1.0
   lottery_min_score: 62
   lottery_min_confirms: 4
+  # Lottery v2 — direction-of-break 0–1 DTE. LOG ONLY. Not routed to Webull.
+  lottery_v2_enabled: true
+  lottery_v2_min_ask: 0.05
+  lottery_v2_max_ask: 0.40
+  lottery_v2_max_dte: 1
+  lottery_v2_min_volume: 50
+  lottery_v2_min_oi: 100
+  lottery_v2_max_spread_pct: 45
+  lottery_v2_min_confirms: 3
+  lottery_v2_max_tickets: 3
+  lottery_v2_size_usd: 50
+  lottery_v2_size_usd_rich: 25
+  lottery_v2_cheap_ask: 0.20
+  lottery_v2_entry_start_et: "09:35"
+  lottery_v2_entry_end_et: "15:30"
+  lottery_v2_time_exit_et: "15:45"
+  lottery_v2_log_only: true
+  lottery_v2_log_path: outputs/lottery_v2_log.json
   # Discord-style radar lane (cheap SPY/QQQ wings) — separate from BUY NOW
   radar_enabled: true
   radar_focus:

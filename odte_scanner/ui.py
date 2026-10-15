@@ -67,6 +67,8 @@ PAGE = r"""
     .tabs button.active { color: var(--ink); background: rgba(255,255,255,.07); }
     .tabpane { display: none; }
     .tabpane.active { display: block; animation: fade .25s ease; }
+    .pinned-desk { border: 1px solid var(--line); border-radius: .85rem; padding: .85rem 1rem; margin: 0 0 .75rem; background: rgba(255,255,255,.025); }
+    .pinned-desk h2 { margin: 0 0 .45rem; font-size: 1.05rem; }
     @keyframes fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
     .cards { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
     .action-card {
@@ -249,7 +251,7 @@ PAGE = r"""
 <body>
   <div class="wrap">
     <h1 class="brand">ZeroLoss <em>Desk</em></h1>
-    <p class="lede">Live desk: <a href="https://2100preet.github.io/stockscanner/" target="_blank" rel="noopener">2100preet.github.io/stockscanner</a>. <strong>0DTE $1K</strong> shows <strong>IN · BUY PUT</strong> / <strong>OUT · SELL PUT</strong> with recommendation-log P&amp;L and ORB15 backtest. Tier-1 flow gate blocks misaligned puts/calls. Also: 0DTE, Power Hour, Explosive, weeklies, swing, ML6.</p>
+    <p class="lede">Live desk: <a href="https://2100preet.github.io/stockscanner/" target="_blank" rel="noopener">2100preet.github.io/stockscanner</a>. <strong>0DTE $1K</strong> shows <strong>IN · BUY PUT</strong> / <strong>OUT · SELL PUT</strong> with recommendation-log P&amp;L and ORB15 backtest. Tier-1 flow gate blocks misaligned puts/calls. Also: 0DTE, Power Hour, Lottery, RIP / META, Patterns, weeklies, swing, ML6.</p>
     <div class="toolbar">
       <button class="primary" id="btnScan">Scan focus</button>
       <button id="btnScanWide">Scan liquid universe</button>
@@ -271,7 +273,7 @@ PAGE = r"""
       <button data-tab="odte">0DTE</button>
       <button data-tab="odte1k">0DTE $1K</button>
       <button data-tab="powerhour">Power Hour</button>
-      <button data-tab="explosive">Explosive</button>
+      <button data-tab="explosive">Lottery</button>
       <button data-tab="rip">RIP / META</button>
       <button data-tab="patterns">Patterns</button>
       <button data-tab="beauty">Beauty 1mo</button>
@@ -287,9 +289,10 @@ PAGE = r"""
 
     <section class="tabpane active" id="tab-nowboard">
       <h2>BUY NOW / SELL NOW — all desks</h2>
-      <p class="lede">Live option BUY NOW / SELL NOW across <strong>Sure Winner</strong> (1–2/day · MAX/HIGH/SOLID · gold/amber · GO HUGE sizing), 0DTE, weeklies, swing, Explosive, <strong>RIP/META</strong>, <strong>Patterns</strong> (double bottom/top · golden triangle), <strong>Levels</strong>, ML6, Challenge, and 0DTE $1K IN/OUT. Hist win ≥80% (n≥5) gates Options BUY NOW. Same losing OCC stays blocked; mega names can still BUY when tape is ripping (see RIP tab). SETUP rows are quality tape without a contract yet — not a buy.</p>
+      <p class="lede">Live option BUY NOW / SELL NOW across <strong>Sure Winner</strong> (1–2/day · MAX/HIGH/SOLID · gold/amber · GO HUGE sizing), 0DTE, weeklies, swing, <strong>Lottery</strong>, <strong>Lottery v2</strong> (log only), <strong>RIP/META</strong>, <strong>Patterns</strong> (double bottom/top · golden triangle), <strong>Levels</strong>, ML6, Challenge, and 0DTE $1K IN/OUT. Lottery, Lottery v2, RIP/META, and Patterns each keep their own heading below even when empty. Hist win ≥80% (n≥5) gates Options BUY NOW. Same losing OCC stays blocked; mega names can still BUY when tape is ripping (see RIP tab). SETUP rows are quality tape without a contract yet — not a buy.</p>
       <div class="metric-row" id="nowBoardMetrics"></div>
       <p class="lede" id="nowBoardNote" style="margin-top:0;font-size:.76rem"></p>
+      <div id="nowBoardPinned"></div>
       <h2>BUY NOW</h2>
       <div id="nowBoardBuy" class="empty">—</div>
       <h2>SELL NOW</h2>
@@ -503,6 +506,18 @@ PAGE = r"""
         </p>
         <div class="metric-row" id="lotteryRecLogMetrics"></div>
         <div id="lotteryRecLog" class="empty">—</div>
+      </div>
+      <div class="panel" id="lotteryV2Panel">
+        <h2>Lottery v2 — LOG ONLY</h2>
+        <p class="lede" style="margin-top:0;font-size:.76rem">
+          Direction of the break: puts below ORB15 and VWAP, calls above both.
+          Asks $0.05–$0.40, 0–1 DTE, $25–$50 a ticket, max 3 a day.
+          <strong>LOG ONLY</strong> — not a BUY NOW and not sent to Webull.
+        </p>
+        <div class="metric-row" id="lotteryV2Metrics"></div>
+        <div id="lotteryV2Tickets" class="empty">No lottery v2 tickets this snapshot.</div>
+        <div class="status" style="margin:.75rem 0 .4rem">SKIP / no tape</div>
+        <div id="lotteryV2Skip" class="empty">—</div>
       </div>
       <div class="panel">
         <h2>Convexity candidates (raw scan)</h2>
@@ -1022,7 +1037,8 @@ PAGE = r"""
         document.querySelectorAll("#tabs button").forEach(b => b.classList.remove("active"));
         document.querySelectorAll(".tabpane").forEach(p => p.classList.remove("active"));
         btn.classList.add("active");
-        document.getElementById("tab-" + btn.dataset.tab).classList.add("active");
+        const pane = document.getElementById("tab-" + btn.dataset.tab);
+        if (pane) pane.classList.add("active");
       };
     });
 
@@ -1159,7 +1175,8 @@ PAGE = r"""
       <p class="pc-why"><strong>EXIT:</strong> ${t.planOut}</p>`;
     }
 
-    const NOW_DESK_ORDER = ["Sure Winner", "0DTE", "1 Week", "Swing 1–3M", "Patterns", "Levels", "Explosive", "ML6", "Challenge", "0DTE $1K", "Options", "RIP/META"];
+    const PINNED_DESKS = ["Lottery", "Lottery v2", "RIP/META", "Patterns"];
+    const NOW_DESK_ORDER = ["Sure Winner", "0DTE", "1 Week", "Swing 1–3M", "Levels", "Lottery", "Lottery v2", "ML6", "Challenge", "0DTE $1K", "Options", "Beauty 1mo", "RIP/META", "Patterns"];
 
     function horizonDesk(row, fallback) {
       const b = String(row.dte_bucket || row.horizon || row.hold_style || row.style || "").toLowerCase();
@@ -1180,6 +1197,7 @@ PAGE = r"""
       const sells = [];
       const waits = [];
       const setups = [];
+      const logs = [];
       const seen = new Set();
       const openIdx = openPositionTimeIndex();
       const { closedAt, openOccs } = closedAtByContract();
@@ -1202,6 +1220,7 @@ PAGE = r"""
         if (side === "BUY") buys.push(item);
         else if (side === "SELL") sells.push(item);
         else if (side === "WAIT") waits.push(item);
+        else if (side === "LOG") logs.push(item);
         else setups.push(item);
       };
       const acts = DATA.actions || {};
@@ -1211,12 +1230,17 @@ PAGE = r"""
       (acts.sell_now || []).forEach(r => add(r, "SELL", horizonDesk(r, "Options")));
       (acts.wait || []).slice(0, 16).forEach(r => add(r, "WAIT", horizonDesk(r, "Options")));
       const lot = DATA.lottery || {};
-      (lot.buy_now || []).forEach(r => add(r, "BUY", "Explosive"));
-      (lot.sell_now || []).forEach(r => add(r, "SELL", "Explosive"));
-      (lot.wait || []).slice(0, 8).forEach(r => add(r, "WAIT", "Explosive"));
+      (lot.buy_now || []).forEach(r => add(r, "BUY", "Lottery"));
+      (lot.sell_now || []).forEach(r => add(r, "SELL", "Lottery"));
+      (lot.wait || []).slice(0, 8).forEach(r => add(r, "WAIT", "Lottery"));
+      (lot.skip || []).slice(0, 6).forEach(r => add(r, "WAIT", "Lottery"));
+      const v2 = DATA.lottery_v2 || {};
+      (v2.tickets || v2.log || []).forEach(r => add(Object.assign({}, r, { action: "LOG" }), "LOG", "Lottery v2"));
+      (v2.skip || []).slice(0, 6).forEach(r => add(r, "WAIT", "Lottery v2"));
       const rip = DATA.rip_radar || DATA.rip || {};
       (rip.buy_rip || rip.buy_now || []).forEach(r => add(Object.assign({}, r, { action: r.action || "BUY_RIP" }), "BUY", "RIP/META"));
       (rip.watch || []).slice(0, 8).forEach(r => add(Object.assign({}, r, { action: r.action || "WAIT" }), "WAIT", "RIP/META"));
+      (rip.cool || []).slice(0, 6).forEach(r => add(Object.assign({}, r, { action: r.action || "RIP_COOL" }), "WAIT", "RIP/META"));
       const beauty = DATA.beauty_monthly || DATA.beauty || {};
       (beauty.buy_beauty || beauty.buy_now || []).forEach(r => add(Object.assign({}, r, { action: r.action || "BUY_BEAUTY" }), "BUY", "Beauty 1mo"));
       (beauty.watch || []).slice(0, 8).forEach(r => add(Object.assign({}, r, { action: r.action || "WAIT" }), "WAIT", "Beauty 1mo"));
@@ -1259,13 +1283,14 @@ PAGE = r"""
           }), "SETUP", desk);
         });
       });
-      return { buys, sells, waits, setups };
+      return { buys, sells, waits, setups, logs };
     }
 
     function nowBoardCard(r) {
       const buy = r._side === "BUY";
       const wait = r._side === "WAIT";
       const setup = r._side === "SETUP";
+      const log = r._side === "LOG";
       const right = String(r.right || "C").toUpperCase() === "P" ? "PUT" : "CALL";
       const win = Number(r.win_pct ?? r.hist_win_pct);
       const n = Number(r.win_samples ?? r.hist_samples);
@@ -1278,14 +1303,16 @@ PAGE = r"""
       const sureTier = String(r.confidence_tier || "").toUpperCase();
       const cls = buy
         ? (sureCls || (isRip || isBeauty || isLevel ? "long" : (gated ? "enter-now" : "long")))
-        : (wait || setup ? "wait" : "short");
-      const label = buy
+        : ((wait || setup || log) ? "wait" : "short");
+      const label = log
+        ? "LOG ONLY"
+        : (buy
         ? (isSure
           ? `${sureTier || "SURE"} · ${r.size_label || (r.go_huge ? "GO HUGE" : "SIZE UP")}`
           : (isLevel ? "BUY LEVEL" : (isBeauty ? "BUY BEAUTY" : (isRip ? "BUY RIP" : (gated ? "ENTER NOW" : "BUY NOW")))))
-        : (setup ? "SETUP · not BUY" : (wait ? "WAIT" : "SELL NOW"));
+        : (setup ? "SETUP · not BUY" : (wait ? "WAIT" : "SELL NOW")));
       const strike = r.strike == null ? "—" : `${fmt(r.strike, Number(r.strike) % 1 ? 2 : 0)}${right === "PUT" ? "p" : "c"}`;
-      const px = buy ? (r.ask ?? r.entry_ask) : (r.bid ?? r.mark ?? r.ask ?? r.exit_bid);
+      const px = (buy || log) ? (r.ask ?? r.entry_ask) : (r.bid ?? r.mark ?? r.ask ?? r.exit_bid);
       const when = rowAskedAt(r);
       const entryWhen = r.entered_at_cst || (r.entered_at ? fmtCST(r.entered_at) : "");
       const showEntry = entryWhen && entryWhen !== "—" && entryWhen !== when;
@@ -1313,14 +1340,29 @@ PAGE = r"""
       </article>`;
     }
 
+    function renderPinnedDesks(groups) {
+      const el = document.getElementById("nowBoardPinned");
+      if (!el) return;
+      const all = [...(groups.buys || []), ...(groups.sells || []), ...(groups.waits || []), ...(groups.setups || []), ...(groups.logs || [])];
+      const hint = { "Lottery": "Lottery", "Lottery v2": "Lottery", "RIP/META": "RIP / META", "Patterns": "Patterns" };
+      el.innerHTML = PINNED_DESKS.map(desk => {
+        const rows = all.filter(r => r._desk === desk);
+        const body = rows.length
+          ? `<div class="cards">${rows.map(nowBoardCard).join("")}</div>`
+          : `<div class="empty">No ${desk} rows on this snapshot. This heading stays up so another desk cannot take its place. Open the <strong>${hint[desk] || desk}</strong> tab for the full lane.</div>`;
+        return `<section class="pinned-desk"><h2>${desk} <span class="status">${rows.length}</span></h2>${body}</section>`;
+      }).join("");
+    }
+
     function renderNowGroups(el, rows, emptyMsg) {
       if (!el) return;
-      if (!rows.length) {
+      const visible = (rows || []).filter(r => !PINNED_DESKS.includes(r._desk));
+      if (!visible.length) {
         el.innerHTML = `<div class="empty">${emptyMsg}</div>`;
         return;
       }
       const g = {};
-      rows.forEach(r => {
+      visible.forEach(r => {
         const d = r._desk || "Options";
         (g[d] = g[d] || []).push(r);
       });
@@ -1332,9 +1374,9 @@ PAGE = r"""
     }
 
     function renderNowBoard() {
-      let buys = [], sells = [], waits = [], setups = [];
+      let buys = [], sells = [], waits = [], setups = [], logs = [];
       try {
-        ({ buys, sells, waits, setups } = collectNowBoard());
+        ({ buys, sells, waits, setups, logs } = collectNowBoard());
       } catch (err) {
         const note = document.getElementById("nowBoardNote");
         if (note) note.textContent = "BUY/SELL board failed to render: " + (err && err.message ? err.message : err);
@@ -1343,14 +1385,15 @@ PAGE = r"""
       const m = (k, v, cls = "") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
       const metrics = document.getElementById("nowBoardMetrics");
       const byDesk = {};
-      [...buys, ...sells, ...waits, ...setups].forEach(r => { byDesk[r._desk] = (byDesk[r._desk] || 0) + 1; });
+      [...buys, ...sells, ...waits, ...setups, ...logs].forEach(r => { byDesk[r._desk] = (byDesk[r._desk] || 0) + 1; });
       if (metrics) {
         metrics.innerHTML = [
           m("BUY NOW", buys.length, buys.length ? "up" : ""),
           m("SELL NOW", sells.length, sells.length ? "down" : ""),
           m("WAIT", waits.length),
           m("SETUP", setups.length),
-          ...NOW_DESK_ORDER.filter(d => byDesk[d]).map(d => m(d, byDesk[d])),
+          ...PINNED_DESKS.map(d => m(d, byDesk[d] || 0)),
+          ...NOW_DESK_ORDER.filter(d => byDesk[d] && !PINNED_DESKS.includes(d)).map(d => m(d, byDesk[d])),
         ].join("");
       }
       const note = document.getElementById("nowBoardNote");
@@ -1363,22 +1406,23 @@ PAGE = r"""
           note.textContent = "";
         }
       }
+      renderPinnedDesks({ buys, sells, waits, setups, logs });
       renderNowGroups(document.getElementById("nowBoardBuy"), buys, "No BUY NOW — need an option contract plus hist win ≥80% (n≥5).");
       renderNowGroups(document.getElementById("nowBoardSell"), sells, "No SELL NOW across desks this snapshot.");
       renderNowGroups(document.getElementById("nowBoardWait"), waits, "No WAIT tickets. These appear when a chain exists but hist win / tape has not cleared BUY NOW.");
       renderNowGroups(document.getElementById("nowBoardSetup"), setups, "No hist-eligible quality underlyings in this snapshot.");
       const table = document.getElementById("nowBoardTable");
       if (table) {
-        const all = [...buys, ...sells, ...waits, ...setups];
+        const all = [...buys, ...sells, ...waits, ...setups, ...logs];
         if (!all.length) table.innerHTML = `<div class="empty">Empty board — wait for the next Actions publish, or run a live Flask scan with option chains.</div>`;
         else table.innerHTML = `<table class="zl-tape"><thead><tr>
           <th>Side</th><th>Desk</th><th>Symbol</th><th>Asked (CST)</th><th>Contract</th><th>Px</th><th>Hist win</th><th>Strike rate</th><th>Why</th>
         </tr></thead><tbody>${all.map(r => {
           const buy = r._side === "BUY";
-          const side = r._side === "BUY" ? "BUY NOW" : (r._side === "SELL" ? "SELL NOW" : r._side);
+          const side = r._side === "BUY" ? "BUY NOW" : (r._side === "SELL" ? "SELL NOW" : (r._side === "LOG" ? "LOG ONLY" : r._side));
           const badge = buy ? "buy" : (r._side === "SELL" ? "sell" : "wait");
           const right = String(r.right || "C").toUpperCase() === "P" ? "p" : "c";
-          const px = buy ? (r.ask ?? r.entry_ask) : (r.bid ?? r.mark ?? r.ask);
+          const px = (buy || r._side === "LOG") ? (r.ask ?? r.entry_ask) : (r.bid ?? r.mark ?? r.ask);
           const w = winLookup(r.symbol, r.dte_bucket || r.horizon || "0dte");
           const sr = w.hit1 == null ? "—" : `${fmt(w.hit1,0)}%`;
           const win = r.win_pct ?? r.hist_win_pct ?? w.pct;
@@ -2209,6 +2253,54 @@ PAGE = r"""
       table.innerHTML = head + list.map(rowHtml).join("") + "</tbody></table>";
       const rec = (DATA.rec_log && DATA.rec_log.by_section && DATA.rec_log.by_section.lottery) || (DATA.rec_log && DATA.rec_log.lottery);
       renderRecLog("lotteryRecLog", rec, "No lottery recommendations logged yet.", "lotteryRecLogMetrics");
+    }
+
+    function renderLotteryV2(board) {
+      const metrics = document.getElementById("lotteryV2Metrics");
+      const ticketsEl = document.getElementById("lotteryV2Tickets");
+      const skipEl = document.getElementById("lotteryV2Skip");
+      if (!metrics && !ticketsEl) return;
+      const ch = board || {};
+      const c = ch.counts || {};
+      const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
+      if (metrics) {
+        metrics.innerHTML = [
+          m("LOG", c.log || (ch.tickets || []).length, (c.log || (ch.tickets || []).length) ? "up" : ""),
+          m("SKIP", c.skip || 0),
+          m("Scanned", c.scanned || 0),
+          m("Route", ch.routed ? "ON" : "OFF"),
+        ].join("");
+      }
+      const card = (r) => {
+        const log = String(r.action || "") === "LOG";
+        const right = String(r.right || "C").toUpperCase() === "P" ? "PUT" : "CALL";
+        return `<article class="action-card ${log ? "long" : "wait"}">
+          <div class="ac-top"><span class="badge ${log ? "buy" : "wait"}">${log ? "LOG ONLY" : "SKIP"}</span>
+            <strong>${r.symbol || "—"}</strong> <span class="tag">${right}</span>
+            <span class="tag">${r.dte != null ? r.dte + "DTE" : "—"}</span></div>
+          <div class="ac-conf">${r.headline || ""}</div>
+          <div class="ac-meta">
+            <div>Ask<strong>${r.ask == null ? "—" : "$" + fmt(r.ask, 2)}</strong></div>
+            <div>Size<strong>${r.size_usd == null ? "—" : "$" + fmt(r.size_usd, 0)}</strong></div>
+            <div>Confirms<strong>${r.confirms == null ? "—" : r.confirms}</strong></div>
+            <div>Strike<strong>${r.strike == null ? "—" : fmt(r.strike, 2)}</strong></div>
+          </div>
+          <div class="why">${r.detail || ""}</div>
+          ${r.exit_plan ? `<p class="why" style="margin:.35rem 0 0">${r.exit_plan}</p>` : ""}
+        </article>`;
+      };
+      const tickets = ch.tickets || ch.log || [];
+      if (ticketsEl) {
+        ticketsEl.innerHTML = tickets.length
+          ? `<div class="cards">${tickets.map(card).join("")}</div>`
+          : `<div class="empty">No lottery v2 LOG tickets. A name needs a held ORB15 + VWAP break, a $0.05–$0.40 ask, and one more confirm. Missing tape stays SKIP — it is not a buy.</div>`;
+      }
+      if (skipEl) {
+        const skips = ch.skip || [];
+        skipEl.innerHTML = skips.length
+          ? `<div class="cards">${skips.slice(0, 8).map(card).join("")}</div>`
+          : `<div class="empty">No skip rows.</div>`;
+      }
     }
 
     function renderChallenge(ch) {
@@ -3641,7 +3733,9 @@ PAGE = r"""
 
       (sureBoard.winners || sureBoard.buy_now || []).forEach(r => pushSure(r));
       (acts.buy_now || []).filter(r => r.headline || r.exit_plan || r.detail).forEach(r => pushMust(r, "Options"));
-      (lot.buy_now || []).forEach(r => pushMust(r, "Explosive"));
+      (lot.buy_now || []).forEach(r => pushMust(r, "Lottery"));
+      const ripBoard = DATA.rip_radar || DATA.rip || {};
+      (ripBoard.buy_rip || ripBoard.buy_now || []).forEach(r => pushMust(r, "RIP/META"));
       (ch.entry || []).forEach(r => pushMust(r, "Challenge"));
       // Radar HOT is a separate discretionary pulse — labeled RADAR, not MUST TRADE hist-gated
       const radarHot = ((DATA.radar || {}).hot || []).map(r => ({
@@ -3668,7 +3762,7 @@ PAGE = r"""
       (acts.sell_now || []).forEach(r => pushExit(r, "Options"));
       (acts.just_exited || []).forEach(r => pushExit(r, "Options"));
       (acts.recent_exits || []).forEach(r => pushExit(r, "Options"));
-      (lot.sell_now || []).forEach(r => pushExit(r, "Explosive"));
+      (lot.sell_now || []).forEach(r => pushExit(r, "Lottery"));
       (ch.exit || []).forEach(r => pushExit(r, "Challenge"));
       (ch.just_exited || []).forEach(r => pushExit(r, "Challenge"));
 
@@ -3898,6 +3992,7 @@ PAGE = r"""
           : (hr.note || "");
       }
       renderExplosive(DATA.explosive || [], DATA.lottery || {});
+      renderLotteryV2(DATA.lottery_v2 || {});
       renderRedFlag(DATA.red_flag);
       renderFreeDealer(DATA.free_dealer);
       renderMl6(DATA.ml6 || { watchlist: ((DATA.horizons||{}).ml6||[]), bottom_line_rules: (DATA.ml6&&DATA.ml6.bottom_line_rules)||[] });
@@ -4157,6 +4252,8 @@ PAGE = r"""
       const lot = DATA.lottery || {};
       (lot.buy_now || []).forEach(r => push(r, "BUY", "Lottery"));
       (lot.sell_now || []).forEach(r => push(r, "SELL", "Lottery"));
+      const ripAlerts = DATA.rip_radar || DATA.rip || {};
+      (ripAlerts.buy_rip || ripAlerts.buy_now || []).forEach(r => push({...r, action: r.action || "BUY_RIP"}, "BUY", "RIP/META"));
       const ch = DATA.challenge || {};
       (ch.entry || []).forEach(r => push({...r, action: "ENTRY"}, "BUY", "Challenge"));
       (ch.exit || []).forEach(r => push({...r, action: "EXIT"}, "SELL", "Challenge"));
@@ -6503,6 +6600,59 @@ def create_app(config_path: str | None = None) -> Flask:
                     logger.warning("market board unavailable: %s", exc)
                     market = {"error": str(exc), "by_earnings": [], "by_volume": [], "by_score": []}
 
+                lottery_v2: dict = {
+                    "desk": "lottery_v2",
+                    "title": "Lottery v2 — LOG ONLY",
+                    "log_only": True,
+                    "routed": False,
+                    "tickets": [],
+                    "log": [],
+                    "skip": [],
+                    "counts": {"log": 0, "skip": 0, "scanned": 0},
+                    "note": "Lottery v2 log-only lane unavailable.",
+                }
+                try:
+                    if bool(actions_cfg.get("lottery_v2_enabled", True)):
+                        from odte_scanner.signals.lottery_v2 import (
+                            append_lottery_v2_log,
+                            build_lottery_v2_board,
+                            harvest_live_inputs,
+                            rules_from_config,
+                        )
+
+                        v2_rules = rules_from_config(actions_cfg)
+                        harvested = harvest_live_inputs(
+                            quotes=quotes,
+                            explosive=explosive if isinstance(explosive, list) else [],
+                            radar=radar if isinstance(radar, dict) else {},
+                            chase=chase_radar if isinstance(chase_radar, dict) else {},
+                            rip=rip_radar if isinstance(rip_radar, dict) else {},
+                            odte_1k=odte_1k if isinstance(odte_1k, dict) else {},
+                            power_hour=power_hour if isinstance(power_hour, dict) else {},
+                            free_dealer=free_dealer if isinstance(free_dealer, dict) else {},
+                            flow_leaders=flow_leaders if isinstance(flow_leaders, list) else [],
+                            focus_names=list(actions_cfg.get("lottery_v2_focus") or []),
+                        )
+                        lottery_v2 = build_lottery_v2_board(
+                            harvested["candidates"],
+                            tape_by_symbol=harvested["tape_by_symbol"],
+                            rules=v2_rules,
+                            vix=harvested["vix"],
+                            vix_rising=harvested["vix_rising"],
+                            gex=harvested["gex"],
+                            gex_regime=harvested["gex_regime"],
+                            flow_by_symbol=harvested["flow_by_symbol"],
+                        )
+                        # Log file only. Do not pass this board to the journal or Webull.
+                        if v2_rules.log_path and lottery_v2.get("tickets"):
+                            v2_path = Path(v2_rules.log_path)
+                            if not v2_path.is_absolute():
+                                v2_path = ROOT / v2_path
+                            append_lottery_v2_log(lottery_v2, v2_path)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("lottery v2 unavailable: %s", exc)
+                    lottery_v2 = {**lottery_v2, "error": str(exc)}
+
                 # Unified walls map for all recommended surfaces (challenge + echo + action cards)
                 walls_by_symbol: dict[str, dict] = {}
                 try:
@@ -6950,6 +7100,7 @@ def create_app(config_path: str | None = None) -> Flask:
                                 "generated_at": datetime.now(timezone.utc).isoformat(),
                                 "actions": actions,
                                 "lottery": lottery,
+                                "lottery_v2": lottery_v2,
                                 "challenge": challenge,
                                 "odte_1k": odte_1k,
                                 "radar": radar,
@@ -7023,6 +7174,7 @@ def create_app(config_path: str | None = None) -> Flask:
                         "call_candidates": refreshed,
                         "explosive": explosive,
                         "lottery": lottery,
+                        "lottery_v2": lottery_v2,
                         "ml6": ml6,
                         "red_flag": red_flag_snapshot,
                         "free_dealer": free_dealer,
