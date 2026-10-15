@@ -38,8 +38,8 @@ from odte_scanner.signals.lottery_v2 import (
 ET = ZoneInfo("America/New_York")
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "outputs" / "lottery_v2_provider_backtest.json"
-START = date(2026, 10, 1)
-END = date(2026, 10, 14)
+START = date.fromisoformat(os.environ.get("LOTTERY_V2_START") or "2026-10-01")
+END = date.fromisoformat(os.environ.get("LOTTERY_V2_END") or "2026-10-14")
 SYMBOLS = [
     "SPY", "QQQ", "IWM", "DIA", "META", "AAPL", "NVDA", "TSLA",
     "AMD", "AMZN", "MSFT", "GOOGL", "NFLX", "AVGO", "PFE", "JNJ",
@@ -48,6 +48,11 @@ POLY = "https://api.polygon.io"
 FLAT_HOSTS = ("https://files.polygon.io", "https://files.massive.com")
 socket_timeout = (5, 20)
 STOP = False
+# This key accepts about five aggregate calls a minute once it starts returning 429.
+NEXT_OK = 0.0
+INTERVAL = 1.0
+PACE_LOCKED = False
+POLY_CALLS = 0
 
 
 def scrub(text: str) -> str:
@@ -123,23 +128,43 @@ def tradier_bars(symbol: str, start: str, end: str, interval: str) -> tuple[list
     return bars, None
 
 
+def _pace() -> None:
+    global NEXT_OK
+    now = time.time()
+    if now < NEXT_OK:
+        time.sleep(NEXT_OK - now)
+    NEXT_OK = time.time() + INTERVAL
+
+
+def _note_status(code: int) -> None:
+    global INTERVAL, PACE_LOCKED
+    if code == 429 and not PACE_LOCKED:
+        PACE_LOCKED = True
+        INTERVAL = 12.5
+        print("pace_lock", INTERVAL, "calls", POLY_CALLS, flush=True)
+    elif code == 200 and not PACE_LOCKED:
+        INTERVAL = max(0.35, INTERVAL * 0.92)
+
+
 def _poly_get(path: str, params: dict) -> tuple[dict | None, str | None]:
+    global POLY_CALLS
     key = api_key_from_env()
     if not key:
         return None, "POLYGON_API_KEY unset"
     query = dict(params)
     query["apiKey"] = key
     last_err = "polygon empty"
-    for attempt in range(3):
+    for attempt in range(2):
+        _pace()
+        POLY_CALLS += 1
         try:
             response = requests.get(f"{POLY}{path}", params=query, timeout=socket_timeout)
         except Exception as exc:  # noqa: BLE001
             last_err = scrub(exc)
-            time.sleep(0.4 * (attempt + 1))
             continue
+        _note_status(response.status_code)
         if response.status_code == 429:
             last_err = "polygon 429"
-            time.sleep(1.2 * (attempt + 1))
             continue
         if response.status_code in {401, 403}:
             return None, f"polygon {response.status_code}"
@@ -517,6 +542,77 @@ def _parse_flat_path(path: Path, day: str, wanted: set[str], cache: dict[str, li
     return kept
 
 
+def _print_px(bars: list[dict], signal_ts: datetime) -> float | None:
+    bar = first_print(bars, signal_ts)
+    if bar is None:
+        return None
+    try:
+        return float(bar["close"])
+    except (TypeError, ValueError):
+        return None
+
+
+def fill_signal(sig: dict, cache: dict[str, list[dict]], errors: dict[str, int]) -> None:
+    """Fetch the strikes whose prints can fall in $0.05–$0.40.
+
+    Premium falls as the strike moves further out of the money, so the walk
+    stops once it has the in-band neighbors. At most seven aggregates per expiry.
+    """
+    brk = sig["break"]
+    signal_ts = datetime.fromisoformat(brk["ts"])
+    for expiry, _dte in ((sig["day"], 0), (next_bday(sig["day"]), 1)):
+        strikes = grid(sig["symbol"], float(brk["last"]), brk["side"])
+        fetched: dict[int, float | None] = {}
+
+        def grab(index: int) -> float | None:
+            if index < 0 or index >= len(strikes):
+                return None
+            if index in fetched:
+                return fetched[index]
+            if len(fetched) >= 7:
+                return None
+            symbol = occ(sig["symbol"], expiry, brk["right"], strikes[index])
+            key = f"{symbol}|{sig['day']}"
+            if key not in cache:
+                bars, err = polygon_aggs(symbol, sig["day"], sig["day"], 1)
+                cache[key] = bars
+                if err:
+                    errors[err] = int(errors.get(err) or 0) + 1
+            fetched[index] = _print_px(cache.get(key) or [], signal_ts)
+            return fetched[index]
+
+        idx = min(2, len(strikes) - 1)
+        for _step in range(8):
+            px = grab(idx)
+            if len(fetched) >= 7:
+                break
+            if px is None:
+                if idx + 1 < len(strikes) and (idx + 1) not in fetched:
+                    idx += 1
+                    continue
+                if idx - 1 >= 0 and (idx - 1) not in fetched:
+                    idx -= 1
+                    continue
+                break
+            if px > 0.40:
+                if idx + 1 >= len(strikes):
+                    break
+                idx += 1
+                continue
+            if px < 0.05:
+                if idx - 1 < 0:
+                    break
+                idx -= 1
+                continue
+            grab(idx - 1)
+            grab(idx + 1)
+            for neighbor in (idx - 1, idx + 1):
+                other = fetched.get(neighbor)
+                if other is not None and 0.05 <= other <= 0.40:
+                    grab(neighbor + (1 if neighbor > idx else -1))
+            break
+
+
 def score_signal(sig: dict, cache: dict[str, list[dict]], vix_bars: list[dict]) -> tuple[dict | None, str | None]:
     brk = sig["break"]
     signal_ts = datetime.fromisoformat(brk["ts"])
@@ -679,88 +775,44 @@ def main() -> None:
         flush=True,
     )
 
-    jobs: list[tuple[str, str]] = []
-    seen: set[str] = set()
-    for sig in signals:
-        brk = sig["break"]
-        for expiry, _dte in ((sig["day"], 0), (next_bday(sig["day"]), 1)):
-            for strike in grid(sig["symbol"], float(brk["last"]), brk["side"]):
-                symbol = occ(sig["symbol"], expiry, brk["right"], strike)
-                key = f"{symbol}|{sig['day']}"
-                if key in seen:
-                    continue
-                seen.add(key)
-                jobs.append((symbol, sig["day"]))
-    print("option_jobs", len(jobs), flush=True)
-    by_day_wanted: dict[str, set[str]] = {}
-    for occ_symbol, day in jobs:
-        by_day_wanted.setdefault(day, set()).add(f"O:{occ_symbol}")
-
+    probe["option_source"] = "polygon_aggs"
+    probe["flatfile"] = "s3_403_http_404"
+    print("breaks_in_window", len(signals), "start", START.isoformat(), "end", END.isoformat(), flush=True)
     cache: dict[str, list[dict]] = {}
-    errors: dict[str, str] = {}
+    errors: dict[str, int] = {}
     started = time.time()
-    days = sorted(by_day_wanted)
-    sample_day = days[-1] if days else END.isoformat()
-    s3_client, s3_endpoint, s3_notes = open_s3(sample_day)
-    probe["polygon_flatfile_s3"] = s3_notes
-    print("flat_s3_probe", json.dumps(s3_notes), flush=True)
-    http_response = None
-    http_host = ""
-    http_mode = ""
-    if s3_client is None:
-        http_response, http_host, http_mode, http_notes = open_flat(sample_day)
-        probe["polygon_flatfile_http"] = http_notes
-        print("flat_http_probe", json.dumps(http_notes), flush=True)
-    if s3_client is None and http_response is None:
-        probe["option_source"] = "polygon_flatfile_unavailable"
-        payload = _base_payload(probe, equity_source, equity, signals, {}, complete=False)
-        payload["ok"] = False
-        payload["reason"] = "Polygon option flat files were not readable. REST aggregates are capped near 5 calls per minute."
-        payload["providers"]["vix"] = vix_source
-        _write(payload)
-        print("FLAT_FAIL", flush=True)
-        sys.exit(1)
-
-    probe["option_source"] = "polygon_flatfile_minute_aggs"
-    ordered = [sample_day] + [day for day in days if day != sample_day]
-    opened_http = {sample_day: http_response} if http_response is not None else {}
-    for day in ordered:
+    by_session: dict[str, list[dict]] = {}
+    for sig in signals:
+        by_session.setdefault(sig["day"], []).append(sig)
+    done_days: list[str] = []
+    for day in sorted(by_session):
         if STOP:
             break
-        wanted = by_day_wanted.get(day) or set()
-        if not wanted:
-            continue
-        try:
-            if s3_client is not None:
-                saved = download_s3(s3_client, day)
-                _parse_flat_path(saved, day, wanted, cache)
-            else:
-                current = opened_http.pop(day, None)
-                if current is None:
-                    current = _flat_get(http_host, day, http_mode)
-                    if current.status_code != 200:
-                        errors[day] = f"flat {current.status_code}"
-                        print("flat_status", day, current.status_code, flush=True)
-                        current.close()
-                        continue
-                _consume_flat(current, day, wanted, cache)
-            errors[day] = "ok"
-        except Exception as exc:  # noqa: BLE001
-            errors[day] = scrub(exc)
-            print("flat_error", day, errors[day], flush=True)
+        for sig in by_session[day]:
+            if STOP:
+                break
+            fill_signal(sig, cache, errors)
+        if STOP:
+            break
+        done_days.append(day)
+        errors["polygon_calls"] = POLY_CALLS
         _checkpoint(
             probe, equity_source, equity, signals, cache, vix_bars, errors, vix_source, started, False,
         )
-
-    auth_failed = any(str(msg).startswith("flat 401") or str(msg).startswith("flat 403") for msg in errors.values())
-    every_day = bool(days) and all(errors.get(day) == "ok" for day in days) and not STOP and not auth_failed
+        print("day_done", day, "calls", POLY_CALLS, "interval", round(INTERVAL, 2), flush=True)
+    every_day = (not STOP) and done_days == sorted(by_session)
+    errors["polygon_calls"] = POLY_CALLS
     payload = _checkpoint(
         probe, equity_source, equity, signals, cache, vix_bars, errors, vix_source, started, every_day,
     )
     if not every_day:
         payload["ok"] = False
         payload["complete"] = False
-        payload["reason"] = "one or more Polygon option flat files failed"
+        payload["reason"] = "stopped before every session was fetched"
+        _write(payload)
+    elif int(errors.get("polygon 429") or 0) > 40:
+        payload["ok"] = False
+        payload["reason"] = "rate limit dropped option bars"
         _write(payload)
     print("SUMMARY", json.dumps(payload["summary"]), flush=True)
     print("CAPPED", json.dumps(payload["summary_max_3_per_day"]), flush=True)
