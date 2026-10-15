@@ -19,6 +19,11 @@ ET = ZoneInfo("America/New_York")
 # Clock flatten for 0DTE (hour + minute as float, e.g. 15.75 = 15:45)
 ODTE_FLATTEN_ET_HOUR = 15.75  # 15:45 ET
 ODTE_NO_NEW_ENTRIES_ET_HOUR = 15.0  # 15:00 ET
+# ETF option orders are accepted 09:30–16:15 ET. Outside that window the
+# sandbox rejects with OPENAPI_ETF_OPTION_CAN_NOT_TRADING.
+OPTION_SESSION_OPEN_ET_HOUR = 9.5  # 09:30 ET
+OPTION_SESSION_CLOSE_ET_HOUR = 16.25  # 16:15 ET
+BEFORE_OPEN_REASON = "no new entries before 09:30 ET"
 
 HOLD_DEFAULTS: dict[str, dict[str, Any]] = {
     "0dte": {
@@ -119,6 +124,21 @@ def past_no_new_0dte_entries(now: datetime | None = None) -> bool:
     return et_session_hour(n) >= ODTE_NO_NEW_ENTRIES_ET_HOUR
 
 
+def option_session_open(now: datetime | None = None) -> bool:
+    """True during the weekday ETF option window, 09:30 through 16:15 ET."""
+    if is_weekend_et(now):
+        return False
+    hour = et_session_hour(now)
+    return OPTION_SESSION_OPEN_ET_HOUR <= hour <= OPTION_SESSION_CLOSE_ET_HOUR
+
+
+def before_option_session(now: datetime | None = None) -> bool:
+    """True on a weekday before 09:30 ET. Weekends are not pre-open."""
+    if is_weekend_et(now):
+        return False
+    return et_session_hour(now) < OPTION_SESSION_OPEN_ET_HOUR
+
+
 def entry_block_reason(
     expiry: str | None,
     now: datetime | None = None,
@@ -127,12 +147,15 @@ def entry_block_reason(
     """Why a new option entry is closed, or None when the session still allows it.
 
     * Weekend: no new entries.
+    * Before 09:30 ET: no new entries. The caller may queue the signal for the open.
     * At or after 15:45 ET: no new entries of any expiry. 0DTE flattens then;
       2DTE and weeklies are held overnight but not opened into the close.
     * 0DTE (expiry today): no new entries at or after 15:00 ET.
     """
     if is_weekend_et(now):
         return "no new entries on the weekend"
+    if before_option_session(now):
+        return BEFORE_OPEN_REASON
     if past_odte_flatten(now):
         return "no new entries at or after 15:45 ET"
     same_day = expiry_is_today(expiry, now)

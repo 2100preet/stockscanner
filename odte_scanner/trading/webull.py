@@ -90,6 +90,7 @@ class WebullOrderIntent:
     strike: float | None
     quantity: int
     limit_price: float | None
+    fill_price: float | None = None
     order_type: str = "LIMIT"  # LIMIT | MARKET
     tif: str = "DAY"
     reason: str = ""
@@ -151,7 +152,7 @@ def parse_occ_contract(contract: str | None) -> dict[str, Any] | None:
     ``IREN261016P00030000`` is the IREN 2026-10-16 30 put. A leading ``O:``
     is ignored. Returns None when the string is not an OCC symbol.
     """
-    raw = str(contract or "").upper().replace("O:", "").strip()
+    raw = str(contract or "").upper().replace("O:", "").replace(" ", "").strip()
     match = _OCC_RE.search(raw)
     if not match:
         return None
@@ -167,12 +168,40 @@ def parse_occ_contract(contract: str | None) -> dict[str, Any] | None:
     }
 
 
+_LEG_LIST_KEYS = ("legs", "leg_list", "option_legs")
+_COST_KEYS = (
+    "cost_price",
+    "costPrice",
+    "avg_price",
+    "avgPrice",
+    "average_price",
+    "averagePrice",
+    "avg_cost",
+    "average_cost",
+    "unit_cost",
+    "cost",
+)
+_FILL_PRICE_KEYS = (
+    "avg_filled_price",
+    "avgFilledPrice",
+    "filled_price",
+    "filledPrice",
+    "avg_fill_price",
+    "avg_price",
+    "average_price",
+    "avgPrice",
+    "averagePrice",
+)
+
+
 def parse_option_positions(payload: Any) -> list[dict[str, Any]]:
     """Pull long option positions out of a Webull positions payload.
 
-    Each row has contract, symbol, right, expiry, strike, and quantity.
-    Short or zero quantities are dropped. An OCC symbol on the row wins
-    over a conflicting right or expiry field.
+    Each row has contract, symbol, right, expiry, strike, quantity, and cost
+    when the payload has one. Strike, expiry, and put/call often live on
+    ``legs`` while quantity and cost sit on the parent. Short or zero
+    quantities are dropped. An OCC symbol on the row wins over a conflicting
+    right or expiry field.
     """
     found: list[dict[str, Any]] = []
 
@@ -184,6 +213,18 @@ def parse_option_positions(payload: Any) -> list[dict[str, Any]]:
                 walk(item, depth + 1)
             return
         if not isinstance(node, dict):
+            return
+        legs = _position_legs(node)
+        if legs:
+            for leg in legs:
+                ident = _position_identity(_leg_with_parent(node, leg))
+                if ident is not None:
+                    found.append(ident)
+            for key, value in node.items():
+                if key in _LEG_LIST_KEYS:
+                    continue
+                if isinstance(value, (dict, list)):
+                    walk(value, depth + 1)
             return
         ident = _position_identity(node)
         if ident is not None:
@@ -201,7 +242,58 @@ def parse_option_positions(payload: Any) -> list[dict[str, Any]]:
         prev = by_contract.get(key)
         if prev is None or float(row["quantity"]) > float(prev["quantity"]):
             by_contract[key] = row
+        elif float(row["quantity"]) == float(prev["quantity"]) and row.get("cost") and not prev.get("cost"):
+            by_contract[key] = row
     return list(by_contract.values())
+
+
+def _position_legs(node: dict[str, Any]) -> list[dict[str, Any]]:
+    for key in _LEG_LIST_KEYS:
+        legs = node.get(key)
+        if isinstance(legs, list):
+            rows = [leg for leg in legs if isinstance(leg, dict)]
+            if rows:
+                return rows
+    return []
+
+
+def _leg_with_parent(parent: dict[str, Any], leg: dict[str, Any]) -> dict[str, Any]:
+    """Copy parent quantity, cost, and underlying onto a leg that omits them."""
+    merged = dict(leg)
+    instrument = merged.get("instrument")
+    if isinstance(instrument, dict):
+        for key, value in instrument.items():
+            if merged.get(key) in (None, "") and value not in (None, ""):
+                merged[key] = value
+    leg_qty = _first_qty(merged)
+    parent_qty = _first_qty(parent)
+    if (leg_qty is None or leg_qty <= 0) and parent_qty is not None and parent_qty > 0:
+        merged["quantity"] = parent_qty
+    if _position_cost(merged) is None:
+        cost = _position_cost(parent)
+        if cost is not None:
+            merged["cost_price"] = cost
+    if not str(merged.get("underlying_symbol") or "").strip():
+        parent_symbol = str(parent.get("underlying_symbol") or parent.get("symbol") or "")
+        if parent_symbol and parse_occ_contract(parent_symbol) is None:
+            merged.setdefault("underlying_symbol", parent_symbol)
+    return merged
+
+
+def _first_qty(node: dict[str, Any]) -> float | None:
+    for key in ("quantity", "position", "position_quantity", "qty"):
+        parsed = _coerce_qty(node.get(key))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _position_cost(node: dict[str, Any]) -> float | None:
+    for key in _COST_KEYS:
+        parsed = _coerce_qty(node.get(key))
+        if parsed is not None and parsed > 0:
+            return parsed
+    return None
 
 
 def _position_identity(node: dict[str, Any]) -> dict[str, Any] | None:
@@ -213,26 +305,29 @@ def _position_identity(node: dict[str, Any]) -> dict[str, Any] | None:
             break
     option_type = str(node.get("option_type") or node.get("optionType") or "").upper()
     right = str(node.get("right") or "").upper()
-    if right in {"CALL", "C"} or option_type == "CALL":
+    side = str(node.get("side") or "").upper()
+    if right in {"CALL", "C"} or option_type == "CALL" or side in {"CALL", "C"}:
         right = "C"
-    elif right in {"PUT", "P"} or option_type == "PUT":
+    elif right in {"PUT", "P"} or option_type == "PUT" or side in {"PUT", "P"}:
         right = "P"
     else:
         right = ""
-    expiry = str(node.get("option_expire_date") or node.get("expiry") or node.get("expire_date") or "")[:10]
+    expiry = str(
+        node.get("option_expire_date")
+        or node.get("optionExpireDate")
+        or node.get("expiry")
+        or node.get("expire_date")
+        or ""
+    )[:10]
     strike = _coerce_qty(node.get("strike_price") if node.get("strike_price") is not None else node.get("strike"))
-    qty = None
-    for key in ("quantity", "position", "position_quantity", "qty"):
-        parsed_qty = _coerce_qty(node.get(key))
-        if parsed_qty is not None:
-            qty = parsed_qty
-            break
+    qty = _first_qty(node)
     instrument = str(node.get("instrument_type") or node.get("instrumentType") or "").upper()
     looks_option = bool(contract) or instrument == "OPTION" or option_type in {"CALL", "PUT"} or right in {"C", "P"}
     if not looks_option or qty is None or qty <= 0:
         return None
+    cost = _position_cost(node)
     if contract:
-        return {
+        row = {
             "contract": contract["contract"],
             "symbol": contract["symbol"],
             "right": contract["right"],
@@ -240,19 +335,23 @@ def _position_identity(node: dict[str, Any]) -> dict[str, Any] | None:
             "strike": contract["strike"],
             "quantity": qty,
         }
-    if not right or strike is None or len(expiry) < 10:
+    elif not right or strike is None or len(expiry) < 10:
         return None
-    symbol = str(node.get("underlying_symbol") or node.get("symbol") or "").upper()
-    if not symbol or parse_occ_contract(symbol):
-        return None
-    return {
-        "contract": "",
-        "symbol": symbol,
-        "right": right,
-        "expiry": expiry,
-        "strike": float(strike),
-        "quantity": qty,
-    }
+    else:
+        symbol = str(node.get("underlying_symbol") or node.get("symbol") or "").upper()
+        if not symbol or parse_occ_contract(symbol):
+            return None
+        row = {
+            "contract": "",
+            "symbol": symbol,
+            "right": right,
+            "expiry": expiry,
+            "strike": float(strike),
+            "quantity": qty,
+        }
+    if cost is not None:
+        row["cost"] = cost
+    return row
 
 
 def apply_occ_identity(intent: WebullOrderIntent) -> WebullOrderIntent:
@@ -409,9 +508,10 @@ def classify_broker_order(payload: Any) -> dict[str, Any]:
     status: str | None = None
     filled: float | None = None
     qty: float | None = None
+    fill_price: float | None = None
 
     def walk(node: Any, depth: int = 0) -> None:
-        nonlocal status, filled, qty
+        nonlocal status, filled, qty, fill_price
         if depth > 6:
             return
         if isinstance(node, list):
@@ -442,7 +542,13 @@ def classify_broker_order(payload: Any) -> dict[str, Any]:
                 if parsed is not None:
                     qty = parsed
                     break
-        if status is None or filled is None or qty is None:
+        if fill_price is None:
+            for key in _FILL_PRICE_KEYS:
+                parsed = _coerce_qty(node.get(key))
+                if parsed is not None and parsed > 0:
+                    fill_price = parsed
+                    break
+        if status is None or filled is None or qty is None or fill_price is None:
             for value in node.values():
                 if isinstance(value, (dict, list)):
                     walk(value, depth + 1)
@@ -466,6 +572,7 @@ def classify_broker_order(payload: Any) -> dict[str, Any]:
         "filled_qty": filled,
         "quantity": qty,
         "order_status": status,
+        "fill_price": fill_price,
     }
 
 
@@ -767,12 +874,17 @@ class WebullBroker:
             )
             return intent
 
+        held = self._hold_outside_session(intent)
+        if held is not None:
+            return held
+
         try:
             broker_id = self._place_via_openapi(intent)
             intent.status = "submitted"
             intent.broker_order_id = broker_id
             intent.error = None
             intent.meta["fill_state"] = "working"
+            intent.meta["queued_for_open"] = False
         except WebullRateLimit as exc:
             # Same client_order_id is still the only order. The next sync
             # retries this row instead of staging a second one.
@@ -780,10 +892,52 @@ class WebullBroker:
             intent.status = "deferred"
             intent.error = str(exc)[:500]
             intent.meta["fill_state"] = "deferred"
+            intent.meta["retryable"] = True
         except Exception as exc:  # noqa: BLE001
             logger.exception("Webull submit failed: %s", exc)
             intent.status = "rejected"
             intent.error = str(exc)[:500]
+            intent.meta["fill_state"] = "rejected"
+            # A broker reject such as OPENAPI_ETF_OPTION_CAN_NOT_TRADING is not
+            # a 429. Do not stage a fresh order for the same contract next sync.
+            intent.meta["retryable"] = False
+        self.save()
+        return intent
+
+    def _hold_outside_session(self, intent: WebullOrderIntent) -> WebullOrderIntent | None:
+        """Skip the HTTP call outside 09:30–16:15 ET, and do not buy after 15:45."""
+        from odte_scanner.signals.hold_rules import (
+            before_option_session,
+            option_session_open,
+            past_odte_flatten,
+        )
+
+        now = getattr(self, "_session_now", None)
+        action = str(intent.action or "").upper()
+        if action == "BUY" and past_odte_flatten(now):
+            return self._stop_unsent_buy(intent, "cancelled at 15:45 ET")
+        if option_session_open(now):
+            return None
+        if before_option_session(now) or action != "BUY":
+            return self._queue_until_open(intent)
+        return self._stop_unsent_buy(intent, "not submitted outside 09:30–16:15 ET")
+
+    def _queue_until_open(self, intent: WebullOrderIntent) -> WebullOrderIntent:
+        intent.status = "deferred"
+        intent.error = "queued until 09:30 ET"
+        intent.meta["queued_for_open"] = True
+        intent.meta["retryable"] = True
+        intent.meta["fill_state"] = "deferred"
+        self.save()
+        return intent
+
+    def _stop_unsent_buy(self, intent: WebullOrderIntent, reason: str) -> WebullOrderIntent:
+        intent.meta["retryable"] = False
+        intent.meta["queued_for_open"] = False
+        if not intent.broker_order_id and intent.status not in {"filled", "partial", "cancelled"}:
+            intent.status = "cancelled"
+            intent.meta["fill_state"] = "cancelled"
+            intent.error = reason
         self.save()
         return intent
 
@@ -1032,6 +1186,9 @@ class WebullBroker:
         intent.meta["fill_state"] = state
         intent.meta["filled_qty"] = classified.get("filled_qty")
         intent.meta["broker_status"] = classified.get("order_status")
+        price = _coerce_qty(classified.get("fill_price"))
+        if price is not None and price > 0:
+            intent.fill_price = price
         if state == "filled":
             intent.status = "filled"
         elif state == "partial":
@@ -1063,6 +1220,15 @@ class WebullBroker:
         """Cancel a resting limit. Dry-run rows are cancelled locally. Sandbox only."""
         intent.updated_at = _now()
         if intent.status in {"filled", "cancelled"}:
+            return intent
+        # A deferred or staged row never received a broker id. Cancelling it
+        # on the wire fails and would leave it eligible for another submit.
+        if intent.status in {"deferred", "staged"} and not intent.broker_order_id:
+            intent.status = "cancelled"
+            intent.meta["fill_state"] = "cancelled"
+            intent.meta["retryable"] = False
+            intent.error = None
+            self.save()
             return intent
         live = (
             self.enabled

@@ -22,7 +22,13 @@ import logging
 from datetime import datetime
 from typing import Any
 
-from odte_scanner.signals.hold_rules import entry_block_reason, expiry_is_today, past_odte_flatten
+from odte_scanner.signals.hold_rules import (
+    BEFORE_OPEN_REASON,
+    entry_block_reason,
+    expiry_is_today,
+    option_session_open,
+    past_odte_flatten,
+)
 from odte_scanner.trading.golden import golden_signal_kind
 from odte_scanner.trading.webull import WebullBroker, WebullOrderIntent, parse_occ_contract
 
@@ -117,7 +123,11 @@ def _exit_limit(row: dict[str, Any], opened: WebullOrderIntent | None) -> tuple[
     )
     if parsed is not None and parsed > 0:
         return parsed, "live_reason"
-    entry = _f(opened.limit_price) if opened is not None else None
+    entry = None
+    if opened is not None:
+        entry = _f(opened.fill_price)
+        if entry is None or entry <= 0:
+            entry = _f(opened.limit_price)
     clock = _is_clock_flatten(row)
     for key in ("bid", "mark", "mid", "ask"):
         price = _f(row.get(key))
@@ -263,10 +273,13 @@ class AutoTrader:
         occ = str(contract or "")
         blocking = {"staged", "dry_run", "submitted", "deferred", "filled", "partial"}
         for o in self.broker.orders:
-            if o.status not in blocking:
-                continue
             if o.action != "BUY":
                 continue
+            if o.status not in blocking:
+                # A rejected buy is not sent again. 429 rows stay deferred and
+                # are retried on the same client order id.
+                if o.status != "rejected" or (o.meta or {}).get("retryable") is True:
+                    continue
             if occ and o.contract and occ == o.contract:
                 return True
             if o.symbol == sym and o.desk == desk and o.right == right.upper():
@@ -462,6 +475,9 @@ class AutoTrader:
             qty = float(pos["quantity"])
             order.meta["filled_qty"] = qty
             order.meta["position_source"] = "webull"
+            cost = _f(pos.get("cost"))
+            if cost is not None and cost > 0 and not (order.fill_price and order.fill_price > 0):
+                order.fill_price = cost
             if qty + 1e-9 >= float(order.quantity or 1):
                 order.meta["fill_state"] = "filled"
                 order.status = "filled"
@@ -601,7 +617,8 @@ class AutoTrader:
         if not sym:
             return None
         blocked = entry_block_reason(row.get("expiry"), self._now, dte=_i(row.get("dte")))
-        if blocked:
+        preopen = blocked == BEFORE_OPEN_REASON
+        if blocked and not preopen:
             self._note_filtered(row, blocked)
             return None
         kind = golden_signal_kind(row)
@@ -699,7 +716,20 @@ class AutoTrader:
             intent.updated_at = intent.created_at
             self.broker.save()
             return intent
+        if preopen:
+            return self._defer_until_open(intent)
         return self.broker.submit(intent)
+
+    def _defer_until_open(self, intent: WebullOrderIntent) -> WebullOrderIntent:
+        """Keep one order id for a pre-open signal. The open sync submits it."""
+        intent.status = "deferred"
+        intent.error = "queued until 09:30 ET"
+        intent.meta["queued_for_open"] = True
+        intent.meta["retryable"] = True
+        intent.meta["fill_state"] = "deferred"
+        intent.updated_at = intent.created_at
+        self.broker.save()
+        return intent
 
     def _route_sell(
         self,
@@ -807,6 +837,19 @@ class AutoTrader:
             self.broker.cancel(opened)
         return sold
 
+    def _cancel_unfilled_at_cutoff(self) -> None:
+        """Cancel managed unfilled buys at 15:45 ET, including deferred rows with no broker id.
+
+        This does not use the sync budget, so a busy pass still pulls day orders.
+        Filled weeklies and legacy golden-flow lots are not in the working set.
+        """
+        for order in list(self.broker.orders):
+            if not self._is_working_buy(order) or not self._tracks_exit(order):
+                continue
+            reason = "0DTE time-stop — flatten by 15:45 ET"
+            order.meta["cancel_reason"] = reason
+            self.broker.cancel(order)
+
     def _cancel_unfilled(self, order: WebullOrderIntent, row: dict[str, Any]) -> WebullOrderIntent:
         """Pull a resting limit. If detail now says it filled, sell that fill instead."""
         reason = str(row.get("detail") or row.get("headline") or row.get("exit_plan") or "cancel unfilled")
@@ -875,9 +918,12 @@ class AutoTrader:
         # Fill state first, so an exit sells a fill and cancels a resting limit.
         # Positions from the sandbox account override a SUBMITTED ledger row.
         self._now = now
+        self.broker._session_now = now
         self._closed_contracts = set()
         self.broker.refresh_working_buys()
         self._reconcile_positions(self._managed_positions())
+        if self.golden_only and past_odte_flatten(now):
+            self._cancel_unfilled_at_cutoff()
 
         # --- Lottery (0DTE convex calls) ---
         if lottery and budget > 0:
@@ -975,12 +1021,19 @@ class AutoTrader:
                 _take(self._route_sell(desk="golden_exit", row=row, right=right))
 
         # Retry 429s after exits so a flatten can cancel a deferred id first.
-        # The same client_order_id is submitted again. Golden buy retries stop
-        # at the per-sync cap; a deferred sell is not held back by that cap.
-        if budget > 0:
+        # The same client_order_id is submitted again. Nothing is sent outside
+        # 09:30–16:15 ET, and a buy is not resent at or after 15:45. Golden buy
+        # retries stop at the per-sync cap; a deferred sell is not held back
+        # by that cap.
+        if budget > 0 and option_session_open(now):
             for intent in [o for o in self.broker.orders if o.status == "deferred"]:
                 if budget <= 0:
                     break
+                if intent.action == "BUY" and past_odte_flatten(now):
+                    self.broker.cancel(intent)
+                    continue
+                if (intent.meta or {}).get("retryable") is False:
+                    continue
                 if (
                     intent.action == "BUY"
                     and (intent.meta or {}).get("golden_kind")
