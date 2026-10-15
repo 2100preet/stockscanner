@@ -310,6 +310,23 @@ class AutoTrader:
             if self._is_position_buy(o) and self._tracks_exit(o) and o.desk != self.second_desk
         ]
 
+    def _symbol_has_unfilled_golden(self, symbol: str) -> bool:
+        """True when this underlying already has a working Sure Winner buy.
+
+        The per-sync cap still limits a burst across names. It does not by
+        itself stop the next pass from stacking another strike of the same
+        name while the first order is unfilled.
+        """
+        sym = str(symbol or "").upper()
+        for order in self.broker.orders:
+            if order.action != "BUY" or order.symbol != sym:
+                continue
+            if str((order.meta or {}).get("golden_kind") or "") != "sure_winner_gold":
+                continue
+            if order.status in {"staged", "dry_run", "deferred"} or self._is_working_buy(order):
+                return True
+        return False
+
     def _working_golden_buys(self) -> list[WebullOrderIntent]:
         return [
             o
@@ -644,6 +661,9 @@ class AutoTrader:
                 self._note_filtered(row, "not a golden signal")
                 return None
             desk = "sure_winner" if kind == "sure_winner_gold" else "golden_flow"
+            if kind == "sure_winner_gold" and self._symbol_has_unfilled_golden(sym):
+                self._note_filtered(row, "golden working buy already open for this symbol")
+                return None
             ready_row, missing = _row_has_option_fields(row, price_key, "ask", "mid", "mark")
             if not ready_row:
                 self._note_filtered(row, missing)

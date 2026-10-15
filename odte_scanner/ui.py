@@ -7714,9 +7714,45 @@ def create_app(config_path: str | None = None) -> Flask:
         out["status"] = out.get("broker") or out.get("status")
         return out
 
+    def _public_option_positions() -> dict:
+        """Sandbox option book with ids removed. Used to verify the parser."""
+        broker, _trader = _webull_bundle()
+        books: list[dict] = []
+        rows: list[dict] = []
+
+        def take(label: str, parsed) -> None:
+            if parsed is None:
+                books.append({"book": label, "ok": False, "n": 0})
+                return
+            books.append({"book": label, "ok": True, "n": len(parsed)})
+            for pos in parsed:
+                if not isinstance(pos, dict):
+                    continue
+                rows.append(
+                    {
+                        "book": label,
+                        "contract": pos.get("contract"),
+                        "symbol": pos.get("symbol"),
+                        "right": pos.get("right"),
+                        "expiry": pos.get("expiry"),
+                        "strike": pos.get("strike"),
+                        "quantity": pos.get("quantity"),
+                        "cost": pos.get("cost"),
+                    }
+                )
+
+        take("primary", broker.list_option_positions())
+        second = str(getattr(broker, "account_id_2", "") or "")
+        if second and second != str(broker.account_id or ""):
+            take("second", broker.list_option_positions(second))
+        return {"books": books, "positions": rows, "n": len(rows)}
+
     @app.get("/api/webull/status")
     def webull_status():
-        return jsonify(_webull_status_payload())
+        payload = _webull_status_payload()
+        if str(request.args.get("positions") or "") == "1":
+            payload["option_positions"] = _public_option_positions()
+        return jsonify(payload)
 
     @app.post("/api/webull/sync")
     def webull_sync():

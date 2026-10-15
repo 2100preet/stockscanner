@@ -1344,6 +1344,145 @@ def test_parse_option_positions_reads_occ_and_option_fields():
     assert "SPY" not in by_symbol
 
 
+def test_parse_option_positions_reads_webull_exercise_price_legs():
+    """Official positions list: strike is option_exercise_price on each leg.
+
+    The response is a JSON array. Symbol is the underlying, not an OCC code.
+    A strike_price-only parser returns an empty book for this payload.
+    """
+    from odte_scanner.trading.webull import parse_option_positions
+
+    rows = parse_option_positions(
+        [
+            {
+                "position_id": "POS1",
+                "currency": "USD",
+                "quantity": "1",
+                "symbol": "DOCU",
+                "option_strategy": "SINGLE",
+                "instrument_type": "OPTION",
+                "last_price": "0.55",
+                "cost_price": "1.39",
+                "unrealized_profit_loss": "-84.00",
+                "legs": [
+                    {
+                        "leg_id": "LEG1",
+                        "symbol": "DOCU",
+                        "quantity": "1",
+                        "option_type": "CALL",
+                        "option_expire_date": "2026-10-16",
+                        "option_exercise_price": "76",
+                        "option_contract_multiplier": "100",
+                        "option_contract_deliverable": "100",
+                    }
+                ],
+            },
+            {
+                "position_id": "POS2",
+                "quantity": "2",
+                "symbol": "AAPL",
+                "instrument_type": "OPTION",
+                "option_strategy": "SINGLE",
+                "cost_price": "11.12",
+                "last_price": "10.0",
+                "legs": [
+                    {
+                        "leg_id": "LEG2",
+                        "symbol": "AAPL",
+                        "option_type": "CALL",
+                        "option_expire_date": "2019-09-20",
+                        "option_exercise_price": "11.0",
+                    }
+                ],
+            },
+            {
+                "symbol": "SPY",
+                "instrument_type": "EQUITY",
+                "quantity": "10",
+                "cost_price": "500",
+            },
+        ]
+    )
+    by_symbol = {row["symbol"]: row for row in rows}
+    assert set(by_symbol) == {"DOCU", "AAPL"}
+    assert by_symbol["DOCU"]["contract"] == "DOCU261016C00076000"
+    assert by_symbol["DOCU"]["right"] == "C"
+    assert by_symbol["DOCU"]["expiry"] == "2026-10-16"
+    assert by_symbol["DOCU"]["strike"] == 76
+    assert by_symbol["DOCU"]["quantity"] == 1
+    assert by_symbol["DOCU"]["cost"] == 1.39
+    assert by_symbol["AAPL"]["contract"] == "AAPL190920C00011000"
+    assert by_symbol["AAPL"]["quantity"] == 2
+    assert by_symbol["AAPL"]["strike"] == 11
+    assert by_symbol["AAPL"]["cost"] == 11.12
+
+
+def test_exercise_price_position_reconciles_to_the_ledger_contract(tmp_path: Path, monkeypatch):
+    from odte_scanner.trading.webull import parse_option_positions
+
+    broker = _live_broker(tmp_path, _Clock())
+    trader = AutoTrader(broker, golden_only=True, max_orders_per_sync=4)
+    row = _sure_card("DOCU", 76, expiry="2026-10-16")
+    intent = _arm_live_buy(broker, row)
+    payload = [
+        {
+            "quantity": "1",
+            "symbol": "DOCU",
+            "instrument_type": "OPTION",
+            "option_strategy": "SINGLE",
+            "cost_price": "1.39",
+            "legs": [
+                {
+                    "symbol": "DOCU",
+                    "option_type": "CALL",
+                    "option_expire_date": "2026-10-16",
+                    "option_exercise_price": "76",
+                }
+            ],
+        }
+    ]
+    monkeypatch.setattr(
+        broker,
+        "list_option_positions",
+        lambda account_id=None: parse_option_positions(payload),
+    )
+    monkeypatch.setattr(
+        broker,
+        "_fetch_order_detail",
+        lambda order: {"order_status": "SUBMITTED", "filled_quantity": "0", "quantity": "1"},
+    )
+    trader.sync(actions={"buy_now": [], "sell_now": []}, sure_winners={"winners": []})
+    assert intent.status == "filled"
+    assert intent.contract == "DOCU261016C00076000"
+    assert intent.fill_price == 1.39
+    assert intent.meta.get("position_source") == "webull"
+
+
+def test_same_symbol_working_golden_buy_does_not_stack(tmp_path: Path):
+    broker = WebullBroker(enabled=True, dry_run=True, ledger_path=tmp_path / "wb.json")
+    trader = AutoTrader(broker, golden_only=True, max_orders_per_sync=5, max_golden_buys_per_sync=2)
+    first = trader.sync(
+        sure_winners={
+            "winners": [_sure_card("DOCU", 75), _sure_card("DOCU", 76), _sure_card("IWM", 272)]
+        }
+    )
+    buys = [o for o in broker.orders if o.action == "BUY"]
+    assert first["submitted_n"] == 2
+    assert {o.symbol for o in buys} == {"DOCU", "IWM"}
+    second = trader.sync(sure_winners={"winners": [_sure_card("DOCU", 77)]})
+    assert second["submitted_n"] == 0
+    assert any("already open" in r["reason"] for r in second["filtered"])
+    assert len([o for o in broker.orders if o.action == "BUY"]) == 2
+    for order in list(broker.orders):
+        if order.action == "BUY" and order.symbol == "DOCU":
+            order.status = "filled"
+            order.meta["fill_state"] = "filled"
+    broker.save()
+    third = trader.sync(sure_winners={"winners": [_sure_card("DOCU", 77)]})
+    assert third["submitted_n"] == 1
+    assert third["submitted"][0]["strike"] == 77
+
+
 def test_parse_option_positions_reads_legs():
     """Strike, expiry, and side live on legs; quantity and cost sit on the parent."""
     from odte_scanner.trading.webull import parse_option_positions

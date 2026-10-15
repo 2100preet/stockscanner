@@ -168,6 +168,29 @@ def parse_occ_contract(contract: str | None) -> dict[str, Any] | None:
     }
 
 
+def format_occ_contract(symbol: str, expiry: str, right: str, strike: float) -> str | None:
+    """Build an OCC symbol from underlying, expiry, put/call, and strike.
+
+    Webull positions identify the underlying on ``symbol`` and the strike on
+    ``option_exercise_price``. The ledger matches holdings by OCC symbol.
+    """
+    raw_exp = str(expiry or "")[:10]
+    if len(raw_exp) != 10 or raw_exp[4] != "-" or raw_exp[7] != "-":
+        return None
+    root = "".join(ch for ch in str(symbol or "").upper() if ch.isalnum())
+    if not root or len(root) > 6:
+        return None
+    try:
+        strike_i = int(round(float(strike) * 1000))
+    except (TypeError, ValueError):
+        return None
+    if strike_i <= 0:
+        return None
+    side = "P" if str(right or "").upper() in {"P", "PUT"} else "C"
+    yymmdd = raw_exp[2:4] + raw_exp[5:7] + raw_exp[8:10]
+    return f"{root}{yymmdd}{side}{strike_i:08d}"
+
+
 _LEG_LIST_KEYS = ("legs", "leg_list", "option_legs")
 _COST_KEYS = (
     "cost_price",
@@ -198,10 +221,11 @@ def parse_option_positions(payload: Any) -> list[dict[str, Any]]:
     """Pull long option positions out of a Webull positions payload.
 
     Each row has contract, symbol, right, expiry, strike, quantity, and cost
-    when the payload has one. Strike, expiry, and put/call often live on
-    ``legs`` while quantity and cost sit on the parent. Short or zero
-    quantities are dropped. An OCC symbol on the row wins over a conflicting
-    right or expiry field.
+    when the payload has one. The list endpoint returns a JSON array. Put/call
+    and expiry live on ``legs``, and the strike is ``option_exercise_price``
+    (not ``strike_price``). Quantity and cost often sit on the parent. Short
+    or zero quantities are dropped. An OCC symbol on the row wins over a
+    conflicting right or expiry field.
     """
     found: list[dict[str, Any]] = []
 
@@ -216,8 +240,14 @@ def parse_option_positions(payload: Any) -> list[dict[str, Any]]:
             return
         legs = _position_legs(node)
         if legs:
+            parsed_leg = False
             for leg in legs:
                 ident = _position_identity(_leg_with_parent(node, leg))
+                if ident is not None:
+                    found.append(ident)
+                    parsed_leg = True
+            if not parsed_leg:
+                ident = _position_identity(node)
                 if ident is not None:
                     found.append(ident)
             for key, value in node.items():
@@ -288,6 +318,25 @@ def _first_qty(node: dict[str, Any]) -> float | None:
     return None
 
 
+_STRIKE_KEYS = (
+    "option_exercise_price",
+    "optionExercisePrice",
+    "exercise_price",
+    "exercisePrice",
+    "strike_price",
+    "strikePrice",
+    "strike",
+)
+
+
+def _position_strike(node: dict[str, Any]) -> float | None:
+    for key in _STRIKE_KEYS:
+        parsed = _coerce_qty(node.get(key))
+        if parsed is not None and parsed > 0:
+            return parsed
+    return None
+
+
 def _position_cost(node: dict[str, Any]) -> float | None:
     for key in _COST_KEYS:
         parsed = _coerce_qty(node.get(key))
@@ -319,7 +368,7 @@ def _position_identity(node: dict[str, Any]) -> dict[str, Any] | None:
         or node.get("expire_date")
         or ""
     )[:10]
-    strike = _coerce_qty(node.get("strike_price") if node.get("strike_price") is not None else node.get("strike"))
+    strike = _position_strike(node)
     qty = _first_qty(node)
     instrument = str(node.get("instrument_type") or node.get("instrumentType") or "").upper()
     looks_option = bool(contract) or instrument == "OPTION" or option_type in {"CALL", "PUT"} or right in {"C", "P"}
@@ -341,8 +390,9 @@ def _position_identity(node: dict[str, Any]) -> dict[str, Any] | None:
         symbol = str(node.get("underlying_symbol") or node.get("symbol") or "").upper()
         if not symbol or parse_occ_contract(symbol):
             return None
+        contract = format_occ_contract(symbol, expiry, right, float(strike)) or ""
         row = {
-            "contract": "",
+            "contract": contract,
             "symbol": symbol,
             "right": right,
             "expiry": expiry,
@@ -604,11 +654,24 @@ def _is_rate_limit_error(exc: BaseException) -> bool:
 def _response_body(res: Any) -> Any:
     if isinstance(res, (dict, list)):
         return res
+    parsed = None
     if hasattr(res, "json") and callable(res.json):
         try:
-            return res.json()
+            parsed = res.json()
         except Exception:  # noqa: BLE001
-            pass
+            parsed = None
+    if isinstance(parsed, (dict, list)):
+        return parsed
+    text = parsed if isinstance(parsed, str) else _response_text(res)
+    if isinstance(text, str):
+        stripped = text.strip()
+        if stripped[:1] in "[{":
+            try:
+                loaded = json.loads(stripped)
+            except Exception:  # noqa: BLE001
+                loaded = None
+            if isinstance(loaded, (dict, list)):
+                return loaded
     return {"raw": _response_text(res)}
 
 
