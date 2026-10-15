@@ -4,6 +4,11 @@ name: Lottery v2 provider backtest
 # The script scrubs those values before writing the artifact.
 on:
   workflow_dispatch:
+  push:
+    branches: ["cursor/lottery-v2-provider-bt-db9d"]
+    paths:
+      - scripts/lottery_v2_provider_backtest.py
+      - .github/workflows/lottery-v2-backtest.yml
 
 jobs:
   backtest:
