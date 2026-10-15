@@ -1,19 +1,23 @@
 """Replay lottery v2 on the desk's live providers. Do not print credentials.
 
-Equity and option bars: Tradier /markets/timesales (the same intraday feed the
-desk uses for ORB and power hour), then Polygon aggregates if Tradier is empty.
-Entry bid/ask: Polygon historical option quotes when the plan returns them.
-Tradier quotes are live-only, so they are not a historical spread source.
+Equity bars: Tradier /markets/timesales (production, 5-minute). That is the
+same intraday feed the desk uses for ORB and power hour.
+Option bars: Polygon minute aggregates. Tradier timesales rejects OCC symbols
+(HTTP 400). Polygon historical option quotes return HTTP 403 on this key, so
+the 45% spread filter cannot be applied and the entry is the trade close.
 
-Writes outputs/lottery_v2_provider_backtest.json. Secrets are scrubbed from
-errors before anything is stored.
+Writes outputs/lottery_v2_provider_backtest.json as it goes. Secrets are
+scrubbed from errors before anything is stored or printed.
 """
 from __future__ import annotations
 
 import json
 import os
+import signal
+import threading
 import time
 import traceback
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -38,6 +42,12 @@ SYMBOLS = [
     "AMD", "AMZN", "MSFT", "GOOGL", "NFLX", "AVGO", "PFE", "JNJ",
 ]
 POLY = "https://api.polygon.io"
+WORKERS = 8
+# A hung read must not stall the pool the way the first replay did.
+socket_timeout = (5, 20)
+
+STATE: dict = {"fetches": 0, "errors": 0, "with_bars": 0}
+STOP = threading.Event()
 
 
 def scrub(text: str) -> str:
@@ -63,7 +73,6 @@ def _as_et(raw: object) -> datetime | None:
     if raw is None:
         return None
     if isinstance(raw, (int, float)) and not isinstance(raw, bool):
-        # Tradier timestamp is seconds. Polygon agg "t" is milliseconds.
         value = float(raw)
         if value > 1e14:
             value = value / 1e9
@@ -118,34 +127,42 @@ def _poly_get(path: str, params: dict) -> tuple[dict | None, str | None]:
     key = api_key_from_env()
     if not key:
         return None, "POLYGON_API_KEY unset"
-    try:
-        query = dict(params)
-        query["apiKey"] = key
-        response = requests.get(f"{POLY}{path}", params=query, timeout=25)
-    except Exception as exc:  # noqa: BLE001
-        return None, scrub(exc)
-    if response.status_code in {401, 403}:
-        return None, f"polygon {response.status_code}"
-    if response.status_code == 429:
-        time.sleep(1.5)
-        return None, "polygon 429"
-    if response.status_code >= 400:
-        return None, f"polygon {response.status_code}"
-    try:
-        return response.json(), None
-    except Exception as exc:  # noqa: BLE001
-        return None, scrub(exc)
+    query = dict(params)
+    query["apiKey"] = key
+    last_err = "polygon empty"
+    for attempt in range(3):
+        try:
+            response = requests.get(f"{POLY}{path}", params=query, timeout=socket_timeout)
+        except Exception as exc:  # noqa: BLE001
+            last_err = scrub(exc)
+            time.sleep(0.4 * (attempt + 1))
+            continue
+        if response.status_code == 429:
+            last_err = "polygon 429"
+            time.sleep(1.2 * (attempt + 1))
+            continue
+        if response.status_code in {401, 403}:
+            return None, f"polygon {response.status_code}"
+        if response.status_code >= 400:
+            return None, f"polygon {response.status_code}"
+        try:
+            return response.json(), None
+        except Exception as exc:  # noqa: BLE001
+            return None, scrub(exc)
+    return None, last_err
 
 
 def polygon_aggs(symbol: str, start: str, end: str, minutes: int) -> tuple[list[dict], str | None]:
-    ticker = symbol if symbol.startswith("O:") or symbol in SYMBOLS or symbol == "I:VIX" else f"O:{symbol}"
     if symbol == "VIX":
         ticker = "I:VIX"
+    elif symbol.startswith("O:") or symbol in SYMBOLS:
+        ticker = symbol
+    else:
+        ticker = f"O:{symbol}"
     payload, err = _poly_get(
         f"/v2/aggs/ticker/{ticker}/range/{minutes}/minute/{start}/{end}",
         {"adjusted": "true", "sort": "asc", "limit": 50000},
     )
-    time.sleep(0.12)
     if err or not payload:
         return [], err
     bars = [b for row in (payload.get("results") or []) if (b := _bar(row))]
@@ -193,11 +210,12 @@ def occ(symbol: str, day: str, right: str, strike: float) -> str:
 
 
 def grid(symbol: str, spot: float, side: str) -> list[float]:
+    """Same 8-strike ladder the Yahoo replay used."""
     step = 1.0 if symbol in {"SPY", "QQQ", "IWM", "DIA"} or spot < 200 else 5.0
     base = round(spot / step) * step
     if side == "put":
-        return [round(base - i * step, 2) for i in range(0, 6)]
-    return [round(base + i * step, 2) for i in range(0, 6)]
+        return [round(base - i * step, 2) for i in range(0, 8)]
+    return [round(base + i * step, 2) for i in range(0, 8)]
 
 
 def first_print(bars: list[dict], signal: datetime) -> dict | None:
@@ -211,12 +229,11 @@ def first_print(bars: list[dict], signal: datetime) -> dict | None:
 def load_equity(symbol: str, source: dict[str, str]) -> list[dict]:
     start = f"{START.isoformat()} 09:30"
     end = f"{END.isoformat()} 16:00"
-    bars, err = tradier_bars(symbol, start, end, "5min")
+    bars, _err = tradier_bars(symbol, start, end, "5min")
     covered = {b["ts"][:10] for b in bars}
     if len(covered) >= 8:
         source[symbol] = "tradier"
         return bars
-    # A long timesales window often truncates. Pull each session.
     merged = list(bars)
     have = set(covered)
     for day in sessions():
@@ -226,7 +243,6 @@ def load_equity(symbol: str, source: dict[str, str]) -> list[dict]:
         if day_bars:
             merged.extend(day_bars)
             have.add(day.isoformat())
-        time.sleep(0.05)
     if len(have) >= 8:
         source[symbol] = "tradier"
         merged.sort(key=lambda b: b["ts"])
@@ -240,52 +256,195 @@ def load_equity(symbol: str, source: dict[str, str]) -> list[dict]:
     return merged
 
 
-def option_bars(occ_symbol: str, day: str, prefer: str, cache: dict, *, polygon_ok: bool) -> list[dict]:
-    key = f"{occ_symbol}|{day}"
-    if key in cache:
-        return cache[key]
-    bars: list[dict] = []
-    if prefer == "tradier":
-        bars, _ = tradier_bars(occ_symbol, f"{day} 09:30", f"{day} 16:00", "1min")
-        time.sleep(0.05)
-    if not bars and polygon_ok:
-        bars, _ = polygon_aggs(occ_symbol, day, day, 1)
-    cache[key] = bars
-    return bars
+def _median(values: list[float]) -> float:
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) / 2.0
+
+
+def _side_stats(rows: list[dict]) -> dict:
+    usable = [r for r in rows if r["ladder"].get("ev_per_100") is not None]
+    if not usable:
+        return {"n": 0}
+    evs = [r["ladder"]["ev_per_100"] for r in usable]
+    return {
+        "n": len(usable),
+        "hit_5x": sum(1 for r in usable if r["ladder"]["hit_5x"]),
+        "hit_10x": sum(1 for r in usable if r["ladder"]["hit_10x"]),
+        "went_to_zero": sum(1 for r in usable if r["ladder"]["went_to_zero"]),
+        "median_ev_per_100": round(_median(evs), 2),
+        "mean_ev_per_100": round(sum(evs) / len(evs), 2),
+    }
 
 
 def summarize(rows: list[dict]) -> dict:
-    if not rows:
+    usable = [r for r in rows if r["ladder"].get("ev_per_100") is not None]
+    if not usable:
         return {"n": 0}
-    evs = sorted(r["ladder"]["ev_per_100"] for r in rows)
-    mults = [r["ladder"]["blended_multiple"] for r in rows]
-
-    def side(name: str) -> dict:
-        sub = [r for r in rows if r["side"] == name]
-        if not sub:
-            return {"n": 0}
-        return {
-            "n": len(sub),
-            "hit_5x": sum(1 for r in sub if r["ladder"]["hit_5x"]),
-            "hit_10x": sum(1 for r in sub if r["ladder"]["hit_10x"]),
-            "went_to_zero": sum(1 for r in sub if r["ladder"]["went_to_zero"]),
-            "mean_ev_per_100": round(sum(r["ladder"]["ev_per_100"] for r in sub) / len(sub), 2),
-        }
-
+    evs = [r["ladder"]["ev_per_100"] for r in usable]
+    mults = [r["ladder"]["blended_multiple"] for r in usable]
     return {
-        "n": len(rows),
-        "hit_5x": sum(1 for r in rows if r["ladder"]["hit_5x"]),
-        "hit_10x": sum(1 for r in rows if r["ladder"]["hit_10x"]),
-        "went_to_zero": sum(1 for r in rows if r["ladder"]["went_to_zero"]),
-        "hit_5x_rate": round(sum(1 for r in rows if r["ladder"]["hit_5x"]) / len(rows), 3),
-        "zero_rate": round(sum(1 for r in rows if r["ladder"]["went_to_zero"]) / len(rows), 3),
-        "median_ev_per_100": evs[len(evs) // 2],
+        "n": len(usable),
+        "hit_5x": sum(1 for r in usable if r["ladder"]["hit_5x"]),
+        "hit_10x": sum(1 for r in usable if r["ladder"]["hit_10x"]),
+        "went_to_zero": sum(1 for r in usable if r["ladder"]["went_to_zero"]),
+        "hit_5x_rate": round(sum(1 for r in usable if r["ladder"]["hit_5x"]) / len(usable), 3),
+        "hit_10x_rate": round(sum(1 for r in usable if r["ladder"]["hit_10x"]) / len(usable), 3),
+        "zero_rate": round(sum(1 for r in usable if r["ladder"]["went_to_zero"]) / len(usable), 3),
+        "median_ev_per_100": round(_median(evs), 2),
         "mean_ev_per_100": round(sum(evs) / len(evs), 2),
-        "median_blended_multiple": round(sorted(mults)[len(mults) // 2], 4),
-        "puts": side("put"),
-        "calls": side("call"),
-        "with_nbbo": sum(1 for r in rows if r.get("nbbo")),
+        "median_blended_multiple": round(_median(mults), 4),
+        "puts": _side_stats([r for r in usable if r["side"] == "put"]),
+        "calls": _side_stats([r for r in usable if r["side"] == "call"]),
+        "with_nbbo": sum(1 for r in usable if r.get("nbbo")),
     }
+
+
+def cap_three_per_day(rows: list[dict]) -> list[dict]:
+    """Live desk keeps 3 LOG tickets a day, confirms then cheaper ask."""
+    by_day: dict[str, list[dict]] = {}
+    for row in rows:
+        by_day.setdefault(row["day"], []).append(row)
+    kept: list[dict] = []
+    for day in sorted(by_day):
+        ranked = sorted(by_day[day], key=lambda r: (-int(r.get("confirms") or 0), float(r["entry"])))
+        kept.extend(ranked[:3])
+    return kept
+
+
+def _write(payload: dict) -> None:
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    tmp = OUT.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, indent=2, default=str))
+    tmp.replace(OUT)
+
+
+def fetch_option_day(occ_symbol: str, day: str) -> tuple[str, list[dict], str | None]:
+    """Polygon minute aggregates only. Tradier OCC timesales is a known 400."""
+    key = f"{occ_symbol}|{day}"
+    bars, err = polygon_aggs(occ_symbol, day, day, 1)
+    with threading.Lock():
+        STATE["fetches"] += 1
+        if err:
+            STATE["errors"] += 1
+        elif bars:
+            STATE["with_bars"] += 1
+        done = STATE["fetches"]
+    if done % 40 == 0:
+        print(
+            "fetch",
+            done,
+            "with_bars",
+            STATE["with_bars"],
+            "errors",
+            STATE["errors"],
+            flush=True,
+        )
+    return key, bars, err
+
+
+def score_signal(sig: dict, cache: dict[str, list[dict]], vix_bars: list[dict]) -> tuple[dict | None, str | None]:
+    brk = sig["break"]
+    signal_ts = datetime.fromisoformat(brk["ts"])
+    vix = None
+    for bar in vix_bars:
+        if datetime.fromisoformat(bar["ts"]) <= signal_ts:
+            vix = bar["close"]
+    chosen = None
+    saw_bar = False
+    for expiry, dte in ((sig["day"], 0), (next_bday(sig["day"]), 1)):
+        for strike in grid(sig["symbol"], float(brk["last"]), brk["side"]):
+            symbol = occ(sig["symbol"], expiry, brk["right"], strike)
+            bars = cache.get(f"{symbol}|{sig['day']}") or []
+            if bars:
+                saw_bar = True
+            entry_bar = first_print(bars, signal_ts)
+            if entry_bar is None:
+                continue
+            px = float(entry_bar["close"])
+            if not (0.05 <= px <= 0.40):
+                continue
+            entry_ts = datetime.fromisoformat(entry_bar["ts"])
+            vol = sum(
+                int(b.get("volume") or 0)
+                for b in bars
+                if b["ts"][:10] == sig["day"] and datetime.fromisoformat(b["ts"]) <= entry_ts
+            )
+            row = {
+                "occ": symbol,
+                "strike": strike,
+                "expiry": expiry,
+                "dte": dte,
+                "ask": px,
+                "volume": vol,
+                "entry_bar": entry_bar,
+                "bars": bars,
+                "dist": abs(px - 0.20),
+                "liquid": vol >= 50,
+            }
+            if chosen is None:
+                chosen = row
+            elif row["liquid"] and not chosen["liquid"]:
+                chosen = row
+            elif row["liquid"] == chosen["liquid"] and row["dist"] < chosen["dist"]:
+                chosen = row
+    if chosen is None:
+        return None, "no_option_bars" if not saw_bar else "no_contract_in_band"
+    decision = decide_lottery_v2(
+        {
+            "symbol": sig["symbol"],
+            "right": brk["right"],
+            "contract": chosen["occ"],
+            "strike": chosen["strike"],
+            "expiry": chosen["expiry"],
+            "dte": chosen["dte"],
+            "ask": chosen["ask"],
+            "bid": None,
+            "volume": chosen["volume"],
+            "open_interest": 0,
+        },
+        tape={
+            "last": brk["last"],
+            "orb_high": brk["orb_high"],
+            "orb_low": brk["orb_low"],
+            "vwap": brk["vwap"],
+            "rel_volume": brk.get("rel_volume"),
+        },
+        now=signal_ts,
+        vix=vix,
+    )
+    if decision.action != "LOG":
+        reason = decision.detail or "gate"
+        if "spread" in reason:
+            return None, "spread"
+        if "thin" in reason:
+            return None, "thin"
+        return None, "gate"
+    later = [
+        b for b in chosen["bars"]
+        if datetime.fromisoformat(b["ts"]) > datetime.fromisoformat(chosen["entry_bar"]["ts"])
+        and b["ts"][:10] == sig["day"]
+    ]
+    ladder = replay_ladder(chosen["ask"], later)
+    return {
+        "symbol": sig["symbol"],
+        "day": sig["day"],
+        "side": brk["side"],
+        "occ": chosen["occ"],
+        "dte": chosen["dte"],
+        "entry": round(chosen["ask"], 4),
+        "bid": None,
+        "nbbo": False,
+        "entry_kind": "trade_close",
+        "signal": brk["ts"],
+        "vix": vix,
+        "volume": chosen["volume"],
+        "confirms": decision.confirms,
+        "tags": decision.confirm_tags,
+        "ladder": ladder,
+    }, None
 
 
 def main() -> None:
@@ -302,8 +461,8 @@ def main() -> None:
         "days": sorted({b["ts"][:10] for b in spy}),
         "error": spy_err,
     }
-    opt, opt_err = tradier_bars("SPY261014P00770000", "2026-10-14 09:30", "2026-10-14 16:00", "1min")
-    probe["tradier_option_1m"] = {"n": len(opt), "error": opt_err, "sample_keys_ok": bool(opt)}
+    _opt, opt_err = tradier_bars("SPY261014P00770000", "2026-10-14 09:30", "2026-10-14 16:00", "1min")
+    probe["tradier_option_1m"] = {"n": 0, "error": opt_err, "sample_keys_ok": False}
     pagg, pagg_err = polygon_aggs("SPY261014P00770000", "2026-10-14", "2026-10-14", 1)
     probe["polygon_option_aggs"] = {"n": len(pagg), "error": pagg_err}
     when = datetime(2026, 10, 14, 10, 0, tzinfo=ET)
@@ -314,18 +473,25 @@ def main() -> None:
         "error": nbbo_err,
     }
     print("probe", json.dumps(probe), flush=True)
-
-    bar_source = "tradier" if len(opt) >= 20 else ("polygon" if len(pagg) >= 20 else "")
-    use_nbbo = bool(nbbo and nbbo.get("ask"))
-    if not bar_source:
-        _write({"ok": False, "probe": probe, "reason": "no historical option bars from Tradier or Polygon"})
+    if len(pagg) < 20:
+        _write({
+            "ok": False,
+            "complete": False,
+            "probe": probe,
+            "reason": "Polygon option aggregates did not return a usable minute tape",
+        })
         return
+
+    payload = _base_payload(probe, {}, [], [], {}, complete=False)
+    _write(payload)
 
     equity_source: dict[str, str] = {}
     equity = {sym: load_equity(sym, equity_source) for sym in SYMBOLS}
-    vix_bars, _ = tradier_bars("VIX", f"{START.isoformat()} 09:30", f"{END.isoformat()} 16:00", "5min")
+    vix_bars, vix_err = tradier_bars("VIX", f"{START.isoformat()} 09:30", f"{END.isoformat()} 16:00", "5min")
+    vix_source = "tradier"
     if len(vix_bars) < 20:
-        vix_bars, _ = polygon_aggs("VIX", START.isoformat(), END.isoformat(), 5)
+        vix_bars, vix_err = polygon_aggs("VIX", START.isoformat(), END.isoformat(), 5)
+        vix_source = "polygon" if len(vix_bars) >= 20 else "none"
 
     signals = []
     for sym, bars in equity.items():
@@ -333,162 +499,153 @@ def main() -> None:
             brk = scan_session_break(day_bars)
             if brk and START.isoformat() <= brk["ts"][:10] <= END.isoformat():
                 signals.append({"symbol": sym, "day": brk["ts"][:10], "break": brk})
-    print("breaks", len(signals), "bar_source", bar_source, "nbbo", use_nbbo, flush=True)
+    print(
+        "breaks", len(signals),
+        "bar_source", "polygon",
+        "nbbo", False,
+        "vix", vix_source, len(vix_bars),
+        flush=True,
+    )
 
-    cache: dict = {}
-    tickets = []
-    skipped: dict[str, int] = {}
-    nbbo_errors = 0
-    for index, sig in enumerate(signals):
+    jobs: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for sig in signals:
         brk = sig["break"]
-        signal_ts = datetime.fromisoformat(brk["ts"])
-        vix = None
-        for bar in vix_bars:
-            if datetime.fromisoformat(bar["ts"]) <= signal_ts:
-                vix = bar["close"]
-        found = []
-        for expiry, dte in ((sig["day"], 0), (next_bday(sig["day"]), 1)):
+        for expiry, _dte in ((sig["day"], 0), (next_bday(sig["day"]), 1)):
             for strike in grid(sig["symbol"], float(brk["last"]), brk["side"]):
                 symbol = occ(sig["symbol"], expiry, brk["right"], strike)
-                bars = option_bars(
-                    symbol,
-                    sig["day"],
-                    bar_source,
-                    cache,
-                    polygon_ok=probe["polygon_option_aggs"]["n"] >= 20,
-                )
-                entry_bar = first_print(bars, signal_ts)
-                if entry_bar is None:
+                key = f"{symbol}|{sig['day']}"
+                if key in seen:
                     continue
-                px = float(entry_bar["close"])
-                if px < 0.02 or px > 1.0:
-                    continue
-                entry_ts = datetime.fromisoformat(entry_bar["ts"])
-                vol = sum(
-                    int(b.get("volume") or 0)
-                    for b in bars
-                    if b["ts"][:10] == sig["day"] and datetime.fromisoformat(b["ts"]) <= entry_ts
-                )
-                quote = None
-                if use_nbbo and 0.02 <= px <= 0.60:
-                    quote, qerr = polygon_nbbo(symbol, signal_ts)
-                    if qerr and qerr not in {"no quote"}:
-                        nbbo_errors += 1
-                        if nbbo_errors >= 8:
-                            use_nbbo = False
-                ask = px
-                bid = None
-                had_nbbo = False
-                if quote and quote.get("ask"):
-                    ask = float(quote["ask"])
-                    bid = quote.get("bid")
-                    had_nbbo = True
-                if not (0.05 <= ask <= 0.40):
-                    continue
-                found.append({
-                    "occ": symbol,
-                    "strike": strike,
-                    "expiry": expiry,
-                    "dte": dte,
-                    "ask": ask,
-                    "bid": bid,
-                    "volume": vol,
-                    "nbbo": had_nbbo,
-                    "entry_bar": entry_bar,
-                    "bars": bars,
-                    "dist": abs(ask - 0.20),
-                })
-        if not found:
-            skipped["no_contract_in_band"] = skipped.get("no_contract_in_band", 0) + 1
-            continue
-        found.sort(key=lambda row: (not row["nbbo"], row["dist"]))
-        chosen = None
-        decision = None
-        for row in found[:4]:
-            decision = decide_lottery_v2(
-                {
-                    "symbol": sig["symbol"],
-                    "right": brk["right"],
-                    "contract": row["occ"],
-                    "strike": row["strike"],
-                    "expiry": row["expiry"],
-                    "dte": row["dte"],
-                    "ask": row["ask"],
-                    "bid": row["bid"],
-                    "volume": row["volume"],
-                    "open_interest": 0,
-                },
-                tape={
-                    "last": brk["last"],
-                    "orb_high": brk["orb_high"],
-                    "orb_low": brk["orb_low"],
-                    "vwap": brk["vwap"],
-                    "rel_volume": brk.get("rel_volume"),
-                },
-                now=signal_ts,
-                vix=vix,
-            )
-            if decision.action == "LOG":
-                chosen = row
-                break
-            reason = decision.detail
-            key = "spread" if "spread" in reason else ("thin" if "thin" in reason else "gate")
-            skipped[key] = skipped.get(key, 0) + 1
-        if chosen is None or decision is None:
-            continue
-        later = [
-            b for b in chosen["bars"]
-            if datetime.fromisoformat(b["ts"]) > datetime.fromisoformat(chosen["entry_bar"]["ts"])
-            and b["ts"][:10] == sig["day"]
-        ]
-        ladder = replay_ladder(chosen["ask"], later)
-        tickets.append({
-            "symbol": sig["symbol"],
-            "day": sig["day"],
-            "side": brk["side"],
-            "occ": chosen["occ"],
-            "dte": chosen["dte"],
-            "entry": round(chosen["ask"], 4),
-            "bid": chosen["bid"],
-            "nbbo": chosen["nbbo"],
-            "signal": brk["ts"],
-            "vix": vix,
-            "confirms": decision.confirms,
-            "tags": decision.confirm_tags,
-            "ladder": ladder,
-        })
-        if index % 10 == 0:
-            print("progress", index, "tickets", len(tickets), flush=True)
+                seen.add(key)
+                jobs.append((symbol, sig["day"]))
+    print("option_jobs", len(jobs), flush=True)
 
-    equity_days = sorted({b["ts"][:10] for bars in equity.values() for b in bars})
-    out = {
+    cache: dict[str, list[dict]] = {}
+    errors: dict[str, int] = {}
+    started = time.time()
+    with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+        pending = {pool.submit(fetch_option_day, symbol, day) for symbol, day in jobs}
+        while pending and not STOP.is_set():
+            done, pending = wait(pending, timeout=30, return_when=FIRST_COMPLETED)
+            if not done:
+                print("alive", "fetches", STATE["fetches"], "pending", len(pending), flush=True)
+                continue
+            for fut in done:
+                try:
+                    key, bars, err = fut.result()
+                except Exception as exc:  # noqa: BLE001
+                    errors["worker"] = errors.get("worker", 0) + 1
+                    print("worker_error", scrub(exc), flush=True)
+                    continue
+                cache[key] = bars
+                if err:
+                    errors[err] = errors.get(err, 0) + 1
+            if STATE["fetches"] and STATE["fetches"] % 80 < len(done):
+                _checkpoint(
+                    probe, equity_source, equity, signals, cache, vix_bars, errors, vix_source, started, False,
+                )
+
+    payload = _checkpoint(
+        probe, equity_source, equity, signals, cache, vix_bars, errors, vix_source, started, True,
+    )
+    print("SUMMARY", json.dumps(payload["summary"]), flush=True)
+    print("CAPPED", json.dumps(payload["summary_max_3_per_day"]), flush=True)
+
+
+def _base_payload(
+    probe: dict,
+    equity_source: dict,
+    equity: dict,
+    signals: list,
+    skipped: dict,
+    *,
+    complete: bool,
+) -> dict:
+    equity_days = sorted({b["ts"][:10] for bars in equity.values() for b in bars}) if equity else []
+    return {
         "ok": True,
+        "complete": complete,
+        "window": {"start": START.isoformat(), "end": END.isoformat(), "sessions": [d.isoformat() for d in sessions()]},
         "providers": {
             "live_priority": ["tradier", "polygon", "yahoo", "cache"],
-            "equity_bars": equity_source,
-            "option_bars": bar_source,
-            "nbbo": "polygon" if probe["polygon_nbbo"]["ok"] else "unavailable",
+            "equity_bars": equity_source or "tradier",
+            "option_bars": "polygon_aggs",
+            "nbbo": "unavailable" if not probe.get("polygon_nbbo", {}).get("ok") else "polygon",
+            "spread_filter": "not_applied_nbbo_unavailable",
+            "entry": "trade_close",
         },
         "probe": probe,
         "equity_days": equity_days,
         "breaks": len(signals),
         "skipped": skipped,
-        "summary": summarize(tickets),
-        "tickets": tickets,
+        "summary": {"n": 0},
+        "tickets": [],
     }
-    _write(out)
-    print("SUMMARY", json.dumps(out["summary"]), flush=True)
 
 
-def _write(payload: dict) -> None:
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(json.dumps(payload, indent=2, default=str))
-    print("wrote", OUT, flush=True)
+def _checkpoint(
+    probe: dict,
+    equity_source: dict,
+    equity: dict,
+    signals: list,
+    cache: dict,
+    vix_bars: list,
+    errors: dict,
+    vix_source: str,
+    started: float,
+    complete: bool,
+) -> dict:
+    tickets = []
+    skipped: dict[str, int] = {}
+    sessions_with_bars = 0
+    for sig in signals:
+        if any(cache.get(f"{occ(sig['symbol'], expiry, sig['break']['right'], strike)}|{sig['day']}")
+               for expiry, _dte in ((sig["day"], 0), (next_bday(sig["day"]), 1))
+               for strike in grid(sig["symbol"], float(sig["break"]["last"]), sig["break"]["side"])):
+            sessions_with_bars += 1
+        ticket, reason = score_signal(sig, cache, vix_bars)
+        if ticket is None:
+            skipped[reason or "skip"] = skipped.get(reason or "skip", 0) + 1
+            continue
+        tickets.append(ticket)
+    capped = cap_three_per_day(tickets)
+    payload = _base_payload(probe, equity_source, equity, signals, skipped, complete=complete)
+    payload["providers"]["vix"] = vix_source
+    payload["providers"]["equity_by_symbol"] = equity_source
+    payload["coverage"] = {
+        "contracts_requested": len(cache),
+        "contracts_with_bars": sum(1 for bars in cache.values() if bars),
+        "sessions_with_any_option_bar": sessions_with_bars,
+        "fetch_errors": errors,
+        "elapsed_sec": round(time.time() - started, 1),
+    }
+    payload["summary"] = summarize(tickets)
+    payload["summary_max_3_per_day"] = summarize(capped)
+    payload["tickets"] = tickets
+    if complete and payload["coverage"]["contracts_with_bars"] == 0:
+        payload["ok"] = False
+        payload["reason"] = "Polygon option aggregates returned no bars"
+    _write(payload)
+    print(
+        "checkpoint",
+        "complete" if complete else "partial",
+        "tickets", len(tickets),
+        "sessions_with_bars", sessions_with_bars,
+        flush=True,
+    )
+    return payload
+
+
+def _on_term(_signum: int, _frame: object) -> None:
+    STOP.set()
+    print("sigterm", flush=True)
 
 
 if __name__ == "__main__":
+    signal.signal(signal.SIGTERM, _on_term)
     try:
         main()
     except Exception as exc:  # noqa: BLE001
-        _write({"ok": False, "error": scrub(exc), "trace": scrub(traceback.format_exc())})
+        _write({"ok": False, "complete": False, "error": scrub(exc), "trace": scrub(traceback.format_exc())})
         raise
