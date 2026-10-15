@@ -16,7 +16,7 @@ GOLD_SURE_WINNER_CLASSES = {"sure-max", "sure-high"}
 
 # Injected into the desk page. Keep the branches in lockstep with
 # sure_winner_card_class() below.
-SURE_WINNER_CARD_JS = """
+SURE_WINNER_CARD_JS = r"""
 function sureWinnerCardClass(row) {
   row = row || {};
   var tier = String(row.confidence_tier || "").toUpperCase();
