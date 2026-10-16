@@ -7548,7 +7548,7 @@ def create_app(config_path: str | None = None) -> Flask:
     def _webull_bundle():
         from odte_scanner.live_desk import resolve_webull_live_flags
         from odte_scanner.signals.exit_rules import load_exit_rules
-        from odte_scanner.trading.auto_trader import AutoTrader
+        from odte_scanner.trading.auto_trader import AutoTrader, paper_risk_kwargs
         from odte_scanner.trading.webull import WebullBroker
 
         lt = cfg.get("live_trading") or {}
@@ -7590,6 +7590,7 @@ def create_app(config_path: str | None = None) -> Flask:
             close_legacy_positions=bool(lt.get("close_legacy_positions", False)),
             second_desk=str(lt.get("second_desk") or "challenge"),
             exit_rules=load_exit_rules(lt.get("exits")),
+            **paper_risk_kwargs(lt, cfg.get("risk") or {}),
         )
         return broker, trader
 

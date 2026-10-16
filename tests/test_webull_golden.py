@@ -1411,6 +1411,8 @@ def test_parse_option_positions_reads_webull_exercise_price_legs():
     assert by_symbol["DOCU"]["strike"] == 76
     assert by_symbol["DOCU"]["quantity"] == 1
     assert by_symbol["DOCU"]["cost"] == 1.39
+    assert by_symbol["DOCU"]["mark"] == 0.55
+    assert by_symbol["AAPL"]["mark"] == 10.0
     assert by_symbol["AAPL"]["contract"] == "AAPL190920C00011000"
     assert by_symbol["AAPL"]["quantity"] == 2
     assert by_symbol["AAPL"]["strike"] == 11

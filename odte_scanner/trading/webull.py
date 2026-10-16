@@ -303,6 +303,10 @@ def _leg_with_parent(parent: dict[str, Any], leg: dict[str, Any]) -> dict[str, A
         cost = _position_cost(parent)
         if cost is not None:
             merged["cost_price"] = cost
+    if _position_mark(merged) is None:
+        mark = _position_mark(parent)
+        if mark is not None:
+            merged["last_price"] = mark
     if not str(merged.get("underlying_symbol") or "").strip():
         parent_symbol = str(parent.get("underlying_symbol") or parent.get("symbol") or "")
         if parent_symbol and parse_occ_contract(parent_symbol) is None:
@@ -342,6 +346,25 @@ def _position_cost(node: dict[str, Any]) -> float | None:
         parsed = _coerce_qty(node.get(key))
         if parsed is not None and parsed > 0:
             return parsed
+    return None
+
+
+# Bid is the premium we can sell. Last/mark fill in when the book has no bid.
+_MARK_KEY_GROUPS = (
+    ("bid", "bid_price", "bidPrice"),
+    ("mark", "market_price", "marketPrice"),
+    ("mid",),
+    ("last_price", "lastPrice", "last", "trade_price", "tradePrice"),
+)
+
+
+def _position_mark(node: dict[str, Any]) -> float | None:
+    """Live option premium on a positions row. Bid wins over last."""
+    for keys in _MARK_KEY_GROUPS:
+        for key in keys:
+            parsed = _coerce_qty(node.get(key))
+            if parsed is not None and parsed > 0:
+                return parsed
     return None
 
 
@@ -401,6 +424,9 @@ def _position_identity(node: dict[str, Any]) -> dict[str, Any] | None:
         }
     if cost is not None:
         row["cost"] = cost
+    mark = _position_mark(node)
+    if mark is not None:
+        row["mark"] = mark
     return row
 
 
