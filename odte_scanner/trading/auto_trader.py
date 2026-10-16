@@ -3,6 +3,12 @@
 Default (golden_only):
   sure_winner → Sure Winner cards the desk renders gold (MAX and HIGH)
 
+Gold cards are entries. Exits come from open sandbox longs: a live premium
+(bid or mark versus entry/cost) that crosses the book TP/SL, a journal or
+desk SELL for that contract, or the 15:45 ET flatten. The signal card does
+not have to stay gold on the board, and the sell does not have to match an
+open golden order.
+
 Other desks stay on the board and are not staged. SOLID sure winners and
 unusual-flow prints (including Flow-desk Golden) are included in that exclusion.
 
@@ -19,15 +25,18 @@ When golden_only is false, the older desk router is unchanged:
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 from typing import Any
 
+from odte_scanner.signals.exit_rules import DEFAULT_EXIT_RULES
 from odte_scanner.signals.hold_rules import (
     BEFORE_OPEN_REASON,
     entry_block_reason,
     expiry_is_today,
     option_session_open,
     past_odte_flatten,
+    trading_dte,
 )
 from odte_scanner.trading.golden import golden_signal_kind
 from odte_scanner.trading.webull import WebullBroker, WebullOrderIntent, parse_occ_contract
@@ -112,6 +121,34 @@ def _is_clock_flatten(row: dict[str, Any]) -> bool:
         for key in ("detail", "headline", "reason", "exit_reason", "exit_plan")
     ).lower()
     return any(token in text for token in ("15:45", "time-stop", "time stop", "flatten"))
+
+
+_TP_PLAN_RE = re.compile(
+    r"(?:tp|take[\s-]*profit|target)\s*[+:]?\s*\+?\s*(\d+(?:\.\d+)?)\s*%",
+    re.IGNORECASE,
+)
+_PLUS_PLAN_RE = re.compile(r"\(\s*\+\s*(\d+(?:\.\d+)?)\s*%\s*\)")
+_SL_PLAN_RE = re.compile(
+    r"(?:sl|stop(?:[\s-]*loss)?)\s*[−\-–:]?\s*(\d+(?:\.\d+)?)\s*%",
+    re.IGNORECASE,
+)
+
+
+def _pcts_from_exit_plan(text: str | None) -> tuple[float, float] | None:
+    """Read TP and SL percents out of an exit-plan string.
+
+    RIP tickets say ``TP +50% / SL −50%`` (or ``premium ≥$x (+50%) … stop −50%``).
+    Both numbers have to be present. A plan with only a target does not drop
+    the desk stop.
+    """
+    raw = str(text or "")
+    if not raw.strip():
+        return None
+    tp_match = _TP_PLAN_RE.search(raw) or _PLUS_PLAN_RE.search(raw)
+    sl_match = _SL_PLAN_RE.search(raw)
+    if tp_match is None or sl_match is None:
+        return None
+    return float(tp_match.group(1)), abs(float(sl_match.group(1)))
 
 
 def _exit_limit(row: dict[str, Any], opened: WebullOrderIntent | None) -> tuple[float | None, str]:
@@ -505,6 +542,311 @@ class AutoTrader:
         if changed:
             self.broker.save()
 
+    def _position_rows(self) -> list[dict[str, Any]]:
+        book = self._positions_by_contract
+        if not book:
+            return []
+        return [pos for pos in book.values() if float(pos.get("quantity") or 0) > 0]
+
+    def _desk_for_position(self, pos: dict[str, Any] | None) -> str:
+        acct = str((pos or {}).get("account_id") or "")
+        second = str(getattr(self.broker, "account_id_2", "") or "")
+        if second and acct == second:
+            return self.second_desk
+        return "sure_winner"
+
+    def _matching_position_buy(self, row: dict[str, Any]) -> WebullOrderIntent | None:
+        """Any filled or simulated buy for this contract, golden or not."""
+        right = str(row.get("right") or "C")
+        return self._golden_buy_matching(
+            row,
+            right,
+            [order for order in self.broker.orders if self._is_position_buy(order)],
+        )
+
+    def _find_open_long(self, row: dict[str, Any], right: str) -> WebullOrderIntent | None:
+        """Ledger long this sell can close, including a non-golden fill."""
+        opened = self._matching_position_buy(row)
+        if opened is None or self._held_qty(opened) <= 0:
+            return None
+        return opened
+
+    def _open_position(self, row: dict[str, Any], right: str) -> dict[str, Any] | None:
+        """Broker long for this contract. The ledger does not have to know it."""
+        book = self._positions_by_contract
+        if not book:
+            return None
+        contract = str(row.get("contract") or "")
+        if contract and contract in book and float(book[contract].get("quantity") or 0) > 0:
+            return book[contract]
+        probe = dict(row)
+        probe["right"] = right
+        for pos in book.values():
+            if float(pos.get("quantity") or 0) <= 0:
+                continue
+            if self._rows_same_option(probe, pos):
+                return pos
+        return None
+
+    @staticmethod
+    def _rows_same_option(row: dict[str, Any], other: dict[str, Any]) -> bool:
+        if str(row.get("symbol") or "").upper() != str(other.get("symbol") or "").upper():
+            return False
+        right = str(row.get("right") or "C").upper()
+        other_right = str(other.get("right") or "C").upper()
+        if right in {"PUT", "P"}:
+            right = "P"
+        elif right in {"CALL", "C"}:
+            right = "C"
+        if other_right in {"PUT", "P"}:
+            other_right = "P"
+        elif other_right in {"CALL", "C"}:
+            other_right = "C"
+        if right != other_right:
+            return False
+        strike = _f(row.get("strike"))
+        other_strike = _f(other.get("strike"))
+        if strike is None or other_strike is None or abs(strike - other_strike) > 1e-6:
+            return False
+        expiry = str(row.get("expiry") or "")[:10]
+        other_expiry = str(other.get("expiry") or "")[:10]
+        return bool(expiry and other_expiry and expiry == other_expiry)
+
+    def _lot_flattens(self, desk: str, expiry: str | None, now: datetime | None) -> bool:
+        """15:45 ET flatten.
+
+        Same-day expiry leaves on every book, including Sure Winner. Challenge
+        also leaves a 1 DTE hold so it does not gap overnight. A Sure Winner
+        weekly whose expiry is after today stays open.
+        """
+        if not past_odte_flatten(now):
+            return False
+        if expiry_is_today(expiry, now):
+            return True
+        if str(desk or "") == self.second_desk:
+            # Next session, including Friday into Monday. A 2-session hold stays.
+            dte = trading_dte(expiry, now)
+            return dte == 1
+        return False
+
+    def _position_for_order(self, order: WebullOrderIntent) -> dict[str, Any] | None:
+        book = self._positions_by_contract
+        if not book:
+            return None
+        pos = book.get(str(order.contract or ""))
+        if pos is not None and float(pos.get("quantity") or 0) > 0:
+            return pos
+        return self._open_position(
+            {
+                "symbol": order.symbol,
+                "right": order.right,
+                "expiry": order.expiry,
+                "strike": order.strike,
+                "contract": order.contract,
+            },
+            str(order.right or "C"),
+        )
+
+    @staticmethod
+    def _lot_mark(pos: dict[str, Any] | None) -> float | None:
+        if not pos:
+            return None
+        for key in ("bid", "mark", "mid", "last"):
+            price = _f(pos.get(key))
+            if price is not None and price > 0:
+                return price
+        return None
+
+    @staticmethod
+    def _lot_entry(order: WebullOrderIntent | None, pos: dict[str, Any] | None) -> float | None:
+        cost = _f((pos or {}).get("cost"))
+        if cost is not None and cost > 0:
+            return cost
+        if order is None:
+            return None
+        fill = _f(order.fill_price)
+        if fill is not None and fill > 0:
+            return fill
+        limit = _f(order.limit_price)
+        if limit is not None and limit > 0:
+            return limit
+        return None
+
+    def _exit_thresholds(
+        self,
+        desk: str,
+        order: WebullOrderIntent | None,
+    ) -> tuple[float, float] | None:
+        """TP/SL percents for an open lot. An exit_plan on the order wins.
+
+        Primary Sure Winner is +80/−50. Challenge is +100/−50. A RIP ticket
+        that stored ``TP +50% / SL −50%`` uses those numbers instead. ``eod``
+        mode leaves the premium target off and lets the 15:45 clock run.
+        """
+        plan = ""
+        explicit_tp = None
+        explicit_sl = None
+        if order is not None:
+            plan = str((order.meta or {}).get("exit_plan") or "")
+            explicit_tp = _f((order.meta or {}).get("take_profit_pct"))
+            if explicit_tp is None:
+                explicit_tp = _f((order.meta or {}).get("target_profit_pct"))
+            explicit_sl = _f((order.meta or {}).get("stop_loss_pct"))
+        parsed = _pcts_from_exit_plan(plan)
+        if parsed is not None:
+            return parsed
+        if explicit_tp is not None and explicit_sl is not None:
+            return float(explicit_tp), abs(float(explicit_sl))
+        rules = self.exit_rules or DEFAULT_EXIT_RULES
+        key = "challenge" if desk in {self.second_desk, "challenge"} else "sure_winner"
+        if order is not None and str(order.desk or "") == "rip":
+            key = "rip"
+        rule = rules.get(key) or DEFAULT_EXIT_RULES.get(key) or DEFAULT_EXIT_RULES["sure_winner"]
+        if str(rule.mode or "premium") != "premium":
+            return None
+        return float(rule.take_profit_pct), abs(float(rule.stop_loss_pct))
+
+    def _stamp_exit_plans(self, challenge: dict[str, Any] | None) -> None:
+        """Keep RIP / challenge percents on the buy after the ticket leaves the board."""
+        if not isinstance(challenge, dict):
+            return
+        tickets: list[dict[str, Any]] = []
+        for key in ("tickets", "entry", "exit"):
+            tickets.extend(row for row in (challenge.get(key) or []) if isinstance(row, dict))
+        if not tickets:
+            return
+        changed = False
+        for ticket in tickets:
+            plan = str(ticket.get("exit_plan") or "").strip()
+            tp = _f(ticket.get("take_profit_pct"))
+            if tp is None:
+                tp = _f(ticket.get("target_profit_pct"))
+            sl = _f(ticket.get("stop_loss_pct"))
+            if not plan and tp is None and sl is None:
+                continue
+            right = str(ticket.get("right") or "C")
+            for order in self.broker.orders:
+                if order.action != "BUY":
+                    continue
+                if self._golden_buy_matching(ticket, right, [order]) is None:
+                    continue
+                if plan and not (order.meta or {}).get("exit_plan"):
+                    order.meta["exit_plan"] = plan[:320]
+                    changed = True
+                if tp is not None and (order.meta or {}).get("take_profit_pct") is None:
+                    order.meta["take_profit_pct"] = tp
+                    changed = True
+                if sl is not None and (order.meta or {}).get("stop_loss_pct") is None:
+                    order.meta["stop_loss_pct"] = sl
+                    changed = True
+        if changed:
+            self.broker.save()
+
+    def _exit_row_for_lot(
+        self,
+        *,
+        symbol: str,
+        right: str,
+        contract: str | None,
+        expiry: str | None,
+        strike: float | None,
+        bid: float | None,
+        detail: str,
+        exit_desk: str,
+    ) -> dict[str, Any]:
+        row: dict[str, Any] = {
+            "symbol": symbol,
+            "right": right or "C",
+            "contract": contract,
+            "expiry": expiry,
+            "strike": strike,
+            "headline": f"SELL NOW {symbol}",
+            "detail": detail,
+            "exit_desk": exit_desk,
+        }
+        if bid is not None and bid > 0:
+            row["bid"] = bid
+        return row
+
+    def _premium_exit_rows(self) -> list[dict[str, Any]]:
+        """SELL rows when an open lot's premium crosses TP or SL.
+
+        The gold board is not consulted. A lot is an open ledger buy we track,
+        or a sandbox long that has no golden order. Legacy golden-flow buys
+        stay put unless ``close_legacy_positions`` is on — this is not a wipe.
+        """
+        rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+
+        def consider(
+            order: WebullOrderIntent | None,
+            pos: dict[str, Any] | None,
+            desk: str,
+        ) -> None:
+            contract = str((order.contract if order is not None else None) or (pos or {}).get("contract") or "")
+            if contract and contract in seen:
+                return
+            if order is not None and not self._tracks_exit(order):
+                return
+            if order is not None and self._held_qty(order) <= 0:
+                return
+            if order is None and (pos is None or float(pos.get("quantity") or 0) <= 0):
+                return
+            mark = self._lot_mark(pos)
+            entry = self._lot_entry(order, pos)
+            if mark is None or entry is None or entry <= 0:
+                return
+            thresholds = self._exit_thresholds(desk, order)
+            if thresholds is None:
+                return
+            tp, sl = thresholds
+            pct = (mark - entry) / entry * 100.0
+            # Compare premiums, not a rounded percent, so +80% of $1.00 (1.80)
+            # still crosses when binary floats land a hair under the ratio.
+            target = entry * (1.0 + float(tp) / 100.0)
+            stop = entry * (1.0 - abs(float(sl)) / 100.0)
+            if mark + 1e-4 >= target:
+                detail = f"take profit {pct:+.0f}% ≥ +{tp:.0f}%"
+            elif mark <= stop + 1e-4:
+                detail = f"stop loss {pct:+.0f}% ≤ −{abs(sl):.0f}%"
+            else:
+                return
+            probe = {
+                "symbol": (order.symbol if order is not None else None) or (pos or {}).get("symbol"),
+                "right": (order.right if order is not None else None) or (pos or {}).get("right") or "C",
+                "contract": contract or None,
+                "expiry": (order.expiry if order is not None else None) or (pos or {}).get("expiry"),
+                "strike": order.strike if order is not None and order.strike is not None else (pos or {}).get("strike"),
+            }
+            if self._sell_already_working(probe, str(probe["right"] or "C")):
+                return
+            if contract:
+                seen.add(contract)
+            exit_desk = self.second_desk if desk == self.second_desk else "golden_exit"
+            rows.append(
+                self._exit_row_for_lot(
+                    symbol=str(probe["symbol"] or ""),
+                    right=str(probe["right"] or "C"),
+                    contract=str(probe["contract"] or "") or None,
+                    expiry=str(probe["expiry"] or "") or None,
+                    strike=_f(probe["strike"]),
+                    bid=mark,
+                    detail=detail,
+                    exit_desk=exit_desk,
+                )
+            )
+
+        for order in self.broker.orders:
+            if not self._is_position_buy(order) or not self._tracks_exit(order):
+                continue
+            consider(order, self._position_for_order(order), order.desk or "sure_winner")
+        for pos in self._position_rows():
+            order = self._matching_position_buy(pos)
+            if order is not None:
+                continue
+            consider(None, pos, self._desk_for_position(pos))
+        return rows
+
     def _legacy_close_rows(self) -> list[dict[str, Any]]:
         """Sell or cancel pre-gold-card positions when the switch is on.
 
@@ -548,17 +890,18 @@ class AutoTrader:
         return rows
 
     def _flatten_when_signal_leaves(self, now: datetime | None) -> list[dict[str, Any]]:
-        """After 15:45 ET, sell managed 0DTE fills and cancel unfilled day orders.
+        """After 15:45 ET, flatten same-day lots and challenge 0–1 DTE holds.
 
-        2DTE and weeklies are held overnight, so a fill is not flattened just
-        because the clock hit 15:45. A DAY limit that never filled is cancelled
-        at that cutoff for every expiry. Take-profit and stop still arrive as
-        SELL NOW rows. Legacy golden-flow positions are included only when
-        ``close_legacy_positions`` is on.
+        Sure Winner weeklies stay open overnight. A same-day Sure Winner still
+        leaves, even when its gold card is gone. Challenge 1 DTE leaves too,
+        so a short-dated hold does not gap. Unfilled DAY limits are cancelled
+        at the cutoff for every expiry. Legacy golden-flow lots are included
+        only when ``close_legacy_positions`` is on.
         """
         if not past_odte_flatten(now):
             return []
         rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
         resting = [
             o
             for o in self.broker.orders
@@ -578,20 +921,70 @@ class AutoTrader:
             # itself is a weekly. Filled weeklies and 2DTEs stay open.
             if self._is_working_buy(order):
                 pass
-            elif not expiry_is_today(order.expiry, now):
+            elif not self._lot_flattens(order.desk, order.expiry, now):
                 continue
             elif self._held_qty(order) <= 0:
                 continue
+            contract = str(order.contract or "")
+            if contract:
+                seen.add(contract)
+            exit_desk = self.second_desk if order.desk == self.second_desk else "golden_exit"
+            if order.desk == self.second_desk and not expiry_is_today(order.expiry, now):
+                detail = "challenge 0–1DTE time-stop — flatten by 15:45 ET"
+            elif order.desk != self.second_desk and expiry_is_today(order.expiry, now):
+                detail = (
+                    "0DTE time-stop — flatten by 15:45 ET "
+                    "(open golden contract left the board)"
+                )
+            else:
+                detail = "0DTE time-stop — flatten by 15:45 ET (open position)"
+            mark = self._lot_mark(self._position_for_order(order))
             rows.append(
-                {
-                    **probe,
-                    "dte_bucket": "0dte",
-                    "headline": f"SELL NOW {order.symbol}",
-                    "detail": (
-                        "0DTE time-stop — flatten by 15:45 ET "
-                        "(open golden contract left the board)"
-                    ),
-                }
+                self._exit_row_for_lot(
+                    symbol=order.symbol,
+                    right=str(order.right or "C"),
+                    contract=order.contract,
+                    expiry=order.expiry,
+                    strike=order.strike,
+                    bid=mark,
+                    detail=detail,
+                    exit_desk=exit_desk,
+                )
+            )
+        for pos in self._position_rows():
+            contract = str(pos.get("contract") or "")
+            if contract and contract in seen:
+                continue
+            order = self._matching_position_buy(pos)
+            if order is not None:
+                # Tracked lots were handled above. Legacy golden-flow stays
+                # unless the mass-close switch is on.
+                continue
+            desk = self._desk_for_position(pos)
+            expiry = str(pos.get("expiry") or "")
+            if not self._lot_flattens(desk, expiry, now):
+                continue
+            right = str(pos.get("right") or "C")
+            if self._sell_already_working(pos, right):
+                continue
+            if contract:
+                seen.add(contract)
+            exit_desk = self.second_desk if desk == self.second_desk else "golden_exit"
+            if desk == self.second_desk and not expiry_is_today(expiry, now):
+                detail = "challenge 0–1DTE time-stop — flatten by 15:45 ET"
+            else:
+                detail = "0DTE time-stop — flatten by 15:45 ET (open position)"
+            rows.append(
+                self._exit_row_for_lot(
+                    symbol=str(pos.get("symbol") or ""),
+                    right=right,
+                    contract=contract or None,
+                    expiry=expiry or None,
+                    strike=_f(pos.get("strike")),
+                    bid=self._lot_mark(pos),
+                    detail=detail,
+                    exit_desk=exit_desk,
+                )
             )
         return rows
 
@@ -727,6 +1120,7 @@ class AutoTrader:
                 "gate_reason": why,
                 "golden_kind": kind,
                 **({"account_id": str(self.broker.account_id_2)} if second else {}),
+                **self._exit_plan_meta(row),
             },
             )
         ready, missing = _option_order_ready(intent)
@@ -740,6 +1134,23 @@ class AutoTrader:
             return self._defer_until_open(intent)
         return self.broker.submit(intent)
 
+    @staticmethod
+    def _exit_plan_meta(row: dict[str, Any]) -> dict[str, Any]:
+        """Percents the exit engine needs after the entry card leaves the board."""
+        meta: dict[str, Any] = {}
+        plan = str(row.get("exit_plan") or "").strip()
+        if plan:
+            meta["exit_plan"] = plan[:320]
+        tp = _f(row.get("take_profit_pct"))
+        if tp is None:
+            tp = _f(row.get("target_profit_pct"))
+        sl = _f(row.get("stop_loss_pct"))
+        if tp is not None:
+            meta["take_profit_pct"] = tp
+        if sl is not None:
+            meta["stop_loss_pct"] = sl
+        return meta
+
     def _defer_until_open(self, intent: WebullOrderIntent) -> WebullOrderIntent:
         """Keep one order id for a pre-open signal. The open sync submits it."""
         intent.status = "deferred"
@@ -750,6 +1161,13 @@ class AutoTrader:
         intent.updated_at = intent.created_at
         self.broker.save()
         return intent
+
+    def _route_exit_row(self, row: dict[str, Any]) -> WebullOrderIntent | None:
+        right = str(row.get("right") or "C").upper()
+        if right not in {"C", "P"}:
+            right = "C"
+        desk = str(row.get("exit_desk") or "golden_exit")
+        return self._route_sell(desk=desk, row=row, right=right)
 
     def _route_sell(
         self,
@@ -769,6 +1187,7 @@ class AutoTrader:
             return None
         kind = golden_signal_kind(row)
         opened: WebullOrderIntent | None = None
+        position: dict[str, Any] | None = None
         limit_price = _f(row.get("bid") or row.get("ask") or row.get("mid") or row.get("mark"))
         limit_source = "row"
         quantity = self.max_contracts
@@ -776,45 +1195,83 @@ class AutoTrader:
         expiry = str(row.get("expiry") or "") or None
         strike = _f(row.get("strike"))
         second = bool(self.golden_only and desk == self.second_desk)
+        exit_kind: str | None = None
         if self.golden_only:
-            # A golden label on the sell row is not enough. Only close a buy
-            # this bridge already staged, and sell that exact contract.
+            # Gold on the sell row is not required. Close the ledger fill or
+            # any sandbox long in this contract. A nearby strike stays open.
             if second:
                 opened = self._golden_buy_matching(row, right, self._open_desk_buys(self.second_desk))
                 working = self._golden_buy_matching(row, right, self._working_desk_buys(self.second_desk))
-                miss = f"sell only closes an open {self.second_desk} order"
             else:
                 opened = self._find_open_golden(row, right)
                 working = self._find_working_golden(row, right)
-                miss = "sell only closes an open golden order"
             if opened is None:
-                if working is None:
-                    self._note_filtered(row, miss)
-                    return None
-                return self._cancel_unfilled(working, row)
+                opened = self._find_open_long(row, right)
+            if opened is None:
+                position = self._open_position(row, right)
+            if opened is None and position is None:
+                if working is not None:
+                    return self._cancel_unfilled(working, row)
+                self._note_filtered(row, "sell only closes an open sandbox long")
+                return None
             if self._sell_already_working(row, right):
                 return None
+            if opened is not None:
+                # The sell follows the book that holds the long.
+                second = opened.desk == self.second_desk
+                if second:
+                    desk = self.second_desk
+            elif position is not None and self._desk_for_position(position) == self.second_desk:
+                second = True
+                desk = self.second_desk
+            if position is not None and _f(row.get("bid") or row.get("mark")) is None:
+                mark = self._lot_mark(position)
+                if mark is not None:
+                    row = dict(row)
+                    row["bid"] = mark
             limit_price, limit_source = _exit_limit(row, opened)
             if limit_price is None:
                 self._note_filtered(row, limit_source)
                 return None
-            # The fill has to be the option we bought, not a nearby strike on the sell row.
-            contract = str(opened.contract or row.get("contract") or "") or None
-            expiry = str(opened.expiry or row.get("expiry") or "") or None
-            strike = opened.strike if opened.strike is not None else strike
-            right = str(opened.right or right or "C").upper()
-            held = self._held_qty(opened)
-            if held <= 0:
-                self._note_filtered(row, "sandbox position is already flat")
-                return None
-            quantity = max(1, int(opened.quantity or self.max_contracts))
-            if held >= 1:
+            if opened is not None:
+                # The fill has to be the option we bought, not a nearby strike on the sell row.
+                contract = str(opened.contract or row.get("contract") or "") or None
+                expiry = str(opened.expiry or row.get("expiry") or "") or None
+                strike = opened.strike if opened.strike is not None else strike
+                right = str(opened.right or right or "C").upper()
+                held = self._held_qty(opened)
+                if held <= 0:
+                    self._note_filtered(row, "sandbox position is already flat")
+                    return None
+                quantity = max(1, int(opened.quantity or self.max_contracts))
+                if held >= 1:
+                    quantity = max(1, int(held))
+                sym = opened.symbol or sym
+            else:
+                contract = str((position or {}).get("contract") or row.get("contract") or "") or None
+                expiry = str((position or {}).get("expiry") or row.get("expiry") or "") or None
+                pos_strike = _f((position or {}).get("strike"))
+                strike = pos_strike if pos_strike is not None else strike
+                right = str((position or {}).get("right") or right or "C").upper()
+                held = float((position or {}).get("quantity") or 0)
+                if held <= 0:
+                    self._note_filtered(row, "sandbox position is already flat")
+                    return None
                 quantity = max(1, int(held))
-            sym = opened.symbol or sym
+                sym = str((position or {}).get("symbol") or sym)
+                exit_kind = "position_exit"
             if not second:
                 desk = "golden_exit"
         elif not self.desks.get(desk, False):
             return None
+        account_id = ""
+        if second:
+            if opened is not None:
+                account_id = str((opened.meta or {}).get("account_id") or "")
+            if not account_id and position is not None:
+                account_id = str(position.get("account_id") or "")
+            if not account_id:
+                account_id = str(getattr(self.broker, "account_id_2", "") or "")
         intent = self.broker.stage(
             desk=desk,
             action="SELL",
@@ -831,14 +1288,10 @@ class AutoTrader:
             meta={
                 "gate": "exit",
                 "gate_reason": "exit signals bypass entry hist gate",
-                "golden_kind": None if second else ("golden_exit" if self.golden_only else kind),
+                "golden_kind": None if second else (exit_kind or ("golden_exit" if self.golden_only else kind)),
                 "limit_source": limit_source,
                 "closes_order_id": opened.id if opened is not None else None,
-                **(
-                    {"account_id": str((opened.meta or {}).get("account_id") or self.broker.account_id_2)}
-                    if second and opened is not None
-                    else {}
-                ),
+                **({"account_id": account_id} if account_id else {}),
             },
         )
         ready, missing = _option_order_ready(intent)
@@ -944,6 +1397,14 @@ class AutoTrader:
         self._reconcile_positions(self._managed_positions())
         if self.golden_only and past_odte_flatten(now):
             self._cancel_unfilled_at_cutoff()
+        if self.golden_only:
+            # TP/SL from the open book, before board cards. A gold card is an
+            # entry, not a requirement for the exit.
+            self._stamp_exit_plans(challenge)
+            for row in self._premium_exit_rows():
+                if budget <= 0:
+                    break
+                _take(self._route_exit_row(row))
 
         # --- Lottery (0DTE convex calls) ---
         if lottery and budget > 0:
@@ -1035,10 +1496,7 @@ class AutoTrader:
             for row in self._flatten_when_signal_leaves(now):
                 if budget <= 0:
                     break
-                right = str(row.get("right") or "C").upper()
-                if right not in {"C", "P"}:
-                    right = "C"
-                _take(self._route_sell(desk="golden_exit", row=row, right=right))
+                _take(self._route_exit_row(row))
 
         # Retry 429s after exits so a flatten can cancel a deferred id first.
         # The same client_order_id is submitted again. Nothing is sent outside

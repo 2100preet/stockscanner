@@ -10,7 +10,7 @@ Every ENTER should publish an EXIT plan (TP / SL / clock / soft wall).
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -193,6 +193,26 @@ def expiry_is_today(expiry: str | None, now: datetime | None = None) -> bool:
     if exp is None:
         return False
     return exp == _et_now(now).date()
+
+
+def trading_dte(expiry: str | None, now: datetime | None = None) -> int | None:
+    """Weekday sessions from today ET through expiry.
+
+    0 is same-day. 1 is the next session, including Friday into Monday.
+    """
+    exp = parse_expiry_date(expiry)
+    if exp is None:
+        return None
+    today = _et_now(now).date()
+    if exp <= today:
+        return 0 if exp == today else -1
+    days = 0
+    cursor = today
+    while cursor < exp and days < 40:
+        cursor += timedelta(days=1)
+        if cursor.weekday() < 5:
+            days += 1
+    return days
 
 
 def days_held(entered_at: str | None, now: datetime | None = None) -> float | None:
