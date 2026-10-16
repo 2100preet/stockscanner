@@ -83,8 +83,13 @@ def atomic_write_text(path: str | Path, text: str) -> None:
             json.loads(previous)
         except Exception:  # noqa: BLE001
             previous = None
-        if previous is not None and previous != text:
-            _replace_text(dest.with_name(dest.name + ".bak"), previous)
+        # Skip the extra copy when the previous file is a large scan/snapshot.
+        # A full volume must still be able to replace the live ledger.
+        if previous is not None and previous != text and len(previous) <= 1_500_000:
+            try:
+                _replace_text(dest.with_name(dest.name + ".bak"), previous)
+            except OSError as exc:
+                logger.warning("state bak skipped %s: %s", dest.name, exc)
     _replace_text(dest, text)
 
 
@@ -288,12 +293,10 @@ def load_json_state(path: str | Path) -> Any | None:
 
 
 def _backup_corrupt(path: Path, text: str) -> None:
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    dest = path.with_name(f"{path.name}.corrupt-{stamp}")
-    suffix = 0
-    while dest.exists():
-        suffix += 1
-        dest = path.with_name(f"{path.name}.corrupt-{stamp}-{suffix}")
+    """Keep one raw copy. A new file on every poll filled the Fly volume."""
+    dest = path.with_name(path.name + ".corrupt")
+    if dest.exists():
+        return
     try:
         _replace_text(dest, text)
     except OSError as exc:

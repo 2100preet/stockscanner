@@ -78,10 +78,53 @@ def test_load_backs_up_and_rewrites_a_corrupt_journal(tmp_path: Path):
     symbols = [trade.symbol for trade in journal.book.trades]
     assert symbols == ["NVDA", "AMD"]
     assert json.loads(path.read_text(encoding="utf-8"))["trades"][0]["symbol"] == "NVDA"
-    backups = list(tmp_path.glob("signal_journal.json.corrupt-*"))
-    assert len(backups) == 1
-    assert "NVDA" in backups[0].read_text(encoding="utf-8")
+    backup = tmp_path / "signal_journal.json.corrupt"
+    assert backup.is_file()
+    assert "NVDA" in backup.read_text(encoding="utf-8")
+    SignalJournal(path, starting_cash=5000)
+    assert list(tmp_path.glob("signal_journal.json.corrupt*")) == [backup]
     assert not list(tmp_path.glob(".*.tmp"))
+
+
+def test_journal_save_skips_a_full_disk(tmp_path: Path, monkeypatch):
+    path = tmp_path / "signal_journal.json"
+    journal = SignalJournal(path, starting_cash=5000)
+    journal.save()
+
+    def fail_replace(_src, _dst):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(os, "replace", fail_replace)
+    journal.save()
+    assert json.loads(path.read_text(encoding="utf-8"))["starting_cash"] == 5000
+
+
+def test_disk_cleanup_keeps_ledgers_and_drops_caches(tmp_path: Path, monkeypatch):
+    from odte_scanner import ui
+
+    out = tmp_path / "outputs"
+    (out / "watch").mkdir(parents=True)
+    (out / "option_chain_cache").mkdir()
+    (out / "scan_20261016.json").write_text("{}", encoding="utf-8")
+    (out / "latest_scan.json").write_text('{"scores":[{"symbol":"NVDA"}]}', encoding="utf-8")
+    (out / "signal_journal.json").write_text('{"trades":[]}', encoding="utf-8")
+    (out / "signal_journal.json.corrupt").write_text("{", encoding="utf-8")
+    (out / "signal_journal.json.corrupt-20261016T000000Z").write_text("{", encoding="utf-8")
+    (out / "watch" / "watch_20261016.json").write_text("{}", encoding="utf-8")
+    (out / "watch" / "latest_watch.json").write_text("{}", encoding="utf-8")
+    (out / "watch" / "watch_state.json").write_text("{}", encoding="utf-8")
+    (out / "option_chain_cache" / "NVDA.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(ui, "ROOT", tmp_path)
+    ui._free_desk_disk()
+    assert not (out / "scan_20261016.json").exists()
+    assert not (out / "watch" / "watch_20261016.json").exists()
+    assert not (out / "option_chain_cache" / "NVDA.json").exists()
+    assert not (out / "signal_journal.json.corrupt-20261016T000000Z").exists()
+    assert (out / "latest_scan.json").is_file()
+    assert (out / "signal_journal.json").is_file()
+    assert (out / "signal_journal.json.corrupt").is_file()
+    assert (out / "watch" / "latest_watch.json").is_file()
+    assert (out / "watch" / "watch_state.json").is_file()
 
 
 def test_unrepairable_state_falls_back_to_bak(tmp_path: Path):
@@ -92,7 +135,7 @@ def test_unrepairable_state_falls_back_to_bak(tmp_path: Path):
     loaded = load_json_state(path)
     assert loaded["orders"][0]["contract"] == "NVDA"
     assert json.loads(path.read_text(encoding="utf-8"))["orders"][0]["contract"] == "NVDA"
-    assert list(tmp_path.glob("webull_orders.json.corrupt-*"))
+    assert (tmp_path / "webull_orders.json.corrupt").is_file()
 
 
 def test_atomic_write_keeps_the_previous_file_when_replace_fails(tmp_path: Path, monkeypatch):

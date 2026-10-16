@@ -179,7 +179,10 @@ class SignalJournal:
     def save(self) -> None:
         from odte_scanner.json_util import atomic_write_text, dumps_strict
 
-        atomic_write_text(self.path, dumps_strict(self.book.to_dict(), indent=2, default=str))
+        try:
+            atomic_write_text(self.path, dumps_strict(self.book.to_dict(), indent=2, default=str))
+        except OSError as exc:
+            logger.warning("journal save skipped: %s", exc)
 
     def open_symbols(self) -> set[str]:
         return {t.symbol for t in self.book.trades if t.status == "open"}

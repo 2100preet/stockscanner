@@ -4381,6 +4381,39 @@ def _read_json(path: Path) -> dict | list | None:
         return None
 
 
+def _free_desk_disk() -> None:
+    """Drop regenerable outputs so a full volume can still save ledgers.
+
+    Stamped scans, watch dumps, option-chain caches, and ladder caches are
+    rebuilt by the desk. Ledgers, the latest scan, and the single ``.corrupt``
+    backup of a torn file stay on disk.
+    """
+    out = ROOT / "outputs"
+    if not out.is_dir():
+        return
+    patterns = (
+        "scan_*.json",
+        "ml6_scan_*.json",
+        "watch/watch_[0-9]*.json",
+        "option_chain_cache/*.json",
+        "option_chain_cache/**/*.json",
+        "echo_ladders/*.json",
+        "echo_ladders/**/*.json",
+        "*.corrupt-*",
+        "watch/*.corrupt-*",
+    )
+    for pattern in patterns:
+        for path in out.glob(pattern):
+            if not path.is_file():
+                continue
+            if path.name in {"watch_state.json", "latest_watch.json"}:
+                continue
+            try:
+                path.unlink()
+            except OSError as exc:
+                logger.warning("disk cleanup skipped %s: %s", path.name, exc)
+
+
 def _snapshot_offline() -> bool:
     """Disk-only snapshot for GitHub Pages export (no live Yahoo fan-out)."""
     if os.environ.get("SIGNAL_DESK_OFFLINE", "").strip().lower() in {"1", "true", "yes", "on"}:
@@ -4585,6 +4618,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 return jsonify(cached)
 
             def _build_snapshot_payload():
+                _free_desk_disk()
                 from odte_scanner.calendars import resolve_yahoo_symbol
                 from odte_scanner.data.live_quotes import fetch_live_quote
                 from odte_scanner.options.live_chain import refresh_candidate_quote
