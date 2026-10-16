@@ -5,9 +5,11 @@ Default (golden_only):
 
 Gold cards are entries. Exits come from open sandbox longs: a live premium
 (bid or mark versus entry/cost) that crosses the book TP/SL, a journal or
-desk SELL for that contract, or the 15:45 ET flatten. The signal card does
-not have to stay gold on the board, and the sell does not have to match an
-open golden order.
+desk SELL for that contract, or the 15:45 ET flatten. A lot opened with
+enough contracts scales out in steps and trails the runner. A 1-lot and a
+same-day expiry still leave in full at TP, SL, or the 15:45 flatten. The
+signal card does not have to stay gold, and the sell does not have to match
+an open golden order.
 
 Other desks stay on the board and are not staged. SOLID sure winners and
 unusual-flow prints (including Flow-desk Golden) are included in that exclusion.
@@ -29,7 +31,7 @@ import re
 from datetime import datetime
 from typing import Any
 
-from odte_scanner.signals.exit_rules import DEFAULT_EXIT_RULES
+from odte_scanner.signals.exit_rules import DEFAULT_EXIT_RULES, ScaleOut, plan_premium_exit
 from odte_scanner.signals.hold_rules import (
     BEFORE_OPEN_REASON,
     entry_block_reason,
@@ -60,6 +62,21 @@ def _i(v: Any) -> int | None:
         return int(v)
     except (TypeError, ValueError):
         return None
+
+
+def paper_risk_kwargs(live: dict | None, risk: dict | None = None) -> dict[str, Any]:
+    """Size kwargs for the paper books. Missing risk leaves the 1-lot default."""
+    live = live or {}
+    raw = live.get("max_risk_per_trade_usd")
+    if raw is None and isinstance(risk, dict):
+        raw = risk.get("max_risk_per_trade_usd")
+    sw = _i(live.get("sure_winner_max_contracts"))
+    ch = _i(live.get("challenge_max_contracts"))
+    return {
+        "max_risk_per_trade_usd": _f(raw),
+        "sure_winner_max_contracts": 3 if sw is None else max(1, sw),
+        "challenge_max_contracts": 2 if ch is None else max(1, ch),
+    }
 
 
 def clears_perfect_hist_win(
@@ -239,6 +256,9 @@ class AutoTrader:
         close_legacy_positions: bool = False,
         second_desk: str = "challenge",
         exit_rules: dict | None = None,
+        max_risk_per_trade_usd: float | None = None,
+        sure_winner_max_contracts: int = 3,
+        challenge_max_contracts: int = 2,
     ):
         self.broker = broker
         self.require_perfect_hist = bool(require_perfect_hist)
@@ -268,6 +288,13 @@ class AutoTrader:
             merged.update(desks)
         self.desks = merged
         self.max_contracts = max(1, int(max_contracts))
+        # None keeps every desk on max_contracts. A cap raises Sure Winner and
+        # Challenge only, and only as far as the premium still fits.
+        self.max_risk_per_trade_usd = (
+            None if max_risk_per_trade_usd is None else float(max_risk_per_trade_usd)
+        )
+        self.sure_winner_max_contracts = max(1, int(sure_winner_max_contracts))
+        self.challenge_max_contracts = max(1, int(challenge_max_contracts))
         self.max_orders_per_sync = max(1, int(max_orders_per_sync))
         # Separate from the HTTP budget so sells/cancels still run when buys are capped.
         self.max_golden_buys_per_sync = max(0, int(max_golden_buys_per_sync))
@@ -706,6 +733,88 @@ class AutoTrader:
             return None
         return float(rule.take_profit_pct), abs(float(rule.stop_loss_pct))
 
+    def _scale_for_lot(
+        self,
+        desk: str,
+        order: WebullOrderIntent | None,
+        take_profit_pct: float,
+        stop_loss_pct: float,
+    ) -> ScaleOut | None:
+        """Ladder for this lot. +50/−50 uses the RIP steps on either book.
+
+        Any other stamped plan keeps a single full exit unless those percents
+        are the desk default (Sure Winner +80/−50, Challenge +100/−50).
+        """
+        rules = self.exit_rules or DEFAULT_EXIT_RULES
+        tp = float(take_profit_pct)
+        sl = abs(float(stop_loss_pct))
+        if abs(tp - 50.0) <= 0.51 and abs(sl - 50.0) <= 0.51:
+            rip = rules.get("rip") or DEFAULT_EXIT_RULES["rip"]
+            return rip.scale_out
+        key = "challenge" if desk in {self.second_desk, "challenge"} else "sure_winner"
+        if order is not None and str(order.desk or "") == "rip":
+            key = "rip"
+        # The RIP +30/−50 study rule is a full exit. Its ladder is the +50/−50 case above.
+        if key == "rip":
+            return None
+        rule = rules.get(key) or DEFAULT_EXIT_RULES.get(key) or DEFAULT_EXIT_RULES["sure_winner"]
+        if abs(tp - float(rule.take_profit_pct)) > 0.51 or abs(sl - abs(float(rule.stop_loss_pct))) > 0.51:
+            return None
+        return rule.scale_out
+
+    def _original_qty(self, order: WebullOrderIntent, held: int) -> int:
+        stamped = _i((order.meta or {}).get("original_qty"))
+        if stamped is not None and stamped >= 1:
+            return stamped
+        qty = _i(order.quantity)
+        if qty is not None and qty >= 1:
+            return qty
+        return max(1, held)
+
+    def _note_scale_mark(
+        self,
+        order: WebullOrderIntent,
+        peak: float,
+        trail_armed: bool,
+    ) -> None:
+        """Remember the premium high on the buy so the next sync can trail."""
+        meta = order.meta
+        changed = False
+        prev = _f(meta.get("peak_mark"))
+        if prev is None or float(peak) > prev + 1e-9:
+            meta["peak_mark"] = float(peak)
+            changed = True
+        if trail_armed and not meta.get("trail_armed"):
+            meta["trail_armed"] = True
+            changed = True
+        if changed:
+            self.broker.save()
+
+    def _commit_scale_exit(self, order: WebullOrderIntent, row: dict[str, Any]) -> None:
+        """Record rungs only after the sell is actually staged."""
+        if row.get("sell_qty") is None and not row.get("scale_rungs"):
+            return
+        done = [int(x) for x in (order.meta.get("scale_rungs_done") or [])]
+        for rung in row.get("scale_rungs") or []:
+            try:
+                number = int(rung)
+            except (TypeError, ValueError):
+                continue
+            if number not in done:
+                done.append(number)
+        if row.get("scale_rungs"):
+            order.meta["scale_rungs_done"] = done
+        peak = _f(row.get("peak_mark"))
+        prev = _f(order.meta.get("peak_mark"))
+        if peak is not None and (prev is None or peak > prev):
+            order.meta["peak_mark"] = peak
+        if row.get("trail_armed"):
+            order.meta["trail_armed"] = True
+        original = _i(row.get("scale_original_qty"))
+        if original is not None and original >= 1 and not order.meta.get("original_qty"):
+            order.meta["original_qty"] = original
+        self.broker.save()
+
     def _stamp_exit_plans(self, challenge: dict[str, Any] | None) -> None:
         """Keep RIP / challenge percents on the buy after the ticket leaves the board."""
         if not isinstance(challenge, dict):
@@ -753,6 +862,11 @@ class AutoTrader:
         bid: float | None,
         detail: str,
         exit_desk: str,
+        sell_qty: int | None = None,
+        scale_rungs: tuple[int, ...] | list[int] | None = None,
+        peak_mark: float | None = None,
+        trail_armed: bool = False,
+        scale_original_qty: int | None = None,
     ) -> dict[str, Any]:
         row: dict[str, Any] = {
             "symbol": symbol,
@@ -766,6 +880,16 @@ class AutoTrader:
         }
         if bid is not None and bid > 0:
             row["bid"] = bid
+        if sell_qty is not None and int(sell_qty) >= 1:
+            row["sell_qty"] = int(sell_qty)
+        if scale_rungs:
+            row["scale_rungs"] = [int(rung) for rung in scale_rungs]
+        if peak_mark is not None:
+            row["peak_mark"] = float(peak_mark)
+        if trail_armed:
+            row["trail_armed"] = True
+        if scale_original_qty is not None and int(scale_original_qty) >= 1:
+            row["scale_original_qty"] = int(scale_original_qty)
         return row
 
     def _premium_exit_rows(self) -> list[dict[str, Any]]:
@@ -800,22 +924,52 @@ class AutoTrader:
             if thresholds is None:
                 return
             tp, sl = thresholds
-            pct = (mark - entry) / entry * 100.0
-            # Compare premiums, not a rounded percent, so +80% of $1.00 (1.80)
-            # still crosses when binary floats land a hair under the ratio.
-            target = entry * (1.0 + float(tp) / 100.0)
-            stop = entry * (1.0 - abs(float(sl)) / 100.0)
-            if mark + 1e-4 >= target:
-                detail = f"take profit {pct:+.0f}% ≥ +{tp:.0f}%"
-            elif mark <= stop + 1e-4:
-                detail = f"stop loss {pct:+.0f}% ≤ −{abs(sl):.0f}%"
+            if order is not None:
+                held = int(self._held_qty(order) + 1e-9)
             else:
+                held = int(float((pos or {}).get("quantity") or 0) + 1e-9)
+            if held < 1:
+                return
+            expiry = (order.expiry if order is not None else None) or (pos or {}).get("expiry")
+            same_day = expiry_is_today(expiry, self._now)
+            # Partials need the buy row so the next sync remembers which rungs
+            # already sold. A position with no ledger buy still full-exits.
+            scale = None
+            original = held
+            rungs_done: set[int] = set()
+            peak_mark = None
+            if order is not None:
+                original = self._original_qty(order, held)
+                if not same_day:
+                    scale = self._scale_for_lot(desk, order, tp, sl)
+                for rung in (order.meta or {}).get("scale_rungs_done") or []:
+                    number = _i(rung)
+                    if number is not None:
+                        rungs_done.add(number)
+                peak_mark = _f((order.meta or {}).get("peak_mark"))
+            decision = plan_premium_exit(
+                entry=entry,
+                mark=mark,
+                held=held,
+                original=original,
+                take_profit_pct=tp,
+                stop_loss_pct=sl,
+                scale=scale,
+                same_day=same_day,
+                rungs_done=rungs_done,
+                peak_mark=peak_mark,
+            )
+            if decision is None:
+                return
+            if order is not None and decision.peak_mark is not None:
+                self._note_scale_mark(order, decision.peak_mark, decision.trail_armed)
+            if decision.quantity < 1:
                 return
             probe = {
                 "symbol": (order.symbol if order is not None else None) or (pos or {}).get("symbol"),
                 "right": (order.right if order is not None else None) or (pos or {}).get("right") or "C",
                 "contract": contract or None,
-                "expiry": (order.expiry if order is not None else None) or (pos or {}).get("expiry"),
+                "expiry": expiry,
                 "strike": order.strike if order is not None and order.strike is not None else (pos or {}).get("strike"),
             }
             if self._sell_already_working(probe, str(probe["right"] or "C")):
@@ -823,6 +977,7 @@ class AutoTrader:
             if contract:
                 seen.add(contract)
             exit_desk = self.second_desk if desk == self.second_desk else "golden_exit"
+            scaled = decision.peak_mark is not None
             rows.append(
                 self._exit_row_for_lot(
                     symbol=str(probe["symbol"] or ""),
@@ -831,8 +986,13 @@ class AutoTrader:
                     expiry=str(probe["expiry"] or "") or None,
                     strike=_f(probe["strike"]),
                     bid=mark,
-                    detail=detail,
+                    detail=decision.detail,
                     exit_desk=exit_desk,
+                    sell_qty=decision.quantity if scaled else None,
+                    scale_rungs=decision.new_rungs if scaled else None,
+                    peak_mark=decision.peak_mark if scaled else None,
+                    trail_armed=decision.trail_armed if scaled else False,
+                    scale_original_qty=original if scaled else None,
                 )
             )
 
@@ -1009,6 +1169,40 @@ class AutoTrader:
             }
         )
 
+    def _paper_entry_qty(
+        self,
+        row: dict[str, Any],
+        desk: str,
+        second: bool,
+        limit_price: float | None,
+    ) -> int:
+        """Contracts for a new paper buy.
+
+        With no risk cap, every desk stays on ``max_contracts`` (the 1-lot
+        default). A cap raises Sure Winner to 3 and Challenge to 2 when the
+        next contract still fits. Lottery and the other desks stay put.
+        Same-day expiry stays 1 contract and flattens on the clock.
+        """
+        if self.max_risk_per_trade_usd is None:
+            return self.max_contracts
+        desk_l = str(desk or "").lower()
+        if second or desk_l in {self.second_desk, "challenge"}:
+            cap = self.challenge_max_contracts
+        elif desk_l == "sure_winner":
+            cap = self.sure_winner_max_contracts
+        else:
+            return self.max_contracts
+        if expiry_is_today(row.get("expiry"), self._now):
+            return 1
+        premium = _f(limit_price)
+        if premium is None or premium <= 0:
+            return 1
+        risk = float(self.max_risk_per_trade_usd)
+        qty = 1
+        while qty < cap and (qty + 1) * premium * 100.0 <= risk + 1e-6:
+            qty += 1
+        return qty
+
     def _route_buy(
         self,
         *,
@@ -1069,6 +1263,9 @@ class AutoTrader:
         if self._already_open(sym, desk, right, contract_id or None):
             return None
 
+        limit_for_size = _f(row.get(price_key) or row.get("ask") or row.get("mid") or row.get("mark"))
+        quantity = self._paper_entry_qty(row, desk, second, limit_for_size)
+
         ok, why = (True, "gate off")
         if self.golden_only and kind:
             ok, why = True, f"golden gate: {kind}"
@@ -1089,7 +1286,7 @@ class AutoTrader:
                 contract=str(row.get("contract") or "") or None,
                 expiry=str(row.get("expiry") or "") or None,
                 strike=_f(row.get("strike")),
-                quantity=self.max_contracts,
+                quantity=quantity,
                 limit_price=_f(row.get(price_key) or row.get("ask") or row.get("mark")),
                 reason=str(row.get("detail") or row.get("headline") or row.get("thesis") or ""),
                 hist_win_pct=_f(row.get("hist_win_pct") if row.get("hist_win_pct") is not None else row.get("win_pct")),
@@ -1110,7 +1307,7 @@ class AutoTrader:
             contract=str(row.get("contract") or "") or None,
             expiry=str(row.get("expiry") or "") or None,
             strike=_f(row.get("strike")),
-            quantity=self.max_contracts,
+            quantity=quantity,
             limit_price=_f(row.get(price_key) or row.get("ask") or row.get("mid") or row.get("mark")),
             reason=str(row.get("detail") or row.get("headline") or row.get("thesis") or why),
             hist_win_pct=_f(row.get("hist_win_pct") if row.get("hist_win_pct") is not None else row.get("win_pct")),
@@ -1119,6 +1316,7 @@ class AutoTrader:
                 "gate": "passed",
                 "gate_reason": why,
                 "golden_kind": kind,
+                "original_qty": quantity,
                 **({"account_id": str(self.broker.account_id_2)} if second else {}),
                 **self._exit_plan_meta(row),
             },
@@ -1260,6 +1458,9 @@ class AutoTrader:
                 quantity = max(1, int(held))
                 sym = str((position or {}).get("symbol") or sym)
                 exit_kind = "position_exit"
+            requested = _i(row.get("sell_qty"))
+            if requested is not None and requested >= 1:
+                quantity = max(1, min(int(quantity), int(requested)))
             if not second:
                 desk = "golden_exit"
         elif not self.desks.get(desk, False):
@@ -1291,6 +1492,8 @@ class AutoTrader:
                 "golden_kind": None if second else (exit_kind or ("golden_exit" if self.golden_only else kind)),
                 "limit_source": limit_source,
                 "closes_order_id": opened.id if opened is not None else None,
+                **({"sell_qty": int(row["sell_qty"])} if row.get("sell_qty") is not None else {}),
+                **({"scale_rungs": list(row.get("scale_rungs") or [])} if row.get("scale_rungs") else {}),
                 **({"account_id": account_id} if account_id else {}),
             },
         )
@@ -1302,12 +1505,24 @@ class AutoTrader:
             self.broker.save()
             return intent
         sold = self.broker.submit(intent)
+        # A partial *entry* still has a resting buy. Scaling a full entry down
+        # also leaves the ledger buy marked partial (position qty < original).
+        # That runner has to stay open, so only cancel when this sell is the
+        # whole remaining lot and it is not a scale slice.
+        closes_all = True
+        if opened is not None:
+            still_held = self._held_qty(opened)
+            closes_all = int(quantity) + 1e-9 >= still_held
         if (
             opened is not None
             and opened.status == "partial"
             and sold.status in {"dry_run", "submitted", "staged"}
+            and closes_all
+            and row.get("sell_qty") is None
         ):
             self.broker.cancel(opened)
+        if opened is not None and sold.status in {"dry_run", "submitted", "staged", "filled", "partial"}:
+            self._commit_scale_exit(opened, row)
         return sold
 
     def _cancel_unfilled_at_cutoff(self) -> None:

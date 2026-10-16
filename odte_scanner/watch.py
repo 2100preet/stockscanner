@@ -192,7 +192,7 @@ def run_watch(
                     lt = cfg.get("live_trading") or {}
                     if bool(lt.get("auto_sync", True)):
                         from odte_scanner.live_desk import resolve_webull_live_flags
-                        from odte_scanner.trading.auto_trader import AutoTrader
+                        from odte_scanner.trading.auto_trader import AutoTrader, paper_risk_kwargs
                         from odte_scanner.trading.webull import WebullBroker
 
                         flags = resolve_webull_live_flags(lt)
@@ -222,6 +222,7 @@ def run_watch(
                             close_legacy_positions=bool(lt.get("close_legacy_positions", False)),
                             second_desk=str(lt.get("second_desk") or "challenge"),
                             exit_rules=_exit_rules,
+                            **paper_risk_kwargs(lt, cfg.get("risk") or {}),
                         )
                         sure_rows = None
                         try:

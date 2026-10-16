@@ -614,6 +614,12 @@ live_trading:
   min_hist_win_pct: 100
   min_hist_win_samples: 3
   max_contracts: 1
+  # Paper size above 1 lot only when this cap still fits the premium.
+  # Sure Winner may go to 3, Challenge to 2. Lottery stays on max_contracts.
+  # 0DTE stays 1 contract. Leave this unset to keep every desk at max_contracts.
+  max_risk_per_trade_usd: 250
+  sure_winner_max_contracts: 3
+  challenge_max_contracts: 2
   max_orders_per_sync: 3
   # Sandbox order calls share one client and wait at least this long between them.
   # Webull paper returns HTTP 429 when golden buys land ~100ms apart.
@@ -628,6 +634,15 @@ live_trading:
       mode: premium
       take_profit_pct: 80
       stop_loss_pct: 50
+      # +40% sell 40% of original N, +80% sell 40%, trail the rest −25% from the peak.
+      # Below min_contracts, or a same-day expiry, the full +80/−50 exit still runs.
+      scale_out:
+        min_contracts: 3
+        trail_giveback_pct: 25
+        trail_after_pct: 80
+        steps:
+          - {at_pct: 40, sell_pct: 40}
+          - {at_pct: 80, sell_pct: 40}
     odte:
       mode: eod
       take_profit_pct: 80
@@ -648,10 +663,25 @@ live_trading:
       mode: premium
       take_profit_pct: 100
       stop_loss_pct: 50
+      # +40% sell 50%, +100% sell 30%, trail the rest −20% from the peak.
+      scale_out:
+        min_contracts: 2
+        trail_giveback_pct: 20
+        trail_after_pct: 100
+        steps:
+          - {at_pct: 40, sell_pct: 50}
+          - {at_pct: 100, sell_pct: 30}
     rip:
       mode: premium
       take_profit_pct: 30
       stop_loss_pct: 50
+      # Used when a ticket is stamped +50/−50. +30% sell 50%, +50% sell 30%.
+      # No trail: the runner waits for −50% or the 15:45 flatten.
+      scale_out:
+        min_contracts: 2
+        steps:
+          - {at_pct: 30, sell_pct: 50}
+          - {at_pct: 50, sell_pct: 30}
   desks:
     lottery: true         # 0DTE/1DTE convex BUY/SELL NOW
     odte: true
