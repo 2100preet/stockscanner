@@ -15,19 +15,31 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def build_offline_snapshot(config_path: str | None = None) -> dict[str, Any]:
-    """Build the same offline desk snapshot Pages uses (Tradier marks when configured)."""
+    """Build the same offline desk snapshot Pages uses (Tradier marks when configured).
+
+    The offline flag is request-scoped. Leaving it set on the process made the
+    live Fly host stamp every board ``host=github-pages``, which the TTL cache
+    refuses, so every UI poll rebuilt under the snapshot lock.
+    """
     from odte_scanner.ui import create_app
 
+    previous = os.environ.get("SIGNAL_DESK_OFFLINE")
     os.environ["SIGNAL_DESK_OFFLINE"] = "1"
-    app = create_app(config_path)
-    with app.test_client() as client:
-        res = client.get("/api/snapshot?offline=1")
-        if res.status_code != 200:
-            raise RuntimeError(f"snapshot pulse failed: HTTP {res.status_code} {res.data[:500]!r}")
-        payload = res.get_json()
-        if not isinstance(payload, dict):
-            raise RuntimeError("snapshot pulse returned non-JSON object")
-    return payload
+    try:
+        app = create_app(config_path)
+        with app.test_client() as client:
+            res = client.get("/api/snapshot?offline=1")
+            if res.status_code != 200:
+                raise RuntimeError(f"snapshot pulse failed: HTTP {res.status_code} {res.data[:500]!r}")
+            payload = res.get_json()
+            if not isinstance(payload, dict):
+                raise RuntimeError("snapshot pulse returned non-JSON object")
+        return payload
+    finally:
+        if previous is None:
+            os.environ.pop("SIGNAL_DESK_OFFLINE", None)
+        else:
+            os.environ["SIGNAL_DESK_OFFLINE"] = previous
 
 
 def pulse_desk_alerts(

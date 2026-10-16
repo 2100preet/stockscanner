@@ -3,6 +3,10 @@ from __future__ import annotations
 
 import json
 import math
+from dataclasses import asdict, is_dataclass
+from datetime import date, datetime
+from enum import Enum
+from pathlib import Path
 from typing import Any
 
 
@@ -20,11 +24,26 @@ def finite_float(value: Any, default: float | None = None) -> float | None:
 
 
 def sanitize_for_json(obj: Any) -> Any:
-    """Recursively replace NaN/Inf with None so dumps are browser-safe."""
+    """Recursively replace NaN/Inf and non-JSON values so a snapshot can be encoded."""
+    if obj is None or isinstance(obj, (str, int, bool)):
+        return obj
     if isinstance(obj, float):
         if math.isnan(obj) or math.isinf(obj):
             return None
         return obj
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    if isinstance(obj, Path):
+        return str(obj)
+    if isinstance(obj, Enum):
+        return sanitize_for_json(obj.value)
+    if isinstance(obj, (set, frozenset)):
+        return [sanitize_for_json(v) for v in obj]
+    if is_dataclass(obj) and not isinstance(obj, type):
+        try:
+            return sanitize_for_json(asdict(obj))
+        except Exception:  # noqa: BLE001
+            return str(obj)
     # numpy / pandas scalars
     if hasattr(obj, "item") and callable(obj.item):
         try:
@@ -32,7 +51,7 @@ def sanitize_for_json(obj: Any) -> Any:
         except Exception:  # noqa: BLE001
             return None
     if isinstance(obj, dict):
-        return {k: sanitize_for_json(v) for k, v in obj.items()}
+        return {str(k): sanitize_for_json(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
         return [sanitize_for_json(v) for v in obj]
     return obj

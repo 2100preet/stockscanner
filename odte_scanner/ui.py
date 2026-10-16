@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -4435,6 +4436,53 @@ def _prioritize_action_board_rows(
     return out
 
 
+def _public_snapshot_error(exc: BaseException) -> str:
+    """Short error for the client. Query secrets are not echoed."""
+    text = f"{type(exc).__name__}: {exc}"
+    text = re.sub(
+        r"(?i)((?:api[_-]?key|secret|token|password|authorization)(['\"]?\s*[:=]\s*['\"]?))([^\s,'\"]+)",
+        r"\1***",
+        text,
+    )
+    return text[:240]
+
+
+def _partial_snapshot(note: str) -> dict:
+    """A board the UI can paint when the rebuild failed and nothing is cached."""
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "host": "live",
+        "offline": False,
+        "scores": [],
+        "actions": {
+            "all": [],
+            "buy_now": [],
+            "sell_now": [],
+            "hold": [],
+            "wait": [],
+            "counts": {},
+            "hold_rules": {},
+        },
+        "sure_winners": {"winners": [], "buy_now": [], "counts": {}},
+        "lottery": {"buy_now": [], "sell_now": [], "counts": {}},
+        "challenge": {"tickets": [], "entry": [], "exit": []},
+        "horizons": {},
+        "action_cards": {},
+        "webull": {},
+        "snapshot_degraded": True,
+        "snapshot_error": (note or "snapshot unavailable")[:240],
+    }
+
+
+def _annotate_snapshot(body: dict, note: str | None) -> dict:
+    if not note:
+        return body
+    out = dict(body)
+    out["snapshot_degraded"] = True
+    out["snapshot_error"] = note[:240]
+    return out
+
+
 def create_app(config_path: str | None = None) -> Flask:
     cfg_path = str(config_path or ROOT / "config.yaml")
     cfg = load_config(cfg_path)
@@ -4444,6 +4492,7 @@ def create_app(config_path: str | None = None) -> Flask:
     risk = cfg.get("risk") or {}
     # Single-flight + short TTL — UI polls ~15s; a 60s snapshot must not pile up.
     _snap_gate = threading.Lock()
+    app.snap_gate = _snap_gate
     _snap_memo: dict = {"body": None, "t": 0.0}
 
     @app.get("/")
@@ -4510,16 +4559,21 @@ def create_app(config_path: str | None = None) -> Flask:
         if (not force) and cached is not None and age < ttl and not stale_shape:
             return jsonify(cached)
 
+        wait_sec = float(os.environ.get("SNAPSHOT_LOCK_WAIT_SEC") or "8")
         got_lock = _snap_gate.acquire(blocking=False)
         if not got_lock:
-            # Never block the browser — return last good board (even if a bit stale)
+            # Never block the browser — return last good board (even if a bit stale).
+            # A Pages-shaped or older board is still better than HTTP 503.
             if cached is not None and age < soft_ttl:
                 return jsonify(cached)
-            got_lock = _snap_gate.acquire(timeout=8)
+            got_lock = _snap_gate.acquire(timeout=max(0.0, wait_sec))
             if not got_lock:
-                if cached is not None:
+                fresh = _snap_memo.get("body")
+                if isinstance(fresh, dict):
+                    return jsonify(fresh)
+                if isinstance(cached, dict):
                     return jsonify(cached)
-                return jsonify({"error": "snapshot busy", "scores": [], "actions": {}}), 503
+                return jsonify(_partial_snapshot("snapshot busy"))
         try:
             cached = _snap_memo.get("body")
             cached_t = float(_snap_memo.get("t") or 0.0)
@@ -7261,7 +7315,17 @@ def create_app(config_path: str | None = None) -> Flask:
                         }
                     )
 
-            payload = _build_snapshot_payload()
+            try:
+                payload = sanitize_for_json(_build_snapshot_payload())
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("snapshot build failed")
+                note = _public_snapshot_error(exc)
+                fresh = _snap_memo.get("body")
+                if isinstance(fresh, dict):
+                    return jsonify(_annotate_snapshot(fresh, note))
+                return jsonify(_partial_snapshot(note))
+            if not isinstance(payload, dict):
+                payload = _partial_snapshot("snapshot payload was not an object")
             _snap_memo["body"] = payload
             _snap_memo["t"] = time.time()
             try:
@@ -7270,7 +7334,11 @@ def create_app(config_path: str | None = None) -> Flask:
                 outp.write_text(dumps_strict(payload, indent=2, default=str))
             except Exception:
                 pass
-            return jsonify(payload)
+            try:
+                return jsonify(payload)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("snapshot encode failed")
+                return jsonify(_partial_snapshot(_public_snapshot_error(exc)))
         finally:
             _snap_gate.release()
 
