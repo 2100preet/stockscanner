@@ -145,8 +145,10 @@ class SignalJournal:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.starting_cash = starting_cash
-        if self.path.exists():
-            raw = json.loads(self.path.read_text())
+        from odte_scanner.json_util import load_json_state
+
+        raw = load_json_state(self.path)
+        if isinstance(raw, dict):
             known = {f.name for f in fields(JournalTrade)}
             trades: list[JournalTrade] = []
             for t in raw.get("trades") or []:
@@ -175,9 +177,9 @@ class SignalJournal:
             self.book = TradeJournal(starting_cash=starting_cash, cash=starting_cash)
 
     def save(self) -> None:
-        from odte_scanner.json_util import dumps_strict
+        from odte_scanner.json_util import atomic_write_text, dumps_strict
 
-        self.path.write_text(dumps_strict(self.book.to_dict(), indent=2, default=str))
+        atomic_write_text(self.path, dumps_strict(self.book.to_dict(), indent=2, default=str))
 
     def open_symbols(self) -> set[str]:
         return {t.symbol for t in self.book.trades if t.status == "open"}

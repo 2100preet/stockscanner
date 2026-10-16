@@ -253,13 +253,15 @@ def run_watch(
             except Exception as exc:  # noqa: BLE001
                 logger.debug("journal sync skipped: %s", exc)
 
+        from odte_scanner.json_util import atomic_write_text
+
         snapshot["finished_at"] = datetime.now(timezone.utc).isoformat()
         latest = out_dir / "latest_watch.json"
-        latest.write_text(json.dumps(snapshot, indent=2))
-        (out_dir / f"watch_{started.strftime('%Y%m%d_%H%M%S')}.json").write_text(
-            json.dumps(snapshot, indent=2)
-        )
-        state_path.write_text(
+        body = json.dumps(snapshot, indent=2)
+        atomic_write_text(latest, body)
+        atomic_write_text(out_dir / f"watch_{started.strftime('%Y%m%d_%H%M%S')}.json", body)
+        atomic_write_text(
+            state_path,
             json.dumps(
                 {
                     "seen_alerts": sorted(seen_alerts)[-500:],

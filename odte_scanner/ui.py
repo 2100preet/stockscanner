@@ -14,7 +14,7 @@ from pathlib import Path
 from flask import Flask, jsonify, render_template_string, request
 
 from odte_scanner.config import load_config
-from odte_scanner.json_util import dumps_strict, sanitize_for_json
+from odte_scanner.json_util import atomic_write_text, dumps_strict, sanitize_for_json
 from odte_scanner.signals.actions import build_action_board
 from odte_scanner.backtest.win_rates import (
     build_win_rate_table,
@@ -7183,7 +7183,8 @@ def create_app(config_path: str | None = None) -> Flask:
                 cache_path = ROOT / "outputs" / "ui_snapshot_cache.json"
                 try:
                     cache_path.parent.mkdir(parents=True, exist_ok=True)
-                    cache_path.write_text(
+                    atomic_write_text(
+                        cache_path,
                         dumps_strict(
                             {
                                 "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -7331,7 +7332,7 @@ def create_app(config_path: str | None = None) -> Flask:
             try:
                 outp = ROOT / "outputs" / "last_api_snapshot.json"
                 outp.parent.mkdir(parents=True, exist_ok=True)
-                outp.write_text(dumps_strict(payload, indent=2, default=str))
+                atomic_write_text(outp, dumps_strict(payload, indent=2, default=str))
             except Exception:
                 pass
             try:

@@ -120,10 +120,12 @@ class Odte1kTracker:
         self.load()
 
     def load(self) -> None:
-        if not self.path.exists():
+        from odte_scanner.json_util import load_json_state
+
+        raw = load_json_state(self.path)
+        if not isinstance(raw, dict):
             return
         try:
-            raw = json.loads(self.path.read_text())
             known = {f.name for f in fields(Odte1kTrade)}
             trades: list[Odte1kTrade] = []
             for t in raw.get("trades") or []:
@@ -157,7 +159,9 @@ class Odte1kTracker:
             "trades": [t.to_dict() for t in self.book.trades],
             "balance_log": self.book.balance_log,
         }
-        self.path.write_text(json.dumps(payload, indent=2))
+        from odte_scanner.json_util import atomic_write_text
+
+        atomic_write_text(self.path, json.dumps(payload, indent=2))
 
     def open_trades(self) -> list[Odte1kTrade]:
         return [t for t in self.book.trades if t.status == "open"]

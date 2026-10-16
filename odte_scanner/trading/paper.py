@@ -54,8 +54,10 @@ class PaperTrader:
     def __init__(self, starting_cash: float, ledger_path: str | Path):
         self.path = Path(ledger_path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        if self.path.exists():
-            raw = json.loads(self.path.read_text())
+        from odte_scanner.json_util import load_json_state
+
+        raw = load_json_state(self.path)
+        if isinstance(raw, dict):
             self.ledger = PaperLedger(
                 cash=float(raw.get("cash", starting_cash)),
                 starting_cash=float(raw.get("starting_cash", starting_cash)),
@@ -65,7 +67,9 @@ class PaperTrader:
             self.ledger = PaperLedger(cash=starting_cash, starting_cash=starting_cash)
 
     def save(self) -> None:
-        self.path.write_text(json.dumps(self.ledger.to_dict(), indent=2))
+        from odte_scanner.json_util import atomic_write_text
+
+        atomic_write_text(self.path, json.dumps(self.ledger.to_dict(), indent=2))
 
     def open_call(
         self,

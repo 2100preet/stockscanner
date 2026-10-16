@@ -282,10 +282,12 @@ class RecommendationLog:
         self._load()
 
     def _load(self) -> None:
-        if not self.path.exists():
+        from odte_scanner.json_util import load_json_state
+
+        raw = load_json_state(self.path)
+        if not isinstance(raw, dict):
             return
         try:
-            raw = json.loads(self.path.read_text())
             recs = [Recommendation.from_dict(r) for r in (raw.get("recommendations") or [])]
             self.book = RecBook(updated_at=str(raw.get("updated_at") or ""), recommendations=recs)
             scrubbed = self._scrub_bogus_zero_closes()
@@ -442,10 +444,10 @@ class RecommendationLog:
         return changed
 
     def save(self) -> None:
-        from odte_scanner.json_util import dumps_strict
+        from odte_scanner.json_util import atomic_write_text, dumps_strict
 
         self.book.updated_at = _now()
-        self.path.write_text(dumps_strict(self.book.to_dict(), indent=2, default=str))
+        atomic_write_text(self.path, dumps_strict(self.book.to_dict(), indent=2, default=str))
 
     def _key(self, section: str, symbol: str, right: str = "C") -> str:
         return f"{section.upper()}|{str(symbol).upper()}|{str(right or 'C').upper()}"

@@ -216,10 +216,12 @@ class ChallengeTracker:
         self._apply_epoch_rebuild(starting_cash=starting_cash)
 
     def load(self) -> None:
-        if not self.path.exists():
+        from odte_scanner.json_util import load_json_state
+
+        raw = load_json_state(self.path)
+        if not isinstance(raw, dict):
             return
         try:
-            raw = json.loads(self.path.read_text())
             known = {f.name for f in fields(ChallengeTrade)}
             trades: list[ChallengeTrade] = []
             for t in raw.get("trades") or []:
@@ -316,7 +318,7 @@ class ChallengeTracker:
         return True
 
     def save(self) -> None:
-        from odte_scanner.json_util import dumps_strict
+        from odte_scanner.json_util import atomic_write_text, dumps_strict
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = self.book.to_dict()
@@ -324,7 +326,7 @@ class ChallengeTracker:
         payload["flips_closed"] = self.book.flips_closed
         payload["wins"] = self.book.wins
         payload["losses"] = self.book.losses
-        self.path.write_text(dumps_strict(payload, indent=2, default=str))
+        atomic_write_text(self.path, dumps_strict(payload, indent=2, default=str))
 
     def open_trades(self) -> list[ChallengeTrade]:
         return [t for t in self.book.trades if t.status == "open"]

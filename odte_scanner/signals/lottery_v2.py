@@ -627,14 +627,10 @@ def append_lottery_v2_log(board: dict[str, Any], path: str | Path) -> None:
     """Append today's LOG tickets. Never raises into the snapshot."""
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    existing: list[Any] = []
-    if target.exists():
-        try:
-            loaded = json.loads(target.read_text())
-            if isinstance(loaded, list):
-                existing = loaded
-        except (OSError, json.JSONDecodeError):
-            existing = []
+    from odte_scanner.json_util import atomic_write_text, load_json_state
+
+    loaded = load_json_state(target)
+    existing: list[Any] = loaded if isinstance(loaded, list) else []
     seen = {
         (str(row.get("session_date")), str(row.get("contract") or row.get("symbol")))
         for row in existing
@@ -649,7 +645,7 @@ def append_lottery_v2_log(board: dict[str, Any], path: str | Path) -> None:
             continue
         seen.add(key)
         existing.append({**ticket, "session_date": day, "logged_at": board.get("generated_at")})
-    target.write_text(json.dumps(existing, indent=2, default=str))
+    atomic_write_text(target, json.dumps(existing, indent=2, default=str))
 
 
 def _row_contract(row: dict[str, Any]) -> dict[str, Any] | None:

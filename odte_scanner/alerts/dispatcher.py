@@ -53,26 +53,28 @@ def _load_seen(path: Path) -> set[str]:
     for p in candidates:
         if p is None or not p.exists():
             continue
-        try:
-            raw = json.loads(p.read_text())
-            if isinstance(raw, list):
-                return {str(x) for x in raw}
-            if isinstance(raw, dict):
-                keys = raw.get("keys") or raw.get("seen") or []
-                return {str(x) for x in keys}
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("alert seen load failed %s: %s", p, exc)
+        from odte_scanner.json_util import load_json_state
+
+        raw = load_json_state(p)
+        if isinstance(raw, list):
+            return {str(x) for x in raw}
+        if isinstance(raw, dict):
+            keys = raw.get("keys") or raw.get("seen") or []
+            return {str(x) for x in keys}
     return set()
 
 
 def _save_seen(path: Path, keys: set[str], *, keep: int = 400) -> None:
+    from odte_scanner.json_util import atomic_write_text
+
     path.parent.mkdir(parents=True, exist_ok=True)
     ordered = sorted(keys)[-keep:]
-    path.write_text(json.dumps({"keys": ordered}, indent=2))
+    payload = json.dumps({"keys": ordered}, indent=2)
+    atomic_write_text(path, payload)
     # Keep legacy file in sync for older caches
     try:
         LEGACY_SEEN.parent.mkdir(parents=True, exist_ok=True)
-        LEGACY_SEEN.write_text(json.dumps({"keys": ordered}, indent=2))
+        atomic_write_text(LEGACY_SEEN, payload)
     except Exception:  # noqa: BLE001
         pass
 

@@ -295,10 +295,12 @@ def run_scan(
     path = out_dir / f"scan_{stamp}.json"
 
     def _persist() -> None:
-        path.write_text(json.dumps(report, indent=2))
-        (out_dir / "latest_scan.json").write_text(json.dumps(report, indent=2))
+        from odte_scanner.json_util import atomic_write_text
+
+        atomic_write_text(path, json.dumps(report, indent=2))
+        atomic_write_text(out_dir / "latest_scan.json", json.dumps(report, indent=2))
         if ml6_board:
-            (out_dir / "latest_ml6.json").write_text(json.dumps(ml6_board, indent=2))
+            atomic_write_text(out_dir / "latest_ml6.json", json.dumps(ml6_board, indent=2))
 
     # Persist before hist-win enrichment so a hung win-rate rebuild cannot leave Pages empty.
     _persist()

@@ -121,11 +121,10 @@ def load_signal_store(path: str | Path | None) -> dict[str, Any]:
     p = Path(path)
     if not p.exists():
         return {}
-    try:
-        data = json.loads(p.read_text())
-        return data if isinstance(data, dict) else {}
-    except Exception:  # noqa: BLE001
-        return {}
+    from odte_scanner.json_util import load_json_state
+
+    data = load_json_state(p)
+    return data if isinstance(data, dict) else {}
 
 
 def save_signal_store(path: str | Path | None, store: dict[str, Any]) -> None:
@@ -133,8 +132,10 @@ def save_signal_store(path: str | Path | None, store: dict[str, Any]) -> None:
         return
     p = Path(path)
     try:
+        from odte_scanner.json_util import atomic_write_text
+
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(store, indent=2))
+        atomic_write_text(p, json.dumps(store, indent=2))
     except Exception:  # noqa: BLE001
         pass
 

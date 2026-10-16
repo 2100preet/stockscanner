@@ -195,17 +195,22 @@ def run_ml6_scan(
         "paper_trades": paper_trades,
         "session_weekday": datetime.now(timezone.utc).strftime("%A"),
     }
-    path.write_text(json.dumps(payload, indent=2, default=str))
-    latest.write_text(json.dumps(payload, indent=2, default=str))
+    from odte_scanner.json_util import atomic_write_text, load_json_state
+
+    body = json.dumps(payload, indent=2, default=str)
+    atomic_write_text(path, body)
+    atomic_write_text(latest, body)
     latest_scan = out_dir / "latest_scan.json"
     if latest_scan.exists():
         try:
-            scan = json.loads(latest_scan.read_text())
+            scan = load_json_state(latest_scan)
+            if not isinstance(scan, dict):
+                scan = {}
             scan["ml6"] = board
             horizons = dict(scan.get("horizons") or {})
             horizons["ml6"] = board.get("watchlist") or []
             scan["horizons"] = horizons
-            latest_scan.write_text(json.dumps(scan, indent=2, default=str))
+            atomic_write_text(latest_scan, json.dumps(scan, indent=2, default=str))
         except Exception as exc:  # noqa: BLE001
             logger.warning("Could not merge ML6 into latest_scan: %s", exc)
 

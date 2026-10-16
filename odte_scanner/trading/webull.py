@@ -754,10 +754,12 @@ class WebullBroker:
         self._last_api_at: float | None = None
 
     def _load(self) -> None:
-        if not self.path.exists():
+        from odte_scanner.json_util import load_json_state
+
+        raw = load_json_state(self.path)
+        if not isinstance(raw, dict):
             return
         try:
-            raw = json.loads(self.path.read_text())
             allowed = {f.name for f in fields(WebullOrderIntent)}
             self.orders = []
             for o in raw.get("orders") or []:
@@ -769,7 +771,10 @@ class WebullBroker:
             self.orders = []
 
     def save(self) -> None:
-        self.path.write_text(
+        from odte_scanner.json_util import atomic_write_text
+
+        atomic_write_text(
+            self.path,
             json.dumps(
                 {
                     "updated_at": _now(),
@@ -781,7 +786,7 @@ class WebullBroker:
                     "orders": [o.to_dict() for o in self.orders[:500]],
                 },
                 indent=2,
-            )
+            ),
         )
 
     def status(self) -> dict[str, Any]:
