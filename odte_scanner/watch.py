@@ -171,6 +171,7 @@ def run_watch(
                         buy_score=float(actions_cfg.get("buy_score", 70)),
                         wait_score=float(actions_cfg.get("wait_score", 62)),
                         weekly_buy_score=float(actions_cfg.get("weekly_buy_score", 65)),
+                        rsi_soft_buy_score=float(actions_cfg.get("rsi_soft_buy_score", 69)),
                         sell_score=float(actions_cfg.get("sell_score", 48)),
                         stop_loss_pct=float(risk.get("stop_loss_pct", 50)),
                         take_profit_pct=float(risk.get("take_profit_pct", 80)),

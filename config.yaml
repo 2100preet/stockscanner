@@ -342,10 +342,16 @@ scan:
 # BUY NOW / SELL NOW thresholds (UI action board)
 actions:
   buy_score: 72          # align with 0DTE quality gate
+  # Soft floor when RSI bounce confirms (rising / mid-band) — catches SPY-class 69 prints
+  rsi_soft_buy_score: 69
   weekly_buy_score: 65   # Friday weeklies / grinders (COST-class) soft floor
   wait_score: 62         # watchlist / WAIT band
   sell_score: 48         # open call exits when score cools below this
   max_chase_pct: 2.5     # if already up this much in-session, prefer WAIT (weekly +1.5; pullback reclaim OK)
+  # Sure-winner / index: honor CBOE GEX + Red Flag (LONG_GAMMA → no SPY/QQQ/IWM 0–1 DTE calls)
+  sure_winners_respect_gex: true
+  rip_prefer_otm: true           # RIP: prefer ATM→slight OTM, not ITM (TSLA 365 vs spot 368 miss)
+  rip_max_itm_pct: 0.35          # reject calls more than 0.35% ITM for RIP continuation
   # Only promote BUY NOW when walk-forward hist win clears the bar
   require_hist_win: true
   min_hist_win_pct: 80   # target ≥80% measured win rate on promoted trades

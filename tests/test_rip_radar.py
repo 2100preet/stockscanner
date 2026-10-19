@@ -557,3 +557,131 @@ def test_meta_far_otm_1dte_repicks_nearer_strike(monkeypatch):
     assert row["strike"] == 750.0
     assert row["contract"] == "META261014C00750000"
     assert float(row["moneyness_pct"]) < 4.0
+
+
+def test_prefer_otm_rejects_deep_itm_tsla_strike():
+    """Oct 19 miss: TSLA 365c ITM vs spot ~368 must not BUY_RIP — re-pick OTM."""
+    act = decide_rip_entry(
+        {
+            "symbol": "TSLA",
+            "ask": 4.2,
+            "bid": 4.0,
+            "strike": 365,
+            "expiry": "2026-10-20",
+            "contract": "TSLA261020C00365000",
+            "dte": 1,
+            "dte_bucket": "0dte",
+            "moneyness_pct": -0.82,  # ~0.82% ITM
+            "volume": 1200,
+            "open_interest": 3000,
+            "score": 72,
+            "prefer_otm": True,
+            "max_itm_pct": 0.35,
+        },
+        quote={
+            "last": 368.0,
+            "session_change_pct": 2.4,
+            "mom_5m_pct": 0.2,
+            "mom_15m_pct": 0.3,
+        },
+        now=_MORNING,
+    )
+    assert act.action == "WATCH_RIP"
+    assert "itm" in act.detail.lower()
+
+
+def test_pick_rip_rejects_deep_itm_when_prefer_otm(monkeypatch):
+    class _C:
+        def __init__(self, strike, mny):
+            self._d = {
+                "strike": strike,
+                "expiry": "2026-10-20",
+                "dte": 1,
+                "ask": 3.5,
+                "bid": 3.3,
+                "contract": f"TSLA261020C00{int(strike):05d}000",
+                "volume": 800,
+                "open_interest": 2000,
+                "moneyness_pct": mny,
+            }
+
+        def to_dict(self):
+            return dict(self._d)
+
+        @property
+        def dte(self):
+            return self._d["dte"]
+
+    def fake_select_calls(*args, **kwargs):
+        # Deep ITM first, then proper OTM — prefer_otm must pick 370
+        return [_C(365, -0.82), _C(370, 0.54)]
+
+    monkeypatch.setattr(
+        "odte_scanner.options.selector.select_calls",
+        fake_select_calls,
+    )
+    import odte_scanner.data.tradier as tr
+
+    monkeypatch.setattr(tr, "access_token_from_env", lambda: None)
+    picked = pick_rip_continuation_call(
+        "TSLA", 368.0, prefer_otm=True, max_itm_pct=0.35
+    )
+    assert picked is not None
+    assert float(picked["strike"]) == 370.0
+    assert float(picked["moneyness_pct"]) >= 0
+
+
+def test_rip_board_stamps_hist_for_sure_desk(monkeypatch):
+    monkeypatch.setattr(
+        "odte_scanner.signals.rip_radar.pick_rip_continuation_call",
+        lambda *a, **k: None,
+    )
+    win_table = {
+        "symbols": {
+            "TSLA": {
+                "0dte": {
+                    "win_pct": 100.0,
+                    "trades": 6,
+                    "hit_1pct": 80.0,
+                    "hit_2pct": 60.0,
+                }
+            }
+        }
+    }
+    board = build_rip_board(
+        candidates=[
+            {
+                "symbol": "TSLA",
+                "ask": 3.8,
+                "bid": 3.6,
+                "strike": 370,
+                "expiry": "2026-10-20",
+                "contract": "TSLA261020C00370000",
+                "dte": 1,
+                "dte_bucket": "0dte",
+                "moneyness_pct": 0.5,
+                "volume": 900,
+                "open_interest": 2500,
+                "score": 74,
+                "right": "C",
+                "live_change_pct": 2.2,
+            }
+        ],
+        scores=[{"symbol": "TSLA", "ensemble_score": 74}],
+        quotes={
+            "TSLA": {
+                "last": 368.2,
+                "session_change_pct": 2.2,
+                "mom_5m_pct": 0.15,
+                "mom_15m_pct": 0.2,
+            }
+        },
+        win_rate_table=win_table,
+        now=_MORNING,
+        signal_times_path=None,
+    )
+    buys = board.get("buy_rip") or []
+    assert buys
+    assert buys[0].get("win_pct") == 100.0
+    assert buys[0].get("win_samples") == 6
+    assert buys[0].get("hit_1pct") == 80.0

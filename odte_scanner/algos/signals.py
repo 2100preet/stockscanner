@@ -84,7 +84,10 @@ def momentum_breakout(df: pd.DataFrame, lookback: int = 20) -> AlgoSignal:
 
 
 def rsi_bounce(df: pd.DataFrame, period: int = 14) -> AlgoSignal:
-    """Favor RSI rising through 40–55 (bounce) or holding 50–65 (trend)."""
+    """Favor RSI rising through 40–55 (bounce) or holding 50–70 (trend).
+
+    Mid-band 65–70 rising scores ~69 so soft buy_score=69 can clear with RSI confirm.
+    """
     close = df["Close"]
     delta = close.diff()
     gain = delta.clip(lower=0).rolling(period).mean()
@@ -100,6 +103,8 @@ def rsi_bounce(df: pd.DataFrame, period: int = 14) -> AlgoSignal:
         score = 82.0
     elif 50 <= cur <= 65 and rising:
         score = 74.0
+    elif 65 < cur <= 70 and rising:
+        score = 69.0  # soft-buy band — still bullish, not chase-extended
     elif 55 < cur <= 70:
         score = 60.0
     elif cur < 35 and rising:

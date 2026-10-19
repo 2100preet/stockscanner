@@ -68,6 +68,8 @@ class RipAction:
     open_interest: int | None = None
     win_pct: float | None = None
     win_samples: int | None = None
+    hit_1pct: float | None = None
+    hit_2pct: float | None = None
     cooldown_waived: bool = False
     right: str = "C"
     signaled_at: str | None = None
@@ -151,10 +153,14 @@ def pick_rip_continuation_call(
     min_ask: float = 0.25,
     max_ask: float = 25.0,
     max_otm_pct: float = 5.5,
+    max_itm_pct: float = 0.35,
+    prefer_otm: bool = True,
     loss_cooldown_contracts: set[str] | None = None,
 ) -> dict[str, Any] | None:
     """Pick a liquid call for RIP: prefer 0–1 DTE, else nearest weekly ≤ max_weekly_dte.
 
+    Prefer ATM→slight OTM (not ITM). TSLA Oct 19 miss: 365c ITM while spot ~368 —
+    continuation should quote the next OTM (370), not the deep ITM print.
     Uses real chain quotes (Tradier when token set, else Yahoo via select_calls).
     Never invents synthetic strikes or zone premiums.
     """
@@ -165,6 +171,7 @@ def pick_rip_continuation_call(
     min_a = float(min_ask)
     max_a = float(max_ask)
     otm_cap = float(max_otm_pct)
+    itm_cap = float(max_itm_pct)
     weekly_dte = int(max_weekly_dte)
 
     def _accept(picked: dict[str, Any], *, weekly: bool) -> dict[str, Any] | None:
@@ -183,6 +190,9 @@ def pick_rip_continuation_call(
             except (TypeError, ValueError, ZeroDivisionError):
                 mny = None
         if mny is not None and float(mny) > otm_cap:
+            return None
+        # Reject ITM deeper than cap when prefer_otm (RIP wants upside convexity)
+        if prefer_otm and mny is not None and float(mny) < -itm_cap:
             return None
         out = {
             "symbol": str(symbol).upper(),
@@ -228,7 +238,8 @@ def pick_rip_continuation_call(
                     max_dte=max_dte,
                     prefer_dte=prefer,
                     otm_pct_max=otm_cap,
-                    itm_pct_max=1.5,
+                    # Prefer ATM→OTM: cap ITM so TSLA 365c (~0.8% ITM vs ~368) loses to 370c
+                    itm_pct_max=itm_cap if prefer_otm else 1.5,
                     min_volume=50 if max_dte <= 1 else 25,
                     min_oi=100 if max_dte <= 1 else 50,
                     require_bid=True,
@@ -260,15 +271,29 @@ def pick_rip_continuation_call(
                 max_dte=max_dte,
                 odte_max_dte=odte_max,
                 otm_pct_max=otm_cap,
-                itm_pct_max=1.5,
+                itm_pct_max=itm_cap if prefer_otm else 1.5,
                 max_ask=max_a,
                 min_open_interest=100 if max_dte <= 1 else 50,
                 min_volume=50 if max_dte <= 1 else 25,
                 yahoo_symbol=yahoo_symbol,
-                per_bucket=1,
+                per_bucket=3 if prefer_otm else 1,
             )
             if not calls:
                 continue
+
+            def _mny_of(p: Any) -> float:
+                d = p.to_dict() if hasattr(p, "to_dict") else dict(p)
+                m = d.get("moneyness_pct")
+                if m is None and spot and d.get("strike") is not None:
+                    try:
+                        m = (float(d["strike"]) - float(spot)) / float(spot) * 100.0
+                    except (TypeError, ValueError, ZeroDivisionError):
+                        m = 99.0
+                try:
+                    return float(m if m is not None else 99.0)
+                except (TypeError, ValueError):
+                    return 99.0
+
             ranked = sorted(
                 calls,
                 key=lambda p: (
@@ -285,6 +310,9 @@ def pick_rip_continuation_call(
                         if not isinstance(p, dict)
                         else p.get("dte") or 99
                     ),
+                    # Prefer slight OTM (≥0) over ITM when prefer_otm
+                    (0 if _mny_of(p) >= 0 else 1) if prefer_otm else 0,
+                    abs(_mny_of(p)),
                 ),
             )
             # When scanning the weekly window, prefer soonest weekly over leftover 0DTE
@@ -406,6 +434,8 @@ def decide_rip_entry(
         open_interest=oi or None,
         win_pct=ticket.get("win_pct"),
         win_samples=ticket.get("win_samples"),
+        hit_1pct=ticket.get("hit_1pct"),
+        hit_2pct=ticket.get("hit_2pct"),
         right="C",
     )
 
@@ -494,6 +524,24 @@ def decide_rip_entry(
             strength=min(70.0, 40 + score * 0.3),
             headline=f"WATCH RIP {symbol}",
             detail=f"Too far OTM ({float(mny):.1f}% > {max_otm_pct:.0f}%) — prefer nearer strikes on the rip.",
+            playbook=playbook,
+            risk_tag="continuation",
+            confirms=1,
+            **base,
+        )
+
+    # Deep ITM kills convexity (TSLA 365c ITM vs spot ~368) — re-pick ATM/OTM via chain
+    max_itm_pct = float(ticket.get("max_itm_pct") if ticket.get("max_itm_pct") is not None else 0.35)
+    prefer_otm = bool(ticket.get("prefer_otm", True))
+    if prefer_otm and mny is not None and float(mny) < -max_itm_pct:
+        return RipAction(
+            action="WATCH_RIP",
+            strength=min(72.0, 42 + score * 0.3),
+            headline=f"WATCH RIP {symbol}",
+            detail=(
+                f"Too far ITM ({float(mny):.1f}% < -{max_itm_pct:.2f}%) — "
+                "prefer ATM/OTM strike on the rip."
+            ),
             playbook=playbook,
             risk_tag="continuation",
             confirms=1,
@@ -603,7 +651,9 @@ def _needs_rip_weekly_fallback(act: RipAction) -> bool:
         return (
             "no liquid call ask" in detail
             or "too far otm" in detail
+            or "too far itm" in detail
             or "prefer nearer strikes" in detail
+            or "prefer atm/otm" in detail
         )
     if act.action == "RIP_COOL":
         return "ask $0.00" in detail or "outside rip band" in detail
@@ -621,9 +671,12 @@ def build_rip_board(
     min_ask: float = 0.25,
     max_ask: float = 25.0,
     max_otm_pct: float = 5.5,
+    max_itm_pct: float = 0.35,
+    prefer_otm: bool = True,
     max_weekly_dte: int = 14,
     allow_chain_fallback: bool = True,
     max_tickets: int = 12,
+    win_rate_table: dict[str, Any] | None = None,
     now: datetime | None = None,
     signal_times_path: str | None = "outputs/rip_signal_times.json",
 ) -> dict[str, Any]:
@@ -690,6 +743,11 @@ def build_rip_board(
                         c = {**c, "spot": q.get("last")}
             except Exception as exc:  # noqa: BLE001
                 logger.debug("rip live quote %s: %s", sym, exc)
+        c = {
+            **c,
+            "prefer_otm": prefer_otm,
+            "max_itm_pct": max_itm_pct,
+        }
         act = decide_rip_entry(
             c,
             quote=q or None,
@@ -703,6 +761,7 @@ def build_rip_board(
             now=now,
         )
         # AVGO/ORCL-class: tape OK but 0–1 DTE ask thin → real weekly chain fallback
+        # Also re-pick when the snapshot strike is too deep ITM (TSLA 365 vs ~368).
         if allow_chain_fallback and _needs_rip_weekly_fallback(act):
             spot = float(
                 act.spot
@@ -720,6 +779,8 @@ def build_rip_board(
                     min_ask=min_ask,
                     max_ask=max_ask,
                     max_otm_pct=max_otm_pct,
+                    max_itm_pct=max_itm_pct,
+                    prefer_otm=prefer_otm,
                     loss_cooldown_contracts=blocked,
                 )
             if picked and float(picked.get("ask") or 0) >= float(min_ask):
@@ -770,6 +831,22 @@ def build_rip_board(
                     max_otm_pct=max_otm_pct,
                     now=now,
                 )
+        # Stamp walk-forward hist so sure-winner desk can promote elite RIP tickets
+        if win_rate_table is not None and (act.win_pct is None or act.win_samples is None):
+            try:
+                from odte_scanner.backtest.win_rates import lookup_win_stats
+
+                stats = lookup_win_stats(
+                    win_rate_table, act.symbol, act.dte_bucket or "0dte"
+                )
+                if stats.get("win_pct") is not None:
+                    act.win_pct = float(stats["win_pct"])
+                    act.win_samples = int(stats.get("trades") or 0) or None
+                    act.hit_1pct = stats.get("hit_1pct")
+                    act.hit_2pct = stats.get("hit_2pct")
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("rip hist stamp %s: %s", sym, exc)
+
         if act.action == "BUY_RIP":
             act, store = _apply_persisted_rip(act, store)
             buys.append(act)
@@ -811,10 +888,11 @@ def build_rip_board(
         "signal_times": store,
         "rules": [
             "Need session ≥~1% OR ≥1.2% reclaim off the day low (TSLA 347→351 style).",
-            "Prefer ATM–near OTM (≤5.5%) liquid calls on focus megas.",
-            "If 0–1 DTE ask missing/thin/far OTM, re-pick nearer 0–1 DTE or weekly (≤14 DTE).",
+            "Prefer ATM→slight OTM (≤5.5%); reject deep ITM (≤0.35% ITM cap) for convexity.",
+            "If 0–1 DTE ask missing/thin/far OTM/deep ITM, re-pick nearer ATM/OTM or weekly (≤14 DTE).",
             "Same OCC after a loss stays blocked ~45d.",
             "Symbol cooldown waived on this lane when tape is ripping.",
+            "Hist stamped for sure-winner desk — size still smaller than gated Options BUY NOW.",
             "Research / discretionary — not auto-journal gated BUY NOW.",
         ],
         "generated_at": (now or datetime.now(ET)).isoformat(),

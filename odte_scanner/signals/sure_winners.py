@@ -255,6 +255,48 @@ def _normalize_candidate(row: dict[str, Any], *, source_desk: str) -> dict[str, 
     }
 
 
+INDEX_SURE_SYMBOLS = frozenset({"SPY", "QQQ", "IWM", "SPX", "XSP", "DIA"})
+
+
+def gex_blocks_sure_candidate(
+    row: dict[str, Any],
+    red_flag: dict[str, Any] | None,
+    *,
+    respect_gex: bool = True,
+) -> bool:
+    """True when CBOE/Red Flag says skip this index 0–1 DTE call as a sure winner.
+
+    LONG_GAMMA → pin/range day — no SPY/QQQ/IWM short-dated long calls.
+    RED_FLAG + block_0dte_long_calls → same (dealer short-gamma / charm crush).
+    """
+    if not respect_gex or not red_flag:
+        return False
+    sym = str(row.get("symbol") or "").upper()
+    if sym not in INDEX_SURE_SYMBOLS:
+        return False
+    right = str(row.get("right") or "C").upper()[:1]
+    if right == "P":
+        return False
+    dte = row.get("dte")
+    bucket = str(row.get("dte_bucket") or row.get("horizon") or "")
+    short_dte = bucket == "0dte" or (dte is not None and int(dte) <= 1)
+    if not short_dte:
+        return False
+    cboe = red_flag.get("cboe_gex") if isinstance(red_flag.get("cboe_gex"), dict) else {}
+    regime = str(
+        cboe.get("regime")
+        or red_flag.get("gex_regime")
+        or ""
+    ).upper()
+    if regime == "LONG_GAMMA":
+        return True
+    if red_flag.get("block_0dte_long_calls"):
+        return True
+    if str(red_flag.get("state") or "").upper() == "RED_FLAG":
+        return True
+    return False
+
+
 def collect_candidates(
     *,
     actions: dict[str, Any] | None = None,
@@ -263,6 +305,8 @@ def collect_candidates(
     min_ask: float = 0.15,
     max_ask: float = 5.0,
     allow_solid: bool = True,
+    red_flag: dict[str, Any] | None = None,
+    respect_gex: bool = True,
 ) -> list[dict[str, Any]]:
     """Pull buy-side tickets that can become sure winners."""
     out: list[dict[str, Any]] = []
@@ -270,6 +314,8 @@ def collect_candidates(
 
     def push(row: dict[str, Any] | None, desk: str) -> None:
         if not row:
+            return
+        if gex_blocks_sure_candidate(row, red_flag, respect_gex=respect_gex):
             return
         norm = _normalize_candidate(row, source_desk=desk)
         if not norm:
@@ -517,6 +563,8 @@ def build_sure_winner_board(
     allow_solid: bool = True,
     store_path: str | Path | None = "outputs/sure_winners_day.json",
     now: datetime | None = None,
+    red_flag: dict[str, Any] | None = None,
+    respect_gex: bool = True,
 ) -> dict[str, Any]:
     """Build the capped sure-winner board and annotate source desks."""
     day = _day_cst(now)
@@ -528,6 +576,8 @@ def build_sure_winner_board(
         min_ask=min_ask,
         max_ask=max_ask,
         allow_solid=allow_solid,
+        red_flag=red_flag,
+        respect_gex=respect_gex,
     )
     prefer = ("MAX", "HIGH", "SOLID") if allow_solid else ("MAX", "HIGH")
     winners, store = select_sure_winners(
@@ -563,11 +613,23 @@ def build_sure_winner_board(
         "MAX = GO HUGE (×3), HIGH = SIZE UP (×2), SOLID = FULL SIZE (×1.5). "
         "Hist edge ≠ guaranteed profit."
     )
+    if respect_gex:
+        note += " GEX/Red Flag checked — index 0–1 DTE calls skipped on LONG_GAMMA / RED_FLAG."
     if not winners:
         note = (
             f"No sure-winner this snapshot — need perfect/elite hist + live contract/ask "
             f"(cap {max(1, min(max_per_day, 2))}/day). {note}"
         )
+
+    gex_meta = None
+    if red_flag:
+        cboe = red_flag.get("cboe_gex") if isinstance(red_flag.get("cboe_gex"), dict) else {}
+        gex_meta = {
+            "respect_gex": bool(respect_gex),
+            "state": red_flag.get("state"),
+            "block_0dte_long_calls": bool(red_flag.get("block_0dte_long_calls")),
+            "cboe_regime": cboe.get("regime"),
+        }
 
     return {
         "generated_at": datetime.now(tz=CT).isoformat(),
@@ -587,6 +649,7 @@ def build_sure_winner_board(
         },
         "size_guide": SIZE_BY_TIER,
         "note": note,
+        "gex": gex_meta,
         "actions": actions_out,
         "challenge": challenge_out,
         "store": store,
