@@ -102,10 +102,14 @@ def test_build_option_flow_buckets():
 
 def test_airline_sector_on_focus_and_liquid():
     """Oct 20 AAL +7–8% / DAL/UAL/LUV/JBLU group rip — must be on focus RIP sleeve."""
+    from odte_scanner.calendars import resolve_universe
+    from odte_scanner.config import load_config
+    from odte_scanner.signals.rip_radar import is_mega_rip_symbol
+
+    cfg = load_config()
+    scanned = set(resolve_universe(cfg))
     for sym in ("AAL", "DAL", "UAL", "LUV", "JBLU"):
         assert sym in FOCUS_DEFAULT, f"{sym} missing from FOCUS_DEFAULT"
         assert sym in liquid_universe(), f"{sym} missing from liquid_universe"
-    from odte_scanner.signals.rip_radar import is_mega_rip_symbol
-
-    for sym in ("AAL", "DAL", "UAL", "LUV", "JBLU"):
+        assert sym in scanned, f"{sym} missing from config.tickers / resolve_universe"
         assert is_mega_rip_symbol(sym)
