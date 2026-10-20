@@ -2361,13 +2361,16 @@ PAGE = r"""
           pauseBanner.innerHTML = "";
         }
       }
+      const bankPct = book.sniper_bank_pct!=null?book.sniper_bank_pct:0;
+      const flatH = book.sniper_flatten_hours!=null?book.sniper_flatten_hours:0;
+      const wingExit = (Number(bankPct)>0)
+        ? `+${fmt(bankPct,0)}% / ${fmt(flatH,0)}h flat`
+        : "runner · −50% · 15:45 ET";
       if (metrics) {
         const tgt = book.target_usd!=null?book.target_usd:(ch.target_usd||100000);
         const startCash = book.starting_cash!=null?book.starting_cash:(ch.start_usd||1000);
         const closedFlips = (book.trades||[]).filter(t=>t.status==="closed");
         const lastClosed = closedFlips.length?closedFlips[closedFlips.length-1]:null;
-        const bankPct = book.sniper_bank_pct!=null?book.sniper_bank_pct:20;
-        const flatH = book.sniper_flatten_hours!=null?book.sniper_flatten_hours:4;
         const daysLeft = (ch.oct_end_pace&&ch.oct_end_pace.days_left)!=null
           ? ch.oct_end_pace.days_left
           : ((ch.deadline||pace.days)!=null?(pace.days!=null?Math.round(pace.days):"—"):"—");
@@ -2378,7 +2381,7 @@ PAGE = r"""
           m("Enter mode", String(enterMode).replace("_"," ").toUpperCase(), enterMode==="ok"?"up":(enterMode==="quality_only"?"":"down")),
           m("→ $100k", book.progress_pct!=null?`${fmt(book.progress_pct,3)}%`:(book.milestone_100k_pct!=null?`${fmt(book.milestone_100k_pct,3)}%`:"—"), "up"),
           m("Days to Oct 31", daysLeft, "up"),
-          m("Same-day bank", `+${fmt(bankPct,0)}% / ${fmt(flatH,0)}h flat`, "up"),
+          m("Index wing", wingExit, "up"),
           m("Last flip P&L", lastClosed?(lastClosed.pnl_usd==null?"—":`$${fmt(lastClosed.pnl_usd,2)} (${lastClosed.profit_pct==null?"—":fmt(lastClosed.profit_pct,1)+"%"})`):"—", lastClosed&&(lastClosed.pnl_usd||0)>=0?"up":""),
           m("Need / flip", (ch.oct_end_pace&&ch.oct_end_pace.pct_per_flip)!=null?`+${fmt(ch.oct_end_pace.pct_per_flip,0)}%`:(paceM.pct_per_flip==null?(path.pct_per_flip==null?"—":`+${fmt(path.pct_per_flip,0)}%`):`+${fmt(paceM.pct_per_flip,0)}%`), "up"),
           m("ENTRY / HOLD / EXIT", `${c.entry||0} / ${c.hold||0} / ${c.exit||0}`),
@@ -2516,7 +2519,7 @@ PAGE = r"""
             <div>Open flips<strong>${book.open_trades!=null?book.open_trades:open.length}</strong></div>
             <div>Closed flips<strong>${book.flips_closed||0}</strong></div>
             <div>Win/Loss<strong>${book.wins||0}/${book.losses||0}</strong></div>
-            <div>Same-day bank<strong>+${fmt(book.sniper_bank_pct!=null?book.sniper_bank_pct:20,0)}% / ${fmt(book.sniper_flatten_hours!=null?book.sniper_flatten_hours:4,0)}h</strong></div>
+            <div>Index wing<strong>${wingExit}</strong></div>
           </div>
           <p class="why" style="margin:.2rem 0 .55rem">Sleeve ledger · epoch ${book.epoch||"—"} · deadline ${ch.deadline||"2026-10-31"}${syncNote}${syncExit || " · refresh after Paper ENTER"}${modeNote}</p>
           ${open.length?open.map(t=>{
@@ -6260,10 +6263,10 @@ def create_app(config_path: str | None = None) -> Flask:
                                         "hold_max_days": 1,
                                         "hold_ideal_days": 0,
                                         "target_premium_mult": float(
-                                            actions_cfg.get("challenge_sniper_target_mult", 1.2)
+                                            actions_cfg.get("challenge_sniper_target_mult", 11.0)
                                         ),
                                         "stop_loss_pct": float(
-                                            actions_cfg.get("challenge_sniper_stop_pct", 20)
+                                            actions_cfg.get("challenge_sniper_stop_pct", 50)
                                         ),
                                         "thesis": r.get("detail")
                                         or r.get("headline")
@@ -7202,6 +7205,7 @@ def create_app(config_path: str | None = None) -> Flask:
                             actions=actions if isinstance(actions, dict) else None,
                             challenge=challenge if isinstance(challenge, dict) else None,
                             rip_radar=rip_radar if isinstance(rip_radar, dict) else None,
+                            radar=radar if isinstance(radar, dict) else None,
                             max_per_day=int(actions_cfg.get("sure_winners_max_per_day", 2)),
                             min_ask=float(actions_cfg.get("sure_winners_min_ask", 0.15)),
                             max_ask=float(actions_cfg.get("sure_winners_max_ask", 10.0)),

@@ -5,6 +5,7 @@ like discretionary Discord alerts ($0.20–$2.50 premium, small OTM).
 
 Does NOT feed the paper journal BUY NOW auto-enter path and does NOT
 bypass the hist-win / quality gates on the main Options desk.
+A HOT SPY/QQQ/IWM wing can still be promoted to Sure Winner HIGH gold.
 """
 from __future__ import annotations
 
@@ -345,7 +346,7 @@ def build_radar_board(
         "lane": "radar",
         "note": (
             "Discord-style lottery radar for cheap SPY/QQQ/IWM 0DTE wings. "
-            "Separate from BUY NOW — no hist-win gate, no auto journal fills. "
-            "Discretionary alerts only."
+            "Separate from BUY NOW — no hist-win gate. "
+            "A HOT SPY/QQQ/IWM wing can become Sure Winner HIGH gold."
         ),
     }

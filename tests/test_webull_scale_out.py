@@ -57,10 +57,22 @@ def _pos(
     }
 
 
-def _arm(broker: WebullBroker, pos: dict, *, qty: int, desk: str = "sure_winner", exit_plan: str | None = None) -> None:
+def _arm(
+    broker: WebullBroker,
+    pos: dict,
+    *,
+    qty: int,
+    desk: str = "sure_winner",
+    exit_plan: str | None = None,
+    index_convex: bool = False,
+) -> None:
     meta: dict = {"original_qty": qty, "gate": "passed"}
     if desk == "sure_winner":
         meta["golden_kind"] = "sure_winner_gold"
+    if index_convex:
+        meta["index_convex"] = True
+        meta["certainty_tier"] = "index_convex"
+        meta["stop_loss_pct"] = 50
     if desk == "challenge":
         meta["account_id"] = "cash-2"
     if exit_plan:
@@ -331,6 +343,45 @@ def test_same_day_stays_all_in_and_clock_flattens_the_lot(tmp_path: Path, monkey
     assert len(sells) == 1
     assert sells[0]["quantity"] == 3
     assert "15:45" in sells[0]["reason"]
+
+
+def test_index_convex_wing_does_not_bank_at_80_and_a_normal_0dte_does(tmp_path: Path, monkeypatch):
+    morning = session_et(11, 0)
+    expiry = iso_day(morning)
+    broker = _broker(tmp_path, "wing.json")
+    trader = _trader(broker)
+    pos = _pos("SPY", 773, expiry, cost=0.35, mark=0.63, quantity=1)
+    _arm(broker, pos, qty=1, index_convex=True)
+    _install(
+        monkeypatch,
+        broker,
+        lambda account_id=None: [] if account_id == "cash-2" else [pos],
+    )
+    assert _sells(_sync(trader, morning)) == []
+    pos["mark"] = 0.28
+    assert _sells(_sync(trader, morning)) == []
+    pos["mark"] = 1.10
+    assert _sells(_sync(trader, morning)) == []
+    pos["mark"] = 0.70
+    trailed = _sync(trader, morning)
+    sells = _sells(trailed)
+    assert len(sells) == 1
+    assert sells[0]["quantity"] == 1
+    assert "trail" in sells[0]["reason"]
+
+    plain = _broker(tmp_path, "plain.json")
+    plain_trader = _trader(plain)
+    qqq = _pos("QQQ", 725, expiry, cost=1.0, mark=1.80, quantity=1)
+    _arm(plain, qqq, qty=1)
+    _install(
+        monkeypatch,
+        plain,
+        lambda account_id=None: [] if account_id == "cash-2" else [qqq],
+    )
+    sold = _sync(plain_trader, morning)
+    sells = _sells(sold)
+    assert len(sells) == 1
+    assert "take profit" in sells[0]["reason"]
 
 
 def test_challenge_ladder_trails_after_the_second_rung_floors_to_zero(tmp_path: Path, monkeypatch):
