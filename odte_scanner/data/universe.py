@@ -121,6 +121,9 @@ LIQUID_UNIVERSE: list[str] = [
     # Energy / cyclicals / others
     "COP", "SLB", "OXY", "HAL", "F", "GM", "NKE", "LULU", "DE", "HON",
     "UNP", "RTX", "LMT", "NOC", "SPGI", "CME", "ICE", "SCHW", "C", "USB",
+    # Airlines (oil / risk-on / pre-earnings sector tape)
+    "AAL", "DAL", "UAL", "LUV", "JBLU",
+
     # ML6 neocloud / AI infra / data-center earnings sleeve (keep liquid mega names above)
     "FRMI", "TSSI", "IREN", "APLD", "CORZ", "NBIS", "CRWV",
     # Mid / small sleeve
@@ -183,6 +186,8 @@ FOCUS_DEFAULT: list[str] = [
     "TSM", "DIA", "XLK", "XLE", "SOXX", "HYG", "EEM", "SPCX", "DDOG",
     # Mega healthcare / banks (Johnson & Johnson was liquid-only — missing on focus Pages)
     "JNJ", "WFC", "UNH", "PFE",
+    # Airlines — oil-easing / pre-earnings sector rips (AAL Oct 20 +7–8% miss)
+    "AAL", "DAL", "UAL", "LUV", "JBLU",
     # Most-anticipated / high-attention names (swing / earnings / focus scan)
     "CRWV", "CBRS", "FLY", "FIGR", "GEMI", "NBIS", "BETA", "XE",
     "CRCL", "NOW", "SMCI", "DELL",

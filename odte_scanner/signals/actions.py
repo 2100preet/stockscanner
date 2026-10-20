@@ -115,6 +115,7 @@ def decide_entry(
     buy_score: float = 70.0,
     wait_score: float = 62.0,
     weekly_buy_score: float | None = None,
+    rsi_soft_buy_score: float | None = 69.0,
     max_chase_pct: float = 2.5,
     open_symbols: set[str] | None = None,
     require_live_confirm: bool = True,
@@ -154,11 +155,33 @@ def decide_entry(
     dte = candidate.get("dte")
     dte_bucket = candidate.get("dte_bucket") or ("weekly" if bucket == "1W" else "0dte")
     # Weekly desk: slightly softer score floor so COST-class grinders can promote
-    # when tape is constructive (0DTE keeps the strict buy_score).
+    # when tape is constructive. 0DTE can soft-clear at rsi_soft_buy_score (69)
+    # when RSI bounce confirms (rising mid-band).
     eff_buy_score = float(buy_score)
     if bucket == "1W":
         soft = float(weekly_buy_score if weekly_buy_score is not None else min(buy_score, 65.0))
         eff_buy_score = min(float(buy_score), soft)
+    elif rsi_soft_buy_score is not None:
+        reasons = " ".join(str(x) for x in (candidate.get("reasons") or []))
+        thesis = str(
+            candidate.get("thesis")
+            or candidate.get("detail")
+            or candidate.get("headline")
+            or ""
+        )
+        rsi_confirm = (
+            "rsi_bounce" in reasons.lower()
+            or "rsi_bounce" in thesis.lower()
+            or bool(candidate.get("rsi_bounce_confirm"))
+        )
+        try:
+            rsi_val = float(candidate.get("rsi") or candidate.get("rsi_value") or 0)
+        except (TypeError, ValueError):
+            rsi_val = 0.0
+        if rsi_val and 50.0 <= rsi_val <= 70.0 and bool(candidate.get("rsi_rising")):
+            rsi_confirm = True
+        if rsi_confirm:
+            eff_buy_score = min(float(buy_score), float(rsi_soft_buy_score))
     contract = candidate.get("contract")
     strike = candidate.get("strike")
     ask = candidate.get("ask")
@@ -838,6 +861,7 @@ def build_action_board(
     buy_score: float = 70.0,
     wait_score: float = 62.0,
     weekly_buy_score: float | None = None,
+    rsi_soft_buy_score: float | None = 69.0,
     sell_score: float = 48.0,
     stop_loss_pct: float = 50.0,
     take_profit_pct: float = 80.0,
@@ -915,12 +939,34 @@ def build_action_board(
             holds.append(sig)
 
     for c in candidates or []:
+        # Stamp score-row reasons (rsi_bounce=…) onto the option candidate
+        sc_row = next(
+            (
+                s
+                for s in (scores or [])
+                if str(s.get("symbol") or "") == str(c.get("symbol") or "")
+            ),
+            None,
+        )
+        if sc_row and not c.get("reasons"):
+            c = {**c, "reasons": list(sc_row.get("reasons") or [])}
+            for sig0 in sc_row.get("signals") or []:
+                if str(sig0.get("name") or "") == "rsi_bounce":
+                    det = sig0.get("details") or {}
+                    c = {
+                        **c,
+                        "rsi": det.get("rsi"),
+                        "rsi_rising": det.get("rising"),
+                        "rsi_bounce_confirm": bool(sig0.get("bullish")),
+                    }
+                    break
         sig = decide_entry(
             c,
             quote=quotes.get(str(c.get("symbol"))),
             buy_score=buy_score,
             wait_score=wait_score,
             weekly_buy_score=weekly_buy_score,
+            rsi_soft_buy_score=rsi_soft_buy_score,
             max_chase_pct=max_chase_pct,
             open_symbols=open_symbols,
             require_live_confirm=require_live_confirm,

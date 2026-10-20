@@ -160,3 +160,69 @@ def test_challenge_entry_can_be_sure_winner(tmp_path: Path):
     assert board["counts"]["winners"] == 1
     assert board["winners"][0]["source_desk"] == "Challenge"
     assert board["challenge"]["entry"][0]["sure_winner"] is True
+
+
+def test_gex_long_gamma_blocks_index_0dte_sure():
+    from odte_scanner.signals.sure_winners import collect_candidates, gex_blocks_sure_candidate
+
+    spy = _buy("SPY", win=100, n=6, score=82, ask=1.2, strike=570)
+    spy["dte"] = 0
+    spy["dte_bucket"] = "0dte"
+    tsla = _buy("TSLA", win=100, n=5, score=80, ask=2.0, strike=370)
+    tsla["dte"] = 1
+    tsla["dte_bucket"] = "0dte"
+
+    red = {
+        "state": "SUPPORTIVE",
+        "block_0dte_long_calls": False,
+        "cboe_gex": {"ok": True, "regime": "LONG_GAMMA"},
+    }
+    assert gex_blocks_sure_candidate(spy, red, respect_gex=True) is True
+    assert gex_blocks_sure_candidate(tsla, red, respect_gex=True) is False
+
+    cands = collect_candidates(
+        actions={"buy_now": [spy, tsla]},
+        red_flag=red,
+        respect_gex=True,
+    )
+    assert [c["symbol"] for c in cands] == ["TSLA"]
+
+
+def test_gex_red_flag_blocks_index_even_without_long_gamma():
+    from odte_scanner.signals.sure_winners import collect_candidates
+
+    qqq = _buy("QQQ", win=100, n=6, score=85, ask=1.5, strike=480)
+    qqq["dte"] = 1
+    qqq["dte_bucket"] = "0dte"
+    red = {
+        "state": "RED_FLAG",
+        "block_0dte_long_calls": True,
+        "cboe_gex": {"ok": True, "regime": "SHORT_GAMMA"},
+    }
+    cands = collect_candidates(
+        actions={"buy_now": [qqq]},
+        red_flag=red,
+        respect_gex=True,
+    )
+    assert cands == []
+
+
+def test_mega_max_ask_allows_tsla_rich_premium():
+    """TSLA weekly RIP ~$8 was filtered by sure_winners_max_ask=$5."""
+    tsla = _buy("TSLA", win=100, n=5, score=72, ask=8.20, strike=385)
+    tsla["action"] = "BUY_RIP"
+    tsla["dte"] = 3
+    tsla["dte_bucket"] = "weekly"
+    blocked = collect_candidates(
+        rip_radar={"buy_rip": [tsla]},
+        max_ask=5.0,
+        mega_max_ask=None,
+    )
+    assert blocked == []
+    ok = collect_candidates(
+        rip_radar={"buy_rip": [tsla]},
+        max_ask=5.0,
+        mega_max_ask=12.0,
+    )
+    assert len(ok) == 1
+    assert ok[0]["symbol"] == "TSLA"

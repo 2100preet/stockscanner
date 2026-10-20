@@ -612,3 +612,43 @@ def test_contract_cooldown_outlasts_symbol_window():
     syms, cts = collect_loss_blocks(rows, cooldown_days=5, contract_cooldown_days=45, now=now)
     assert "META" not in syms
     assert "META260921C00682500" in cts
+
+
+def test_rsi_soft_buy_score_69_promotes_with_bounce_confirm():
+    """Soft floor 69 when RSI bounce confirms — catches SPY-class mid-band prints."""
+    cand = {
+        "symbol": "SPY",
+        "score": 69.5,
+        "strike": 568,
+        "expiry": "2026-10-20",
+        "ask": 1.25,
+        "bid": 1.20,
+        "contract": "SPY261020C00568000",
+        "dte": 1,
+        "dte_bucket": "0dte",
+        "moneyness_pct": -0.26,
+        "reasons": ["rsi_bounce=69"],
+        "rsi": 67.0,
+        "rsi_rising": True,
+        "rsi_bounce_confirm": True,
+    }
+    q = {"last": 569.5, "session_change_pct": 0.6, "mom_5m_pct": 0.08, "mom_15m_pct": 0.1}
+    blocked = decide_entry(
+        cand,
+        quote=q,
+        buy_score=72,
+        rsi_soft_buy_score=None,
+        require_live_confirm=True,
+        now=_MORNING,
+    )
+    assert blocked.action != "BUY_NOW"
+
+    soft = decide_entry(
+        cand,
+        quote=q,
+        buy_score=72,
+        rsi_soft_buy_score=69,
+        require_live_confirm=True,
+        now=_MORNING,
+    )
+    assert soft.action == "BUY_NOW"

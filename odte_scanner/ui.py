@@ -4882,6 +4882,8 @@ def create_app(config_path: str | None = None) -> Flask:
                                 min_ask=float(actions_cfg.get("sure_winners_min_ask", 0.15)),
                                 max_ask=max_ask_mega,
                                 max_otm_pct=float(actions_cfg.get("rip_max_otm_pct", 5.5)),
+                                prefer_otm=bool(actions_cfg.get("rip_prefer_otm", True)),
+                                max_itm_pct=float(actions_cfg.get("rip_max_itm_pct", 0.35)),
                             )
                             if not picked or not picked.get("ask"):
                                 continue
@@ -4929,6 +4931,8 @@ def create_app(config_path: str | None = None) -> Flask:
                                 min_ask=float(actions_cfg.get("sure_winners_min_ask", 0.15)),
                                 max_ask=max_ask_mega,
                                 max_otm_pct=float(actions_cfg.get("rip_max_otm_pct", 5.5)),
+                                prefer_otm=bool(actions_cfg.get("rip_prefer_otm", True)),
+                                max_itm_pct=float(actions_cfg.get("rip_max_itm_pct", 0.35)),
                             )
                             if not picked or not picked.get("ask"):
                                 continue
@@ -5080,6 +5084,9 @@ def create_app(config_path: str | None = None) -> Flask:
                         "weekly_buy_score",
                         actions_cfg.get("wait_score", 62) if offline else 65,
                     )
+                )
+                rsi_soft_buy_score = float(
+                    actions_cfg.get("rsi_soft_buy_score", 69)
                 )
 
                 from odte_scanner.echo.flow_snapshot import flow_leaders_from_cache
@@ -5267,6 +5274,7 @@ def create_app(config_path: str | None = None) -> Flask:
                     buy_score=pages_buy_score,
                     wait_score=float(actions_cfg.get("wait_score", 62)),
                     weekly_buy_score=weekly_buy_score,
+                    rsi_soft_buy_score=rsi_soft_buy_score,
                     sell_score=float(actions_cfg.get("sell_score", 48)),
                     stop_loss_pct=float(risk.get("stop_loss_pct", 50)),
                     take_profit_pct=float(risk.get("take_profit_pct", 80)),
@@ -5321,6 +5329,7 @@ def create_app(config_path: str | None = None) -> Flask:
                             buy_score=pages_buy_score,
                             wait_score=float(actions_cfg.get("wait_score", 62)),
                             weekly_buy_score=weekly_buy_score,
+                            rsi_soft_buy_score=rsi_soft_buy_score,
                             sell_score=float(actions_cfg.get("sell_score", 48)),
                             stop_loss_pct=float(risk.get("stop_loss_pct", 50)),
                             take_profit_pct=float(risk.get("take_profit_pct", 80)),
@@ -5590,11 +5599,14 @@ def create_app(config_path: str | None = None) -> Flask:
                         min_live_pct=float(actions_cfg.get("rip_min_live_pct", 1.0)),
                         min_mom5=float(actions_cfg.get("rip_min_mom_5m", 0.05)),
                         max_otm_pct=float(actions_cfg.get("rip_max_otm_pct", 5.5)),
+                        max_itm_pct=float(actions_cfg.get("rip_max_itm_pct", 0.35)),
+                        prefer_otm=bool(actions_cfg.get("rip_prefer_otm", True)),
                         max_weekly_dte=int(actions_cfg.get("rip_max_weekly_dte", 14)),
                         allow_chain_fallback=bool(
                             actions_cfg.get("rip_allow_chain_fallback", True)
                         ),
                         max_tickets=int(actions_cfg.get("rip_max_tickets", 12)),
+                        win_rate_table=win_table if isinstance(win_table, dict) else None,
                     )
                     rip_radar = _uw_annotate_board(
                         rip_radar, keys=("buy_rip", "buy_now", "watch"), hard_block=False
@@ -5697,6 +5709,7 @@ def create_app(config_path: str | None = None) -> Flask:
                                     buy_score=pages_buy_score,
                                     wait_score=float(actions_cfg.get("wait_score", 62)),
                                     weekly_buy_score=weekly_buy_score,
+                                    rsi_soft_buy_score=rsi_soft_buy_score,
                                     sell_score=float(actions_cfg.get("sell_score", 48)),
                                     stop_loss_pct=float(risk.get("stop_loss_pct", 50)),
                                     take_profit_pct=float(risk.get("take_profit_pct", 80)),
@@ -6020,6 +6033,7 @@ def create_app(config_path: str | None = None) -> Flask:
                             buy_score=pages_buy_score,
                             wait_score=float(actions_cfg.get("wait_score", 62)),
                             weekly_buy_score=weekly_buy_score,
+                            rsi_soft_buy_score=rsi_soft_buy_score,
                             sell_score=float(actions_cfg.get("sell_score", 48)),
                             stop_loss_pct=float(risk.get("stop_loss_pct", 50)),
                             take_profit_pct=float(risk.get("take_profit_pct", 80)),
@@ -7190,9 +7204,17 @@ def create_app(config_path: str | None = None) -> Flask:
                             rip_radar=rip_radar if isinstance(rip_radar, dict) else None,
                             max_per_day=int(actions_cfg.get("sure_winners_max_per_day", 2)),
                             min_ask=float(actions_cfg.get("sure_winners_min_ask", 0.15)),
-                            max_ask=float(actions_cfg.get("sure_winners_max_ask", 5.0)),
+                            max_ask=float(actions_cfg.get("sure_winners_max_ask", 10.0)),
+                            mega_max_ask=float(
+                                actions_cfg.get(
+                                    "sure_winners_mega_max_ask",
+                                    actions_cfg.get("sure_winners_max_ask", 12.0),
+                                )
+                            ),
                             allow_solid=bool(actions_cfg.get("sure_winners_allow_solid", True)),
                             store_path=sw_path,
+                            red_flag=red_flag_snapshot if isinstance(red_flag_snapshot, dict) else None,
+                            respect_gex=bool(actions_cfg.get("sure_winners_respect_gex", True)),
                         )
                         # Re-bind annotated source desks so color flags land on BUY NOW cards
                         if isinstance(sure_board.get("actions"), dict):
