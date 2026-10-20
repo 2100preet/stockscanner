@@ -51,6 +51,12 @@ tickers:
   - WFC   # Wells Fargo — bank sleeve with JPM/BAC
   - UNH
   - PFE
+  # Airlines — oil-easing / pre-earnings sector rips (AAL Oct 20 +7–8% miss; focus scan uses this list)
+  - AAL   # American — Q3 Thu Oct 22 BMO; oil easing + risk-on
+  - DAL   # Delta
+  - UAL   # United — reports after close Oct 20
+  - LUV   # Southwest
+  - JBLU  # JetBlue — UBS upgrade Neutral
   - XOM
   - COST
   - TSM
