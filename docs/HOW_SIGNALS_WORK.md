@@ -61,7 +61,7 @@ Env knobs:
 ## Webull
 
 - Every live snapshot with `auto_sync: true` runs the AutoTrader.
-- Default config: `enabled: false`, `dry_run: true`, `paper: true`, `golden_only: true` → **ledger / deep-link only**, and only for Sure Winner gold (MAX) and Golden unusual-flow prints.
+- Default config: `enabled: false`, `dry_run: true`, `paper: true`, `golden_only: true` → **ledger / deep-link only**, and only for Sure Winner cards rendered gold (MAX and HIGH). Golden unusual-flow prints stay on the Flow desk and are not staged.
 - Paper submits use Webull's official sandbox (`api.sandbox.webull.com`) via `WEBULL_PAPER_SUBMIT=1` plus sandbox keys. That account is isolated from production. `WEBULL_LIVE=1` cannot select `api.webull.com`.
 
 ## What “instantaneous” means here

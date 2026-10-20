@@ -95,6 +95,95 @@ def is_beauty_symbol(symbol: str) -> bool:
     return str(symbol or "").upper() in BEAUTY_SYMBOLS
 
 
+def _positive_price(raw: Any) -> float | None:
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if val > 1:
+        return val
+    return None
+
+
+def resolve_underlying_spot(
+    row: dict[str, Any] | None,
+    quote: dict[str, Any] | None = None,
+    score_row: dict[str, Any] | None = None,
+) -> float | None:
+    """Underlying price for a monthly contract pick.
+
+    The ensemble score is a 0–100 rank. Using it as dollars prices the strike
+    around the score (AMAT at ~$63 instead of ~$405) and the scorecard then
+    grades that against the real close.
+    """
+    row = row or {}
+    quote = quote or {}
+    score_row = score_row or {}
+    for raw in (
+        quote.get("last"),
+        row.get("live_last"),
+        row.get("live_spot"),
+        score_row.get("last_price"),
+        score_row.get("entry"),
+        row.get("spot"),
+    ):
+        price = _positive_price(raw)
+        if price is not None:
+            return price
+    return None
+
+
+def overlay_monthly_contract(row: dict[str, Any], picked: dict[str, Any], spot: float) -> None:
+    """Replace a ticket with the picked ~1 month contract.
+
+    The previous label, mid, and cost stay cleared so a 0DTE card cannot keep
+    describing a different strike. The chain's underlying wins over the hint.
+    """
+    try:
+        ask = float(picked.get("ask") or 0)
+    except (TypeError, ValueError):
+        ask = 0.0
+    try:
+        bid = float(picked.get("bid") or 0)
+    except (TypeError, ValueError):
+        bid = 0.0
+    if ask < 0:
+        ask = 0.0
+    if bid < 0:
+        bid = 0.0
+    mid = (bid + ask) / 2 if bid > 0 and ask > 0 else ask
+    right = str(picked.get("right") or "C").upper()[:1] or "C"
+    chain_spot = _positive_price(picked.get("spot"))
+    use_spot = chain_spot if chain_spot is not None else float(spot)
+    expiry = picked.get("expiry")
+    strike = picked.get("strike")
+    try:
+        strike_txt = f"{float(strike):g}"
+    except (TypeError, ValueError):
+        strike_txt = str(strike or "")
+    side = "p" if right == "P" else "c"
+    row.update(
+        {
+            "ask": picked.get("ask"),
+            "bid": picked.get("bid"),
+            "mid": round(mid, 4) if mid else None,
+            "strike": strike,
+            "expiry": expiry,
+            "contract": picked.get("contract"),
+            "dte": picked.get("dte"),
+            "dte_bucket": "monthly",
+            "volume": picked.get("volume"),
+            "open_interest": picked.get("open_interest") or picked.get("oi"),
+            "spot": use_spot,
+            "live_spot": use_spot,
+            "moneyness_pct": picked.get("moneyness_pct"),
+            "right": right,
+            "label": f"1M {expiry} {strike_txt}{side} @ ${ask:.2f}",
+            "estimated_cost_1": round(ask * 100, 2) if ask else None,
+        }
+    )
+
+
 def _month_change_pct(quote: dict[str, Any] | None, candidate: dict[str, Any] | None = None) -> float | None:
     q = quote or {}
     c = candidate or {}

@@ -8,9 +8,51 @@ from odte_scanner.signals.beauty_monthly import (
     decide_beauty_entry,
     is_beauty_symbol,
     oct_end_pace_note,
+    overlay_monthly_contract,
+    resolve_underlying_spot,
 )
 
 _NOW = datetime(2026, 9, 23, 12, 0, tzinfo=ZoneInfo("America/New_York"))
+
+
+def test_monthly_overlay_does_not_use_ensemble_score_as_spot():
+    """AMAT/NOW on 2026-10-20 stored the ~65 score as the underlying."""
+    row = {
+        "symbol": "AMAT",
+        "score": 63.02419354838709,
+        "spot": 63.02419354838709,
+        "right": "P",
+        "ask": 6.05,
+        "mid": 5.175,
+        "label": "0DTE 2026-10-23 395p @ $6.05",
+        "estimated_cost_1": 605.0,
+        "contract": "AMAT261023P00395000",
+    }
+    assert resolve_underlying_spot(row, {}, {"symbol": "AMAT", "last_price": 404.98}) == 404.98
+    assert resolve_underlying_spot(row, {"last": 405.1}, {"last_price": 404.98}) == 405.1
+    overlay_monthly_contract(
+        row,
+        {
+            "ask": 21.3,
+            "bid": 19.05,
+            "strike": 420,
+            "expiry": "2026-11-20",
+            "contract": "AMAT261120C00420000",
+            "dte": 31,
+            "right": "C",
+            "spot": 404.98,
+            "moneyness_pct": 3.709,
+            "volume": 135,
+            "open_interest": 481,
+        },
+        404.98,
+    )
+    assert row["spot"] == 404.98
+    assert row["score"] == 63.02419354838709
+    assert row["right"] == "C"
+    assert row["label"] == "1M 2026-11-20 420c @ $21.30"
+    assert row["estimated_cost_1"] == 2130.0
+    assert row["contract"] == "AMAT261120C00420000"
 
 
 def test_beauty_symbols_include_sep_names():

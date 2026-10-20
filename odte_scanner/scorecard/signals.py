@@ -34,13 +34,50 @@ def _direction(row: dict[str, Any]) -> str:
     return "long"
 
 
+def _implied_spot(row: dict[str, Any]) -> float | None:
+    """Underlying implied by strike and moneyness.
+
+    Call moneyness is (strike - spot) / spot. Put moneyness is (spot - strike) / spot.
+    """
+    strike = _num(row.get("strike"))
+    try:
+        mny = float(row.get("moneyness_pct"))
+    except (TypeError, ValueError):
+        return None
+    if strike is None:
+        return None
+    right = str(row.get("right") or "C").upper()[:1]
+    denom = (1.0 - mny / 100.0) if right == "P" else (1.0 + mny / 100.0)
+    if denom <= 0.05:
+        return None
+    return _num(strike / denom)
+
+
+def _agrees(left: float | None, right: float | None, *, tol: float = 0.15) -> bool:
+    if left is None or right is None or right <= 0:
+        return False
+    return abs(left - right) / right <= tol
+
+
 def _spot(row: dict[str, Any], spots: dict[str, float]) -> float | None:
+    recorded = None
     for key in ("spot", "live_last", "live_spot", "entry_spot", "last_price", "underlying_price"):
-        price = _num(row.get(key))
-        if price is not None:
-            return price
+        recorded = _num(row.get(key))
+        if recorded is not None:
+            break
     ticker = str(row.get("symbol") or "").upper()
-    return spots.get(ticker)
+    scanned = spots.get(ticker)
+    implied = _implied_spot(row)
+    # A monthly overlay used to store the ensemble score in ``spot`` while
+    # moneyness still reflected the real underlying. Prefer the scan price,
+    # then the price moneyness was computed from.
+    if implied is not None and not _agrees(recorded, implied):
+        if _agrees(scanned, implied):
+            return scanned
+        return implied
+    if recorded is not None:
+        return recorded
+    return scanned
 
 
 def _premium(row: dict[str, Any]) -> float | None:
