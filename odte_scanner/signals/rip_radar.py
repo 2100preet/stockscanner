@@ -32,11 +32,13 @@ from odte_scanner.time_cst import (
 logger = logging.getLogger(__name__)
 ET = ZoneInfo("America/New_York")
 
-# Liquid megas / China ADRs / semis the desk wants on RIP alerts
+# Liquid megas / China ADRs / semis / airline sector the desk wants on RIP alerts
 MEGA_RIP_SYMBOLS = {
     "META", "GOOGL", "GOOG", "AMD", "BABA", "NVDA", "TSLA", "AAPL", "AMZN",
     "MSFT", "NFLX", "AVGO", "MU", "SMCI", "PLTR", "TSM", "QCOM", "ARM",
     "SPOT", "SHOP", "CRWD", "PANW", "ORCL", "IBM", "INTC", "SNDK",
+    # Airlines — oil easing + pre-earnings group rips (AAL/DAL/UAL Oct 20 miss)
+    "AAL", "DAL", "UAL", "LUV", "JBLU",
 }
 
 
@@ -469,7 +471,7 @@ def decide_rip_entry(
             action="RIP_COOL",
             strength=max(0.0, score * 0.4),
             headline=f"RIP COOL {symbol}",
-            detail="Not in mega/continuation sleeve (META/GOOGL/AMD/BABA/…).",
+            detail="Not in mega/continuation sleeve (META/GOOGL/AMD/BABA/AAL/…).",
             playbook=playbook,
             risk_tag="cool",
             **base,

@@ -425,7 +425,9 @@ actions:
   sure_winners_enabled: true
   sure_winners_max_per_day: 2
   sure_winners_min_ask: 0.15
-  sure_winners_max_ask: 5.0
+  # Was $5 — TSLA weekly ~$8 RIP tickets never reached sure desk
+  sure_winners_max_ask: 10.0
+  sure_winners_mega_max_ask: 12.0   # MEGA_RIP / airline RIP can clear richer premium
   sure_winners_allow_solid: true
   sure_winners_store_path: outputs/sure_winners_day.json
   # Sticky TA level-watch (manual support/breakout setups)

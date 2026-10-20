@@ -304,6 +304,7 @@ def collect_candidates(
     rip_radar: dict[str, Any] | None = None,
     min_ask: float = 0.15,
     max_ask: float = 5.0,
+    mega_max_ask: float | None = None,
     allow_solid: bool = True,
     red_flag: dict[str, Any] | None = None,
     respect_gex: bool = True,
@@ -311,6 +312,17 @@ def collect_candidates(
     """Pull buy-side tickets that can become sure winners."""
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
+    mega_cap = float(mega_max_ask) if mega_max_ask is not None else float(max_ask)
+
+    def _ask_cap(sym: str) -> float:
+        try:
+            from odte_scanner.signals.rip_radar import is_mega_rip_symbol
+
+            if is_mega_rip_symbol(sym):
+                return mega_cap
+        except Exception:  # noqa: BLE001
+            pass
+        return float(max_ask)
 
     def push(row: dict[str, Any] | None, desk: str) -> None:
         if not row:
@@ -323,7 +335,8 @@ def collect_candidates(
         if not allow_solid and norm["confidence_tier"] == "SOLID":
             return
         ask = float(norm["ask"])
-        if ask < min_ask or ask > max_ask:
+        cap = _ask_cap(str(norm.get("symbol") or ""))
+        if ask < min_ask or ask > cap:
             return
         key = norm["pick_key"]
         if key in seen:
@@ -560,6 +573,7 @@ def build_sure_winner_board(
     max_per_day: int = 2,
     min_ask: float = 0.15,
     max_ask: float = 5.0,
+    mega_max_ask: float | None = None,
     allow_solid: bool = True,
     store_path: str | Path | None = "outputs/sure_winners_day.json",
     now: datetime | None = None,
@@ -575,6 +589,7 @@ def build_sure_winner_board(
         rip_radar=rip_radar,
         min_ask=min_ask,
         max_ask=max_ask,
+        mega_max_ask=mega_max_ask,
         allow_solid=allow_solid,
         red_flag=red_flag,
         respect_gex=respect_gex,

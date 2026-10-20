@@ -7204,7 +7204,13 @@ def create_app(config_path: str | None = None) -> Flask:
                             rip_radar=rip_radar if isinstance(rip_radar, dict) else None,
                             max_per_day=int(actions_cfg.get("sure_winners_max_per_day", 2)),
                             min_ask=float(actions_cfg.get("sure_winners_min_ask", 0.15)),
-                            max_ask=float(actions_cfg.get("sure_winners_max_ask", 5.0)),
+                            max_ask=float(actions_cfg.get("sure_winners_max_ask", 10.0)),
+                            mega_max_ask=float(
+                                actions_cfg.get(
+                                    "sure_winners_mega_max_ask",
+                                    actions_cfg.get("sure_winners_max_ask", 12.0),
+                                )
+                            ),
                             allow_solid=bool(actions_cfg.get("sure_winners_allow_solid", True)),
                             store_path=sw_path,
                             red_flag=red_flag_snapshot if isinstance(red_flag_snapshot, dict) else None,

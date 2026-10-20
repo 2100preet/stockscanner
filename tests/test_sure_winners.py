@@ -205,3 +205,24 @@ def test_gex_red_flag_blocks_index_even_without_long_gamma():
         respect_gex=True,
     )
     assert cands == []
+
+
+def test_mega_max_ask_allows_tsla_rich_premium():
+    """TSLA weekly RIP ~$8 was filtered by sure_winners_max_ask=$5."""
+    tsla = _buy("TSLA", win=100, n=5, score=72, ask=8.20, strike=385)
+    tsla["action"] = "BUY_RIP"
+    tsla["dte"] = 3
+    tsla["dte_bucket"] = "weekly"
+    blocked = collect_candidates(
+        rip_radar={"buy_rip": [tsla]},
+        max_ask=5.0,
+        mega_max_ask=None,
+    )
+    assert blocked == []
+    ok = collect_candidates(
+        rip_radar={"buy_rip": [tsla]},
+        max_ask=5.0,
+        mega_max_ask=12.0,
+    )
+    assert len(ok) == 1
+    assert ok[0]["symbol"] == "TSLA"
