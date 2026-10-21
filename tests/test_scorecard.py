@@ -200,6 +200,25 @@ def test_open_session_stays_pending(ledger: Path):
     assert view["summary"]["horizons"]["eod"]["settled"] == 0
 
 
+def test_score_stored_as_spot_does_not_become_the_reference(ledger: Path):
+    """Monthly overlay wrote the ensemble score into spot; moneyness still matched the stock."""
+    row = _flow(symbol="AMAT", right="C", tier="golden")
+    row.update(
+        {
+            "spot": 63.02419354838709,
+            "strike": 420,
+            "moneyness_pct": 3.709,
+            "contract": "AMAT261120C00420000",
+        }
+    )
+    view = _observe(
+        ledger,
+        option_flow={"golden": [row]},
+        scores=[{"symbol": "AMAT", "last_price": 404.98}],
+    )
+    assert view["rows"][0]["reference_entry"] == 404.98
+
+
 def test_reference_price_can_come_from_the_scan(ledger: Path):
     row = _gold()
     row.pop("spot")

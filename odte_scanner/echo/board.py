@@ -225,10 +225,17 @@ def _build_cortex(
 def _ladders_from_candidates(candidates: list[dict[str, Any]], quotes: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     """Fallback mini-ladders from already-fetched call candidates (no extra Yahoo hits)."""
     by_sym: dict[str, dict[str, Any]] = {}
+    seen: dict[str, set[str]] = {}
     for c in candidates or []:
         sym = str(c.get("symbol") or "")
         if not sym:
             continue
+        contract = str(c.get("contract") or "")
+        right = str(c.get("right") or "C").upper()[:1] or "C"
+        dedupe_key = contract or f"{right}|{c.get('expiry')}|{c.get('strike')}"
+        if dedupe_key in seen.setdefault(sym, set()):
+            continue
+        seen[sym].add(dedupe_key)
         spot = float(
             (quotes.get(sym) or {}).get("last")
             or c.get("live_spot")
@@ -250,9 +257,10 @@ def _ladders_from_candidates(candidates: list[dict[str, Any]], quotes: dict[str,
         mid = float(c.get("ask") or c.get("mid") or 0)
         vol = int(c.get("volume") or 0)
         oi = int(c.get("open_interest") or 0)
-        bucket["calls"].append(
+        side = "puts" if right == "P" else "calls"
+        bucket[side].append(
             {
-                "right": "C",
+                "right": "P" if right == "P" else "C",
                 "strike": float(c.get("strike") or 0),
                 "bid": float(c.get("bid") or 0),
                 "ask": float(c.get("ask") or 0),
@@ -262,7 +270,7 @@ def _ladders_from_candidates(candidates: list[dict[str, Any]], quotes: dict[str,
                 "open_interest": oi,
                 "iv": c.get("iv"),
                 "moneyness_pct": c.get("moneyness_pct"),
-                "contract": c.get("contract") or "",
+                "contract": contract,
                 "premium_notional": round(mid * 100 * vol, 2),
             }
         )

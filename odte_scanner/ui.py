@@ -5776,6 +5776,8 @@ def create_app(config_path: str | None = None) -> Flask:
                             build_beauty_board,
                             is_beauty_symbol,
                             oct_end_pace_note,
+                            overlay_monthly_contract,
+                            resolve_underlying_spot,
                         )
 
                         score_rows = scan.get("scores") or []
@@ -5822,20 +5824,30 @@ def create_app(config_path: str | None = None) -> Flask:
                                 min_d = int(actions_cfg.get("beauty_min_dte", 18))
                                 max_d = int(actions_cfg.get("beauty_max_dte", 45))
                                 fetched = 0
+                                overlaid: set[str] = set()
+                                score_by_sym = {
+                                    str(s.get("symbol") or "").upper(): s
+                                    for s in score_rows
+                                    if isinstance(s, dict)
+                                }
                                 for row in beauty_cands:
                                     if fetched >= fetch_n:
                                         break
                                     sym = str(row.get("symbol") or "").upper()
-                                    if row.get("ask") and row.get("dte") and min_d <= int(row["dte"]) <= max_d:
+                                    if not sym or sym in overlaid:
                                         continue
-                                    spot = float((quotes.get(sym) or {}).get("last") or row.get("score") or 0)
-                                    if spot <= 1:
-                                        # last-price from scores often missing — skip pick without spot
-                                        qlast = (quotes.get(sym) or {}).get("last")
-                                        if qlast:
-                                            spot = float(qlast)
-                                        else:
-                                            continue
+                                    if row.get("ask") and row.get("dte") and min_d <= int(row["dte"]) <= max_d:
+                                        overlaid.add(sym)
+                                        continue
+                                    # Ensemble score is not a price. A missing quote must not
+                                    # fall back to it or the strike is picked around ~60–70.
+                                    spot = resolve_underlying_spot(
+                                        row,
+                                        quotes.get(sym) if isinstance(quotes.get(sym), dict) else None,
+                                        score_by_sym.get(sym),
+                                    )
+                                    if spot is None:
+                                        continue
                                     aliases.setdefault(sym, resolve_yahoo_symbol(sym, cfg))
                                     picked = pick_challenge_contract(
                                         sym,
@@ -5848,21 +5860,8 @@ def create_app(config_path: str | None = None) -> Flask:
                                     )
                                     if not picked or not picked.get("ask"):
                                         continue
-                                    row.update(
-                                        {
-                                            "ask": picked.get("ask"),
-                                            "bid": picked.get("bid"),
-                                            "strike": picked.get("strike"),
-                                            "expiry": picked.get("expiry"),
-                                            "contract": picked.get("contract"),
-                                            "dte": picked.get("dte"),
-                                            "dte_bucket": "monthly",
-                                            "volume": picked.get("volume"),
-                                            "open_interest": picked.get("open_interest") or picked.get("oi"),
-                                            "spot": spot,
-                                            "moneyness_pct": picked.get("moneyness_pct"),
-                                        }
-                                    )
+                                    overlay_monthly_contract(row, picked, spot)
+                                    overlaid.add(sym)
                                     fetched += 1
                             except Exception as exc:  # noqa: BLE001
                                 logger.debug("beauty contract fetch skipped: %s", exc)

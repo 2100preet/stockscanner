@@ -1,7 +1,7 @@
 """Echo Desk — TradeEcho-style flow / GEX / algo board."""
 from odte_scanner.echo.flow import build_option_flow, score_flow_print
 from odte_scanner.echo.gex import compute_gex_profile
-from odte_scanner.echo.board import build_echo_board, _build_algo_edge
+from odte_scanner.echo.board import build_echo_board, _build_algo_edge, _ladders_from_candidates
 
 
 def test_flow_tiers_golden_on_large_premium():
@@ -72,6 +72,23 @@ def test_build_option_flow_sorts_and_counts():
     assert flow["counts"]["all"] >= 1
     assert flow["prints"][0]["symbol"] == "SPY"
     assert flow["counts"]["golden"] >= 1
+
+
+def test_candidate_ladders_dedupe_and_keep_puts():
+    ladders = _ladders_from_candidates(
+        [
+            {"symbol": "UNH", "right": "C", "contract": "UNH261030C00430000", "strike": 430, "ask": 4.15, "spot": 419.26},
+            {"symbol": "UNH", "right": "C", "contract": "UNH261030C00430000", "strike": 430, "ask": 4.15, "spot": 419.26},
+            {"symbol": "AMAT", "right": "P", "contract": "AMAT261023P00395000", "strike": 395, "ask": 6.05, "spot": 404.98},
+        ],
+        {},
+    )
+    by_sym = {row["symbol"]: row for row in ladders}
+    assert len(by_sym["UNH"]["calls"]) == 1
+    assert by_sym["UNH"]["puts"] == []
+    assert len(by_sym["AMAT"]["puts"]) == 1
+    assert by_sym["AMAT"]["calls"] == []
+    assert by_sym["AMAT"]["puts"][0]["right"] == "P"
 
 
 def test_gex_walls_and_regime():
