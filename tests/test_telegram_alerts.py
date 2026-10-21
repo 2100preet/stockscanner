@@ -40,6 +40,7 @@ def test_telegram_send_posts(monkeypatch):
     assert "123:ABC" in calls["url"]
     assert calls["json"]["chat_id"] == "987654321"
     assert "BUY AAPL" in calls["json"]["text"]
+    assert "parse_mode" not in calls["json"]
 
 
 def test_dispatch_sends_telegram(tmp_path, monkeypatch):
@@ -202,12 +203,11 @@ def test_collects_gold_setup_and_golden_flow_only():
     assert all(sym != "TRI" for _, sym in desks)
     assert all(sym != "JNJ" for _, sym in desks)
     gold = alerts[0]["message"]
-    assert "Gold Setup" in gold
-    assert "HIGH" in gold
+    assert gold.splitlines()[0] == "⭐ 🟢 SURE WINNER TSLA 385C 10/23 HIGH"
     assert "parse_mode" not in gold
     flow = next(a for a in alerts if a["desk"] == "Golden Flow")
     assert flow["ask"] == 3.4
-    assert "Golden Flow" in flow["message"]
+    assert flow["message"].splitlines()[0] == "🔴 GOLDEN FLOW LRCX 265P 10/23"
 
 
 def test_gold_and_golden_are_not_crowded_out(tmp_path, monkeypatch):
@@ -289,7 +289,32 @@ def test_gold_and_golden_are_not_crowded_out(tmp_path, monkeypatch):
     result = disp.dispatch_snapshot_alerts(snap, seen_path=seen)
     assert result.get("sent") == 8
     assert result.get("errors") in ([], None)
-    assert any("Gold Setup" in body and "TSLA" in body for body in sent)
-    assert any("Golden Flow" in body and "AMAT" in body for body in sent)
-    assert sent[0].startswith("🟢 BUY · Gold Setup")
-    assert "Golden Flow" in sent[1]
+    assert any("SURE WINNER" in body and "TSLA" in body for body in sent)
+    assert any("GOLDEN FLOW" in body and "AMAT" in body for body in sent)
+    assert sent[0].splitlines()[0] == "⭐ 🟢 SURE WINNER TSLA 385C 10/23 MAX"
+    assert sent[1].splitlines()[0] == "🟢 GOLDEN FLOW AMAT 420C 10/23"
+
+
+def test_signal_headline_uses_sentiment_when_right_is_missing():
+    bear = disp._fmt_alert(
+        {"symbol": "SPY", "sentiment": "bearish", "strike": 500, "expiry": "2026-10-16", "ask": 2.0},
+        "BUY",
+        "Golden Flow",
+    )
+    bull = disp._fmt_alert(
+        {
+            "symbol": "QQQ",
+            "sentiment": "bullish",
+            "right": "C",
+            "strike": 480.0,
+            "expiry": "2026-10-16",
+            "confidence_tier": "MAX",
+            "ask": 1.5,
+        },
+        "BUY",
+        "Gold Setup",
+    )
+    assert bear.splitlines()[0] == "🔴 GOLDEN FLOW SPY 500 10/16"
+    assert bull.splitlines()[0] == "⭐ 🟢 SURE WINNER QQQ 480C 10/16 MAX"
+    assert "parse_mode" not in bear
+    assert "parse_mode" not in bull

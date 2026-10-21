@@ -96,9 +96,74 @@ def _row_key(row: dict[str, Any], side: str, desk: str) -> str:
     return f"{desk}|{side}|{sym}|{act}|{occ or f'{strike}:{exp}'}|{signaled}"
 
 
+def _contract_circle(row: dict[str, Any]) -> str:
+    """Green for calls and bullish prints, red for puts and bearish prints."""
+    right = str(row.get("right") or "").strip().upper()[:1]
+    if right == "P":
+        return "🔴"
+    if right == "C":
+        return "🟢"
+    sentiment = str(row.get("sentiment") or "").strip().lower()
+    if sentiment in {"bearish", "short"}:
+        return "🔴"
+    return "🟢"
+
+
+def _compact_expiry(raw: Any) -> str:
+    text = str(raw or "")[:10]
+    parts = text.split("-")
+    if len(parts) == 3 and all(part.isdigit() for part in parts):
+        return f"{int(parts[1])}/{int(parts[2])}"
+    return text
+
+
+def _compact_strike(strike: Any, right: str) -> str:
+    if strike is None or strike == "":
+        return right
+    try:
+        number = float(strike)
+    except (TypeError, ValueError):
+        base = str(strike)
+    else:
+        base = str(int(number)) if number.is_integer() else f"{number:g}"
+    return f"{base}{right}" if right else base
+
+
+def _signal_headline(row: dict[str, Any], desk: str) -> str | None:
+    """Plain-text first line for Gold Setup and Golden Flow. No Markdown."""
+    if desk not in {"Gold Setup", "Golden Flow"}:
+        return None
+    right = str(row.get("right") or "").strip().upper()[:1]
+    if right not in {"C", "P"}:
+        right = ""
+    parts: list[str] = []
+    if desk == "Gold Setup":
+        parts.extend(["⭐", _contract_circle(row), "SURE WINNER"])
+    else:
+        parts.extend([_contract_circle(row), "GOLDEN FLOW"])
+    parts.append(str(row.get("symbol") or "?").upper())
+    strike_s = _compact_strike(row.get("strike"), right)
+    if strike_s:
+        parts.append(strike_s)
+    expiry_s = _compact_expiry(row.get("expiry"))
+    if expiry_s:
+        parts.append(expiry_s)
+    if desk == "Gold Setup":
+        tier = str(row.get("confidence_tier") or "").strip().upper()
+        if tier:
+            parts.append(tier)
+    return " ".join(parts)
+
+
 def _fmt_alert(row: dict[str, Any], side: str, desk: str) -> str:
     sym = str(row.get("symbol") or "?").upper()
-    right = str(row.get("right") or "C").upper()[:1]
+    headline = _signal_headline(row, desk)
+    if headline:
+        right = str(row.get("right") or "").strip().upper()[:1]
+        if right not in {"C", "P"}:
+            right = ""
+    else:
+        right = str(row.get("right") or "C").upper()[:1]
     strike = row.get("strike")
     exp = str(row.get("expiry") or "")[:10]
     ask = row.get("ask")
@@ -108,12 +173,17 @@ def _fmt_alert(row: dict[str, Any], side: str, desk: str) -> str:
     strike_s = f"{strike}{right}" if strike is not None else right
     ask_s = f"${float(ask):.2f}" if ask is not None else "—"
     spot_s = f"${float(spot):.2f}" if spot is not None else "—"
-    emoji = "🟢" if side == "BUY" else "🔴"
-    lines = [
-        f"{emoji} {side} · {desk}",
-        f"{sym} {strike_s} · exp {exp or '—'}",
-        f"Ask {ask_s} · spot {spot_s}",
-    ]
+    if headline:
+        lines = [headline]
+    else:
+        emoji = "🟢" if side == "BUY" else "🔴"
+        lines = [f"{emoji} {side} · {desk}"]
+    lines.extend(
+        [
+            f"{sym} {strike_s} · exp {exp or '—'}",
+            f"Ask {ask_s} · spot {spot_s}",
+        ]
+    )
     if when:
         lines.append(f"Asked {when}")
     if detail:
