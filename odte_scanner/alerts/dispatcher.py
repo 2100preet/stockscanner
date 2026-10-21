@@ -1,10 +1,17 @@
-"""Collect BUY/SELL pulses from a desk snapshot and push Telegram / WhatsApp alerts."""
+"""Collect BUY/SELL pulses from a desk snapshot and push Telegram / WhatsApp alerts.
+
+Gold Setup (Sure Winner MAX/HIGH) and Golden Flow prints are part of this
+personal-chat pulse. They are collected first so the per-cycle send cap cannot
+drop them behind a long RIP tape. SOLID cards, non-golden flow, and chart
+triangles stay off this path.
+"""
 
 from __future__ import annotations
 
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +19,7 @@ from odte_scanner.alerts.telegram import configured as telegram_configured
 from odte_scanner.alerts.telegram import send_telegram_text
 from odte_scanner.alerts.whatsapp import configured as whatsapp_configured
 from odte_scanner.alerts.whatsapp import send_whatsapp_text
+from odte_scanner.trading.golden import is_golden_unusual_flow, is_sure_winner_gold
 
 logger = logging.getLogger(__name__)
 
@@ -89,11 +97,102 @@ def _row_key(row: dict[str, Any], side: str, desk: str) -> str:
     return f"{desk}|{side}|{sym}|{act}|{occ or f'{strike}:{exp}'}|{signaled}"
 
 
+_OCC_RE = re.compile(r"([A-Z0-9]{1,6})(\d{6})([CP])(\d{8})")
+
+
+def _occ_parts(contract: Any) -> dict[str, Any]:
+    """Read right, strike, and expiry from an OCC symbol when the row omitted them."""
+    raw = str(contract or "").upper().replace("O:", "").replace(" ", "")
+    match = _OCC_RE.search(raw)
+    if not match:
+        return {}
+    _root, yymmdd, right, strike_raw = match.groups()
+    return {
+        "right": right,
+        "expiry": f"{2000 + int(yymmdd[:2]):04d}-{yymmdd[2:4]}-{yymmdd[4:6]}",
+        "strike": int(strike_raw) / 1000.0,
+    }
+
+
+def _resolved_contract(row: dict[str, Any]) -> tuple[str, Any, str]:
+    occ = _occ_parts(row.get("contract") or row.get("occ"))
+    right = str(row.get("right") or "").strip().upper()[:1]
+    if right not in {"C", "P"}:
+        right = str(occ.get("right") or "")
+    strike = row.get("strike")
+    if strike is None or strike == "":
+        strike = occ.get("strike")
+    expiry = str(row.get("expiry") or occ.get("expiry") or "")
+    return right, strike, expiry
+
+
+def _contract_circle(row: dict[str, Any]) -> str:
+    """Green for calls and bullish prints, red for puts and bearish prints."""
+    right, _strike, _expiry = _resolved_contract(row)
+    if right == "P":
+        return "🔴"
+    if right == "C":
+        return "🟢"
+    sentiment = str(row.get("sentiment") or "").strip().lower()
+    if sentiment in {"bearish", "short"}:
+        return "🔴"
+    return "🟢"
+
+
+def _compact_expiry(raw: Any) -> str:
+    text = str(raw or "")[:10]
+    parts = text.split("-")
+    if len(parts) == 3 and all(part.isdigit() for part in parts):
+        return f"{int(parts[1])}/{int(parts[2])}"
+    return text
+
+
+def _compact_strike(strike: Any, right: str) -> str:
+    if strike is None or strike == "":
+        return right
+    try:
+        number = float(strike)
+    except (TypeError, ValueError):
+        base = str(strike)
+    else:
+        base = str(int(number)) if number.is_integer() else f"{number:g}"
+    return f"{base}{right}" if right else base
+
+
+def _signal_headline(row: dict[str, Any], desk: str) -> str | None:
+    """Plain-text first line for Gold Setup and Golden Flow. No Markdown."""
+    if desk not in {"Gold Setup", "Golden Flow"}:
+        return None
+    right, strike, expiry = _resolved_contract(row)
+    parts: list[str] = []
+    if desk == "Gold Setup":
+        parts.extend(["⭐", _contract_circle(row), "SURE WINNER"])
+    else:
+        parts.extend([_contract_circle(row), "GOLDEN FLOW"])
+    parts.append(str(row.get("symbol") or "?").upper())
+    strike_s = _compact_strike(strike, right)
+    if strike_s:
+        parts.append(strike_s)
+    expiry_s = _compact_expiry(expiry)
+    if expiry_s:
+        parts.append(expiry_s)
+    if desk == "Gold Setup":
+        tier = str(row.get("confidence_tier") or "").strip().upper()
+        if tier:
+            parts.append(tier)
+    return " ".join(parts)
+
+
 def _fmt_alert(row: dict[str, Any], side: str, desk: str) -> str:
     sym = str(row.get("symbol") or "?").upper()
-    right = str(row.get("right") or "C").upper()[:1]
-    strike = row.get("strike")
-    exp = str(row.get("expiry") or "")[:10]
+    headline = _signal_headline(row, desk)
+    if headline:
+        right, strike, exp = _resolved_contract(row)
+        exp = str(exp or "")[:10]
+    else:
+        right = str(row.get("right") or "C").upper()[:1]
+        strike = row.get("strike")
+        exp = str(row.get("expiry") or "")[:10]
     ask = row.get("ask")
     spot = row.get("spot") or row.get("last")
     when = row.get("signaled_at_cst") or ""
@@ -101,12 +200,17 @@ def _fmt_alert(row: dict[str, Any], side: str, desk: str) -> str:
     strike_s = f"{strike}{right}" if strike is not None else right
     ask_s = f"${float(ask):.2f}" if ask is not None else "—"
     spot_s = f"${float(spot):.2f}" if spot is not None else "—"
-    emoji = "🟢" if side == "BUY" else "🔴"
-    lines = [
-        f"{emoji} {side} · {desk}",
-        f"{sym} {strike_s} · exp {exp or '—'}",
-        f"Ask {ask_s} · spot {spot_s}",
-    ]
+    if headline:
+        lines = [headline]
+    else:
+        emoji = "🟢" if side == "BUY" else "🔴"
+        lines = [f"{emoji} {side} · {desk}"]
+    lines.extend(
+        [
+            f"{sym} {strike_s} · exp {exp or '—'}",
+            f"Ask {ask_s} · spot {spot_s}",
+        ]
+    )
     if when:
         lines.append(f"Asked {when}")
     if detail:
@@ -115,12 +219,33 @@ def _fmt_alert(row: dict[str, Any], side: str, desk: str) -> str:
     return "\n".join(lines)
 
 
+def _option_flow(snapshot: dict[str, Any]) -> dict[str, Any]:
+    echo = snapshot.get("echo") if isinstance(snapshot.get("echo"), dict) else {}
+    flow = echo.get("option_flow") if isinstance(echo.get("option_flow"), dict) else None
+    if flow is None and isinstance(snapshot.get("option_flow"), dict):
+        flow = snapshot["option_flow"]
+    return flow or {}
+
+
+def _golden_flow_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    """Golden unusual-flow prints only. Chart-pattern triangles are not flow."""
+    flow = _option_flow(snapshot)
+    rows = [row for row in (flow.get("golden") or []) if isinstance(row, dict)]
+    if not rows:
+        rows = [row for row in (flow.get("prints") or []) if isinstance(row, dict)]
+    return [row for row in rows if is_golden_unusual_flow(row)]
+
+
 def collect_trade_alerts(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
-    """Mirror the UI Buy/Sell Now pulse set for outbound delivery."""
+    """Mirror the UI Buy/Sell Now pulse set, plus Gold Setup and Golden Flow.
+
+    Gold and golden rows are first. ``dispatch_snapshot_alerts`` sends at most
+    eight new messages, and a RIP burst would otherwise use every slot.
+    """
     out: list[dict[str, Any]] = []
     seen_local: set[str] = set()
 
-    def push(row: dict[str, Any] | None, side: str, desk: str) -> None:
+    def push(row: dict[str, Any] | None, side: str, desk: str, *, force: bool = False) -> None:
         if not isinstance(row, dict):
             return
         sym = str(row.get("symbol") or "").upper()
@@ -129,17 +254,18 @@ def collect_trade_alerts(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
         act = str(
             row.get("alert_action") or row.get("desk_action") or row.get("action") or side
         ).upper()
-        if side == "BUY" and act not in _BUY_ACTIONS and "BUY" not in act and act not in {
-            "PUT_NOW",
-            "CALL_NOW",
-            "ENTRY",
-            "RADAR_HOT",
-        }:
-            if not any(x in act for x in ("BUY", "PUT_NOW", "CALL_NOW", "ENTRY", "HOT")):
-                return
-        if side == "SELL" and act not in _SELL_ACTIONS and "SELL" not in act and act != "EXIT":
-            if "EXIT" not in act and "SELL" not in act:
-                return
+        if not force:
+            if side == "BUY" and act not in _BUY_ACTIONS and "BUY" not in act and act not in {
+                "PUT_NOW",
+                "CALL_NOW",
+                "ENTRY",
+                "RADAR_HOT",
+            }:
+                if not any(x in act for x in ("BUY", "PUT_NOW", "CALL_NOW", "ENTRY", "HOT")):
+                    return
+            if side == "SELL" and act not in _SELL_ACTIONS and "SELL" not in act and act != "EXIT":
+                if "EXIT" not in act and "SELL" not in act:
+                    return
         key = _row_key(row, side, desk)
         if key in seen_local:
             return
@@ -159,6 +285,31 @@ def collect_trade_alerts(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
                 "row": row,
             }
         )
+
+    sure = snapshot.get("sure_winners") if isinstance(snapshot.get("sure_winners"), dict) else {}
+    for raw in list(sure.get("winners") or []) + list(sure.get("buy_now") or []):
+        if not isinstance(raw, dict) or not is_sure_winner_gold(raw):
+            continue
+        row = dict(raw)
+        row["action"] = row.get("action") or "SURE_WINNER"
+        tier = str(row.get("confidence_tier") or "").strip().upper()
+        if tier and tier not in str(row.get("detail") or ""):
+            prefix = f"{tier} Gold Setup"
+            row["detail"] = f"{prefix} · {row['detail']}" if row.get("detail") else prefix
+        push(row, "BUY", "Gold Setup", force=True)
+
+    for raw in _golden_flow_rows(snapshot):
+        row = dict(raw)
+        row["action"] = "GOLDEN_FLOW"
+        if row.get("ask") is None and row.get("mid") is not None:
+            row["ask"] = row["mid"]
+        if not row.get("detail"):
+            premium = row.get("premium_notional")
+            try:
+                row["detail"] = f"Golden flow · premium ${float(premium):,.0f}"
+            except (TypeError, ValueError):
+                row["detail"] = "Golden flow"
+        push(row, "BUY", "Golden Flow", force=True)
 
     acts = snapshot.get("actions") or {}
     for r in acts.get("buy_now") or []:
