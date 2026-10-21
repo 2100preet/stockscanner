@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -96,9 +97,38 @@ def _row_key(row: dict[str, Any], side: str, desk: str) -> str:
     return f"{desk}|{side}|{sym}|{act}|{occ or f'{strike}:{exp}'}|{signaled}"
 
 
+_OCC_RE = re.compile(r"([A-Z0-9]{1,6})(\d{6})([CP])(\d{8})")
+
+
+def _occ_parts(contract: Any) -> dict[str, Any]:
+    """Read right, strike, and expiry from an OCC symbol when the row omitted them."""
+    raw = str(contract or "").upper().replace("O:", "").replace(" ", "")
+    match = _OCC_RE.search(raw)
+    if not match:
+        return {}
+    _root, yymmdd, right, strike_raw = match.groups()
+    return {
+        "right": right,
+        "expiry": f"{2000 + int(yymmdd[:2]):04d}-{yymmdd[2:4]}-{yymmdd[4:6]}",
+        "strike": int(strike_raw) / 1000.0,
+    }
+
+
+def _resolved_contract(row: dict[str, Any]) -> tuple[str, Any, str]:
+    occ = _occ_parts(row.get("contract") or row.get("occ"))
+    right = str(row.get("right") or "").strip().upper()[:1]
+    if right not in {"C", "P"}:
+        right = str(occ.get("right") or "")
+    strike = row.get("strike")
+    if strike is None or strike == "":
+        strike = occ.get("strike")
+    expiry = str(row.get("expiry") or occ.get("expiry") or "")
+    return right, strike, expiry
+
+
 def _contract_circle(row: dict[str, Any]) -> str:
     """Green for calls and bullish prints, red for puts and bearish prints."""
-    right = str(row.get("right") or "").strip().upper()[:1]
+    right, _strike, _expiry = _resolved_contract(row)
     if right == "P":
         return "🔴"
     if right == "C":
@@ -133,19 +163,17 @@ def _signal_headline(row: dict[str, Any], desk: str) -> str | None:
     """Plain-text first line for Gold Setup and Golden Flow. No Markdown."""
     if desk not in {"Gold Setup", "Golden Flow"}:
         return None
-    right = str(row.get("right") or "").strip().upper()[:1]
-    if right not in {"C", "P"}:
-        right = ""
+    right, strike, expiry = _resolved_contract(row)
     parts: list[str] = []
     if desk == "Gold Setup":
         parts.extend(["⭐", _contract_circle(row), "SURE WINNER"])
     else:
         parts.extend([_contract_circle(row), "GOLDEN FLOW"])
     parts.append(str(row.get("symbol") or "?").upper())
-    strike_s = _compact_strike(row.get("strike"), right)
+    strike_s = _compact_strike(strike, right)
     if strike_s:
         parts.append(strike_s)
-    expiry_s = _compact_expiry(row.get("expiry"))
+    expiry_s = _compact_expiry(expiry)
     if expiry_s:
         parts.append(expiry_s)
     if desk == "Gold Setup":
@@ -159,13 +187,12 @@ def _fmt_alert(row: dict[str, Any], side: str, desk: str) -> str:
     sym = str(row.get("symbol") or "?").upper()
     headline = _signal_headline(row, desk)
     if headline:
-        right = str(row.get("right") or "").strip().upper()[:1]
-        if right not in {"C", "P"}:
-            right = ""
+        right, strike, exp = _resolved_contract(row)
+        exp = str(exp or "")[:10]
     else:
         right = str(row.get("right") or "C").upper()[:1]
-    strike = row.get("strike")
-    exp = str(row.get("expiry") or "")[:10]
+        strike = row.get("strike")
+        exp = str(row.get("expiry") or "")[:10]
     ask = row.get("ask")
     spot = row.get("spot") or row.get("last")
     when = row.get("signaled_at_cst") or ""

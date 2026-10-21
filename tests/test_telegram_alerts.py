@@ -316,5 +316,17 @@ def test_signal_headline_uses_sentiment_when_right_is_missing():
     )
     assert bear.splitlines()[0] == "🔴 GOLDEN FLOW SPY 500 10/16"
     assert bull.splitlines()[0] == "⭐ 🟢 SURE WINNER QQQ 480C 10/16 MAX"
+    from_occ = disp._fmt_alert(
+        {
+            "symbol": "TSLA",
+            "action": "SURE_WINNER",
+            "confidence_tier": "HIGH",
+            "contract": "TSLA261023P00385000",
+            "ask": 7.6,
+        },
+        "BUY",
+        "Gold Setup",
+    )
+    assert from_occ.splitlines()[0] == "⭐ 🔴 SURE WINNER TSLA 385P 10/23 HIGH"
     assert "parse_mode" not in bear
     assert "parse_mode" not in bull
