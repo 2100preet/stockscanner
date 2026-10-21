@@ -1,4 +1,10 @@
-"""Collect BUY/SELL pulses from a desk snapshot and push Telegram / WhatsApp alerts."""
+"""Collect BUY/SELL pulses from a desk snapshot and push Telegram / WhatsApp alerts.
+
+Gold Setup (Sure Winner MAX/HIGH) and Golden Flow prints are part of this
+personal-chat pulse. They are collected first so the per-cycle send cap cannot
+drop them behind a long RIP tape. SOLID cards, non-golden flow, and chart
+triangles stay off this path.
+"""
 
 from __future__ import annotations
 
@@ -12,6 +18,7 @@ from odte_scanner.alerts.telegram import configured as telegram_configured
 from odte_scanner.alerts.telegram import send_telegram_text
 from odte_scanner.alerts.whatsapp import configured as whatsapp_configured
 from odte_scanner.alerts.whatsapp import send_whatsapp_text
+from odte_scanner.trading.golden import is_golden_unusual_flow, is_sure_winner_gold
 
 logger = logging.getLogger(__name__)
 
@@ -115,12 +122,33 @@ def _fmt_alert(row: dict[str, Any], side: str, desk: str) -> str:
     return "\n".join(lines)
 
 
+def _option_flow(snapshot: dict[str, Any]) -> dict[str, Any]:
+    echo = snapshot.get("echo") if isinstance(snapshot.get("echo"), dict) else {}
+    flow = echo.get("option_flow") if isinstance(echo.get("option_flow"), dict) else None
+    if flow is None and isinstance(snapshot.get("option_flow"), dict):
+        flow = snapshot["option_flow"]
+    return flow or {}
+
+
+def _golden_flow_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    """Golden unusual-flow prints only. Chart-pattern triangles are not flow."""
+    flow = _option_flow(snapshot)
+    rows = [row for row in (flow.get("golden") or []) if isinstance(row, dict)]
+    if not rows:
+        rows = [row for row in (flow.get("prints") or []) if isinstance(row, dict)]
+    return [row for row in rows if is_golden_unusual_flow(row)]
+
+
 def collect_trade_alerts(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
-    """Mirror the UI Buy/Sell Now pulse set for outbound delivery."""
+    """Mirror the UI Buy/Sell Now pulse set, plus Gold Setup and Golden Flow.
+
+    Gold and golden rows are first. ``dispatch_snapshot_alerts`` sends at most
+    eight new messages, and a RIP burst would otherwise use every slot.
+    """
     out: list[dict[str, Any]] = []
     seen_local: set[str] = set()
 
-    def push(row: dict[str, Any] | None, side: str, desk: str) -> None:
+    def push(row: dict[str, Any] | None, side: str, desk: str, *, force: bool = False) -> None:
         if not isinstance(row, dict):
             return
         sym = str(row.get("symbol") or "").upper()
@@ -129,17 +157,18 @@ def collect_trade_alerts(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
         act = str(
             row.get("alert_action") or row.get("desk_action") or row.get("action") or side
         ).upper()
-        if side == "BUY" and act not in _BUY_ACTIONS and "BUY" not in act and act not in {
-            "PUT_NOW",
-            "CALL_NOW",
-            "ENTRY",
-            "RADAR_HOT",
-        }:
-            if not any(x in act for x in ("BUY", "PUT_NOW", "CALL_NOW", "ENTRY", "HOT")):
-                return
-        if side == "SELL" and act not in _SELL_ACTIONS and "SELL" not in act and act != "EXIT":
-            if "EXIT" not in act and "SELL" not in act:
-                return
+        if not force:
+            if side == "BUY" and act not in _BUY_ACTIONS and "BUY" not in act and act not in {
+                "PUT_NOW",
+                "CALL_NOW",
+                "ENTRY",
+                "RADAR_HOT",
+            }:
+                if not any(x in act for x in ("BUY", "PUT_NOW", "CALL_NOW", "ENTRY", "HOT")):
+                    return
+            if side == "SELL" and act not in _SELL_ACTIONS and "SELL" not in act and act != "EXIT":
+                if "EXIT" not in act and "SELL" not in act:
+                    return
         key = _row_key(row, side, desk)
         if key in seen_local:
             return
@@ -159,6 +188,31 @@ def collect_trade_alerts(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
                 "row": row,
             }
         )
+
+    sure = snapshot.get("sure_winners") if isinstance(snapshot.get("sure_winners"), dict) else {}
+    for raw in list(sure.get("winners") or []) + list(sure.get("buy_now") or []):
+        if not isinstance(raw, dict) or not is_sure_winner_gold(raw):
+            continue
+        row = dict(raw)
+        row["action"] = row.get("action") or "SURE_WINNER"
+        tier = str(row.get("confidence_tier") or "").strip().upper()
+        if tier and tier not in str(row.get("detail") or ""):
+            prefix = f"{tier} Gold Setup"
+            row["detail"] = f"{prefix} · {row['detail']}" if row.get("detail") else prefix
+        push(row, "BUY", "Gold Setup", force=True)
+
+    for raw in _golden_flow_rows(snapshot):
+        row = dict(raw)
+        row["action"] = "GOLDEN_FLOW"
+        if row.get("ask") is None and row.get("mid") is not None:
+            row["ask"] = row["mid"]
+        if not row.get("detail"):
+            premium = row.get("premium_notional")
+            try:
+                row["detail"] = f"Golden flow · premium ${float(premium):,.0f}"
+            except (TypeError, ValueError):
+                row["detail"] = "Golden flow"
+        push(row, "BUY", "Golden Flow", force=True)
 
     acts = snapshot.get("actions") or {}
     for r in acts.get("buy_now") or []:
