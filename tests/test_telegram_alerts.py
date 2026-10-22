@@ -372,3 +372,194 @@ def test_signal_headline_uses_sentiment_when_right_is_missing():
     assert from_occ.splitlines()[0] == "⭐ 🔴 SURE WINNER TSLA 385P 10/23 HIGH"
     assert "parse_mode" not in bear
     assert "parse_mode" not in bull
+
+
+def _flow(sym, strike, expiry, *, right="C", premium=100_000, flow_score=10, ask=1.2):
+    yymmdd = expiry[2:4] + expiry[5:7] + expiry[8:10]
+    occ = f"{sym}{yymmdd}{right}{int(round(float(strike) * 1000)):08d}"
+    return {
+        "symbol": sym,
+        "tier": "golden",
+        "flags": ["golden"],
+        "contract": occ,
+        "right": right,
+        "strike": strike,
+        "expiry": expiry,
+        "ask": ask,
+        "premium_notional": premium,
+        "flow_score": flow_score,
+        "action": "GOLDEN_FLOW",
+    }
+
+
+def _prime(tmp_path, monkeypatch):
+    monkeypatch.delenv("CALLMEBOT_APIKEY", raising=False)
+    monkeypatch.delenv("TWILIO_ACCOUNT_SID", raising=False)
+    monkeypatch.delenv("WHATSAPP_TOKEN", raising=False)
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:ABC")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "42")
+    sent: list[str] = []
+
+    def fake_tg(body, **kwargs):
+        sent.append(body)
+        return {"ok": True, "provider": "telegram", "configured": True}
+
+    monkeypatch.setattr(disp, "send_telegram_text", fake_tg)
+    monkeypatch.setattr(
+        disp,
+        "whatsapp_configured",
+        lambda: {"ok": False, "callmebot": False, "twilio": False, "meta": False},
+    )
+    seen = tmp_path / "seen.json"
+    primed = disp.dispatch_snapshot_alerts(
+        {"actions": {"buy_now": [{"symbol": "MSFT", "action": "BUY_NOW", "contract": "MSFT1", "ask": 1.0}]}},
+        seen_path=seen,
+    )
+    assert primed.get("primed") is True
+    return seen, sent
+
+
+def test_golden_flow_and_gold_setup_collapse_to_one_message_per_symbol():
+    snap = {
+        "sure_winners": {
+            "winners": [
+                {
+                    "symbol": "TSLA",
+                    "action": "SURE_WINNER",
+                    "sure_winner": True,
+                    "confidence_tier": "HIGH",
+                    "contract": "TSLA261023C00385000",
+                    "strike": 385,
+                    "expiry": "2026-10-23",
+                    "right": "C",
+                    "ask": 7.6,
+                    "score": 90,
+                },
+                {
+                    "symbol": "TSLA",
+                    "action": "SURE_WINNER",
+                    "sure_winner": True,
+                    "confidence_tier": "MAX",
+                    "contract": "TSLA261023C00400000",
+                    "strike": 400,
+                    "expiry": "2026-10-23",
+                    "right": "C",
+                    "ask": 2.4,
+                    "score": 70,
+                },
+            ]
+        },
+        "echo": {
+            "option_flow": {
+                "golden": [
+                    _flow("NBIS", 180, "2026-10-24", premium=800_000, flow_score=40, ask=4.2),
+                    _flow("NBIS", 175, "2026-10-24", premium=200_000, flow_score=20, ask=2.1),
+                    _flow("NBIS", 170, "2026-10-24", premium=100_000, flow_score=10, ask=3.4),
+                    _flow("NBIS", 190, "2026-10-30", premium=50_000, flow_score=5, ask=1.1),
+                    _flow("NBIS", 160, "2026-10-30", right="P", premium=30_000, flow_score=-8, ask=0.9),
+                    {
+                        "symbol": "NBIS",
+                        "tier": "golden",
+                        "flags": ["golden"],
+                        "contract": "NBIS261023C00051000",
+                        "strike": 50,
+                        "expiry": "2026-10-30",
+                        "right": "C",
+                        "ask": 0.15,
+                        "spot": 50.01,
+                        "dte": 8,
+                        "premium_notional": 9_000_000,
+                        "flow_score": 99,
+                    },
+                    _flow("AMD", 200, "2026-10-24", premium=300_000, flow_score=15, ask=1.5),
+                ]
+            }
+        },
+    }
+    alerts = disp.collect_trade_alerts(snap)
+    desks = [(a["desk"], a["symbol"]) for a in alerts]
+    assert desks == [("Gold Setup", "TSLA"), ("Golden Flow", "NBIS"), ("Golden Flow", "AMD")]
+    gold = alerts[0]["message"]
+    assert gold.splitlines()[0] == "⭐ 🟢 SURE WINNER TSLA 400C 10/23 MAX"
+    assert "Also 🟢 385C 10/23 · ask $7.60" in gold.splitlines()
+    assert "parse_mode" not in gold
+    flow = alerts[1]["message"]
+    lines = flow.splitlines()
+    assert lines[0] == "🟢 GOLDEN FLOW NBIS 180C 10/24"
+    assert "Also 🟢 175C 10/24 · ask $2.10" in lines
+    assert "Also 🟢 170C 10/24 · ask $3.40" in lines
+    assert sum(1 for line in lines if line.startswith("Also ")) == 2
+    assert "190C" not in flow
+    assert "160P" not in flow
+    assert "0.15" not in flow
+    assert "50C" not in lines[0]
+
+
+def test_session_suppresses_same_symbol_until_a_stronger_contract(tmp_path, monkeypatch):
+    seen, sent = _prime(tmp_path, monkeypatch)
+    first = {
+        "echo": {
+            "option_flow": {
+                "golden": [
+                    _flow("NBIS", 180, "2026-10-24", premium=800_000, flow_score=40, ask=4.2),
+                    _flow("NBIS", 175, "2026-10-24", premium=200_000, flow_score=20, ask=2.1),
+                ]
+            }
+        }
+    }
+    r1 = disp.dispatch_snapshot_alerts(first, seen_path=seen)
+    assert r1.get("sent") == 1
+    assert [(row["desk"], row["symbol"]) for row in r1["results"]] == [("Golden Flow", "NBIS")]
+    assert sent[0].splitlines()[0] == "🟢 GOLDEN FLOW NBIS 180C 10/24"
+
+    r2 = disp.dispatch_snapshot_alerts(first, seen_path=seen)
+    assert r2.get("sent") == 0
+    assert len(sent) == 1
+
+    weaker = {
+        "echo": {
+            "option_flow": {
+                "golden": [
+                    _flow("NBIS", 170, "2026-10-24", premium=50_000, flow_score=5, ask=1.0),
+                ]
+            }
+        }
+    }
+    r3 = disp.dispatch_snapshot_alerts(weaker, seen_path=seen)
+    assert r3.get("sent") == 0
+
+    stronger = {
+        "echo": {
+            "option_flow": {
+                "golden": [
+                    _flow("NBIS", 200, "2026-10-24", premium=1_500_000, flow_score=80, ask=6.5),
+                    _flow("NBIS", 180, "2026-10-24", premium=800_000, flow_score=40, ask=4.2),
+                ]
+            }
+        }
+    }
+    r4 = disp.dispatch_snapshot_alerts(stronger, seen_path=seen)
+    assert r4.get("sent") == 1
+    assert sent[-1].splitlines()[0] == "🟢 GOLDEN FLOW NBIS 200C 10/24"
+    assert "Also 🟢 180C 10/24 · ask $4.20" in sent[-1].splitlines()
+
+
+def test_send_cap_counts_symbols_not_contracts(tmp_path, monkeypatch):
+    seen, sent = _prime(tmp_path, monkeypatch)
+    golden = [
+        _flow("NBIS", 180 + i, "2026-10-24", premium=100_000 * (5 - i), flow_score=40 - i, ask=1 + i * 0.1)
+        for i in range(5)
+    ]
+    for i, sym in enumerate(["AMD", "SPX", "XSP", "USO", "ALAB", "RKLB", "TSLA", "AMAT"]):
+        golden.append(_flow(sym, 100 + i, "2026-10-24", premium=90_000 - i, flow_score=10, ask=1.2))
+    result = disp.dispatch_snapshot_alerts(
+        {"echo": {"option_flow": {"golden": golden}}},
+        seen_path=seen,
+        max_send=8,
+    )
+    assert result.get("sent") == 8
+    symbols = [row["symbol"] for row in result["results"]]
+    assert symbols[0] == "NBIS"
+    assert symbols.count("NBIS") == 1
+    assert len(symbols) == len(set(symbols))
+    assert sum(body.splitlines()[0].count("NBIS") for body in sent) == 1
