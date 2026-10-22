@@ -1182,9 +1182,17 @@ class AutoTrader:
         default). A cap raises Sure Winner to 3 and Challenge to 2 when the
         next contract still fits. Lottery and the other desks stay put.
         Same-day expiry stays 1 contract and flattens on the clock.
+        A row ``max_contracts`` (promoted trend/flow gold) cannot be raised.
         """
+        row_max = _i(row.get("max_contracts"))
+
+        def _cap_row(qty: int) -> int:
+            if row_max is not None and row_max > 0:
+                return max(1, min(int(qty), int(row_max)))
+            return int(qty)
+
         if self.max_risk_per_trade_usd is None:
-            return self.max_contracts
+            return _cap_row(self.max_contracts)
         desk_l = str(desk or "").lower()
         if second or desk_l in {self.second_desk, "challenge"}:
             cap = self.challenge_max_contracts
@@ -1201,7 +1209,7 @@ class AutoTrader:
         qty = 1
         while qty < cap and (qty + 1) * premium * 100.0 <= risk + 1e-6:
             qty += 1
-        return qty
+        return _cap_row(qty)
 
     def _route_buy(
         self,

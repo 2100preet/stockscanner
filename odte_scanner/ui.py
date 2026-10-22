@@ -4731,10 +4731,20 @@ def create_app(config_path: str | None = None) -> Flask:
                 except Exception:  # noqa: BLE001
                     challenge_syms = []
                     dram_syms = []
+                from odte_scanner.data.live_quotes import prioritize_quote_symbols
+
+                quote_top_n = int(actions_cfg.get("action_quote_top_n", 24))
+                ranked_quotes = prioritize_quote_symbols(
+                    board_rows,
+                    scan.get("scores") if isinstance(scan, dict) else None,
+                    top_n=quote_top_n,
+                )
                 quote_syms = (
                     []
                     if not live_marks
-                    else sorted(set(syms[:8]) | set(challenge_syms[:12]) | set(dram_syms))
+                    else list(
+                        dict.fromkeys([*ranked_quotes, *list(challenge_syms[:12]), *list(dram_syms)])
+                    )
                 )
                 # Always refresh CORE mega tape — even when default polls skip option fan-out.
                 # ORCL Oct 13 miss: +4.4% session but quotes empty → RIP_COOL / no chain fallback.
@@ -7175,6 +7185,12 @@ def create_app(config_path: str | None = None) -> Flask:
                         )
                         if not sw_path.is_absolute():
                             sw_path = ROOT / sw_path
+                        flow_board = echo.get("option_flow") if isinstance(echo, dict) else None
+                        contract_rows = []
+                        if isinstance(scan, dict):
+                            contract_rows.extend(scan.get("call_candidates") or [])
+                            contract_rows.extend(scan.get("put_candidates") or [])
+                            contract_rows.extend(scan.get("option_candidates") or [])
                         sure_board = build_sure_winner_board(
                             actions=actions if isinstance(actions, dict) else None,
                             challenge=challenge if isinstance(challenge, dict) else None,
@@ -7192,6 +7208,11 @@ def create_app(config_path: str | None = None) -> Flask:
                             store_path=sw_path,
                             red_flag=red_flag_snapshot if isinstance(red_flag_snapshot, dict) else None,
                             respect_gex=bool(actions_cfg.get("sure_winners_respect_gex", True)),
+                            scores=scan.get("scores") if isinstance(scan, dict) else None,
+                            option_flow=flow_board,
+                            option_rows=contract_rows,
+                            quotes=quotes,
+                            promotion_cfg=actions_cfg,
                         )
                         # Re-bind annotated source desks so color flags land on BUY NOW cards
                         if isinstance(sure_board.get("actions"), dict):

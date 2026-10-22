@@ -1,4 +1,4 @@
-"""Sure-winner desk — 1–2 high-confidence tickets per day to size huge.
+"""Sure-winner desk — 1–2 hist-gated tickets per day, plus one promoted slot.
 
 Selects from Options BUY_NOW + Challenge ENTRY that clear perfect/elite hist
 certainty, have a live contract/ask, and rank by confidence. Sticky for the
@@ -81,6 +81,8 @@ class SureWinner:
     signaled_at_cst: str | None = None
     day_cst: str | None = None
     pick_key: str | None = None
+    max_contracts: int | None = None
+    promotion_path: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -374,9 +376,19 @@ def collect_candidates(
 
 def _to_sure_winner(row: dict[str, Any], *, day: str) -> SureWinner:
     tier = str(row["confidence_tier"])
-    sizing = SIZE_BY_TIER[tier]
-    conf = confidence_pct_for(tier, row.get("win_pct"), row.get("score"))
-    certainty = str(row.get("certainty_tier") or "strong")
+    promoted = bool(row.get("promotion_path"))
+    if promoted:
+        sizing = {
+            "size_mult": float(row.get("size_mult") or 1.0),
+            "size_label": str(row.get("size_label") or "1-LOT"),
+            "size_hint": str(row.get("size_hint") or "Promoted gold — 1 contract, not GO HUGE"),
+        }
+    else:
+        sizing = SIZE_BY_TIER[tier]
+    conf = row.get("confidence_pct") if promoted and row.get("confidence_pct") is not None else None
+    if conf is None:
+        conf = confidence_pct_for(tier, row.get("win_pct"), row.get("score"))
+    certainty = str(row.get("certainty_tier") or ("watch" if promoted else "strong"))
     win = row.get("win_pct")
     n = row.get("win_samples")
     ts = signal_timestamps()
@@ -389,35 +401,49 @@ def _to_sure_winner(row: dict[str, Any], *, day: str) -> SureWinner:
         }
     right = str(row.get("right") or "C").upper()
     side = "PUT" if right == "P" else "CALL"
-    headline = (
-        f"{tier} · {sizing['size_label']} — {row['symbol']} {side} "
-        f"({certainty} hist {float(win or 0):.0f}% n={int(n or 0)})"
-    )
-    detail_bits = [
-        f"Sure-winner #{tier}",
-        sizing["size_hint"],
-        f"hist {float(win or 0):.0f}% n={int(n or 0)}",
-        f"conf ~{conf:.0f}%",
-    ]
-    if row.get("hit_1pct") is not None:
+    if promoted and row.get("headline"):
+        headline = str(row["headline"])
+    else:
+        headline = (
+            f"{tier} · {sizing['size_label']} — {row['symbol']} {side} "
+            f"({certainty} hist {float(win or 0):.0f}% n={int(n or 0)})"
+        )
+    if promoted and row.get("detail"):
+        detail = str(row["detail"])
+        detail_bits = None
+    else:
+        detail = None
+        detail_bits = [
+            f"Sure-winner #{tier}",
+            sizing["size_hint"],
+            f"hist {float(win or 0):.0f}% n={int(n or 0)}",
+            f"conf ~{conf:.0f}%",
+        ]
+    if detail_bits is not None and row.get("hit_1pct") is not None:
         detail_bits.append(f"strike rate ≥1% {float(row['hit_1pct']):.0f}%")
     src_detail = row.get("headline") or row.get("detail") or row.get("recommend_reason") or ""
-    if src_detail:
+    if detail_bits is not None and src_detail:
         detail_bits.append(str(src_detail)[:180])
     playbook = list(row.get("playbook") or [])
     playbook = [f"sure_{tier.lower()}", sizing["size_label"].lower().replace(" ", "_"), *playbook][:8]
+    if promoted and row.get("promotion_path"):
+        playbook = [str(row["promotion_path"]), *playbook][:8]
+    try:
+        max_contracts = int(row["max_contracts"]) if row.get("max_contracts") is not None else None
+    except (TypeError, ValueError):
+        max_contracts = None
 
     return SureWinner(
         action="SURE_WINNER",
         symbol=str(row["symbol"]).upper(),
         confidence_tier=tier,
-        confidence_pct=conf,
+        confidence_pct=float(conf),
         size_mult=float(sizing["size_mult"]),
         size_label=sizing["size_label"],
         size_hint=sizing["size_hint"],
-        color=COLOR_BY_TIER[tier],
+        color=str(row.get("color") or "gold") if promoted else COLOR_BY_TIER[tier],
         headline=headline,
-        detail=" · ".join(detail_bits),
+        detail=detail if detail is not None else " · ".join(detail_bits or []),
         source_desk=str(row.get("source_desk") or "Options"),
         certainty_tier=certainty,
         right=right,
@@ -442,12 +468,69 @@ def _to_sure_winner(row: dict[str, Any], *, day: str) -> SureWinner:
         soft_exit=row.get("soft_exit"),
         wall_buffer_usd=row.get("wall_buffer_usd"),
         playbook=playbook,
-        go_huge=tier == "MAX",
+        go_huge=tier == "MAX" and not promoted,
         signaled_at=ts["signaled_at"],
         signaled_at_cst=ts["signaled_at_cst"],
         day_cst=day,
         pick_key=row.get("pick_key") or _pick_key(row),
+        max_contracts=max_contracts,
+        promotion_path=str(row.get("promotion_path") or "") or None,
     )
+
+
+def _select_bucket(
+    candidates: list[dict[str, Any]],
+    *,
+    limit: int,
+    store_picks: list[dict[str, Any]],
+    tier_ok: set[str],
+    taken_symbols: set[str] | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Sticky-then-fill one bucket. ``limit`` is this bucket's own cap."""
+    by_key = {str(c["pick_key"]): c for c in candidates if c.get("pick_key")}
+    taken = set(taken_symbols or ())
+    selected: list[dict[str, Any]] = []
+    kept_keys: list[str] = []
+
+    def _take(cand: dict[str, Any], key: str) -> bool:
+        sym = str(cand.get("symbol") or "").upper()
+        if not sym or sym in taken:
+            return False
+        selected.append(cand)
+        kept_keys.append(key)
+        taken.add(sym)
+        return True
+
+    for prior in store_picks:
+        if len(selected) >= limit:
+            break
+        key = str(prior.get("pick_key") or "")
+        cand = by_key.get(key)
+        if not cand or cand.get("confidence_tier") not in tier_ok:
+            continue
+        _take(cand, key)
+
+    for cand in candidates:
+        if len(selected) >= limit:
+            break
+        key = str(cand.get("pick_key") or "")
+        if not key or key in kept_keys:
+            continue
+        if cand.get("confidence_tier") not in tier_ok:
+            continue
+        if cand.get("confidence_tier") == "SOLID" and any(
+            s.get("confidence_tier") in {"MAX", "HIGH"} for s in selected
+        ):
+            better = [
+                c
+                for c in candidates
+                if c.get("pick_key") not in kept_keys
+                and c.get("confidence_tier") in {"MAX", "HIGH"}
+            ]
+            if better:
+                continue
+        _take(cand, key)
+    return selected, kept_keys
 
 
 def select_sure_winners(
@@ -457,61 +540,48 @@ def select_sure_winners(
     day: str | None = None,
     store: dict[str, Any] | None = None,
     prefer_tiers: tuple[str, ...] = ("MAX", "HIGH", "SOLID"),
+    promoted: list[dict[str, Any]] | None = None,
+    promoted_extra_slots: int = 1,
+    total_cap: int = 3,
 ) -> tuple[list[SureWinner], dict[str, Any]]:
-    """Pick up to max_per_day winners; sticky within the CST day."""
+    """Pick hist-gated winners plus a reserved slot for promoted golds.
+
+    Hist-gated names stay hard-capped at 2 (``max_per_day`` cannot raise
+    that). Promoted strong-trend / confirmed-flow cards use
+    ``promoted_extra_slots`` and never push the board past ``total_cap``.
+    """
     day = day or _day_cst()
-    max_n = max(1, min(int(max_per_day), 2))  # hard cap 1–2
+    max_n = max(1, min(int(max_per_day), 2))  # hist hard cap 1–2
+    extra = max(0, int(promoted_extra_slots))
+    total = max(max_n, min(int(total_cap), max_n + extra))
     store = dict(store or {})
     if store.get("day") != day:
         store = {"day": day, "picks": []}
 
-    by_key = {str(c["pick_key"]): c for c in candidates if c.get("pick_key")}
     tier_ok = set(prefer_tiers)
+    hist = [c for c in candidates if not c.get("promotion_path")]
+    promo = [c for c in (promoted or []) if c.get("promotion_path") and c.get("pick_key")]
+    priors = [p for p in (store.get("picks") or []) if isinstance(p, dict)]
+    hist_priors = [p for p in priors if not p.get("promotion_path")]
+    promo_priors = [p for p in priors if p.get("promotion_path")]
 
-    sticky: list[dict[str, Any]] = []
-    kept_keys: list[str] = []
-    for prior in store.get("picks") or []:
-        key = str(prior.get("pick_key") or "")
-        if not key or key not in by_key:
-            continue
-        cand = by_key[key]
-        if cand.get("confidence_tier") not in tier_ok:
-            continue
-        sticky.append(cand)
-        kept_keys.append(key)
-        if len(sticky) >= max_n:
-            break
+    hist_selected, _hist_keys = _select_bucket(
+        hist, limit=max_n, store_picks=hist_priors, tier_ok=tier_ok
+    )
+    promo_room = max(0, min(extra, total - len(hist_selected)))
+    taken = {str(c.get("symbol") or "").upper() for c in hist_selected}
+    promo_selected, _promo_keys = _select_bucket(
+        promo,
+        limit=promo_room,
+        store_picks=promo_priors,
+        tier_ok={"MAX", "HIGH"},
+        taken_symbols=taken,
+    )
+    selected = hist_selected + promo_selected
 
-    selected = list(sticky)
-    for cand in candidates:
-        if len(selected) >= max_n:
-            break
-        key = str(cand.get("pick_key") or "")
-        if not key or key in kept_keys:
-            continue
-        if cand.get("confidence_tier") not in tier_ok:
-            continue
-        # Prefer MAX/HIGH before filling with SOLID
-        if cand.get("confidence_tier") == "SOLID" and any(
-            s.get("confidence_tier") in {"MAX", "HIGH"} for s in selected
-        ):
-            # allow second SOLID only if we still have a free slot and no better left
-            better = [
-                c
-                for c in candidates
-                if c.get("pick_key") not in kept_keys
-                and c.get("confidence_tier") in {"MAX", "HIGH"}
-            ]
-            if better:
-                continue
-        selected.append(cand)
-        kept_keys.append(key)
-
-    winners = [_to_sure_winner(c, day=day) for c in selected[:max_n]]
+    winners = [_to_sure_winner(c, day=day) for c in selected[:total]]
     # Preserve first-seen time for sticky picks
-    prior_by_key = {
-        str(p.get("pick_key")): p for p in (store.get("picks") or []) if p.get("pick_key")
-    }
+    prior_by_key = {str(p.get("pick_key")): p for p in priors if p.get("pick_key")}
     new_picks = []
     for w in winners:
         prior = prior_by_key.get(str(w.pick_key) or "")
@@ -526,6 +596,7 @@ def select_sure_winners(
                 "symbol": w.symbol,
                 "contract": w.contract,
                 "confidence_tier": w.confidence_tier,
+                "promotion_path": w.promotion_path,
                 "signaled_at": w.signaled_at,
                 "signaled_at_cst": w.signaled_at_cst,
             }
@@ -569,6 +640,17 @@ def annotate_buy_rows(
     return out
 
 
+def _option_rows_from_actions(actions: dict[str, Any] | None) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    if not isinstance(actions, dict):
+        return rows
+    for key in ("buy_now", "wait", "all", "buy_now_0dte", "buy_now_weekly", "buy_now_calls"):
+        for row in actions.get(key) or []:
+            if isinstance(row, dict):
+                rows.append(row)
+    return rows
+
+
 def build_sure_winner_board(
     *,
     actions: dict[str, Any] | None = None,
@@ -583,6 +665,13 @@ def build_sure_winner_board(
     now: datetime | None = None,
     red_flag: dict[str, Any] | None = None,
     respect_gex: bool = True,
+    scores: list[dict[str, Any]] | None = None,
+    option_flow: Any = None,
+    option_rows: list[dict[str, Any]] | None = None,
+    quotes: dict[str, Any] | None = None,
+    promotion_cfg: dict[str, Any] | None = None,
+    promoted_extra_slots: int | None = None,
+    total_cap: int | None = None,
 ) -> dict[str, Any]:
     """Build the capped sure-winner board and annotate source desks."""
     day = _day_cst(now)
@@ -598,6 +687,26 @@ def build_sure_winner_board(
         red_flag=red_flag,
         respect_gex=respect_gex,
     )
+    cfg = dict(promotion_cfg or {})
+    extra = int(
+        promoted_extra_slots
+        if promoted_extra_slots is not None
+        else cfg.get("sure_winners_promoted_extra_slots", 1)
+    )
+    cap_total = int(total_cap if total_cap is not None else cfg.get("sure_winners_total_cap", 3))
+    from odte_scanner.signals.trend_gold import collect_promotions
+
+    contract_rows = list(option_rows or []) + _option_rows_from_actions(actions)
+    promoted = collect_promotions(
+        scores=scores,
+        option_rows=contract_rows,
+        option_flow=option_flow,
+        quotes=quotes,
+        cfg=cfg,
+        now=now,
+        red_flag=red_flag,
+        respect_gex=respect_gex,
+    )
     prefer = ("MAX", "HIGH", "SOLID") if allow_solid else ("MAX", "HIGH")
     winners, store = select_sure_winners(
         candidates,
@@ -605,6 +714,9 @@ def build_sure_winner_board(
         day=day,
         store=store,
         prefer_tiers=prefer,
+        promoted=promoted,
+        promoted_extra_slots=extra,
+        total_cap=cap_total,
     )
     save_day_store(store_path, store)
 
@@ -627,10 +739,13 @@ def build_sure_winner_board(
     high_n = sum(1 for w in winners if w.confidence_tier == "HIGH")
     solid_n = sum(1 for w in winners if w.confidence_tier == "SOLID")
 
+    hist_cap = max(1, min(int(max_per_day), 2))
     note = (
-        f"Cap {max(1, min(max_per_day, 2))}/day · sticky CST day {day}. "
+        f"Cap {hist_cap}/day hist-gated · sticky CST day {day}. "
         "MAX = GO HUGE (×3), HIGH = SIZE UP (×2), SOLID = FULL SIZE (×1.5). "
-        "Hist edge ≠ guaranteed profit."
+        f"Promoted trend/flow gold uses {max(0, extra)} reserved slot "
+        f"(board cap {max(hist_cap, min(cap_total, hist_cap + max(0, extra)))}). "
+        "Hist gate is unchanged. Hist edge ≠ guaranteed profit."
     )
     if respect_gex:
         note += " GEX/Red Flag checked — index 0–1 DTE calls skipped on LONG_GAMMA / RED_FLAG."
@@ -654,6 +769,8 @@ def build_sure_winner_board(
         "generated_at": datetime.now(tz=CT).isoformat(),
         "day_cst": day,
         "max_per_day": max(1, min(int(max_per_day), 2)),
+        "promoted_extra_slots": max(0, extra),
+        "total_cap": max(hist_cap, min(cap_total, hist_cap + max(0, extra))),
         "winners": winner_dicts,
         "primary": winner_dicts[0] if winner_dicts else None,
         "buy_now": winner_dicts,  # alias for NOW board collectors
@@ -664,6 +781,7 @@ def build_sure_winner_board(
             "high": high_n,
             "solid": solid_n,
             "go_huge": sum(1 for w in winners if w.go_huge),
+            "promoted": sum(1 for w in winners if w.promotion_path),
             "candidates": len(candidates),
         },
         "size_guide": SIZE_BY_TIER,

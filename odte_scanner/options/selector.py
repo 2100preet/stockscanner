@@ -81,14 +81,19 @@ def _rank_call(
     min_oi: int,
     min_vol: int,
     prefer_closer_dte: bool,
+    prefer_near_money: bool = False,
 ) -> float:
     liq_penalty = 0.0
     if oi < min_oi:
         liq_penalty += 8
     if vol < min_vol:
         liq_penalty += 4
-    # Prefer slight OTM / ATM; penalize deep ITM less than far OTM
-    money_pen = abs(moneyness) * (6 if moneyness >= 0 else 4)
+    # Prefer slight OTM / ATM; penalize deep ITM less than far OTM.
+    # Strong trends pull harder toward the money so a 3% wing does not win.
+    if prefer_near_money:
+        money_pen = abs(moneyness) * (18 if moneyness >= 0 else 10)
+    else:
+        money_pen = abs(moneyness) * (6 if moneyness >= 0 else 4)
     dte_pen = dte * (1.5 if prefer_closer_dte else 0.4)
     return score - money_pen - spread * 25 - liq_penalty - dte_pen
 
@@ -108,6 +113,9 @@ def select_calls(
     min_volume: int = 10,
     yahoo_symbol: str | None = None,
     per_bucket: int = 1,
+    prefer_near_money: bool = False,
+    near_otm_cap: float = 1.25,
+    near_itm_cap: float = 1.50,
 ) -> list[CallCandidate]:
     """
     Pick best *real* ATM/OTM calls from the live chain.
@@ -129,6 +137,9 @@ def select_calls(
         min_volume=min_volume,
         yahoo_symbol=yahoo_symbol,
         per_bucket=per_bucket,
+        prefer_near_money=prefer_near_money,
+        near_otm_cap=near_otm_cap,
+        near_itm_cap=near_itm_cap,
     )
 
 
@@ -147,6 +158,7 @@ def select_puts(
     min_volume: int = 10,
     yahoo_symbol: str | None = None,
     per_bucket: int = 1,
+    prefer_near_money: bool = False,
 ) -> list[CallCandidate]:
     """Pick best *real* ATM/OTM puts — mirror of select_calls for bearish sleeve."""
     return _select_side(
@@ -164,6 +176,7 @@ def select_puts(
         min_volume=min_volume,
         yahoo_symbol=yahoo_symbol,
         per_bucket=per_bucket,
+        prefer_near_money=prefer_near_money,
     )
 
 
@@ -183,9 +196,17 @@ def _select_side(
     min_volume: int = 10,
     yahoo_symbol: str | None = None,
     per_bucket: int = 1,
+    prefer_near_money: bool = False,
+    near_otm_cap: float = 1.25,
+    near_itm_cap: float = 1.50,
 ) -> list[CallCandidate]:
     right = right.upper()
     fetch_sym = yahoo_symbol or symbol
+    eff_otm = float(otm_pct_max)
+    eff_itm = float(itm_pct_max)
+    if prefer_near_money:
+        eff_otm = min(eff_otm, float(near_otm_cap))
+        eff_itm = min(eff_itm, float(near_itm_cap))
 
     # Prefer Tradier chains when token set (Pages offline Yahoo often empty)
     tradier_out: list[CallCandidate] = []
@@ -208,9 +229,12 @@ def _select_side(
                     min_dte=min_d,
                     max_dte=max_d,
                     prefer_dte=prefer,
-                    otm_pct_max=otm_pct_max,
-                    itm_pct_max=itm_pct_max,
+                    otm_pct_max=eff_otm,
+                    itm_pct_max=eff_itm,
                     min_volume=min_volume,
+                    prefer_near_money=prefer_near_money,
+                    near_otm_cap=near_otm_cap,
+                    near_itm_cap=near_itm_cap,
                     min_oi=min_open_interest,
                     require_bid=True,
                 )
@@ -292,7 +316,7 @@ def _select_side(
                 moneyness = (spot - strike) / spot * 100
             else:
                 moneyness = (strike - spot) / spot * 100
-            if moneyness < -itm_pct_max or moneyness > otm_pct_max:
+            if moneyness < -eff_itm or moneyness > eff_otm:
                 continue
 
             bid = float(row.get("bid") or 0)
@@ -332,6 +356,7 @@ def _select_side(
                 min_oi=min_open_interest,
                 min_vol=min_volume,
                 prefer_closer_dte=(bucket == "0dte"),
+                prefer_near_money=prefer_near_money,
             )
             contract = str(row.get("contractSymbol") or "")
             if not contract or contract.endswith("_SYN"):

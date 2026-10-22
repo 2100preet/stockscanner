@@ -296,6 +296,45 @@ def fetch_live_quote(symbol: str, *, yahoo_symbol: str | None = None) -> LiveQuo
         return _quote_from_daily_cache(symbol, yahoo_symbol=yahoo_symbol)
 
 
+def prioritize_quote_symbols(
+    board_rows: list[dict[str, Any]] | None,
+    scores: list[dict[str, Any]] | None,
+    *,
+    top_n: int = 24,
+) -> list[str]:
+    """Symbols that must get a live quote, highest ensemble score first.
+
+    An alphabetical slice of the board drops rank-2 names when the book is
+    large. Top scores fill the budget before leftover board symbols.
+    """
+    ranked = sorted(
+        [row for row in (scores or []) if isinstance(row, dict)],
+        key=lambda row: float(row.get("ensemble_score") or row.get("score") or 0),
+        reverse=True,
+    )
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def add(symbol: Any) -> None:
+        text = str(symbol or "").upper().strip()
+        if not text or text in seen:
+            return
+        seen.add(text)
+        out.append(text)
+
+    limit = max(1, int(top_n))
+    for row in ranked:
+        add(row.get("symbol"))
+        if len(out) >= limit:
+            return out
+    for row in board_rows or []:
+        if isinstance(row, dict):
+            add(row.get("symbol"))
+        if len(out) >= limit:
+            break
+    return out
+
+
 def fetch_live_quotes(
     symbols: list[str],
     *,
