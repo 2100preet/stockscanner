@@ -2,8 +2,9 @@
 
 Gold Setup (Sure Winner MAX/HIGH) and Golden Flow prints are part of this
 personal-chat pulse. They are collected first so the per-cycle send cap cannot
-drop them behind a long RIP tape. SOLID cards, non-golden flow, and chart
-triangles stay off this path.
+drop them behind a long RIP tape. Each of those desks sends one message per
+symbol: the strongest contract is the headline and up to two others are extra
+lines. SOLID cards, non-golden flow, and chart triangles stay off this path.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import json
 import logging
 import os
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -53,7 +55,10 @@ def _env_flag(name: str, default: bool = True) -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
-def _load_seen(path: Path) -> set[str]:
+_GROUPED_DESKS = frozenset({"Gold Setup", "Golden Flow"})
+
+
+def _load_seen(path: Path) -> tuple[set[str], dict[str, list[float]]]:
     # Only fall back to legacy when using the default desk seen path
     candidates = [path]
     if path.resolve() == DEFAULT_SEEN.resolve() and LEGACY_SEEN.exists():
@@ -65,19 +70,37 @@ def _load_seen(path: Path) -> set[str]:
 
         raw = load_json_state(p)
         if isinstance(raw, list):
-            return {str(x) for x in raw}
+            return {str(x) for x in raw}, {}
         if isinstance(raw, dict):
             keys = raw.get("keys") or raw.get("seen") or []
-            return {str(x) for x in keys}
-    return set()
+            strengths: dict[str, list[float]] = {}
+            raw_strengths = raw.get("strengths") or {}
+            if isinstance(raw_strengths, dict):
+                for key, value in raw_strengths.items():
+                    if isinstance(value, (list, tuple)):
+                        strengths[str(key)] = [float(part) for part in value]
+            return {str(x) for x in keys}, strengths
+    return set(), {}
 
 
-def _save_seen(path: Path, keys: set[str], *, keep: int = 400) -> None:
+def _save_seen(
+    path: Path,
+    keys: set[str],
+    strengths: dict[str, list[float]] | None = None,
+    *,
+    keep: int = 400,
+) -> None:
     from odte_scanner.json_util import atomic_write_text
 
     path.parent.mkdir(parents=True, exist_ok=True)
     ordered = sorted(keys)[-keep:]
-    payload = json.dumps({"keys": ordered}, indent=2)
+    kept = set(ordered)
+    stored = {
+        key: value
+        for key, value in (strengths or {}).items()
+        if key in kept and isinstance(value, list)
+    }
+    payload = json.dumps({"keys": ordered, "strengths": stored}, indent=2)
     atomic_write_text(path, payload)
     # Keep legacy file in sync for older caches
     try:
@@ -183,7 +206,73 @@ def _signal_headline(row: dict[str, Any], desk: str) -> str | None:
     return " ".join(parts)
 
 
-def _fmt_alert(row: dict[str, Any], side: str, desk: str) -> str:
+def _num(value: Any) -> float:
+    try:
+        return round(float(value), 4)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _contract_strength(row: dict[str, Any]) -> list[float]:
+    """Higher is a stronger headline. Tier, then score, then flow, then premium."""
+    tier = str(row.get("confidence_tier") or "").strip().upper()
+    tier_rank = {"MAX": 2.0, "HIGH": 1.0}.get(tier, 0.0)
+    score = _num(row.get("score") if row.get("score") is not None else row.get("ensemble_score"))
+    flow = abs(_num(row.get("flow_score")))
+    premium = _num(row.get("premium_notional"))
+    volume = _num(row.get("volume"))
+    return [tier_rank, score, flow, premium, volume]
+
+
+def _strength_gt(current: list[float] | None, previous: list[float] | None) -> bool:
+    cur = [float(part) for part in (current or [])]
+    prev = [float(part) for part in (previous or [])]
+    width = max(len(cur), len(prev))
+    cur.extend([0.0] * (width - len(cur)))
+    prev.extend([0.0] * (width - len(prev)))
+    return cur > prev
+
+
+def _session_day() -> str:
+    from odte_scanner.time_cst import CT
+
+    return datetime.now(CT).strftime("%Y-%m-%d")
+
+
+def _session_key(alert: dict[str, Any]) -> str:
+    return f"session|{_session_day()}|{alert['desk']}|{alert['side']}|{alert['symbol']}"
+
+
+def _contract_id(row: dict[str, Any]) -> str:
+    occ = str(row.get("contract") or row.get("occ") or "").upper()
+    if occ:
+        return occ
+    right, strike, expiry = _resolved_contract(row)
+    return f"{strike}:{expiry}:{right}"
+
+
+def _also_line(row: dict[str, Any]) -> str:
+    right, strike, expiry = _resolved_contract(row)
+    strike_s = _compact_strike(strike, right)
+    expiry_s = _compact_expiry(expiry)
+    ask = row.get("ask")
+    if ask is None and row.get("mid") is not None:
+        ask = row.get("mid")
+    ask_s = f"${float(ask):.2f}" if ask is not None else "—"
+    bits = [_contract_circle(row)]
+    if strike_s:
+        bits.append(strike_s)
+    if expiry_s:
+        bits.append(expiry_s)
+    return f"Also {' '.join(bits)} · ask {ask_s}"
+
+
+def _fmt_alert(
+    row: dict[str, Any],
+    side: str,
+    desk: str,
+    extras: list[dict[str, Any]] | None = None,
+) -> str:
     sym = str(row.get("symbol") or "?").upper()
     headline = _signal_headline(row, desk)
     if headline:
@@ -211,6 +300,9 @@ def _fmt_alert(row: dict[str, Any], side: str, desk: str) -> str:
             f"Ask {ask_s} · spot {spot_s}",
         ]
     )
+    for extra in extras or []:
+        if isinstance(extra, dict):
+            lines.append(_also_line(extra))
     if when:
         lines.append(f"Asked {when}")
     if detail:
@@ -370,7 +462,67 @@ def collect_trade_alerts(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             "0DTE $1K",
         )
 
-    return out
+    return _collapse_symbol_alerts(out)
+
+
+def _collapse_symbol_alerts(alerts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One Gold Setup / Golden Flow message per symbol. Headline is the strongest contract."""
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    order: list[Any] = []
+    for alert in alerts:
+        if alert.get("desk") not in _GROUPED_DESKS:
+            order.append(alert)
+            continue
+        bucket = (str(alert.get("desk")), str(alert.get("symbol")))
+        if bucket not in grouped:
+            grouped[bucket] = []
+            order.append(bucket)
+        grouped[bucket].append(alert)
+
+    collapsed: list[dict[str, Any]] = []
+    for item in order:
+        if not isinstance(item, tuple):
+            collapsed.append(item)
+            continue
+        by_contract: dict[str, dict[str, Any]] = {}
+        for alert in grouped[item]:
+            row = alert.get("row") if isinstance(alert.get("row"), dict) else {}
+            cid = _contract_id(row)
+            prev = by_contract.get(cid)
+            if prev is None or _strength_gt(_contract_strength(row), _contract_strength(prev.get("row") or {})):
+                by_contract[cid] = alert
+        ranked = sorted(
+            by_contract.values(),
+            key=lambda alert: _contract_strength(alert.get("row") or {}),
+            reverse=True,
+        )
+        primary = ranked[0]
+        extras = [alert.get("row") or {} for alert in ranked[1:3]]
+        merged = dict(primary)
+        merged["key"] = _session_key(primary)
+        merged["grouped"] = True
+        merged["strength"] = _contract_strength(primary.get("row") or {})
+        merged["message"] = _fmt_alert(primary.get("row") or {}, primary["side"], primary["desk"], extras)
+        collapsed.append(merged)
+    return collapsed
+
+
+def _mark_alert(alert: dict[str, Any], seen: set[str], strengths: dict[str, list[float]]) -> None:
+    seen.add(alert["key"])
+    if alert.get("grouped"):
+        strengths[str(alert["key"])] = [float(part) for part in (alert.get("strength") or [])]
+
+
+def _alert_is_fresh(alert: dict[str, Any], seen: set[str], strengths: dict[str, list[float]]) -> bool:
+    key = alert["key"]
+    if key not in seen:
+        return True
+    if not alert.get("grouped"):
+        return False
+    previous = strengths.get(key)
+    if not previous:
+        return False
+    return _strength_gt(alert.get("strength"), previous)
 
 
 def _provider_labels(tg_ok: bool, wa_cfg: dict[str, Any]) -> list[str]:
@@ -432,7 +584,7 @@ def dispatch_snapshot_alerts(
 
     alerts = collect_trade_alerts(snapshot)
     path = Path(seen_path) if seen_path else DEFAULT_SEEN
-    seen = _load_seen(path)
+    seen, strengths = _load_seen(path)
     providers = _provider_labels(bool(tg_cfg.get("ok")), wa_cfg if wa_enabled else {})
 
     # First-ever run with a channel: seed without spamming the whole board.
@@ -459,8 +611,8 @@ def dispatch_snapshot_alerts(
                 "note": "Not seeded — this board can still alert once a channel is configured",
             }
         for a in alerts:
-            seen.add(a["key"])
-        _save_seen(path, seen)
+            _mark_alert(a, seen, strengths)
+        _save_seen(path, seen, strengths)
         return {
             "ok": True,
             "configured": True,
@@ -472,7 +624,7 @@ def dispatch_snapshot_alerts(
             "note": "Seeded current board — next new BUY/SELL will alert",
         }
 
-    fresh = [a for a in alerts if a["key"] not in seen]
+    fresh = [a for a in alerts if _alert_is_fresh(a, seen, strengths)]
     if not fresh:
         return {
             "ok": True,
@@ -486,8 +638,8 @@ def dispatch_snapshot_alerts(
     if not any_channel or dry_run:
         if dry_run:
             for a in fresh:
-                seen.add(a["key"])
-            _save_seen(path, seen)
+                _mark_alert(a, seen, strengths)
+            _save_seen(path, seen, strengths)
         return {
             "ok": bool(dry_run),
             "configured": any_channel,
@@ -506,7 +658,7 @@ def dispatch_snapshot_alerts(
         ok_providers, errs = _send_all_channels(a["message"])
         errors.extend(errs)
         if ok_providers:
-            seen.add(a["key"])
+            _mark_alert(a, seen, strengths)
             sent.append(
                 {
                     "key": a["key"],
@@ -519,7 +671,7 @@ def dispatch_snapshot_alerts(
             )
         # If every channel failed, leave unseen for retry
 
-    _save_seen(path, seen)
+    _save_seen(path, seen, strengths)
     return {
         "ok": len(sent) > 0 or not errors,
         "configured": True,
