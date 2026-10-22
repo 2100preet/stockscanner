@@ -89,7 +89,9 @@ def is_golden_unusual_flow(row: dict[str, Any] | None) -> bool:
 def golden_signal_kind(row: dict[str, Any] | None) -> str | None:
     """Return ``sure_winner_gold`` or None.
 
-    Golden unusual-flow is intentionally not a route. A chart-pattern golden
+    Raw golden unusual-flow is not a route. A print becomes a Sure Winner
+    only after ``signals.trend_gold`` promotes it onto the sure board
+    (HIGH, its own premium and clock guards). A chart-pattern golden
     triangle is not a Sure Winner card either.
     """
     if is_sure_winner_gold(row):

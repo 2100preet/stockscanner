@@ -177,6 +177,57 @@ def test_pick_option_contract(monkeypatch):
     assert picked["ask"] == 1.1
 
 
+def test_prefer_near_money_skips_far_otm(monkeypatch):
+    monkeypatch.setenv("TRADIER_ACCESS_TOKEN", "tok")
+    monkeypatch.setattr(
+        tr,
+        "fetch_expirations",
+        lambda *a, **k: {"ok": True, "dates": ["2099-01-02"]},
+    )
+    monkeypatch.setattr(
+        tr,
+        "fetch_quotes",
+        lambda *a, **k: {"ok": True, "quotes": {"ADBE": {"last": 100.0, "symbol": "ADBE"}}},
+    )
+
+    def fake_chain(symbol, expiry, **kwargs):
+        def opt(strike, occ):
+            return {
+                "symbol": occ,
+                "option_type": "call",
+                "strike": strike,
+                "bid": 1.0,
+                "ask": 1.1,
+                "last": 1.05,
+                "volume": 400,
+                "open_interest": 800,
+            }
+
+        return {
+            "ok": True,
+            "options": [
+                opt(100.0, "ADBE990102C00100000"),
+                opt(103.0, "ADBE990102C00103000"),
+            ],
+        }
+
+    monkeypatch.setattr(tr, "fetch_option_chain", fake_chain)
+    far = tr.pick_option_contract("ADBE", 100.0, right="C", min_dte=0, max_dte=40000, prefer_dte=0)
+    assert far is not None
+    assert far["strike"] == 103.0
+    near = tr.pick_option_contract(
+        "ADBE",
+        100.0,
+        right="C",
+        min_dte=0,
+        max_dte=40000,
+        prefer_dte=0,
+        prefer_near_money=True,
+    )
+    assert near is not None
+    assert near["strike"] == 100.0
+
+
 def test_timesales_to_dataframe():
     res = {
         "bars": [

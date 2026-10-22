@@ -134,6 +134,9 @@ def run_scan(
         min_volume=int(opt_cfg.get("min_volume", 10)),
         per_bucket=int(opt_cfg.get("per_bucket", 1)),
     )
+    actions_cfg = cfg.get("actions") or {}
+    from odte_scanner.signals.trend_gold import is_strong_trend
+
     for sym in sorted(option_syms):
         ts = odte_scores.get(sym)
         if ts is None:
@@ -141,13 +144,28 @@ def run_scan(
         ysym = resolve_yahoo_symbol(ts.symbol, cfg)
         if ts.ensemble_score >= min_score or ts.quality:
             if ts.expected_move_pct >= lo * 0.6:
+                call_kwargs = dict(opt_kwargs)
+                if bool(actions_cfg.get("trend_gold_enabled", True)) and is_strong_trend(
+                    ts.to_dict(), actions_cfg
+                ):
+                    call_kwargs["prefer_near_money"] = True
+                    call_kwargs["otm_pct_max"] = min(
+                        float(call_kwargs["otm_pct_max"]),
+                        float(actions_cfg.get("trend_gold_max_otm_pct", 1.25)),
+                    )
+                    call_kwargs["itm_pct_max"] = min(
+                        float(call_kwargs["itm_pct_max"]),
+                        float(actions_cfg.get("trend_gold_max_itm_pct", 1.5)),
+                    )
+                    call_kwargs["near_otm_cap"] = float(actions_cfg.get("trend_gold_max_otm_pct", 1.25))
+                    call_kwargs["near_itm_cap"] = float(actions_cfg.get("trend_gold_max_itm_pct", 1.5))
                 picked = select_calls(
                     ts.symbol,
                     ts.last_price,
                     ts.ensemble_score,
                     ts.reasons,
                     yahoo_symbol=ysym,
-                    **opt_kwargs,
+                    **call_kwargs,
                 )
                 candidates.extend(picked)
         # Bearish / weak sleeve → puts (score inverted for ranking)

@@ -802,6 +802,9 @@ def pick_option_contract(
     require_bid: bool = True,
     greeks: bool = False,
     token: str | None = None,
+    prefer_near_money: bool = False,
+    near_otm_cap: float = 1.25,
+    near_itm_cap: float = 1.50,
 ) -> dict[str, Any] | None:
     """Select a liquid option via Tradier expirations + chains (Yahoo-free)."""
     if not (token or access_token_from_env()):
@@ -859,14 +862,19 @@ def pick_option_contract(
             if strike <= 0:
                 continue
             mny = (strike - live_spot) / live_spot * 100.0
+            otm_lim = float(otm_pct_max)
+            itm_lim = float(itm_pct_max)
+            if prefer_near_money:
+                otm_lim = min(otm_lim, float(near_otm_cap))
+                itm_lim = min(itm_lim, float(near_itm_cap))
             if not want_put:
-                if mny < -itm_pct_max or mny > otm_pct_max:
+                if mny < -itm_lim or mny > otm_lim:
                     continue
-                otm_target = 3.0
+                otm_target = 0.0 if prefer_near_money else 3.0
             else:
-                if mny > itm_pct_max or mny < -otm_pct_max:
+                if mny > itm_lim or mny < -otm_lim:
                     continue
-                otm_target = -3.0
+                otm_target = 0.0 if prefer_near_money else -3.0
             bid = _as_float(opt.get("bid"))
             ask = _as_float(opt.get("ask"))
             last = _as_float(opt.get("last"))

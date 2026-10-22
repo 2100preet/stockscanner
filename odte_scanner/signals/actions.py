@@ -4,6 +4,13 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Any
 
+from odte_scanner.signals.tape import (
+    call_lacks_rebound,
+    call_otm_tape_blocked,
+    put_lacks_dump,
+    put_otm_tape_blocked,
+    tape_direction,
+)
 from odte_scanner.signals.hold_rules import (
     contract_expired,
     exit_plan_text,
@@ -187,7 +194,15 @@ def decide_entry(
     ask = candidate.get("ask")
     bid = candidate.get("bid")
     mom5 = float(quote["mom_5m_pct"]) if quote and quote.get("mom_5m_pct") is not None else None
+    if mom5 is None and candidate.get("mom_5m_pct") is not None:
+        try:
+            mom5 = float(candidate["mom_5m_pct"])
+        except (TypeError, ValueError):
+            mom5 = None
     mom15 = float(quote["mom_15m_pct"]) if quote and quote.get("mom_15m_pct") is not None else None
+    # Missing 5m momentum is unknown, not flat. Day change, the latest bar,
+    # or relative strength can still show a tape that is holding.
+    tape_dir = tape_direction(quote, candidate)
     dist_high = (
         float(quote["dist_from_day_high_pct"])
         if quote and quote.get("dist_from_day_high_pct") is not None
@@ -326,14 +341,19 @@ def decide_entry(
                 return _wait(
                     f"Spot {last:.2f} below strike {float(strike):g} — 0DTE call is losing; wait for reclaim."
                 )
-            if dist_high is not None and dist_high <= -0.45 and (mom5 is None or mom5 <= 0):
+            if dist_high is not None and dist_high <= -0.45 and call_lacks_rebound(mom5, tape_dir):
                 return _wait(
                     f"Off day high ({dist_high:+.2f}%) with no rebound — skip 0DTE call."
                 )
 
-        if moneyness is not None and bucket == "0DTE" and moneyness > 0.35 and (mom5 is None or mom5 <= 0.05):
+        if (
+            moneyness is not None
+            and bucket == "0DTE"
+            and moneyness > 0.35
+            and call_otm_tape_blocked(mom5, tape_dir)
+        ):
             return _wait(
-                f"Strike is {moneyness:.2f}% OTM while tape flat/down — prefer ATM/ITM or WAIT."
+                f"Strike is {moneyness:.2f}% OTM while tape {tape_dir} — prefer ATM/ITM or WAIT."
             )
 
         chase_limit = max_chase_pct if bucket == "0DTE" else max_chase_pct + 1.5
@@ -356,8 +376,14 @@ def decide_entry(
                 )
 
         if tape_required and bucket == "0DTE":
-            if mom5 is None and mom15 is None and live is None:
+            if mom5 is None and mom15 is None and live is None and tape_dir == "unknown":
                 return _wait("No live tape confirm — not buying 0DTE call blind off daily score alone.")
+            if mom5 is None and tape_dir == "flat":
+                return _wait(
+                    "Tape flat on the day/gap read — need a short-term bounce for 0DTE call BUY."
+                )
+            if mom5 is None and tape_dir == "down":
+                return _wait("Tape down on the day/gap read — no BUY NOW call.")
             if mom5 is not None and mom5 < 0.05 and (mom15 is None or mom15 < 0.05):
                 return _wait(
                     f"Need short-term bounce for 0DTE call BUY (5m {mom5:+.2f}%"
@@ -409,14 +435,19 @@ def decide_entry(
                 return _wait(
                     f"Spot {last:.2f} above strike {float(strike):g} — 0DTE put is losing; wait for break."
                 )
-            if dist_low is not None and dist_low >= 0.45 and (mom5 is None or mom5 >= 0):
+            if dist_low is not None and dist_low >= 0.45 and put_lacks_dump(mom5, tape_dir):
                 return _wait(
                     f"Off day low (+{dist_low:.2f}%) with no fresh dump — skip 0DTE put."
                 )
 
-        if moneyness is not None and bucket == "0DTE" and moneyness > 0.35 and (mom5 is None or mom5 >= -0.05):
+        if (
+            moneyness is not None
+            and bucket == "0DTE"
+            and moneyness > 0.35
+            and put_otm_tape_blocked(mom5, tape_dir)
+        ):
             return _wait(
-                f"Put strike is {moneyness:.2f}% OTM while tape flat/up — prefer ATM/ITM or WAIT."
+                f"Put strike is {moneyness:.2f}% OTM while tape {tape_dir} — prefer ATM/ITM or WAIT."
             )
 
         chase_limit = max_chase_pct if bucket == "0DTE" else max_chase_pct + 1.5
@@ -424,7 +455,7 @@ def decide_entry(
             return _wait(f"Already down {live:+.2f}% this session — chase risk on puts.")
 
         if tape_required and bucket == "0DTE":
-            if mom5 is None and mom15 is None:
+            if mom5 is None and mom15 is None and tape_dir == "unknown":
                 return _wait("No 5m/15m tape — not buying 0DTE put blind off daily score alone.")
             if mom5 is not None and mom5 > -0.05 and (mom15 is None or mom15 > -0.05):
                 return _wait(
@@ -948,8 +979,19 @@ def build_action_board(
             ),
             None,
         )
-        if sc_row and not c.get("reasons"):
-            c = {**c, "reasons": list(sc_row.get("reasons") or [])}
+        if sc_row:
+            extra: dict[str, Any] = {}
+            if not c.get("reasons"):
+                extra["reasons"] = list(sc_row.get("reasons") or [])
+            if c.get("confirms") is None and sc_row.get("confirms") is not None:
+                extra["confirms"] = sc_row.get("confirms")
+            if not c.get("signals") and sc_row.get("signals"):
+                extra["signals"] = list(sc_row.get("signals") or [])
+            for key in ("relative_strength", "gap_and_go", "ensemble_score", "live_change_pct"):
+                if c.get(key) is None and sc_row.get(key) is not None:
+                    extra[key] = sc_row.get(key)
+            if extra:
+                c = {**c, **extra}
             for sig0 in sc_row.get("signals") or []:
                 if str(sig0.get("name") or "") == "rsi_bounce":
                     det = sig0.get("details") or {}

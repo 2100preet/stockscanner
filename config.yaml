@@ -409,6 +409,9 @@ actions:
   mega_short_dte_max_ask: 8.0
   mega_short_dte_max_weekly: 7
   mega_quote_max: 24          # always refresh mega session % (even when option fan-out skipped)
+  # Top ensemble names always get a live quote. An alphabetical first-8
+  # slice was leaving rank-2 names (ADBE) with a null session change.
+  action_quote_top_n: 24
   # Chase / high-convexity lane — far-OTM or already-ripping wings (MU-style)
   # Separate bucket: BUY — BIT RISKY / WATCH CONVEX (not hist-gated BUY NOW)
   chase_radar_enabled: true
@@ -430,6 +433,32 @@ actions:
   # Sure-winner desk — 1–2/day high-conviction tickets (GO HUGE / SIZE UP)
   sure_winners_enabled: true
   sure_winners_max_per_day: 2
+  # Hist-gated sure winners stay hard-capped at 2. Promoted trend/flow
+  # golds get one reserved slot, so the board can reach 3.
+  sure_winners_promoted_extra_slots: 1
+  sure_winners_total_cap: 3
+  # Strong-trend promotion to sure_winner_gold. Does not loosen the hist gate.
+  # Needs score + confirms + relative strength + a gap that is not failing,
+  # a near-the-money contract, and the entry window (ET).
+  trend_gold_enabled: true
+  trend_gold_min_score: 65
+  trend_gold_min_confirms: 6
+  trend_gold_min_relative_strength: 80
+  trend_gold_min_gap_and_go: 70
+  trend_gold_max_otm_pct: 1.25
+  trend_gold_max_itm_pct: 1.50
+  trend_gold_max_ask: 8.0
+  trend_gold_max_contracts: 1
+  trend_gold_entry_start_et: "09:35"
+  trend_gold_entry_end_et: "14:30"
+  # Golden Flow + the same scanner trend, same symbol and direction.
+  flow_gold_enabled: true
+  flow_gold_max_ask: 8.0
+  flow_gold_max_otm_pct: 1.25
+  flow_gold_max_itm_pct: 1.50
+  flow_gold_max_contracts: 1
+  flow_gold_entry_start_et: "09:35"
+  flow_gold_entry_end_et: "14:30"
   sure_winners_min_ask: 0.15
   # Was $5 — TSLA weekly ~$8 RIP tickets never reached sure desk
   sure_winners_max_ask: 10.0

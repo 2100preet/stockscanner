@@ -1,4 +1,4 @@
-from odte_scanner.data.live_quotes import LiveQuote, _session_label
+from odte_scanner.data.live_quotes import LiveQuote, _session_label, prioritize_quote_symbols
 import pandas as pd
 
 
@@ -15,6 +15,18 @@ def test_session_label_premarket():
 def test_session_label_overnight():
     ts = pd.Timestamp("2026-08-05 01:15:00", tz="America/New_York")
     assert _session_label(ts) == "overnight"
+
+
+def test_top_scored_symbols_are_quoted_ahead_of_alphabetical_board():
+    scores = [
+        {"symbol": "AAA", "ensemble_score": 10},
+        {"symbol": "ADBE", "ensemble_score": 67.2},
+        {"symbol": "ZZZ", "ensemble_score": 90},
+    ]
+    board = [{"symbol": "MMM"}, {"symbol": "AAA"}]
+    picked = prioritize_quote_symbols(board, scores, top_n=2)
+    assert picked == ["ZZZ", "ADBE"]
+    assert "AAA" not in picked
 
 
 def test_live_quote_dataclass():
