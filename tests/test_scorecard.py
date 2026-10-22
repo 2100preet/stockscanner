@@ -208,7 +208,7 @@ def test_score_stored_as_spot_does_not_become_the_reference(ledger: Path):
             "spot": 63.02419354838709,
             "strike": 420,
             "moneyness_pct": 3.709,
-            "contract": "AMAT261120C00420000",
+            "contract": "AMAT261016C00420000",
         }
     )
     view = _observe(

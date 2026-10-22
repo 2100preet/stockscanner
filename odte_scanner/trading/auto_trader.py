@@ -1743,6 +1743,12 @@ class AutoTrader:
                     if golden_signal_kind(row) is None:
                         self._note_filtered(row, "not a golden signal")
                     continue
+                from odte_scanner.options.quote_sanity import quote_reject_reason
+
+                reason = quote_reject_reason(row)
+                if reason:
+                    self._note_filtered(row, reason)
+                    continue
                 right = str(row.get("right") or "C").upper()
                 if right not in {"C", "P"}:
                     right = "C"
@@ -1770,6 +1776,12 @@ class AutoTrader:
                 if budget <= 0:
                     break
                 if not isinstance(row, dict):
+                    continue
+                from odte_scanner.options.quote_sanity import quote_reject_reason
+
+                reason = quote_reject_reason(row)
+                if reason:
+                    self._note_filtered(row, reason)
                     continue
                 _take(
                     self._route_buy(

@@ -711,15 +711,37 @@ def fetch_option_quote(
     if not key:
         return None
 
+    want_right = "put" if str(right).lower().startswith("p") else "call"
+    # An OCC shortcut is only safe when that symbol IS the requested contract.
+    # Otherwise the caller keeps its strike/expiry and inherits a different ask.
+    occ_ok = False
     if contract:
+        from odte_scanner.options.quote_sanity import parse_occ
+
+        parts = parse_occ(contract)
+        if parts:
+            same_right = (parts["right"] == "P") == (want_right == "put")
+            same_expiry = not expiry or str(expiry)[:10] == parts["expiry"]
+            same_strike = True
+            try:
+                same_strike = abs(float(strike) - float(parts["strike"])) <= 0.02
+            except (TypeError, ValueError):
+                same_strike = False
+            occ_ok = bool(same_right and same_expiry and same_strike)
+        else:
+            occ_ok = True
+    if contract and occ_ok:
         q = fetch_quotes([str(contract)], token=key, timeout=timeout, greeks=greeks)
         row = (q.get("quotes") or {}).get(str(contract).upper())
         if q.get("ok") and row and (row.get("ask") or row.get("bid") or row.get("last")):
+            from odte_scanner.options.quote_sanity import parse_occ
+
+            parts = parse_occ(contract) or {}
             return {
                 **row,
-                "expiry": expiry,
-                "strike": float(strike),
-                "right": "call" if str(right).lower().startswith("c") else "put",
+                "expiry": parts.get("expiry") or expiry,
+                "strike": parts.get("strike") if parts.get("strike") is not None else float(strike),
+                "right": want_right,
                 "underlying": symbol,
             }
 

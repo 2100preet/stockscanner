@@ -51,6 +51,54 @@ def test_fetch_option_quote_uses_chain(monkeypatch):
     assert row["source"] == "tradier"
 
 
+def test_fetch_option_quote_ignores_mismatched_occ(monkeypatch):
+    monkeypatch.setenv("TRADIER_ACCESS_TOKEN", "test-token")
+    calls = {"quotes": 0, "chain": 0}
+
+    def fake_quotes(symbols, **kwargs):
+        calls["quotes"] += 1
+        return {
+            "ok": True,
+            "quotes": {
+                "SLV261023C00051000": {"bid": 0.14, "ask": 0.15, "last": 0.16, "symbol": "SLV261023C00051000"}
+            },
+        }
+
+    def fake_chain(symbol, expiry, **kwargs):
+        calls["chain"] += 1
+        return {
+            "ok": True,
+            "options": [
+                {
+                    "symbol": "SLV261030C00050000",
+                    "option_type": "call",
+                    "strike": 50.0,
+                    "bid": 1.18,
+                    "ask": 1.26,
+                    "last": 1.26,
+                    "volume": 10,
+                    "open_interest": 432,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(tr, "fetch_quotes", fake_quotes)
+    monkeypatch.setattr(tr, "fetch_option_chain", fake_chain)
+    row = tr.fetch_option_quote(
+        symbol="SLV",
+        expiry="2026-10-30",
+        strike=50.0,
+        right="call",
+        contract="SLV261023C00051000",
+    )
+    assert calls["quotes"] == 0
+    assert row is not None
+    assert row["ask"] == 1.26
+    assert row["symbol"] == "SLV261030C00050000"
+    assert row["expiry"] == "2026-10-30"
+    assert row["strike"] == 50.0
+
+
 def test_live_chain_prefers_tradier(monkeypatch):
     monkeypatch.setenv("TRADIER_ACCESS_TOKEN", "test-token")
 

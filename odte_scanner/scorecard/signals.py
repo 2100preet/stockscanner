@@ -227,6 +227,10 @@ def extract_signals(
     for row in _iter_dicts(board.get("winners")) + _iter_dicts(board.get("buy_now")):
         if not is_sure_winner_gold(row):
             continue
+        from odte_scanner.options.quote_sanity import quote_bundle_ok
+
+        if not quote_bundle_ok(row):
+            continue
         add(_row_signal(row, signal_type=GOLD_SETUP, spots=spots, now=moment, recorded_at=stamped))
 
     flow_rows: list[dict[str, Any]] = []
@@ -241,6 +245,10 @@ def extract_signals(
     for row in flow_rows:
         # A triangle flag is not a flow print. Require the flow tier or flow flags.
         if not is_golden_unusual_flow(row):
+            continue
+        from odte_scanner.options.quote_sanity import quote_bundle_ok
+
+        if not quote_bundle_ok(row):
             continue
         add(_row_signal(row, signal_type=GOLDEN_FLOW, spots=spots, now=moment, recorded_at=stamped))
     return found

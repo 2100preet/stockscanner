@@ -338,6 +338,10 @@ def collect_candidates(
         cap = _ask_cap(str(norm.get("symbol") or ""))
         if ask < min_ask or ask > cap:
             return
+        from odte_scanner.options.quote_sanity import quote_bundle_ok
+
+        if not quote_bundle_ok(norm):
+            return
         key = norm["pick_key"]
         if key in seen:
             return

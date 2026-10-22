@@ -1117,7 +1117,12 @@ def test_outgoing_order_matches_the_occ_contract():
     assert uso.expiry == "2026-10-14"
 
 
-def test_routed_buy_uses_occ_when_the_row_fields_disagree(tmp_path: Path):
+def test_routed_buy_drops_when_the_row_fields_disagree(tmp_path: Path):
+    """A label that disagrees with the OCC is not a paper order.
+
+    The broker payload still follows the OCC when an order is built, but a
+    spliced row (call 10/16 labeled on a put 10/23 symbol) is dropped first.
+    """
     broker = WebullBroker(enabled=True, dry_run=True, ledger_path=tmp_path / "wb.json")
     trader = AutoTrader(broker, golden_only=True)
     row = _sure_card("WULF", 11.5, right="C", expiry="2026-10-16")
@@ -1125,14 +1130,9 @@ def test_routed_buy_uses_occ_when_the_row_fields_disagree(tmp_path: Path):
     row["right"] = "C"
     row["expiry"] = "2026-10-16"
     out = trader.sync(sure_winners={"winners": [row]})
-    assert out["submitted_n"] == 1
-    order = broker.orders[0]
-    body = build_option_place_order(order)
-    assert order.right == "P"
-    assert order.expiry == "2026-10-23"
-    assert order.strike == 11.5
-    assert body["legs"][0]["option_type"] == "PUT"
-    assert body["legs"][0]["option_expire_date"] == "2026-10-23"
+    assert out["submitted_n"] == 0
+    assert broker.orders == []
+    assert any("contract symbol" in str(item.get("reason") or "") for item in out["filtered"])
 
 
 def test_no_new_entries_at_or_after_the_close(tmp_path: Path):
