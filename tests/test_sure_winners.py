@@ -39,7 +39,7 @@ def _buy(sym, *, win, n, score, hit1=70, ask=0.85, strike=100, tier=None):
         "dte_bucket": "weekly",
         "ask": ask,
         "bid": ask - 0.05,
-        "contract": f"{sym}261017C00{strike:05d}000",
+        "contract": f"{sym}261017C{int(round(float(strike) * 1000)):08d}",
         "win_pct": win,
         "win_samples": n,
         "hit_1pct": hit1,
