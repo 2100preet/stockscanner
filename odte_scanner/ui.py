@@ -7872,6 +7872,13 @@ def create_app(config_path: str | None = None) -> Flask:
             take("second", broker.list_option_positions(second))
         return {"books": books, "positions": rows, "n": len(rows)}
 
+    @app.get("/api/alerts/status")
+    def alerts_status():
+        """Telegram/WhatsApp configured flags and the last pulse. No secret values."""
+        from odte_scanner.alert_pulse import read_alert_status
+
+        return jsonify(read_alert_status())
+
     @app.get("/api/webull/status")
     def webull_status():
         payload = _webull_status_payload()

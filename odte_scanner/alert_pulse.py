@@ -42,6 +42,54 @@ def build_offline_snapshot(config_path: str | None = None) -> dict[str, Any]:
             os.environ["SIGNAL_DESK_OFFLINE"] = previous
 
 
+def read_alert_status() -> dict[str, Any]:
+    """Public alert health: channel flags and the last pulse summary. No secrets."""
+    from odte_scanner.alerts.telegram import configured as telegram_configured
+    from odte_scanner.alerts.whatsapp import configured as whatsapp_configured
+    from odte_scanner.json_util import load_json_state
+
+    tg = telegram_configured()
+    wa = whatsapp_configured()
+    last_path = ROOT / "outputs" / "desk_alerts_last.json"
+    last_raw = load_json_state(last_path) if last_path.exists() else {}
+    if not isinstance(last_raw, dict):
+        last_raw = {}
+    meta = last_raw.get("desk_alerts") if isinstance(last_raw.get("desk_alerts"), dict) else {}
+    results = meta.get("results") if isinstance(meta.get("results"), list) else []
+    symbols: list[dict[str, Any]] = []
+    for row in results:
+        if not isinstance(row, dict):
+            continue
+        symbols.append(
+            {
+                "symbol": row.get("symbol"),
+                "desk": row.get("desk"),
+                "side": row.get("side"),
+            }
+        )
+    errors = meta.get("errors") if isinstance(meta.get("errors"), list) else []
+    return {
+        "telegram": {
+            "ok": bool(tg.get("ok")),
+            "token_set": bool(tg.get("token_set")),
+            "chat_set": bool(tg.get("chat_set")),
+            "enabled": bool(tg.get("enabled")),
+        },
+        "whatsapp_configured": bool(wa.get("ok")),
+        "last": {
+            "generated_at": last_raw.get("generated_at"),
+            "snapshot_at": last_raw.get("snapshot_at"),
+            "configured": meta.get("configured"),
+            "sent": meta.get("sent"),
+            "primed": meta.get("primed"),
+            "note": meta.get("note") or meta.get("error"),
+            "providers": meta.get("providers") or [],
+            "errors": [str(item)[:200] for item in errors[:8]],
+            "symbols": symbols[:12],
+        },
+    }
+
+
 def pulse_desk_alerts(
     config_path: str | None = None,
     *,
