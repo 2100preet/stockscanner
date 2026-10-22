@@ -4627,18 +4627,18 @@ def create_app(config_path: str | None = None) -> Flask:
                 tradier_live = _tradier_live_ok()
                 # Pages sets offline=1 to skip Yahoo fan-out; Tradier still supplies live marks/bars.
                 # Outside RTH, skip live quote fan-out — scan marks paint the board in seconds.
-                # Non-fresh polls also skip fan-out when a prior board exists so UI refreshes stay fast.
-                live_marks = (not offline) or tradier_live
+                tape_ok = (not offline) or tradier_live
                 try:
                     from odte_scanner.live_desk import _in_rth_window
 
-                    if live_marks and not _in_rth_window(extended=True):
-                        live_marks = False
+                    if tape_ok and not _in_rth_window(extended=True):
+                        tape_ok = False
                 except Exception:  # noqa: BLE001
                     pass
-                # Default polls skip live fan-out; use ?fresh=1 for a full mark rebuild.
-                if live_marks and not force:
-                    live_marks = False
+                # Option-chain fan-out stays on ?fresh=1 so a normal poll stays fast.
+                # Equity tape for every ~60+ board name runs on every RTH rebuild,
+                # including the alert pulse (offline=1 with Tradier configured).
+                live_marks = bool(tape_ok and force)
                 scan = _read_json(ROOT / "outputs" / "latest_scan.json") or {}
                 watch = _read_json(ROOT / "outputs" / "watch" / "latest_watch.json")
                 ledger_path = Path(cfg.get("paper_trading", {}).get("ledger_path", "outputs/paper_ledger.json"))
@@ -4737,7 +4737,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 quote_cap = int(actions_cfg.get("live_quote_max", 40))
                 quote_syms = (
                     []
-                    if not live_marks
+                    if not tape_ok
                     else board_quote_symbols(
                         deduped,
                         extra=[*challenge_syms[:12], *dram_syms],
@@ -4780,6 +4780,19 @@ def create_app(config_path: str | None = None) -> Flask:
 
                 refreshed: list[dict] = []
 
+                def _apply_equity_tape(out: dict, sym: str) -> None:
+                    q = quotes.get(sym)
+                    if not q:
+                        return
+                    out["live_change_pct"] = q.get("session_change_pct")
+                    if out["live_change_pct"] is None:
+                        out["live_change_pct"] = q.get("change_pct")
+                    out["live_last"] = q.get("last")
+                    if q.get("mom_5m_pct") is not None:
+                        out["mom_5m_pct"] = q.get("mom_5m_pct")
+                    if q.get("mom_15m_pct") is not None:
+                        out["mom_15m_pct"] = q.get("mom_15m_pct")
+
                 def _refresh(item: dict) -> dict:
                     # Equity tape always overlays; when Tradier is live also refresh option marks
                     # so BUY NOW / WAIT see real bid/ask (scan-time Yahoo asks go stale on Pages).
@@ -4792,12 +4805,7 @@ def create_app(config_path: str | None = None) -> Flask:
                     )
                     out["quote_stale"] = synthetic or not has_mark
                     sym = str(item.get("symbol"))
-                    q = quotes.get(sym)
-                    if q:
-                        out["live_change_pct"] = q.get("session_change_pct")
-                        if out["live_change_pct"] is None:
-                            out["live_change_pct"] = q.get("change_pct")
-                        out["live_last"] = q.get("last")
+                    _apply_equity_tape(out, sym)
                     if live_marks and item.get("expiry") and item.get("strike") is not None:
                         try:
                             refreshed_opt = refresh_candidate_quote(
@@ -4830,12 +4838,7 @@ def create_app(config_path: str | None = None) -> Flask:
                         )
                         out["quote_stale"] = synthetic or not has_mark
                         sym = str(item.get("symbol"))
-                        q = quotes.get(sym)
-                        if q:
-                            out["live_change_pct"] = q.get("session_change_pct")
-                            if out["live_change_pct"] is None:
-                                out["live_change_pct"] = q.get("change_pct")
-                            out["live_last"] = q.get("last")
+                        _apply_equity_tape(out, sym)
                         refreshed.append(out)
 
                 refreshed.sort(key=lambda c: float(c.get("score") or 0), reverse=True)
