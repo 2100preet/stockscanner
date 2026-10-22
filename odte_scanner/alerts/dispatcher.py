@@ -13,7 +13,7 @@ import json
 import logging
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -653,16 +653,30 @@ def dispatch_snapshot_alerts(
         }
 
     sent: list[dict[str, Any]] = []
+    attempts: list[dict[str, Any]] = []
     errors: list[str] = []
     for a in fresh[: max(1, int(max_send))]:
         ok_providers, errs = _send_all_channels(a["message"])
         errors.extend(errs)
+        ok = bool(ok_providers)
+        attempts.append(
+            {
+                "time": datetime.now(timezone.utc).isoformat(),
+                "symbol": a["symbol"],
+                "contract": a.get("contract"),
+                "kind": a["desk"],
+                "side": a["side"],
+                "ok": ok,
+                "error": None if ok else "; ".join(str(err) for err in errs)[:200],
+            }
+        )
         if ok_providers:
             _mark_alert(a, seen, strengths)
             sent.append(
                 {
                     "key": a["key"],
                     "symbol": a["symbol"],
+                    "contract": a.get("contract"),
                     "side": a["side"],
                     "desk": a["desk"],
                     "providers": ok_providers,
@@ -677,6 +691,7 @@ def dispatch_snapshot_alerts(
         "configured": True,
         "sent": len(sent),
         "results": sent,
+        "attempts": attempts,
         "fresh": len(fresh),
         "errors": errors[:8],
         "providers": providers,

@@ -95,6 +95,45 @@ def test_sticky_day_keeps_prior_pick(tmp_path: Path):
     assert store3["day"] == "2026-10-13"
 
 
+def test_contract_swap_keeps_the_other_ticker():
+    tsla = _buy("TSLA", win=100, n=6, score=90, strike=390)
+    cost = _buy("COST", win=100, n=6, score=80, strike=1025, ask=2.4)
+    first, store = select_sure_winners(
+        collect_candidates(actions={"buy_now": [tsla, cost]}),
+        max_per_day=2,
+        day="2026-10-22",
+        store={},
+    )
+    assert [w.symbol for w in first] == ["TSLA", "COST"]
+
+    swapped = _buy("TSLA", win=100, n=6, score=92, strike=400)
+    jpm = _buy("JPM", win=100, n=6, score=88, strike=340, ask=1.8)
+    second, store2 = select_sure_winners(
+        collect_candidates(actions={"buy_now": [swapped, jpm, cost]}),
+        max_per_day=2,
+        day="2026-10-22",
+        store=store,
+    )
+    assert [w.symbol for w in second] == ["TSLA", "COST"]
+    assert second[0].strike == 400
+    assert [p["symbol"] for p in store2["picks"]] == ["TSLA", "COST"]
+    assert second[1].signaled_at == first[1].signaled_at
+
+
+def test_two_contracts_for_one_ticker_use_one_slot():
+    tsla_a = _buy("TSLA", win=100, n=6, score=90, strike=390)
+    tsla_b = _buy("TSLA", win=100, n=6, score=91, strike=400)
+    cost = _buy("COST", win=100, n=6, score=80, strike=1025, ask=2.4)
+    winners, _store = select_sure_winners(
+        collect_candidates(actions={"buy_now": [tsla_a, tsla_b, cost]}),
+        max_per_day=2,
+        day="2026-10-22",
+        store={},
+    )
+    assert [w.symbol for w in winners] == ["TSLA", "COST"]
+    assert winners[0].strike == 400
+
+
 def test_hard_cap_two_even_if_max_per_day_higher():
     buys = [
         _buy("A", win=100, n=5, score=90, strike=100),

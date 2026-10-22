@@ -149,6 +149,10 @@ def test_dispatch_sends_telegram(tmp_path, monkeypatch):
     assert "telegram" in (r3.get("providers") or [])
     assert len(sent) == 1
     assert "NVDA" in sent[0]
+    assert r3["attempts"][0]["symbol"] == "NVDA"
+    assert r3["attempts"][0]["contract"] == "NVDA261005C00180000"
+    assert r3["attempts"][0]["kind"] == "Options"
+    assert r3["attempts"][0]["ok"] is True
 
 
 def test_collects_gold_setup_and_golden_flow_only():

@@ -409,6 +409,8 @@ actions:
   mega_short_dte_max_ask: 8.0
   mega_short_dte_max_weekly: 7
   mega_quote_max: 24          # always refresh mega session % (even when option fan-out skipped)
+  live_quote_min_score: 60    # every board name at/above this gets a live tape
+  live_quote_max: 40
   # Chase / high-convexity lane — far-OTM or already-ripping wings (MU-style)
   # Separate bucket: BUY — BIT RISKY / WATCH CONVEX (not hist-gated BUY NOW)
   chase_radar_enabled: true

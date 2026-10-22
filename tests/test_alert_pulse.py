@@ -25,6 +25,45 @@ def test_read_alert_status_hides_secrets(monkeypatch, tmp_path):
     assert "bot" not in blob.lower() or "telegram" in blob.lower()
 
 
+def test_alert_log_is_append_only_for_today(tmp_path):
+    path = tmp_path / "desk_alert_log.jsonl"
+    wrote = ap.append_alert_log(
+        [
+            {
+                "time": "2026-10-22T14:48:35+00:00",
+                "symbol": "NBIS",
+                "contract": "NBIS261024C00180000",
+                "kind": "Golden Flow",
+                "side": "BUY",
+                "ok": True,
+            }
+        ],
+        path=path,
+    )
+    assert wrote == 1
+    ap.append_alert_log(
+        [
+            {
+                "time": "2026-10-21T20:00:00+00:00",
+                "symbol": "OLD",
+                "contract": "OLD1",
+                "kind": "Options",
+                "side": "BUY",
+                "ok": False,
+                "error": "telegram: timeout",
+            }
+        ],
+        path=path,
+    )
+    assert path.read_text(encoding="utf-8").count("\n") == 2
+    today = ap.read_alert_log(day="2026-10-22", path=path)
+    assert today["n"] == 1
+    assert today["alerts"][0]["symbol"] == "NBIS"
+    assert today["alerts"][0]["contract"] == "NBIS261024C00180000"
+    assert today["alerts"][0]["kind"] == "Golden Flow"
+    assert today["alerts"][0]["ok"] is True
+
+
 def test_pulse_skips_when_env_set(monkeypatch):
     monkeypatch.setenv("SKIP_DESK_ALERTS", "1")
     called = {"n": 0}

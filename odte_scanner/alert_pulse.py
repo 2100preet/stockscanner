@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -12,6 +13,10 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def alert_log_path() -> Path:
+    return Path(ROOT) / "outputs" / "desk_alert_log.jsonl"
 
 
 def build_offline_snapshot(config_path: str | None = None) -> dict[str, Any]:
@@ -42,6 +47,62 @@ def build_offline_snapshot(config_path: str | None = None) -> dict[str, Any]:
             os.environ["SIGNAL_DESK_OFFLINE"] = previous
 
 
+def append_alert_log(
+    attempts: list[dict[str, Any]] | None,
+    *,
+    path: str | Path | None = None,
+) -> int:
+    """Append one JSON line per send attempt. Never rewrites earlier lines."""
+    rows = [row for row in (attempts or []) if isinstance(row, dict)]
+    if not rows:
+        return 0
+    dest = Path(path) if path else alert_log_path()
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with dest.open("a", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, default=str) + "\n")
+    return len(rows)
+
+
+def read_alert_log(
+    *,
+    day: str | None = None,
+    limit: int = 200,
+    path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Today's sent-alert log in America/Chicago, oldest first."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    ct = ZoneInfo("America/Chicago")
+    day_s = day or datetime.now(ct).strftime("%Y-%m-%d")
+    dest = Path(path) if path else alert_log_path()
+    rows: list[dict[str, Any]] = []
+    if dest.exists():
+        for line in dest.read_text(encoding="utf-8").splitlines():
+            text = line.strip()
+            if not text:
+                continue
+            try:
+                row = json.loads(text)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(row, dict):
+                continue
+            stamp = str(row.get("time") or "")
+            try:
+                when = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+                if when.tzinfo is None:
+                    when = when.replace(tzinfo=ZoneInfo("UTC"))
+                row_day = when.astimezone(ct).strftime("%Y-%m-%d")
+            except ValueError:
+                row_day = stamp[:10]
+            if row_day == day_s:
+                rows.append(row)
+    cap = max(1, int(limit))
+    return {"day": day_s, "n": len(rows), "alerts": rows[-cap:]}
+
+
 def read_alert_status() -> dict[str, Any]:
     """Public alert health: channel flags and the last pulse summary. No secrets."""
     from odte_scanner.alerts.telegram import configured as telegram_configured
@@ -68,6 +129,7 @@ def read_alert_status() -> dict[str, Any]:
             }
         )
     errors = meta.get("errors") if isinstance(meta.get("errors"), list) else []
+    log = read_alert_log(limit=12)
     return {
         "telegram": {
             "ok": bool(tg.get("ok")),
@@ -86,6 +148,8 @@ def read_alert_status() -> dict[str, Any]:
             "providers": meta.get("providers") or [],
             "errors": [str(item)[:200] for item in errors[:8]],
             "symbols": symbols[:12],
+            "log_today_n": log["n"],
+            "log_today": log["alerts"],
         },
     }
 
@@ -104,6 +168,10 @@ def pulse_desk_alerts(
 
     payload = build_offline_snapshot(config_path)
     alert_meta = dispatch_snapshot_alerts(payload) or {"ok": False}
+    try:
+        append_alert_log(alert_meta.get("attempts") if isinstance(alert_meta, dict) else None)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("alert log append failed: %s", exc)
 
     out = ROOT / "outputs"
     out.mkdir(parents=True, exist_ok=True)

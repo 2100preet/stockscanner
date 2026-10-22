@@ -326,12 +326,19 @@ def decide_entry(
                 return _wait(
                     f"Spot {last:.2f} below strike {float(strike):g} — 0DTE call is losing; wait for reclaim."
                 )
-            if dist_high is not None and dist_high <= -0.45 and (mom5 is None or mom5 <= 0):
+            # Missing 5m momentum is not a falling tape. Only a real non-positive print fails.
+            if dist_high is not None and dist_high <= -0.45 and mom5 is not None and mom5 <= 0:
                 return _wait(
                     f"Off day high ({dist_high:+.2f}%) with no rebound — skip 0DTE call."
                 )
 
-        if moneyness is not None and bucket == "0DTE" and moneyness > 0.35 and (mom5 is None or mom5 <= 0.05):
+        if (
+            moneyness is not None
+            and bucket == "0DTE"
+            and moneyness > 0.35
+            and mom5 is not None
+            and mom5 <= 0.05
+        ):
             return _wait(
                 f"Strike is {moneyness:.2f}% OTM while tape flat/down — prefer ATM/ITM or WAIT."
             )
@@ -409,12 +416,18 @@ def decide_entry(
                 return _wait(
                     f"Spot {last:.2f} above strike {float(strike):g} — 0DTE put is losing; wait for break."
                 )
-            if dist_low is not None and dist_low >= 0.45 and (mom5 is None or mom5 >= 0):
+            if dist_low is not None and dist_low >= 0.45 and mom5 is not None and mom5 >= 0:
                 return _wait(
                     f"Off day low (+{dist_low:.2f}%) with no fresh dump — skip 0DTE put."
                 )
 
-        if moneyness is not None and bucket == "0DTE" and moneyness > 0.35 and (mom5 is None or mom5 >= -0.05):
+        if (
+            moneyness is not None
+            and bucket == "0DTE"
+            and moneyness > 0.35
+            and mom5 is not None
+            and mom5 >= -0.05
+        ):
             return _wait(
                 f"Put strike is {moneyness:.2f}% OTM while tape flat/up — prefer ATM/ITM or WAIT."
             )

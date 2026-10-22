@@ -4731,10 +4731,19 @@ def create_app(config_path: str | None = None) -> Flask:
                 except Exception:  # noqa: BLE001
                     challenge_syms = []
                     dram_syms = []
+                from odte_scanner.data.live_quotes import board_quote_symbols
+
+                quote_floor = float(actions_cfg.get("live_quote_min_score", 60))
+                quote_cap = int(actions_cfg.get("live_quote_max", 40))
                 quote_syms = (
                     []
                     if not live_marks
-                    else sorted(set(syms[:8]) | set(challenge_syms[:12]) | set(dram_syms))
+                    else board_quote_symbols(
+                        deduped,
+                        extra=[*challenge_syms[:12], *dram_syms],
+                        min_score=quote_floor,
+                        limit=quote_cap,
+                    )
                 )
                 # Always refresh CORE mega tape — even when default polls skip option fan-out.
                 # ORCL Oct 13 miss: +4.4% session but quotes empty → RIP_COOL / no chain fallback.
@@ -4759,14 +4768,15 @@ def create_app(config_path: str | None = None) -> Flask:
                 for s in quote_syms:
                     aliases.setdefault(s, resolve_yahoo_symbol(s, cfg))
 
-                def _uq(sym: str):
-                    return sym, fetch_live_quote(sym, yahoo_symbol=aliases.get(sym))
-
                 if quote_syms:
-                    with ThreadPoolExecutor(max_workers=8) as pool:
-                        for sym, q in pool.map(_uq, quote_syms):
-                            if q:
-                                quotes[sym] = q.to_dict()
+                    from odte_scanner.data.live_quotes import fetch_live_quotes
+
+                    for sym, q in fetch_live_quotes(
+                        quote_syms,
+                        aliases=aliases,
+                        attach_momentum=True,
+                    ).items():
+                        quotes[sym] = q.to_dict()
 
                 refreshed: list[dict] = []
 
@@ -7856,6 +7866,18 @@ def create_app(config_path: str | None = None) -> Flask:
         from odte_scanner.alert_pulse import read_alert_status
 
         return jsonify(read_alert_status())
+
+    @app.get("/api/alerts/log")
+    def alerts_log():
+        """Append-only log of alerts sent today (America/Chicago). No secrets."""
+        from odte_scanner.alert_pulse import read_alert_log
+
+        day = str(request.args.get("day") or "").strip() or None
+        try:
+            limit = int(request.args.get("limit") or 200)
+        except (TypeError, ValueError):
+            limit = 200
+        return jsonify(read_alert_log(day=day, limit=max(1, min(limit, 500))))
 
     @app.get("/api/webull/status")
     def webull_status():

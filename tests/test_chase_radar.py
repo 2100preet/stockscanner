@@ -1,7 +1,15 @@
 """Tests for chase / high-convexity alert lane."""
 from __future__ import annotations
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 from odte_scanner.signals.chase_radar import build_chase_board, decide_chase_entry
+
+# Regular session. final_30 (15:30–16:00 ET) vetoes every chase, so an unpinned
+# wall clock fails these tests only in that window.
+_ET = ZoneInfo("America/New_York")
+_MIDDAY = datetime(2026, 10, 22, 11, 0, tzinfo=_ET)
 
 
 def _ticket(**kwargs):
@@ -34,6 +42,7 @@ def test_buy_risky_on_extended_rip_with_impulse():
         _ticket(ask=2.5, moneyness_pct=3.2),
         quote={"last": 969, "session_change_pct": 4.5, "mom_5m_pct": 0.15, "mom_15m_pct": 0.2},
         ensemble_score=64,
+        now=_MIDDAY,
     )
     assert sig.action == "BUY_RISKY"
     assert "BIT RISKY" in sig.headline
@@ -45,6 +54,7 @@ def test_far_otm_watch_without_tape():
         _ticket(ask=1.2, moneyness_pct=5.0, mult_at_3pct=8.0, best_mult=15.0),
         quote={"last": 920, "session_change_pct": 0.2, "mom_5m_pct": 0.0},
         ensemble_score=60,
+        now=_MIDDAY,
     )
     assert sig.action in {"WATCH_CONVEX", "BUY_RISKY", "CHASE_COOL"}
     # Without impulse, should not be cool if convexity strong — prefer WATCH
@@ -56,6 +66,7 @@ def test_rich_ask_veto():
         _ticket(ask=18.0),
         quote={"last": 969, "session_change_pct": 5.0, "mom_5m_pct": 0.2},
         max_ask=12.0,
+        now=_MIDDAY,
     )
     assert sig.action == "CHASE_COOL"
     assert any("ceiling" in v for v in sig.vetoes)
@@ -65,6 +76,7 @@ def test_knife_still_vetoed():
     sig = decide_chase_entry(
         _ticket(),
         quote={"last": 969, "session_change_pct": 3.0, "mom_5m_pct": -0.35},
+        now=_MIDDAY,
     )
     assert sig.action == "CHASE_COOL"
     assert any("dump" in v for v in sig.vetoes)
@@ -79,7 +91,12 @@ def test_board_partitions():
         "MU": {"last": 970, "session_change_pct": 3.5, "mom_5m_pct": 0.12},
         "NVDA": {"last": 130, "session_change_pct": 0.3, "mom_5m_pct": 0.0},
     }
-    board = build_chase_board(tickets, quotes=quotes, scores=[{"symbol": "MU", "ensemble_score": 64}])
+    board = build_chase_board(
+        tickets,
+        quotes=quotes,
+        scores=[{"symbol": "MU", "ensemble_score": 64}],
+        now=_MIDDAY,
+    )
     assert "buy_risky" in board
     assert "watch" in board
     assert board["counts"]["all"] == 2

@@ -177,6 +177,63 @@ def test_pick_option_contract(monkeypatch):
     assert picked["ask"] == 1.1
 
 
+def test_slow_name_prefers_near_the_money(monkeypatch):
+    monkeypatch.setenv("TRADIER_ACCESS_TOKEN", "tok")
+    monkeypatch.setattr(
+        tr,
+        "fetch_expirations",
+        lambda *a, **k: {"ok": True, "dates": ["2099-01-02"]},
+    )
+    monkeypatch.setattr(
+        tr,
+        "fetch_quotes",
+        lambda *a, **k: {"ok": True, "quotes": {"COST": {"last": 1000.0, "symbol": "COST"}}},
+    )
+
+    def fake_chain(symbol, expiry, **kwargs):
+        return {
+            "ok": True,
+            "options": [
+                {
+                    "symbol": "COST990102C01000000",
+                    "option_type": "call",
+                    "strike": 1000.0,
+                    "bid": 8.0,
+                    "ask": 8.2,
+                    "last": 8.1,
+                    "volume": 80,
+                    "open_interest": 400,
+                },
+                {
+                    "symbol": "COST990102C01030000",
+                    "option_type": "call",
+                    "strike": 1030.0,
+                    "bid": 2.0,
+                    "ask": 2.2,
+                    "last": 2.1,
+                    "volume": 400,
+                    "open_interest": 900,
+                },
+            ],
+        }
+
+    monkeypatch.setattr(tr, "fetch_option_chain", fake_chain)
+    picked = tr.pick_option_contract(
+        "COST",
+        1000.0,
+        right="C",
+        min_dte=0,
+        max_dte=40000,
+        prefer_dte=1,
+        otm_pct_max=1.0,
+        otm_target=0.25,
+        min_volume=10,
+        min_oi=50,
+    )
+    assert picked is not None
+    assert picked["strike"] == 1000.0
+
+
 def test_timesales_to_dataframe():
     res = {
         "bars": [
