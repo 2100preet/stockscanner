@@ -6,6 +6,48 @@ from odte_scanner.alerts import dispatcher as disp
 from odte_scanner.alerts import telegram as tg
 
 
+def test_missing_channel_does_not_seed_seen(tmp_path, monkeypatch):
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT", raising=False)
+    monkeypatch.delenv("CALLMEBOT_APIKEY", raising=False)
+    monkeypatch.delenv("CALLMEBOT_API_KEY", raising=False)
+    monkeypatch.delenv("TWILIO_ACCOUNT_SID", raising=False)
+    monkeypatch.delenv("WHATSAPP_TOKEN", raising=False)
+    monkeypatch.delenv("WHATSAPP_CLOUD_TOKEN", raising=False)
+    monkeypatch.setattr(
+        disp,
+        "telegram_configured",
+        lambda: {"ok": False, "token_set": False, "chat_set": False, "enabled": True},
+    )
+    monkeypatch.setattr(
+        disp,
+        "whatsapp_configured",
+        lambda: {"ok": False, "callmebot": False, "twilio": False, "meta": False},
+    )
+    snap = {
+        "actions": {
+            "buy_now": [
+                {
+                    "symbol": "AMAT",
+                    "action": "BUY_NOW",
+                    "contract": "AMAT261120C00420000",
+                    "ask": 4.2,
+                    "signaled_at": "2026-10-22T13:35:00+00:00",
+                }
+            ]
+        }
+    }
+    seen = tmp_path / "seen.json"
+    res = disp.dispatch_snapshot_alerts(snap, seen_path=seen)
+    assert res.get("primed") is False
+    assert res.get("sent") == 0
+    assert res.get("configured") is False
+    assert "No alert channel" in str(res.get("error") or "")
+    assert not seen.exists()
+
+
 def test_telegram_not_configured(monkeypatch):
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("TELEGRAM_TOKEN", raising=False)

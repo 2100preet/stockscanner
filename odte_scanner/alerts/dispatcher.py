@@ -430,7 +430,9 @@ def dispatch_snapshot_alerts(
     seen = _load_seen(path)
     providers = _provider_labels(bool(tg_cfg.get("ok")), wa_cfg if wa_enabled else {})
 
-    # First-ever run: seed without spamming the whole board
+    # First-ever run with a channel: seed without spamming the whole board.
+    # Do not seed when nothing can send — that would permanently swallow the
+    # open board, and those keys would stay silent after secrets are added.
     prime_only = (os.environ.get("DESK_ALERTS_PRIME") or os.environ.get("WHATSAPP_ALERTS_PRIME") or "").strip().lower() in {
         "1",
         "true",
@@ -438,12 +440,25 @@ def dispatch_snapshot_alerts(
         "on",
     }
     if not seen and not prime_only:
+        if not any_channel:
+            return {
+                "ok": False,
+                "configured": False,
+                "primed": False,
+                "seeded": 0,
+                "sent": 0,
+                "fresh": len(alerts),
+                "skipped": True,
+                "providers": providers,
+                "error": "No alert channel secrets set (Telegram or WhatsApp)",
+                "note": "Not seeded — this board can still alert once a channel is configured",
+            }
         for a in alerts:
             seen.add(a["key"])
         _save_seen(path, seen)
         return {
             "ok": True,
-            "configured": any_channel,
+            "configured": True,
             "primed": True,
             "seeded": len(alerts),
             "sent": 0,

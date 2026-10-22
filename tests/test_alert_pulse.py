@@ -7,6 +7,24 @@ from pathlib import Path
 from odte_scanner import alert_pulse as ap
 
 
+def test_read_alert_status_hides_secrets(monkeypatch, tmp_path):
+    monkeypatch.setattr(ap, "ROOT", tmp_path)
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    (tmp_path / "outputs").mkdir(parents=True)
+    (tmp_path / "outputs" / "desk_alerts_last.json").write_text(
+        '{"generated_at":"2026-10-22T13:40:00+00:00","desk_alerts":{"configured":false,"sent":0,"primed":false,"note":"No alert channel secrets set (Telegram or WhatsApp)","providers":[],"errors":[],"results":[{"symbol":"AMAT","desk":"Options","side":"BUY"}]}}',
+        encoding="utf-8",
+    )
+    status = ap.read_alert_status()
+    assert status["telegram"]["ok"] is False
+    assert status["telegram"]["token_set"] is False
+    assert status["last"]["sent"] == 0
+    assert status["last"]["symbols"] == [{"symbol": "AMAT", "desk": "Options", "side": "BUY"}]
+    blob = str(status)
+    assert "bot" not in blob.lower() or "telegram" in blob.lower()
+
+
 def test_pulse_skips_when_env_set(monkeypatch):
     monkeypatch.setenv("SKIP_DESK_ALERTS", "1")
     called = {"n": 0}
