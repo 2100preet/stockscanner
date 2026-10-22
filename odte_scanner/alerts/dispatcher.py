@@ -266,6 +266,11 @@ def collect_trade_alerts(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             if side == "SELL" and act not in _SELL_ACTIONS and "SELL" not in act and act != "EXIT":
                 if "EXIT" not in act and "SELL" not in act:
                     return
+        if side == "BUY":
+            from odte_scanner.options.quote_sanity import quote_bundle_ok
+
+            if not quote_bundle_ok(row):
+                return
         key = _row_key(row, side, desk)
         if key in seen_local:
             return

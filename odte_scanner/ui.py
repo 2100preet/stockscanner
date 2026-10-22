@@ -6407,20 +6407,6 @@ def create_app(config_path: str | None = None) -> Flask:
                         if not prev:
                             continue
                         for key in (
-                            "contract",
-                            "expiry",
-                            "dte",
-                            "strike",
-                            "ask",
-                            "bid",
-                            "option_last",
-                            "mark_source",
-                            "moneyness_pct",
-                            "open_interest",
-                            "volume",
-                            "target_ask",
-                            "debit_usd",
-                            "contracts_for_bankroll",
                             "call_wall",
                             "put_wall",
                             "call_wall_oi",
@@ -6441,24 +6427,16 @@ def create_app(config_path: str | None = None) -> Flask:
                         ):
                             if t.get(key) in (None, "", "zone") and prev.get(key) not in (None, ""):
                                 t[key] = prev.get(key)
-                        # Prefer live ask from first pass when second pass fell back to zone
-                        if prev.get("ask") is not None and (
-                            t.get("ask") is None or t.get("mark_source") == "zone"
-                        ):
-                            t["ask"] = prev.get("ask")
-                            t["bid"] = prev.get("bid")
-                            t["option_last"] = prev.get("option_last")
-                            t["mark_source"] = prev.get("mark_source") or "ask"
-                            t["contract"] = prev.get("contract") or t.get("contract")
-                            t["expiry"] = prev.get("expiry") or t.get("expiry")
-                            t["dte"] = prev.get("dte") if prev.get("dte") is not None else t.get("dte")
-                            t["strike"] = prev.get("strike") if prev.get("strike") is not None else t.get("strike")
-                            if prev.get("target_ask") is not None:
-                                t["target_ask"] = prev.get("target_ask")
+                        # A zone label may adopt the previous live contract only as a
+                        # whole. Copying the ask alone prices the new strike with the
+                        # old contract.
+                        from odte_scanner.options.quote_sanity import merge_prior_quote, quote_bundle_ok
+
+                        merge_prior_quote(t, prev)
                         # Second pass rebuilds without chains and demotes ENTRY→WAIT — restore action
                         prev_action = str(prev.get("action") or "")
                         if prev_action in {"ENTRY", "HOLD", "EXIT"} and t.get("action") == "WAIT":
-                            if t.get("ask") is not None or prev.get("ask") is not None:
+                            if quote_bundle_ok(t):
                                 t["action"] = prev_action
                                 for k in (
                                     "status_detail",
