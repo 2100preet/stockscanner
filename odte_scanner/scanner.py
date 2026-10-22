@@ -147,6 +147,7 @@ def run_scan(
                     ts.ensemble_score,
                     ts.reasons,
                     yahoo_symbol=ysym,
+                    expected_move_pct=ts.expected_move_pct,
                     **opt_kwargs,
                 )
                 candidates.extend(picked)
@@ -160,6 +161,7 @@ def run_scan(
                 put_score,
                 reasons,
                 yahoo_symbol=ysym,
+                expected_move_pct=ts.expected_move_pct,
                 **opt_kwargs,
             )
             for p in puts:

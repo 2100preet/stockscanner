@@ -93,6 +93,31 @@ def _rank_call(
     return score - money_pen - spread * 25 - liq_penalty - dte_pen
 
 
+# Names whose 0DTE expected move is under this do not pay a 1–3% OTM strike.
+SLOW_MOVE_MAX_PCT = 1.5
+SLOW_OTM_TARGET = 0.25
+
+
+def otm_band_for_expected_move(
+    expected_move_pct: float | None,
+    otm_pct_max: float,
+) -> tuple[float, float]:
+    """Return ``(otm_target, otm_cap)``.
+
+    A low-ATR name (COST/UNH class, expected move under 1.5%) stays at or
+    just outside the money. Faster names keep the 3% target and the caller's cap.
+    """
+    cap = float(otm_pct_max)
+    try:
+        move = float(expected_move_pct) if expected_move_pct is not None else None
+    except (TypeError, ValueError):
+        move = None
+    if move is None or move >= SLOW_MOVE_MAX_PCT:
+        return 3.0, cap
+    near_cap = min(cap, max(0.75, move))
+    return SLOW_OTM_TARGET, near_cap
+
+
 def select_calls(
     symbol: str,
     spot: float,
@@ -108,6 +133,7 @@ def select_calls(
     min_volume: int = 10,
     yahoo_symbol: str | None = None,
     per_bucket: int = 1,
+    expected_move_pct: float | None = None,
 ) -> list[CallCandidate]:
     """
     Pick best *real* ATM/OTM calls from the live chain.
@@ -129,6 +155,7 @@ def select_calls(
         min_volume=min_volume,
         yahoo_symbol=yahoo_symbol,
         per_bucket=per_bucket,
+        expected_move_pct=expected_move_pct,
     )
 
 
@@ -147,6 +174,7 @@ def select_puts(
     min_volume: int = 10,
     yahoo_symbol: str | None = None,
     per_bucket: int = 1,
+    expected_move_pct: float | None = None,
 ) -> list[CallCandidate]:
     """Pick best *real* ATM/OTM puts — mirror of select_calls for bearish sleeve."""
     return _select_side(
@@ -164,6 +192,7 @@ def select_puts(
         min_volume=min_volume,
         yahoo_symbol=yahoo_symbol,
         per_bucket=per_bucket,
+        expected_move_pct=expected_move_pct,
     )
 
 
@@ -183,9 +212,11 @@ def _select_side(
     min_volume: int = 10,
     yahoo_symbol: str | None = None,
     per_bucket: int = 1,
+    expected_move_pct: float | None = None,
 ) -> list[CallCandidate]:
     right = right.upper()
     fetch_sym = yahoo_symbol or symbol
+    otm_target, otm_pct_max = otm_band_for_expected_move(expected_move_pct, otm_pct_max)
 
     # Prefer Tradier chains when token set (Pages offline Yahoo often empty)
     tradier_out: list[CallCandidate] = []
@@ -209,6 +240,7 @@ def _select_side(
                     max_dte=max_d,
                     prefer_dte=prefer,
                     otm_pct_max=otm_pct_max,
+                    otm_target=otm_target,
                     itm_pct_max=itm_pct_max,
                     min_volume=min_volume,
                     min_oi=min_open_interest,

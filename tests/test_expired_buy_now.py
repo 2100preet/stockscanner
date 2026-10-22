@@ -64,6 +64,48 @@ def test_decide_entry_blocks_same_day_after_1500_offline():
     assert "15:00" in sig.detail or "Past 15:00" in sig.detail
 
 
+def _cost_candidate(**extra):
+    row = {
+        "symbol": "COST",
+        "score": 75,
+        "right": "C",
+        "strike": 1025,
+        "expiry": "2026-10-23",
+        "ask": 4.2,
+        "dte": 1,
+        "dte_bucket": "0dte",
+        "contract": "COST261023C01025000",
+        "moneyness_pct": 1.8,
+    }
+    row.update(extra)
+    return row
+
+
+def test_missing_momentum_does_not_fail_otm_gate():
+    """A green session with no 5m print is not 'tape flat/down'."""
+    now = datetime(2026, 10, 22, 12, 48, tzinfo=ET)
+    quote = {"session_change_pct": 1.7, "mom_5m_pct": None, "mom_15m_pct": None}
+    missing = decide_entry(
+        _cost_candidate(),
+        quote=quote,
+        buy_score=65,
+        require_live_confirm=True,
+        now=now,
+    )
+    assert "flat/down" not in missing.detail
+    assert missing.action == "BUY_NOW"
+
+    flat = decide_entry(
+        _cost_candidate(),
+        quote={**quote, "mom_5m_pct": 0.0},
+        buy_score=65,
+        require_live_confirm=True,
+        now=now,
+    )
+    assert flat.action == "WAIT"
+    assert "flat/down" in flat.detail
+
+
 def test_journal_expiry_follows_session_clock(tmp_path):
     """Replay clock, not the wall clock, decides whether a contract is expired."""
     session = datetime(2026, 9, 9, 11, 0, tzinfo=ET)

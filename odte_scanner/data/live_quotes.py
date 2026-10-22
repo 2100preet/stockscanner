@@ -296,10 +296,115 @@ def fetch_live_quote(symbol: str, *, yahoo_symbol: str | None = None) -> LiveQuo
         return _quote_from_daily_cache(symbol, yahoo_symbol=yahoo_symbol)
 
 
+def board_quote_symbols(
+    rows: list[dict[str, Any]] | None,
+    *,
+    extra: list[str] | None = None,
+    min_score: float = 60.0,
+    limit: int = 40,
+) -> list[str]:
+    """Symbols on the options board that need a live tape.
+
+    Score around 60+ is included in full. Alphabetical slicing used to quote
+    only eight names and leave the rest with a null session change.
+    """
+    scored: list[tuple[float, str]] = []
+    seen: set[str] = set()
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        sym = str(row.get("symbol") or "").upper()
+        if not sym or sym in seen:
+            continue
+        try:
+            score = float(row.get("score") if row.get("score") is not None else row.get("ensemble_score") or 0)
+        except (TypeError, ValueError):
+            score = 0.0
+        if score < float(min_score):
+            continue
+        seen.add(sym)
+        scored.append((score, sym))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    out = [sym for _score, sym in scored]
+    for raw in extra or []:
+        sym = str(raw or "").upper()
+        if sym and sym not in seen:
+            seen.add(sym)
+            out.append(sym)
+    cap = max(1, int(limit))
+    return out[:cap]
+
+
+def momentum_from_closes(closes: list[float]) -> tuple[float | None, float | None]:
+    """5-minute and 15-minute percent moves from ordered closes. None when short."""
+    mom5 = mom15 = None
+    if len(closes) >= 2 and closes[-2] > 0:
+        mom5 = (closes[-1] / closes[-2] - 1.0) * 100.0
+    if len(closes) >= 4 and closes[-4] > 0:
+        mom15 = (closes[-1] / closes[-4] - 1.0) * 100.0
+    return mom5, mom15
+
+
+def _momentum_from_timesales(symbol: str) -> tuple[float | None, float | None]:
+    from datetime import timedelta
+
+    from odte_scanner.data.tradier import ET, fetch_timesales
+
+    now = datetime.now(ET)
+    start = (now - timedelta(minutes=45)).strftime("%Y-%m-%d %H:%M")
+    end = now.strftime("%Y-%m-%d %H:%M")
+    res = fetch_timesales(symbol, interval="5min", start=start, end=end, timeout=8.0)
+    closes: list[float] = []
+    for row in res.get("bars") or []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            px = float(row.get("close") or row.get("price") or 0)
+        except (TypeError, ValueError):
+            continue
+        if px > 0:
+            closes.append(px)
+    return momentum_from_closes(closes)
+
+
+def _attach_missing_momentum(quotes: dict[str, LiveQuote]) -> None:
+    """Fill 5m/15m from Tradier timesales when the quote itself has no momentum."""
+    missing = [sym for sym, quote in quotes.items() if quote.mom_5m_pct is None]
+    if not missing:
+        return
+    try:
+        from odte_scanner.data.tradier import access_token_from_env
+
+        if not access_token_from_env():
+            return
+    except Exception:  # noqa: BLE001
+        return
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _one(sym: str) -> tuple[str, tuple[float | None, float | None]]:
+        try:
+            return sym, _momentum_from_timesales(sym)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("momentum timesales %s: %s", sym, exc)
+            return sym, (None, None)
+
+    workers = min(6, len(missing))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for sym, (mom5, mom15) in pool.map(_one, missing):
+            quote = quotes.get(sym)
+            if quote is None:
+                continue
+            if mom5 is not None:
+                quote.mom_5m_pct = mom5
+            if mom15 is not None and quote.mom_15m_pct is None:
+                quote.mom_15m_pct = mom15
+
+
 def fetch_live_quotes(
     symbols: list[str],
     *,
     aliases: dict[str, str] | None = None,
+    attach_momentum: bool = False,
 ) -> dict[str, LiveQuote]:
     aliases = aliases or {}
     out: dict[str, LiveQuote] = {}
@@ -330,4 +435,6 @@ def fetch_live_quotes(
         q = fetch_live_quote(sym, yahoo_symbol=aliases.get(sym))
         if q:
             out[sym] = q
+    if attach_momentum:
+        _attach_missing_momentum(out)
     return out

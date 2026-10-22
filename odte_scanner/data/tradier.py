@@ -797,6 +797,7 @@ def pick_option_contract(
     prefer_dte: int = 3,
     otm_pct_max: float = 8.0,
     itm_pct_max: float = 2.0,
+    otm_target: float | None = None,
     min_volume: int = 25,
     min_oi: int = 200,
     require_bid: bool = True,
@@ -859,14 +860,15 @@ def pick_option_contract(
             if strike <= 0:
                 continue
             mny = (strike - live_spot) / live_spot * 100.0
+            target = 3.0 if otm_target is None else float(otm_target)
             if not want_put:
                 if mny < -itm_pct_max or mny > otm_pct_max:
                     continue
-                otm_target = 3.0
+                aim = target
             else:
                 if mny > itm_pct_max or mny < -otm_pct_max:
                     continue
-                otm_target = -3.0
+                aim = -target
             bid = _as_float(opt.get("bid"))
             ask = _as_float(opt.get("ask"))
             last = _as_float(opt.get("last"))
@@ -893,7 +895,7 @@ def pick_option_contract(
                 continue
             rank = (
                 50.0
-                - abs(mny - otm_target) * 4.0
+                - abs(mny - aim) * 4.0
                 - abs(dte - prefer_dte) * 0.04
                 - spread * 30.0
                 + min(30.0, oi / 150.0)

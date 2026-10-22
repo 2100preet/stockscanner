@@ -151,6 +151,14 @@ def confidence_pct_for(tier: str, win_pct: float | None, score: float | None) ->
     return round(min(98.0, base + bump), 1)
 
 
+def _symbol_key(row: dict[str, Any]) -> str:
+    sym = str(row.get("symbol") or "").upper()
+    if sym:
+        return sym
+    raw = str(row.get("pick_key") or "")
+    return raw.split("|", 1)[0].upper()
+
+
 def _pick_key(row: dict[str, Any]) -> str:
     sym = str(row.get("symbol") or "").upper()
     occ = str(row.get("contract") or "")
@@ -465,20 +473,39 @@ def select_sure_winners(
     if store.get("day") != day:
         store = {"day": day, "picks": []}
 
-    by_key = {str(c["pick_key"]): c for c in candidates if c.get("pick_key")}
+    def _cand_rank(row: dict[str, Any]) -> tuple:
+        return (
+            TIER_RANK.get(str(row.get("confidence_tier")), 9),
+            0 if str(row.get("certainty_tier")) == "perfect" else 1,
+            -(float(row.get("win_pct") or 0)),
+            -(float(row.get("hit_1pct") or 0)),
+            -(float(row.get("score") or 0)),
+            float(row.get("ask") or 99),
+        )
+
+    candidates = sorted(candidates, key=_cand_rank)
+    # One slot per ticker. A contract swap stays on the same card and must not
+    # open a second slot or evict the other name.
+    best_by_symbol: dict[str, dict[str, Any]] = {}
+    for cand in candidates:
+        sym = _symbol_key(cand)
+        if sym and sym not in best_by_symbol:
+            best_by_symbol[sym] = cand
     tier_ok = set(prefer_tiers)
 
     sticky: list[dict[str, Any]] = []
-    kept_keys: list[str] = []
+    kept_symbols: list[str] = []
     for prior in store.get("picks") or []:
-        key = str(prior.get("pick_key") or "")
-        if not key or key not in by_key:
+        sym = _symbol_key(prior)
+        if not sym or sym in kept_symbols:
             continue
-        cand = by_key[key]
+        cand = best_by_symbol.get(sym)
+        if not cand:
+            continue
         if cand.get("confidence_tier") not in tier_ok:
             continue
         sticky.append(cand)
-        kept_keys.append(key)
+        kept_symbols.append(sym)
         if len(sticky) >= max_n:
             break
 
@@ -486,8 +513,8 @@ def select_sure_winners(
     for cand in candidates:
         if len(selected) >= max_n:
             break
-        key = str(cand.get("pick_key") or "")
-        if not key or key in kept_keys:
+        sym = _symbol_key(cand)
+        if not sym or sym in kept_symbols:
             continue
         if cand.get("confidence_tier") not in tier_ok:
             continue
@@ -495,26 +522,27 @@ def select_sure_winners(
         if cand.get("confidence_tier") == "SOLID" and any(
             s.get("confidence_tier") in {"MAX", "HIGH"} for s in selected
         ):
-            # allow second SOLID only if we still have a free slot and no better left
             better = [
                 c
                 for c in candidates
-                if c.get("pick_key") not in kept_keys
+                if _symbol_key(c) not in kept_symbols
                 and c.get("confidence_tier") in {"MAX", "HIGH"}
             ]
             if better:
                 continue
         selected.append(cand)
-        kept_keys.append(key)
+        kept_symbols.append(sym)
 
     winners = [_to_sure_winner(c, day=day) for c in selected[:max_n]]
     # Preserve first-seen time for sticky picks
-    prior_by_key = {
-        str(p.get("pick_key")): p for p in (store.get("picks") or []) if p.get("pick_key")
-    }
+    prior_by_symbol = {}
+    for prior in store.get("picks") or []:
+        sym = _symbol_key(prior)
+        if sym and sym not in prior_by_symbol:
+            prior_by_symbol[sym] = prior
     new_picks = []
     for w in winners:
-        prior = prior_by_key.get(str(w.pick_key) or "")
+        prior = prior_by_symbol.get(w.symbol)
         if prior and prior.get("signaled_at"):
             w.signaled_at = str(prior["signaled_at"])
             w.signaled_at_cst = str(
