@@ -1,6 +1,6 @@
 """$1,000 → $100,000 challenge path via same-day index sniper flips.
 
-Primary path: SPY/QQQ/IWM 0–1 DTE wings — bank ~+20% and flatten same session.
+Primary path: SPY/QQQ/IWM 0–1 DTE wings — convex runner, hard stop −50%, flatten 15:45 ET.
 Default desk style: same-day / next-session liquid near-dated calls/puts —
 not multi-month LEAPs.
 
@@ -1564,7 +1564,7 @@ def build_challenge_board(
             ),
         },
             "rules": [
-            "$1k→$100k by Oct 31: INDEX SNIPER on SPY/QQQ/IWM (SPX→SPY) 0–1 DTE wings — same-day buy→sell, bank +20%.",
+            "$1k→$100k by Oct 31: INDEX SNIPER on SPY/QQQ/IWM (SPX→SPY) 0–1 DTE wings — convex runner, not a +20% bank.",
             "Hist-win filter still ranks midcaps, but SPY/QQQ/IWM are force-fed onto the board for tape snipes.",
             "Auto paper ENTER when RADAR HOT / ENTRY / BUY_RIP has a live listed ask in the $0.20–$1.50 band and fits ≤30% cash.",
             "Skip lottery pennies / rich asks that blow the cash-frac — 1ct must fit the $1k risk budget.",
@@ -1572,11 +1572,11 @@ def build_challenge_board(
             "Earnings watch: today / this week / next week / post-print across challenge + DRAM sleeve.",
             "Earnings: boost post-print continuation; WAIT into/through the print on the sprint desk (no LEAP force).",
             f"OI walls: soft EXIT ${wall_buffer_usd:.2f} before call wall (long calls) or put wall (long puts).",
-            "Hold periods: sniper same-day (≤4h flatten) · sprint 0–1d · weekly 5–14d · swing 20–60d — EXIT at target, stop, or flatten.",
-            f"Each flip targets ~+20% option premium on snipers (path math ~{primary_path['pct_per_flip']:.0f}%/flip × ~29 days); then EXIT and roll.",
+            "Hold periods: sniper same-day (flatten 15:45 ET) · sprint 0–1d · weekly 5–14d · swing 20–60d — EXIT at trail, stop, or flatten.",
+            f"Index wings trail after +200% (give back −35% from the peak) with a −50% hard stop. Path math for a grind is still ~{primary_path['pct_per_flip']:.0f}%/flip × ~29 days.",
             "Long-dated opens are auto-retired so cash can re-enter same-day sniper tickets.",
             "After a losing flip, that symbol is blocked ~7d (incl. archived epochs) — no midcap bleed re-chase loops.",
-            "Bank +20% same day on SPY/QQQ snipers; flatten ~4h / EOD if still open; hard-skip ENTRY when 1 contract exceeds ~30% of cash.",
+            "SPY/QQQ snipers hold for the convex move: trail −35% from a +200% peak, hard stop −50%, flatten 15:45 ET. Hard-skip ENTRY when 1 contract exceeds ~30% of cash.",
             "Puts need a clear dump confirmation; weak bearish scores default to calls.",
             "Status updates: ENTRY (new), HOLD (open inside window), EXIT (target/stop/time).",
             "Max 1 open challenge flip at a time. 3 consecutive losses pauses auto-enter until next quality epoch. Research / paper only.",

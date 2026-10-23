@@ -7,8 +7,9 @@ Gold cards are entries. Exits come from open sandbox longs: a live premium
 (bid or mark versus entry/cost) that crosses the book TP/SL, a journal or
 desk SELL for that contract, or the 15:45 ET flatten. A lot opened with
 enough contracts scales out in steps and trails the runner. A 1-lot and a
-same-day expiry still leave in full at TP, SL, or the 15:45 flatten. The
-signal card does not have to stay gold, and the sell does not have to match
+same-day expiry still leave in full at TP, SL, or the 15:45 flatten. An
+index-convex SPY/QQQ/IWM wing is the exception: it trails after +200% and
+does not bank at +80%. The signal card does not have to stay gold, and the sell does not have to match
 an open golden order.
 
 Other desks stay on the board and are not staged. SOLID sure winners and
@@ -31,7 +32,13 @@ import re
 from datetime import datetime
 from typing import Any
 
-from odte_scanner.signals.exit_rules import DEFAULT_EXIT_RULES, ScaleOut, plan_premium_exit
+from odte_scanner.signals.exit_rules import (
+    DEFAULT_EXIT_RULES,
+    INDEX_CONVEX_SCALE,
+    INDEX_CONVEX_STOP_PCT,
+    ScaleOut,
+    plan_premium_exit,
+)
 from odte_scanner.signals.hold_rules import (
     BEFORE_OPEN_REASON,
     entry_block_reason,
@@ -699,6 +706,15 @@ class AutoTrader:
             return limit
         return None
 
+    @staticmethod
+    def _is_index_convex_order(order: WebullOrderIntent | None) -> bool:
+        if order is None:
+            return False
+        meta = order.meta or {}
+        if meta.get("index_convex"):
+            return True
+        return str(meta.get("certainty_tier") or "").lower() == "index_convex"
+
     def _exit_thresholds(
         self,
         desk: str,
@@ -713,6 +729,13 @@ class AutoTrader:
         plan = ""
         explicit_tp = None
         explicit_sl = None
+        if self._is_index_convex_order(order):
+            # Runner. The 10_000% figure is not a bank — the trail sells, and
+            # 15:45 still flattens. A parsed "+80%" plan must not win.
+            sl = _f((order.meta or {}).get("stop_loss_pct")) if order is not None else None
+            if sl is None or abs(float(sl)) < INDEX_CONVEX_STOP_PCT:
+                sl = INDEX_CONVEX_STOP_PCT
+            return 10_000.0, abs(float(sl))
         if order is not None:
             plan = str((order.meta or {}).get("exit_plan") or "")
             explicit_tp = _f((order.meta or {}).get("take_profit_pct"))
@@ -745,6 +768,8 @@ class AutoTrader:
         Any other stamped plan keeps a single full exit unless those percents
         are the desk default (Sure Winner +80/−50, Challenge +100/−50).
         """
+        if self._is_index_convex_order(order):
+            return INDEX_CONVEX_SCALE
         rules = self.exit_rules or DEFAULT_EXIT_RULES
         tp = float(take_profit_pct)
         sl = abs(float(stop_loss_pct))
@@ -940,8 +965,9 @@ class AutoTrader:
             peak_mark = None
             if order is not None:
                 original = self._original_qty(order, held)
-                if not same_day:
-                    scale = self._scale_for_lot(desk, order, tp, sl)
+                scale = self._scale_for_lot(desk, order, tp, sl)
+                if same_day and not (scale is not None and scale.allow_same_day):
+                    scale = None
                 for rung in (order.meta or {}).get("scale_rungs_done") or []:
                     number = _i(rung)
                     if number is not None:
@@ -1339,6 +1365,12 @@ class AutoTrader:
         plan = str(row.get("exit_plan") or "").strip()
         if plan:
             meta["exit_plan"] = plan[:320]
+        convex = bool(row.get("index_convex")) or str(row.get("certainty_tier") or "").lower() == "index_convex"
+        if convex:
+            meta["index_convex"] = True
+            meta["certainty_tier"] = "index_convex"
+            meta["stop_loss_pct"] = INDEX_CONVEX_STOP_PCT
+            return meta
         tp = _f(row.get("take_profit_pct"))
         if tp is None:
             tp = _f(row.get("target_profit_pct"))

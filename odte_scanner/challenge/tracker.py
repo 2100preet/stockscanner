@@ -13,6 +13,12 @@ from pathlib import Path
 from typing import Any
 
 from odte_scanner.json_util import finite_float
+from odte_scanner.signals.exit_rules import (
+    INDEX_CONVEX_STOP_PCT,
+    INDEX_CONVEX_TRAIL_AFTER_PCT,
+    INDEX_CONVEX_TRAIL_GIVEBACK_PCT,
+)
+from odte_scanner.signals.hold_rules import past_odte_flatten
 
 logger = logging.getLogger(__name__)
 
@@ -37,14 +43,17 @@ CORE_MEGAS: frozenset[str] = frozenset(
     {"SPY", "QQQ", "IWM", "NVDA", "TSLA", "AMD", "META", "MU", "AAPL", "MSFT", "AMZN", "GOOGL"}
 )
 
-# Index sniper sleeve — same-day buy→sell on liquid ETF options (SPX traded via SPY)
-# Aligned with config challenge_sniper_* (+20% bank / −20% stop / 4h flatten)
+# Index sniper sleeve — same-day SPY/QQQ/IWM wings (SPX traded via SPY).
+# The old +20% bank / −20% stop / 4h flatten clipped the convex move.
+# These match the Sure Winner index-convex runner.
 INDEX_SNIPERS: frozenset[str] = frozenset({"SPY", "QQQ", "IWM"})
-SNIPER_BANK_PCT = 20.0
-SNIPER_STOP_PCT = 20.0
-SNIPER_EARLY_CUT_PCT = 12.0
-SNIPER_FLATTEN_HOURS = 4.0
-SNIPER_TARGET_MULT = 1.20
+SNIPER_BANK_PCT = 0.0
+SNIPER_STOP_PCT = INDEX_CONVEX_STOP_PCT
+SNIPER_EARLY_CUT_PCT = 0.0
+SNIPER_FLATTEN_HOURS = 0.0
+SNIPER_TARGET_MULT = 11.0
+SNIPER_TRAIL_AFTER_PCT = INDEX_CONVEX_TRAIL_AFTER_PCT
+SNIPER_TRAIL_GIVEBACK_PCT = INDEX_CONVEX_TRAIL_GIVEBACK_PCT
 
 
 def _now() -> str:
@@ -121,6 +130,7 @@ class ChallengeTrade:
     exit_plan: str = ""
     hold_approx_label: str = ""
     certainty_tier: str | None = None
+    peak_mark: float | None = None
     cash_before: float | None = None
     cash_after: float | None = None
     equity_after: float | None = None
@@ -594,7 +604,7 @@ class ChallengeTracker:
                 "min_days": 0,
                 "max_days": 1,
                 "ideal_days": 0,
-                "label": f"sniper same-day (bank +{SNIPER_BANK_PCT:.0f}% / {SNIPER_FLATTEN_HOURS:.0f}h flat)",
+                "label": "sniper same-day (convex runner · stop −50% · flatten 15:45 ET)",
             }
         contracts = int(ticket.get("contracts_for_bankroll") or 1)
         contracts = max(1, min(int(max_contracts), contracts))
@@ -622,9 +632,10 @@ class ChallengeTracker:
 
         default_mult = SNIPER_TARGET_MULT if is_sniper else (2.0 if self.exit_rule == "tp100" else 1.75)
         mult = float(ticket.get("target_premium_mult") or default_mult)
-        # Snipers bank ~+20% same day; other sprint tickets still aim ~40–100%
+        # Index wings trail. A 1.2× ticket is the retired +20% bank — do not use it.
         if is_sniper:
-            mult = max(1.15, min(1.60, mult))
+            if mult < 3.0:
+                mult = float(SNIPER_TARGET_MULT)
         else:
             mult = max(1.4, min(2.0, mult))
         target_pct = round((mult - 1.0) * 100.0, 1)
@@ -634,6 +645,8 @@ class ChallengeTracker:
         # Snipers cut faster; sprint otherwise
         if is_sniper:
             stop_pct = float(ticket.get("stop_loss_pct") or SNIPER_STOP_PCT)
+            if stop_pct < float(SNIPER_STOP_PCT):
+                stop_pct = float(SNIPER_STOP_PCT)
         else:
             default_stop = 50.0 if self.exit_rule == "tp100" else (35.0 if hp.get("style") == "sprint" else 45.0)
             stop_pct = float(ticket.get("stop_loss_pct") or default_stop)
@@ -643,16 +656,17 @@ class ChallengeTracker:
             f"ENTER {lane} {side} now @ ≤${ask:.2f} · {ticket.get('expiry') or '?'} · "
             f"K{ticket.get('strike')} · hold {hp['label']}"
         )
-        exit_plan = ticket.get("exit_plan") or (
-            f"EXIT when premium ≥${float(target_ask):.2f} (+{target_pct:.0f}%)"
-            + (f" or bank +{SNIPER_BANK_PCT:.0f}% same day" if is_sniper else "")
-            + f", or stop −{stop_pct:.0f}%"
-            + (
-                f", or flatten ~{SNIPER_FLATTEN_HOURS:.0f}h / EOD"
-                if is_sniper
-                else f", or max hold {hp['max_days']}d"
+        if is_sniper:
+            exit_plan = ticket.get("exit_plan") or (
+                f"EXIT convex runner · trail −{SNIPER_TRAIL_GIVEBACK_PCT:.0f}% from peak "
+                f"after +{SNIPER_TRAIL_AFTER_PCT:.0f}% · hard stop −{stop_pct:.0f}% · flatten 15:45 ET"
             )
-        )
+        else:
+            exit_plan = ticket.get("exit_plan") or (
+                f"EXIT when premium ≥${float(target_ask):.2f} (+{target_pct:.0f}%)"
+                + f", or stop −{stop_pct:.0f}%"
+                + f", or max hold {hp['max_days']}d"
+            )
         cash_before = round(self.book.cash, 2)
         trade = ChallengeTrade(
             id=f"CH-{symbol}{right}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
@@ -746,6 +760,7 @@ class ChallengeTracker:
         mark: float | None,
         quote: dict[str, Any] | None = None,
         sprint_desk: bool = True,
+        now: datetime | None = None,
     ) -> dict[str, Any]:
         """Return ENTRY/HOLD/EXIT recommendation for an open challenge trade."""
         days = self._days_held(trade)
@@ -789,23 +804,14 @@ class ChallengeTracker:
                 "sprint desk — retire long-dated hold for 1–3d / 50–100% flips"
             )
 
-        if unreal is not None and unreal >= target_pct:
+        if not is_sniper and unreal is not None and unreal >= target_pct:
             action = "EXIT"
             reasons.append(f"hit challenge target +{unreal:.0f}% (≥{target_pct:.0f}%)")
-        # Index sniper: bank +20% same day (ideal flip path $1k→$100k)
+        # Other sprint: bank +40% to free capital for next flip.
+        # Index snipers do not take this — a +40% print is still early on a 10× wing.
         elif (
-            is_sniper
-            and unreal is not None
-            and unreal >= SNIPER_BANK_PCT
-            and days >= 0.01
-        ):
-            action = "EXIT"
-            reasons.append(
-                f"bank sniper +{unreal:.0f}% (≥{SNIPER_BANK_PCT:.0f}%) same day — next index flip"
-            )
-        # Other sprint: bank +40% to free capital for next flip
-        elif (
-            not pure_tp100
+            not is_sniper
+            and not pure_tp100
             and unreal is not None
             and unreal >= 40.0
             and days >= max(0.05, float(trade.hold_min_days or 0) * 0.25)
@@ -813,23 +819,18 @@ class ChallengeTracker:
             action = "EXIT"
             reasons.append(f"bank sprint +{unreal:.0f}% (≥40%) — free capital for next flip")
         stop_line = 50.0 if pure_tp100 else float(trade.stop_loss_pct)
+        if is_sniper:
+            stop_line = max(float(stop_line), float(SNIPER_STOP_PCT))
         if unreal is not None and unreal <= -stop_line:
             action = "EXIT"
             reasons.append(f"stop −{abs(unreal):.0f}%")
-            if pure_tp100:
+            if pure_tp100 or is_sniper:
                 reasons[-1] = f"stop −{abs(unreal):.0f}% ≤ −{stop_line:.0f}%"
-        # Sniper early cut — don't wait for full stop if already −12% after ~1h
+        # Early sprint cut — don't wait for full −35/−45 if already −25% after min hold.
+        # Snipers stay on the −50% hard stop so a cheap wing is not shaken out.
         elif (
-            is_sniper
-            and unreal is not None
-            and unreal <= -SNIPER_EARLY_CUT_PCT
-            and days >= 0.04
-        ):
-            action = "EXIT"
-            reasons.append(f"sniper early cut −{abs(unreal):.0f}%")
-        # Early sprint cut — don't wait for full −35/−45 if already −25% after min hold
-        elif (
-            not pure_tp100
+            not is_sniper
+            and not pure_tp100
             and unreal is not None
             and unreal <= -25.0
             and days >= max(0.15, float(trade.hold_min_days or 0) * 0.5)
@@ -837,16 +838,34 @@ class ChallengeTracker:
         ):
             action = "EXIT"
             reasons.append(f"early sprint cut −{abs(unreal):.0f}%")
-        # Same-day sniper: force flat after ~4h (0–1 DTE wings)
-        flatten_days = float(SNIPER_FLATTEN_HOURS) / 24.0
         if (
             is_sniper
             and action == "HOLD"
-            and days >= flatten_days
+            and trade.entry_ask
+            and bid > 0
+        ):
+            peak = trade.peak_mark
+            if peak is None or bid > float(peak):
+                trade.peak_mark = float(bid)
+                peak = float(bid)
+            else:
+                peak = float(peak)
+            arm_at = float(trade.entry_ask) * (1.0 + float(SNIPER_TRAIL_AFTER_PCT) / 100.0)
+            if peak + 1e-9 >= arm_at and bid < peak - 1e-9:
+                line = peak * (1.0 - float(SNIPER_TRAIL_GIVEBACK_PCT) / 100.0)
+                if bid <= line + 1e-4:
+                    action = "EXIT"
+                    reasons.append(
+                        f"trail −{float(SNIPER_TRAIL_GIVEBACK_PCT):.0f}% from peak — convex runner"
+                    )
+        if (
+            is_sniper
+            and action == "HOLD"
             and (dte_entry is None or int(dte_entry) <= 1)
+            and past_odte_flatten(now)
         ):
             action = "EXIT"
-            reasons.append(f"same-day sniper flatten (~{SNIPER_FLATTEN_HOURS:.0f}h)")
+            reasons.append("same-day sniper flatten 15:45 ET")
         if days >= trade.hold_max_days:
             action = "EXIT"
             reasons.append(f"max hold {trade.hold_max_days}d reached ({days:.1f}d)")
@@ -862,15 +881,28 @@ class ChallengeTracker:
                 unreal = ((bid - trade.entry_ask) / trade.entry_ask * 100.0) if trade.entry_ask else None
                 trade.unrealized_pct = round(unreal, 2) if unreal is not None else None
                 reasons.append(f"no live mark — salvage exit @ ${salvage:.2f}")
-        # Thesis fail: call vs dump / put vs rip
-        if trade.right == "C" and mom5 is not None and mom5 <= -0.35 and days >= trade.hold_min_days:
+        # Thesis fail: call vs dump / put vs rip. A 5-minute wiggle is noise on a 0DTE wing.
+        if (
+            not is_sniper
+            and trade.right == "C"
+            and mom5 is not None
+            and mom5 <= -0.35
+            and days >= trade.hold_min_days
+        ):
             action = "EXIT"
             reasons.append(f"call tape fail 5m {mom5:+.2f}% after min hold")
-        if trade.right == "P" and mom5 is not None and mom5 >= 0.35 and days >= trade.hold_min_days:
+        if (
+            not is_sniper
+            and trade.right == "P"
+            and mom5 is not None
+            and mom5 >= 0.35
+            and days >= trade.hold_min_days
+        ):
             action = "EXIT"
             reasons.append(f"put tape fail 5m {mom5:+.2f}% after min hold")
         if (
-            action == "HOLD"
+            not is_sniper
+            and action == "HOLD"
             and days >= trade.hold_ideal_days
             and unreal is not None
             and unreal >= target_pct * 0.7
@@ -882,7 +914,7 @@ class ChallengeTracker:
         soft = getattr(trade, "soft_exit", None)
         if soft is None and isinstance(quote, dict):
             soft = quote.get("soft_exit")
-        if soft is not None and quote:
+        if not is_sniper and soft is not None and quote:
             spot = quote.get("last")
             if spot is not None:
                 soft_f = float(soft)

@@ -4,6 +4,11 @@ Selects from Options BUY_NOW + Challenge ENTRY that clear perfect/elite hist
 certainty, have a live contract/ask, and rank by confidence. Sticky for the
 America/Chicago trading day so the board does not churn every snapshot.
 
+A radar-HOT SPY/QQQ/IWM wing (0–1 DTE, live ask) is the one exception. Those
+cheap index wings do not have a hist score, and the challenge sleeve often
+blocks them after a loss streak. They still surface here as HIGH gold — not
+MAX / GO HUGE — so the primary book can take the convex runner.
+
 Confidence tiers (color-coded on the desk):
   MAX   — perfect hist (100% n≥3) + quality score → GO HUGE (×3)
   HIGH  — elite hist (≥85% n≥5) + quality → SIZE UP (×2)
@@ -21,7 +26,17 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from odte_scanner.signals.exit_rules import INDEX_CONVEX_STOP_PCT
+from odte_scanner.signals.hold_rules import trading_dte
 from odte_scanner.time_cst import CT, signal_timestamps, to_cst_label
+
+# Radar HOT on these names can become HIGH gold without a hist score.
+# SPX is the same sleeve as SPY (the challenge desk already proxies it).
+INDEX_CONVEX_SYMBOLS = frozenset({"SPY", "QQQ", "IWM"})
+INDEX_CONVEX_EXIT_PLAN = (
+    "CONVEX runner · hard stop −50% · trail −35% from peak after +200% · "
+    "flatten 15:45 ET · no early bank"
+)
 
 ET = ZoneInfo("America/New_York")
 
@@ -81,6 +96,7 @@ class SureWinner:
     signaled_at_cst: str | None = None
     day_cst: str | None = None
     pick_key: str | None = None
+    index_convex: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -305,15 +321,152 @@ def gex_blocks_sure_candidate(
     return False
 
 
+def _index_symbol(raw: Any) -> str:
+    sym = str(raw or "").upper()
+    if sym == "SPX":
+        return "SPY"
+    return sym
+
+
+def _contract_right(row: dict[str, Any], contract: str) -> str:
+    right = str(row.get("right") or "").upper()
+    if right in {"CALL", "C"}:
+        return "C"
+    if right in {"PUT", "P"}:
+        return "P"
+    if len(contract) >= 15 and contract[-9] in {"C", "P"}:
+        return contract[-9]
+    return "C"
+
+
+def _short_index_wing(row: dict[str, Any], now: datetime | None) -> bool:
+    """0 DTE or the next session. A wing with no expiry and no DTE is skipped."""
+    expiry = str(row.get("expiry") or "").strip()
+    if expiry:
+        sessions = trading_dte(expiry, now)
+        if sessions is not None:
+            return 0 <= int(sessions) <= 1
+    try:
+        return int(row.get("dte")) <= 1
+    except (TypeError, ValueError):
+        return False
+
+
+def index_convex_candidate(
+    row: dict[str, Any] | None,
+    *,
+    min_ask: float,
+    max_ask: float,
+    now: datetime | None = None,
+    source_desk: str = "Radar",
+) -> dict[str, Any] | None:
+    """Radar-HOT SPY/QQQ/IWM wing → HIGH gold, without a hist score.
+
+    Other names stay on the hist gate. WATCH/COOL radar rows are not gold.
+    """
+    if not isinstance(row, dict):
+        return None
+    action = str(row.get("action") or "").upper()
+    if action not in {"RADAR_HOT", "SNIPER"} and not row.get("from_radar"):
+        return None
+    if action and action not in {"RADAR_HOT", "SNIPER"}:
+        return None
+    sym = _index_symbol(row.get("symbol"))
+    if sym not in INDEX_CONVEX_SYMBOLS:
+        return None
+    if not _short_index_wing(row, now):
+        return None
+    contract = str(row.get("contract") or "")
+    if not contract or contract.endswith("_SYN"):
+        return None
+    try:
+        ask_f = float(row.get("ask"))
+    except (TypeError, ValueError):
+        return None
+    if ask_f < float(min_ask) or ask_f > float(max_ask) or ask_f <= 0:
+        return None
+    right = _contract_right(row, contract)
+    dte_out = row.get("dte")
+    if dte_out is None and row.get("expiry"):
+        sessions = trading_dte(str(row.get("expiry")), now)
+        if sessions is not None:
+            dte_out = sessions
+    try:
+        mult = float(row.get("mult_at_1pct") or row.get("best_mult") or 0)
+    except (TypeError, ValueError):
+        mult = 0.0
+    score = row.get("strength")
+    if score is None:
+        score = row.get("ensemble_score") or row.get("score")
+    cleaned = {
+        k: v
+        for k, v in row.items()
+        if k not in {"take_profit_pct", "target_profit_pct", "stop_loss_pct"}
+    }
+    return {
+        **cleaned,
+        "symbol": sym,
+        "action": "RADAR_HOT",
+        "ask": ask_f,
+        "contract": contract,
+        "right": right,
+        "dte": dte_out,
+        "confidence_tier": "HIGH",
+        "certainty_tier": "index_convex",
+        "index_convex": True,
+        "go_huge": False,
+        "source_desk": source_desk,
+        "score": float(score) if isinstance(score, (int, float)) else None,
+        "mult_at_1pct": mult or None,
+        "win_pct": None,
+        "win_samples": None,
+        "stop_loss_pct": INDEX_CONVEX_STOP_PCT,
+        "exit_plan": INDEX_CONVEX_EXIT_PLAN,
+        "pick_key": _pick_key({**row, "symbol": sym, "contract": contract, "right": right}),
+    }
+
+
+def _best_index_wings(
+    rows: list[dict[str, Any]] | None,
+    *,
+    min_ask: float,
+    max_ask: float,
+    now: datetime | None,
+) -> list[dict[str, Any]]:
+    """One wing per index. Prefer the higher 1% multiple, then the cheaper ask."""
+    best: dict[str, dict[str, Any]] = {}
+    for raw in rows or []:
+        cand = index_convex_candidate(raw, min_ask=min_ask, max_ask=max_ask, now=now)
+        if cand is None:
+            continue
+        prev = best.get(cand["symbol"])
+        rank = (
+            -(float(cand.get("mult_at_1pct") or 0)),
+            float(cand["ask"]),
+        )
+        if prev is None:
+            best[cand["symbol"]] = cand
+            continue
+        prev_rank = (
+            -(float(prev.get("mult_at_1pct") or 0)),
+            float(prev["ask"]),
+        )
+        if rank < prev_rank:
+            best[cand["symbol"]] = cand
+    return list(best.values())
+
+
 def collect_candidates(
     *,
     actions: dict[str, Any] | None = None,
     challenge: dict[str, Any] | None = None,
     rip_radar: dict[str, Any] | None = None,
+    radar: dict[str, Any] | None = None,
     min_ask: float = 0.15,
     max_ask: float = 5.0,
     mega_max_ask: float | None = None,
     allow_solid: bool = True,
+    now: datetime | None = None,
     red_flag: dict[str, Any] | None = None,
     respect_gex: bool = True,
 ) -> list[dict[str, Any]]:
@@ -332,12 +485,7 @@ def collect_candidates(
             pass
         return float(max_ask)
 
-    def push(row: dict[str, Any] | None, desk: str) -> None:
-        if not row:
-            return
-        if gex_blocks_sure_candidate(row, red_flag, respect_gex=respect_gex):
-            return
-        norm = _normalize_candidate(row, source_desk=desk)
+    def accept(norm: dict[str, Any] | None) -> None:
         if not norm:
             return
         if not allow_solid and norm["confidence_tier"] == "SOLID":
@@ -356,6 +504,13 @@ def collect_candidates(
         seen.add(key)
         out.append(norm)
 
+    def push(row: dict[str, Any] | None, desk: str) -> None:
+        if not row:
+            return
+        if gex_blocks_sure_candidate(row, red_flag, respect_gex=respect_gex):
+            return
+        accept(_normalize_candidate(row, source_desk=desk))
+
     acts = actions or {}
     for r in acts.get("buy_now") or []:
         push(r, "Options")
@@ -366,11 +521,23 @@ def collect_candidates(
     for r in rip.get("buy_rip") or rip.get("buy_now") or []:
         # RIP only if it already has elite/perfect hist (normalize will filter)
         push({**r, "action": r.get("action") or "BUY_RIP"}, "RIP/META")
+    for wing in _best_index_wings(
+        (radar or {}).get("hot"),
+        min_ask=min_ask,
+        max_ask=max_ask,
+        now=now,
+    ):
+        # Already HIGH gold. The hist normalizer would drop certainty "index_convex".
+        if gex_blocks_sure_candidate(wing, red_flag, respect_gex=respect_gex):
+            continue
+        accept(wing)
 
     out.sort(
         key=lambda r: (
             TIER_RANK.get(str(r.get("confidence_tier")), 9),
+            0 if r.get("index_convex") else 1,
             0 if str(r.get("certainty_tier")) == "perfect" else 1,
+            -(float(r.get("mult_at_1pct") or r.get("best_mult") or 0)),
             -(float(r.get("win_pct") or 0)),
             -(float(r.get("hit_1pct") or 0)),
             -(float(r.get("score") or 0)),
@@ -397,16 +564,30 @@ def _to_sure_winner(row: dict[str, Any], *, day: str) -> SureWinner:
         }
     right = str(row.get("right") or "C").upper()
     side = "PUT" if right == "P" else "CALL"
-    headline = (
-        f"{tier} · {sizing['size_label']} — {row['symbol']} {side} "
-        f"({certainty} hist {float(win or 0):.0f}% n={int(n or 0)})"
-    )
-    detail_bits = [
-        f"Sure-winner #{tier}",
-        sizing["size_hint"],
-        f"hist {float(win or 0):.0f}% n={int(n or 0)}",
-        f"conf ~{conf:.0f}%",
-    ]
+    index_convex = bool(row.get("index_convex")) or certainty == "index_convex"
+    if index_convex:
+        mult = row.get("mult_at_1pct") or row.get("best_mult")
+        mult_txt = f"~{float(mult):.0f}× if +1%" if mult else "convex wing"
+        headline = f"HIGH · INDEX WING — {row['symbol']} {side} ({mult_txt})"
+        detail_bits = [
+            "Sure-winner index convex",
+            "1-lot runner on same-day expiry",
+            "hard stop −50%",
+            "trail −35% from peak after +200%",
+            "flatten 15:45 ET",
+            "no +20% bank and no +80% full take",
+        ]
+    else:
+        headline = (
+            f"{tier} · {sizing['size_label']} — {row['symbol']} {side} "
+            f"({certainty} hist {float(win or 0):.0f}% n={int(n or 0)})"
+        )
+        detail_bits = [
+            f"Sure-winner #{tier}",
+            sizing["size_hint"],
+            f"hist {float(win or 0):.0f}% n={int(n or 0)}",
+            f"conf ~{conf:.0f}%",
+        ]
     if row.get("hit_1pct") is not None:
         detail_bits.append(f"strike rate ≥1% {float(row['hit_1pct']):.0f}%")
     src_detail = row.get("headline") or row.get("detail") or row.get("recommend_reason") or ""
@@ -450,11 +631,12 @@ def _to_sure_winner(row: dict[str, Any], *, day: str) -> SureWinner:
         soft_exit=row.get("soft_exit"),
         wall_buffer_usd=row.get("wall_buffer_usd"),
         playbook=playbook,
-        go_huge=tier == "MAX",
+        go_huge=tier == "MAX" and not index_convex,
         signaled_at=ts["signaled_at"],
         signaled_at_cst=ts["signaled_at_cst"],
         day_cst=day,
         pick_key=row.get("pick_key") or _pick_key(row),
+        index_convex=index_convex,
     )
 
 
@@ -602,6 +784,7 @@ def build_sure_winner_board(
     actions: dict[str, Any] | None = None,
     challenge: dict[str, Any] | None = None,
     rip_radar: dict[str, Any] | None = None,
+    radar: dict[str, Any] | None = None,
     max_per_day: int = 2,
     min_ask: float = 0.15,
     max_ask: float = 5.0,
@@ -619,10 +802,12 @@ def build_sure_winner_board(
         actions=actions,
         challenge=challenge,
         rip_radar=rip_radar,
+        radar=radar,
         min_ask=min_ask,
         max_ask=max_ask,
         mega_max_ask=mega_max_ask,
         allow_solid=allow_solid,
+        now=now,
         red_flag=red_flag,
         respect_gex=respect_gex,
     )
@@ -662,9 +847,15 @@ def build_sure_winner_board(
     )
     if respect_gex:
         note += " GEX/Red Flag checked — index 0–1 DTE calls skipped on LONG_GAMMA / RED_FLAG."
+    if any(w.index_convex for w in winners):
+        note = (
+            "Index convex wing (SPY/QQQ/IWM radar HOT, 0–1 DTE) is HIGH gold without hist. "
+            "Runner: stop −50%, trail after +200%, flatten 15:45 ET. " + note
+        )
     if not winners:
         note = (
-            f"No sure-winner this snapshot — need perfect/elite hist + live contract/ask "
+            f"No sure-winner this snapshot — need perfect/elite hist + live contract/ask, "
+            f"or a radar-HOT SPY/QQQ/IWM wing "
             f"(cap {max(1, min(max_per_day, 2))}/day). {note}"
         )
 

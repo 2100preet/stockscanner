@@ -471,11 +471,11 @@ actions:
   # Index sniper — SPY/QQQ/IWM (SPX→SPY) same-day buy→sell
   challenge_sniper_enabled: true
   challenge_sniper_symbols: ["SPY", "QQQ", "IWM"]
-  challenge_sniper_target_mult: 1.2   # bank +20% same day
-  challenge_sniper_bank_pct: 20
-  challenge_sniper_stop_pct: 20
-  challenge_sniper_early_cut_pct: 12
-  challenge_sniper_flatten_hours: 4   # force flat same session if still open
+  challenge_sniper_target_mult: 11.0  # convex ceiling, not a +20% bank
+  challenge_sniper_bank_pct: 0        # runner trails after +200%; no early bank
+  challenge_sniper_stop_pct: 50       # wider than the old −20% shakeout
+  challenge_sniper_early_cut_pct: 0
+  challenge_sniper_flatten_hours: 0   # session flatten is 15:45 ET
   challenge_min_ensemble: 60
   challenge_mega_min_ensemble: 55
   challenge_min_ask: 0.20

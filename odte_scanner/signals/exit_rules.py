@@ -10,6 +10,10 @@ not stopping at −50%, not from holding through the close.
 
 ``scale_out`` is the paper ladder for a lot that was opened with enough
 contracts. Smaller lots and same-day expiry stay on the full TP/SL exit.
+
+An index-convex wing (cheap same-day SPY/QQQ/IWM) is the exception: one
+contract can still trail. It does not take the +80% full exit, and it does
+not use the challenge sniper's +20% bank. The 15:45 ET flatten still runs.
 """
 from __future__ import annotations
 
@@ -38,6 +42,9 @@ class ScaleOut:
     steps: tuple[ScaleStep, ...]
     trail_giveback_pct: float | None = None
     trail_after_pct: float | None = None
+    # Same-day lots normally skip the ladder. A convex index wing keeps it
+    # so a 1-lot can run past +80% and still trail.
+    allow_same_day: bool = False
 
 
 # Sure Winner: +40% sell 40%, +80% sell 40% of original N, trail the rest
@@ -59,6 +66,20 @@ CHALLENGE_SCALE = ScaleOut(
 RIP_SCALE = ScaleOut(
     min_contracts=2,
     steps=(ScaleStep(30.0, 50.0), ScaleStep(50.0, 30.0)),
+)
+
+# Cheap SPY/QQQ/IWM wings. No partials on a 1-lot. Hard stop is −50%, not the
+# sniper −20%. The trail arms only after a 3× peak so a 10× move is not sold
+# at +20% or +80%. The session clock still flattens at 15:45 ET.
+INDEX_CONVEX_STOP_PCT = 50.0
+INDEX_CONVEX_TRAIL_AFTER_PCT = 200.0
+INDEX_CONVEX_TRAIL_GIVEBACK_PCT = 35.0
+INDEX_CONVEX_SCALE = ScaleOut(
+    min_contracts=1,
+    steps=(),
+    trail_giveback_pct=INDEX_CONVEX_TRAIL_GIVEBACK_PCT,
+    trail_after_pct=INDEX_CONVEX_TRAIL_AFTER_PCT,
+    allow_same_day=True,
 )
 
 
@@ -172,7 +193,8 @@ def plan_premium_exit(
 
     A hard stop always sells everything still open. The ladder never sells a
     piece while premium is below the entry. A same-day lot, or one opened
-    below ``min_contracts``, keeps the single full exit.
+    below ``min_contracts``, keeps the single full exit. A scale with
+    ``allow_same_day`` (the index-convex runner) still trails on a 1-lot.
     """
     if entry <= 0 or mark <= 0 or held < 1:
         return None
@@ -187,7 +209,7 @@ def plan_premium_exit(
 
     use_scale = (
         scale is not None
-        and not same_day
+        and (not same_day or scale.allow_same_day)
         and int(original) >= int(scale.min_contracts)
         and held >= 1
     )

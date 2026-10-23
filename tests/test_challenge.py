@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from odte_scanner.challenge.million import (
     build_challenge_board,
@@ -1018,7 +1019,7 @@ def test_time_boxed_path_1mo_500k_sprint():
 
 
 def test_index_sniper_radar_hot_spy_quick_inout(tmp_path):
-    """SPY/QQQ RADAR HOT should sniper-enter and bank +20% same day (not hist midcaps)."""
+    """SPY/QQQ RADAR HOT enters and holds through +20%. It does not bank there."""
     ledger = tmp_path / "ch.json"
     tr = ChallengeTracker(
         ledger,
@@ -1059,19 +1060,28 @@ def test_index_sniper_radar_hot_spy_quick_inout(tmp_path):
     assert open_t.right == "C"
     assert open_t.certainty_tier == "sniper"
     assert open_t.cost == 34.0
-    assert open_t.target_premium_mult == 1.2
-    assert open_t.stop_loss_pct == 20.0
-    # Bank +20% sniper exit (same-day) — target_mult 1.2 fires first
+    assert open_t.target_premium_mult == 11.0
+    assert open_t.stop_loss_pct == 50.0
+    morning = datetime(2026, 10, 20, 11, 0, tzinfo=timezone.utc)
+    # +20% is not a bank. The wing stays open.
     open_t.entered_at = (datetime.now(timezone.utc) - timedelta(minutes=45)).isoformat()
     tr.save()
-    ev = tr.evaluate_open(open_t, mark=0.41, quote={}, sprint_desk=True)  # +20.6%
-    assert ev["action"] == "EXIT"
-    detail = ev["detail"].lower()
-    assert "20" in detail or "sniper" in detail or "bank" in detail or "target" in detail
-    # Below bank/target: HOLD
-    open_t.entered_at = (datetime.now(timezone.utc) - timedelta(minutes=45)).isoformat()
-    ev_hold = tr.evaluate_open(open_t, mark=0.37, quote={}, sprint_desk=True)  # +8.8%
-    assert ev_hold["action"] == "HOLD"
+    ev = tr.evaluate_open(open_t, mark=0.41, quote={}, sprint_desk=True, now=morning)
+    assert ev["action"] == "HOLD"
+    # +80% is still early. A normal 0DTE sure-winner would have full-exited.
+    ev_80 = tr.evaluate_open(open_t, mark=0.62, quote={}, sprint_desk=True, now=morning)
+    assert ev_80["action"] == "HOLD"
+    # Hard stop is −50%, not the old −20% / −12% cut.
+    ev_noise = tr.evaluate_open(open_t, mark=0.26, quote={}, sprint_desk=True, now=morning)
+    assert ev_noise["action"] == "HOLD"
+    ev_stop = tr.evaluate_open(open_t, mark=0.16, quote={}, sprint_desk=True, now=morning)
+    assert ev_stop["action"] == "EXIT"
+    assert "stop" in ev_stop["detail"].lower()
+    # Trail only after a +200% peak, then a −35% giveback.
+    tr.evaluate_open(open_t, mark=1.10, quote={}, sprint_desk=True, now=morning)
+    ev_trail = tr.evaluate_open(open_t, mark=0.70, quote={}, sprint_desk=True, now=morning)
+    assert ev_trail["action"] == "EXIT"
+    assert "trail" in ev_trail["detail"].lower()
 
 
 def test_spx_maps_to_spy_sniper(tmp_path):
@@ -1186,12 +1196,13 @@ def test_1k_to_100k_epoch_rebuild_sets_target(tmp_path):
     assert tr2.book.archive[-1]["to_epoch"] == "2026-10-02-1k-to-100k"
     d = tr2.book.to_dict()
     assert d["progress_pct"] == 1.0  # $1k / $100k
-    assert d["sniper_bank_pct"] == 20.0
-    assert d["sniper_flatten_hours"] == 4.0
+    assert d["sniper_bank_pct"] == 0.0
+    assert d["sniper_stop_pct"] == 50.0
+    assert d["sniper_flatten_hours"] == 0.0
 
 
 def test_sniper_same_day_flatten_after_4h(tmp_path):
-    """Still-open sniper forces EXIT after ~4h even without bank/stop."""
+    """A sniper held 4.5h still runs. It flattens at 15:45 ET, not at 4 hours."""
     ledger = tmp_path / "ch.json"
     tr = ChallengeTracker(
         ledger,
@@ -1221,16 +1232,19 @@ def test_sniper_same_day_flatten_after_4h(tmp_path):
         max_ask=2.50,
     )
     assert entered is not None
-    # Flat mark, held ~4.5h → same-day flatten
     entered.entered_at = (datetime.now(timezone.utc) - timedelta(hours=4, minutes=30)).isoformat()
     tr.save()
-    ev = tr.evaluate_open(entered, mark=0.50, quote={}, sprint_desk=True)
-    assert ev["action"] == "EXIT"
-    assert "flatten" in ev["detail"].lower()
+    morning = datetime(2026, 10, 20, 15, 0, tzinfo=ZoneInfo("America/New_York"))
+    ev = tr.evaluate_open(entered, mark=0.50, quote={}, sprint_desk=True, now=morning)
+    assert ev["action"] == "HOLD"
+    late = datetime(2026, 10, 20, 15, 50, tzinfo=ZoneInfo("America/New_York"))
+    ev_flat = tr.evaluate_open(entered, mark=0.50, quote={}, sprint_desk=True, now=late)
+    assert ev_flat["action"] == "EXIT"
+    assert "15:45" in ev_flat["detail"]
 
 
 def test_sniper_target_mult_allows_20pct_bank(tmp_path):
-    """Config 1.2× must not be clamped back up to 1.4×."""
+    """A 1.2× ticket is the retired +20% bank. The wing stores the convex ceiling."""
     tr = ChallengeTracker(tmp_path / "ch.json", starting_cash=1000, target_usd=100_000)
     entered = tr.enter(
         {
@@ -1252,9 +1266,9 @@ def test_sniper_target_mult_allows_20pct_bank(tmp_path):
         max_ask=2.50,
     )
     assert entered is not None
-    assert entered.target_premium_mult == 1.2
-    assert entered.target_profit_pct == 20.0
-    assert entered.stop_loss_pct == 20.0
+    assert entered.target_premium_mult == 11.0
+    assert entered.target_profit_pct == 1000.0
+    assert entered.stop_loss_pct == 50.0
 
 
 def test_compound_path_1k_to_100k_26_flips():

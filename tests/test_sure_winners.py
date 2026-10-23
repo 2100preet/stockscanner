@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from odte_scanner.signals.sure_winners import (
     annotate_buy_rows,
@@ -244,6 +246,106 @@ def test_gex_red_flag_blocks_index_even_without_long_gamma():
         respect_gex=True,
     )
     assert cands == []
+
+
+def test_radar_hot_index_wing_is_high_gold_without_hist(tmp_path: Path):
+    """The cheap SPY/QQQ wings the radar already had should be Sure Winner gold."""
+    radar = {
+        "hot": [
+            {
+                "action": "RADAR_HOT",
+                "symbol": "SPY",
+                "right": "C",
+                "ask": 0.35,
+                "contract": "SPY261020C00773000",
+                "expiry": "2026-10-20",
+                "dte": 0,
+                "strike": 773,
+                "mult_at_1pct": 17,
+                "spot": 771.16,
+                "detail": "SPY 773c @ $0.35 · ~17× if +1%",
+            },
+            {
+                "action": "RADAR_HOT",
+                "symbol": "SPY",
+                "right": "C",
+                "ask": 0.57,
+                "contract": "SPY261020C00772000",
+                "expiry": "2026-10-20",
+                "dte": 0,
+                "strike": 772,
+                "mult_at_1pct": 9,
+            },
+            {
+                "action": "RADAR_HOT",
+                "symbol": "QQQ",
+                "right": "C",
+                "ask": 0.38,
+                "contract": "QQQ261020C00725000",
+                "expiry": "2026-10-20",
+                "dte": 0,
+                "strike": 725,
+                "mult_at_1pct": 9,
+                "detail": "QQQ 725c @ $0.38 · ~9× if +1%",
+            },
+            {
+                "action": "RADAR_HOT",
+                "symbol": "AAPL",
+                "right": "C",
+                "ask": 0.40,
+                "contract": "AAPL261020C00270000",
+                "expiry": "2026-10-20",
+                "dte": 0,
+                "strike": 270,
+                "mult_at_1pct": 12,
+            },
+        ]
+    }
+    board = build_sure_winner_board(
+        actions={"buy_now": [_buy("SKIP", win=60, n=10, score=90)]},
+        radar=radar,
+        max_per_day=2,
+        store_path=tmp_path / "sw.json",
+        now=datetime(2026, 10, 20, 12, 0, tzinfo=ZoneInfo("America/New_York")),
+    )
+    syms = [w["symbol"] for w in board["winners"]]
+    assert syms == ["SPY", "QQQ"]
+    spy = board["winners"][0]
+    assert spy["confidence_tier"] == "HIGH"
+    assert spy["go_huge"] is False
+    assert spy["index_convex"] is True
+    assert spy["contract"] == "SPY261020C00773000"
+    assert "17" in spy["headline"]
+    assert spy["exit_plan"].startswith("CONVEX runner")
+    from odte_scanner.trading.golden import is_sure_winner_gold
+
+    assert is_sure_winner_gold(spy) is True
+
+
+def test_long_gamma_still_blocks_the_index_wing(tmp_path: Path):
+    radar = {
+        "hot": [
+            {
+                "action": "RADAR_HOT",
+                "symbol": "SPY",
+                "right": "C",
+                "ask": 0.35,
+                "contract": "SPY261020C00773000",
+                "expiry": "2026-10-20",
+                "dte": 0,
+                "strike": 773,
+                "mult_at_1pct": 17,
+            }
+        ]
+    }
+    board = build_sure_winner_board(
+        actions={"buy_now": []},
+        radar=radar,
+        store_path=tmp_path / "sw.json",
+        now=datetime(2026, 10, 20, 12, 0, tzinfo=ZoneInfo("America/New_York")),
+        red_flag={"state": "SUPPORTIVE", "cboe_gex": {"regime": "LONG_GAMMA"}},
+    )
+    assert board["winners"] == []
 
 
 def test_mega_max_ask_allows_tsla_rich_premium():
