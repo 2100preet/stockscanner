@@ -40,6 +40,9 @@ SECTION_HTML = f"""
           <input id="scTicker" class="sc-input" type="search" placeholder="NVDA" autocomplete="off" />
         </label>
       </div>
+      <h3>SPX 0DTE paper structures</h3>
+      <p class="lede" id="scorecardSpxNote"></p>
+      <div id="scorecardSpx" class="empty">No SPX structure logged yet.</div>
       <div style="overflow-x:auto">
         <table id="scorecardTable"></table>
       </div>
@@ -126,6 +129,33 @@ CLIENT_JS = r"""
       var ledgerLink = document.getElementById("scorecardLedgerLink");
       if (ledgerLink && !window.SIGNAL_DESK_STATIC && location.pathname.indexOf("scorecard") === -1) {
         ledgerLink.href = "/scorecard/ledger.jsonl";
+      }
+      var spx = sc.spx_strategies || {};
+      var spxNote = document.getElementById("scorecardSpxNote");
+      var spxEl = document.getElementById("scorecardSpx");
+      if (spxNote) spxNote.textContent = spx.note || "";
+      if (spxEl) {
+        var spxRows = spx.rows || [];
+        if (!spxRows.length) {
+          spxEl.innerHTML = '<div class="empty">No SPX structure logged yet.</div>';
+        } else {
+          var groups = spx.by_strategy || {};
+          var cards = Object.keys(groups).map(function (name) {
+            var bucket = groups[name] || {};
+            return '<div class="metric"><div class="k">' + scEsc(name) + '</div><div class="v">'
+              + scEsc(bucket.closed || 0) + ' closed · '
+              + scEsc(bucket.wins || 0) + 'W/' + scEsc(bucket.losses || 0) + 'L · $'
+              + Number(bucket.pnl || 0).toFixed(2) + '</div></div>';
+          }).join("");
+          var lines = spxRows.slice(0, 12).map(function (row) {
+            var outcome = row.outcomes || {};
+            var pnl = outcome.pnl == null ? "—" : ("$" + Number(outcome.pnl).toFixed(2));
+            return '<div class="why">' + scEsc(row.signal_type) + ' ' + scEsc(row.contract || "")
+              + ' · ' + scEsc(outcome.status || "open") + ' · ' + scEsc(pnl)
+              + (outcome.exit_reason ? (' · ' + scEsc(outcome.exit_reason)) : '') + '</div>';
+          }).join("");
+          spxEl.innerHTML = '<div class="metric-row">' + cards + '</div>' + lines;
+        }
       }
       var rows = sc.rows || [];
       var type = (document.getElementById("scType") || {}).value || "all";

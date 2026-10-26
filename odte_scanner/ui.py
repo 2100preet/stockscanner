@@ -278,6 +278,7 @@ PAGE = r"""
       <button class="active" data-tab="nowboard">BUY / SELL NOW</button>
       <button data-tab="overview">Overview</button>
       <button data-tab="odte">0DTE</button>
+      <button data-tab="spx">SPX 0DTE</button>
       <button data-tab="odte1k">0DTE $1K</button>
       <button data-tab="powerhour">Power Hour</button>
       <button data-tab="explosive">Lottery</button>
@@ -888,6 +889,11 @@ PAGE = r"""
         <div class="metric-row" id="recLogMetrics"></div>
         <div id="recLogAll" class="empty">—</div>
       </div>
+    </section>
+    <section class="tabpane" id="tab-spx">
+      <h2>SPX 0DTE strategy selector</h2>
+      <p class="lede" id="spxLede">Levels, volatility regime, and paper structures. Nothing here is routed to Webull.</p>
+      <div id="spxStrategy" class="empty">Waiting for the chain…</div>
     </section>
     <!--SCORECARD_SECTION-->
 
@@ -3965,8 +3971,64 @@ PAGE = r"""
     }
 
 /*SCORECARD_FN*/
+    function renderSpxStrategy() {
+      const el = document.getElementById("spxStrategy");
+      if (!el) return;
+      const board = DATA.spx_strategy || {};
+      const levels = board.levels || {};
+      const regime = board.regime || {};
+      const pin = levels.pin || {};
+      if (!board.ok && !levels.ut3) {
+        el.innerHTML = '<div class="empty">' + (board.error || "SPX chain unavailable.") + "</div>";
+        return;
+      }
+      const fmt = (n) => (n == null || n === "" ? "—" : Number(n).toLocaleString(undefined, {maximumFractionDigits: 2}));
+      const money = (n) => (n == null ? "—" : "$" + Number(n).toFixed(2));
+      const levelRow = ["lt3","lt2","lt1","ut1","ut2","ut3"].map((key) =>
+        '<div class="metric"><div class="k">' + key.toUpperCase() + '</div><div class="v">' + fmt(levels[key]) + "</div></div>"
+      ).join("");
+      const setups = (board.setups || []).map((row) => {
+        const px = row.credit != null ? ("credit " + money(row.credit)) : ("debit " + money(row.debit));
+        return '<div class="panel" style="margin:.4rem 0;padding:.55rem .7rem"><strong>'
+          + (row.action || "") + " · " + (row.strategy || "") + "</strong> "
+          + (row.structure || "") + " · " + px
+          + " · max loss " + money(row.max_loss)
+          + '<div class="why">' + (row.reason || "") + "</div>"
+          + '<div class="why">' + (row.exit || "") + " · " + ((row.size || {}).formula || "") + "</div>"
+          + "</div>";
+      }).join("");
+      const book = board.book || {};
+      const trades = [].concat(book.open || [], book.closed || []).map((row) =>
+        '<div class="why">' + (row.strategy || "") + " " + (row.structure || "")
+        + " · " + (row.status || "") + " · pnl " + money(row.pnl)
+        + (row.exit_reason ? (" · " + row.exit_reason) : "") + "</div>"
+      ).join("");
+      const limits = (board.limitations || []).map((line) => "<li>" + line + "</li>").join("");
+      el.innerHTML = ''
+        + '<div class="metric-row">'
+        + '<div class="metric"><div class="k">Spot</div><div class="v">' + fmt(board.spot || levels.spot) + "</div></div>"
+        + '<div class="metric"><div class="k">Anchor</div><div class="v">' + fmt(levels.anchor_spot) + "</div></div>"
+        + '<div class="metric"><div class="k">Expected move</div><div class="v">' + fmt(levels.em) + "</div></div>"
+        + '<div class="metric"><div class="k">Pin</div><div class="v">' + fmt(pin.low) + "–" + fmt(pin.high) + "</div></div>"
+        + '<div class="metric"><div class="k">IV</div><div class="v">' + (regime.iv || "—") + "</div></div>"
+        + '<div class="metric"><div class="k">Trend</div><div class="v">' + (regime.trend || "—") + "</div></div>"
+        + "</div>"
+        + '<div class="metric-row">' + levelRow + "</div>"
+        + '<p class="why">' + (board.definitions || "") + "</p>"
+        + '<p class="why">Regime: ATM IV ' + fmt(regime.atm_iv) + " vs 20-day realized " + fmt(regime.rv20)
+        + (regime.iv_ratio != null ? (" (" + fmt(regime.iv_ratio) + "×)") : "")
+        + ". Session " + fmt(regime.session_change_pct) + "% · 5m " + fmt(regime.mom_5m_pct)
+        + "%. Source " + (board.source || "—") + " · " + (board.symbol || "SPX") + " " + (board.expiry || "")
+        + " · phase " + (board.phase || "—") + ".</p>"
+        + (setups || '<div class="empty">No setup for this tape.</div>')
+        + "<h3>Paper book</h3>"
+        + (trades || '<div class="empty">No paper structure yet.</div>')
+        + '<p class="why">' + (board.paper_note || "") + "</p>"
+        + (limits ? ("<ul>" + limits + "</ul>") : "");
+    }
     function paint() {
       try { renderScorecard(); } catch (err) { console.error(err); }
+      try { renderSpxStrategy(); } catch (err) { console.error(err); }
       renderMustTradeBanner();
       renderNowBoard();
       maybeFireTradeAlerts();
@@ -7293,6 +7355,20 @@ def create_app(config_path: str | None = None) -> Flask:
                     logger.warning("daily_pnl build failed: %s", exc)
                     daily_pnl = {"error": str(exc), "totals": {}, "by_day": [], "closed": [], "open": []}
 
+                spx_strategy: dict = {}
+                try:
+                    from odte_scanner.signals.spx_strategy import build_spx_desk
+
+                    spx_strategy = build_spx_desk(cfg=cfg, quotes=quotes)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("spx strategy failed: %s", exc)
+                    spx_strategy = {
+                        "ok": False,
+                        "error": str(exc)[:200],
+                        "setups": [],
+                        "book": {"open": [], "closed": []},
+                    }
+
                 scorecard_public: dict = {}
                 try:
                     from odte_scanner.scorecard.service import observe_snapshot
@@ -7301,6 +7377,7 @@ def create_app(config_path: str | None = None) -> Flask:
                         sure_winners=sure_winners if isinstance(sure_winners, dict) else None,
                         option_flow=(echo.get("option_flow") if isinstance(echo, dict) else None),
                         scores=scan.get("scores") or [],
+                        spx_board=spx_strategy,
                     )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("scorecard observe failed: %s", exc)
@@ -7359,6 +7436,7 @@ def create_app(config_path: str | None = None) -> Flask:
                         "rec_log": rec_log_payload,
                         "webull": webull_payload,
                         "scorecard": scorecard_public,
+                        "spx_strategy": spx_strategy,
                         }
                     )
 
@@ -7869,6 +7947,21 @@ def create_app(config_path: str | None = None) -> Flask:
         from odte_scanner.alert_pulse import read_alert_status
 
         return jsonify(read_alert_status())
+
+    @app.get("/api/spx-strategy")
+    def spx_strategy_view():
+        """Today's SPX levels, regime, and paper structures. No secrets and no Webull route."""
+        from odte_scanner.scorecard.service import observe_snapshot
+        from odte_scanner.signals.spx_strategy import build_spx_desk
+
+        board = build_spx_desk(cfg=cfg)
+        try:
+            view = observe_snapshot(spx_board=board)
+            board["scorecard"] = view.get("spx_strategies")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("spx scorecard observe failed: %s", exc)
+            board["scorecard_error"] = str(exc)[:200]
+        return jsonify(board)
 
     @app.get("/api/alerts/log")
     def alerts_log():

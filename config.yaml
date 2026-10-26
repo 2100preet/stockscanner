@@ -600,6 +600,13 @@ watch:
   quote_top_n: 50           # how many names to pull live/extended quotes for
   output_dir: outputs/watch
 
+# SPX 0DTE strategy selector. Paper signals and the scorecard only — not a Webull route.
+spx_strategy:
+  enabled: true
+  wing_points: 10             # SPX wing. XSP uses 2 points.
+  risk_pct_defined: 0.01      # condor, credit, and debit: 1% of account per idea
+  risk_pct_long: 0.005        # naked long premium: 0.5% of account
+
 live_trading:
   enabled: false          # master switch — never implied by the presence of API keys
   broker: webull

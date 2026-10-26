@@ -274,3 +274,50 @@ def fetch_option_quote(
         "greeks": greeks if isinstance(greeks, dict) else None,
         "source": "polygon",
     }
+
+
+def fetch_option_chain_snapshot(
+    underlying: str,
+    expiry: str,
+    *,
+    timeout: float = 15.0,
+    max_pages: int = 4,
+) -> dict[str, Any]:
+    """List one expiry from the Polygon options snapshot. Empty when the plan has no chain."""
+    if not api_key_from_env():
+        return {"ok": False, "configured": False, "options": [], "error": "POLYGON_API_KEY not set"}
+    und = str(underlying).upper()
+    key = api_key_from_env() or ""
+    params: dict[str, Any] | None = {
+        "expiration_date": str(expiry)[:10],
+        "limit": 250,
+        "apiKey": key,
+    }
+    url = f"{BASE}/v3/snapshot/options/{und}"
+    rows: list[dict[str, Any]] = []
+    for _ in range(max_pages):
+        try:
+            response = requests.get(url, params=params, timeout=timeout)
+            if response.status_code in {401, 403}:
+                if rows:
+                    break
+                return {"ok": False, "configured": True, "options": [], "error": "unauthorized"}
+            response.raise_for_status()
+            payload = response.json() if response.content else {}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("polygon option chain failed: %s", exc)
+            if rows:
+                break
+            return {"ok": False, "configured": True, "options": [], "error": "chain request failed"}
+        raw = payload.get("results") or []
+        if isinstance(raw, dict):
+            raw = [raw]
+        for row in raw:
+            if isinstance(row, dict):
+                rows.append(row)
+        nxt = str(payload.get("next_url") or "")
+        if not nxt:
+            break
+        url = nxt
+        params = None if "apiKey=" in nxt else {"apiKey": key}
+    return {"ok": True, "configured": True, "options": rows, "n": len(rows), "underlying": und}
