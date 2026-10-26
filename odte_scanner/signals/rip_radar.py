@@ -39,6 +39,8 @@ MEGA_RIP_SYMBOLS = {
     "SPOT", "SHOP", "CRWD", "PANW", "ORCL", "IBM", "INTC", "SNDK",
     # Airlines — oil easing + pre-earnings group rips (AAL/DAL/UAL Oct 20 miss)
     "AAL", "DAL", "UAL", "LUV", "JBLU",
+    # Neocloud / AI infra — session rips while daily ensemble stays crushed (CRWV Oct 26 miss)
+    "CRWV", "NBIS", "IREN", "APLD", "CORZ",
 }
 
 

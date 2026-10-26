@@ -19,6 +19,12 @@ def test_mega_symbols_include_baba_googl_amd_meta():
         assert is_mega_rip_symbol(s)
 
 
+def test_mega_symbols_include_neocloud_crwv():
+    """Oct 26 miss: CRWV +8% from open while daily ensemble ~38 — need RIP sleeve."""
+    for s in ("CRWV", "NBIS", "IREN", "APLD", "CORZ", "CRWD"):
+        assert is_mega_rip_symbol(s), f"{s} missing from MEGA_RIP_SYMBOLS"
+
+
 def test_mega_rip_tape_ok():
     assert mega_rip_tape_ok(live=1.4, mom5=0.12)
     assert not mega_rip_tape_ok(live=0.4, mom5=0.12)
