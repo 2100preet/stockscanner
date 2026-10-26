@@ -41,6 +41,12 @@ MOVE_NOTE = (
     "These figures are not option fills, not account profit, and not real-money returns."
 )
 
+SPX_NOTE = (
+    "SPX 0DTE structures are paper marks in dollars per one-lot, graded on their own. "
+    "They are not part of the Gold Setup or Golden Flow win rate, not broker fills, "
+    "and not Webull orders."
+)
+
 FetchBars = Callable[[str], list[dict[str, Any]]]
 
 
@@ -291,6 +297,8 @@ def _append_evaluations(
     latest = _latest_outcomes(events)
     by_symbol: dict[str, list[dict[str, Any]]] = {}
     for payload in signal_payloads(events):
+        if str(payload.get("reference_basis") or "") == "structure":
+            continue
         if _needs_eval(latest.get(str(payload.get("id")))):
             by_symbol.setdefault(str(payload.get("ticker") or ""), []).append(payload)
     cache: dict[str, list[dict[str, Any]] | None] = {}
@@ -371,10 +379,51 @@ def _summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _structure_fingerprint(outcome: dict[str, Any]) -> str:
+    from odte_scanner.scorecard.ledger import canonical
+
+    pnl = outcome.get("pnl")
+    if isinstance(pnl, (int, float)):
+        pnl = round(float(pnl), 2)
+    return canonical(
+        {
+            "status": outcome.get("status"),
+            "pnl": pnl,
+            "exit_reason": outcome.get("exit_reason"),
+            "win": outcome.get("win"),
+        }
+    )
+
+
+def _spx_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    by: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        name = str(row.get("signal_type") or "SPX")
+        bucket = by.setdefault(
+            name,
+            {"count": 0, "open": 0, "closed": 0, "wins": 0, "losses": 0, "pnl": 0.0},
+        )
+        bucket["count"] += 1
+        outcome = row.get("outcomes") or {}
+        pnl = outcome.get("pnl")
+        if outcome.get("status") == "closed":
+            bucket["closed"] += 1
+            if outcome.get("win") is True:
+                bucket["wins"] += 1
+            elif outcome.get("win") is False:
+                bucket["losses"] += 1
+        else:
+            bucket["open"] += 1
+        if isinstance(pnl, (int, float)):
+            bucket["pnl"] = round(float(bucket["pnl"]) + float(pnl), 2)
+    return {"note": SPX_NOTE, "count": len(rows), "by_strategy": by, "rows": rows}
+
+
 def fold(events: list[dict[str, Any]], status: ChainStatus | None = None) -> dict[str, Any]:
     chain = (status or verify_chain(events)).to_dict()
     outcomes = _latest_outcomes(events)
     rows: list[dict[str, Any]] = []
+    spx_rows: list[dict[str, Any]] = []
     for payload in signal_payloads(events):
         outcome = outcomes.get(str(payload.get("id"))) or {
             "eod": {"status": "pending", "return_pct": None, "win": None},
@@ -384,24 +433,29 @@ def fold(events: list[dict[str, Any]], status: ChainStatus | None = None) -> dic
             "mae_pct": None,
             "mfe_status": "pending",
         }
-        rows.append(
-            {
-                "id": payload.get("id"),
-                "signaled_at": payload.get("signaled_at"),
-                "signaled_at_ct": payload.get("signaled_at_ct"),
-                "recorded_at": payload.get("recorded_at"),
-                "ticker": payload.get("ticker"),
-                "signal_type": payload.get("signal_type"),
-                "direction": payload.get("direction"),
-                "reference_entry": payload.get("reference_entry"),
-                "reference_basis": payload.get("reference_basis") or "underlying",
-                "premium_reference": payload.get("premium_reference"),
-                "contract": payload.get("contract"),
-                "conviction": payload.get("conviction"),
-                "outcomes": outcome,
-            }
-        )
+        card = {
+            "id": payload.get("id"),
+            "signaled_at": payload.get("signaled_at"),
+            "signaled_at_ct": payload.get("signaled_at_ct"),
+            "recorded_at": payload.get("recorded_at"),
+            "ticker": payload.get("ticker"),
+            "signal_type": payload.get("signal_type"),
+            "strategy": payload.get("strategy"),
+            "direction": payload.get("direction"),
+            "reference_entry": payload.get("reference_entry"),
+            "reference_basis": payload.get("reference_basis") or "underlying",
+            "premium_reference": payload.get("premium_reference"),
+            "contract": payload.get("contract"),
+            "conviction": payload.get("conviction"),
+            "max_loss": payload.get("max_loss"),
+            "outcomes": outcome,
+        }
+        if card["reference_basis"] == "structure":
+            spx_rows.append(card)
+        else:
+            rows.append(card)
     rows.sort(key=lambda row: (str(row.get("signaled_at") or ""), str(row.get("id") or "")), reverse=True)
+    spx_rows.sort(key=lambda row: (str(row.get("signaled_at") or ""), str(row.get("id") or "")), reverse=True)
     head = chain.get("head") or ""
     return {
         "disclaimer": DISCLAIMER,
@@ -417,6 +471,7 @@ def fold(events: list[dict[str, Any]], status: ChainStatus | None = None) -> dic
         },
         "summary": _summary(rows),
         "rows": rows,
+        "spx_strategies": _spx_summary(spx_rows),
         "as_of": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -440,11 +495,45 @@ def ledger_text() -> str:
     return "".join(_line(event) for event in events)
 
 
+def _append_spx_board(events: list[dict[str, Any]], board: dict[str, Any] | None, now: datetime) -> None:
+    if not isinstance(board, dict):
+        return
+    known = {str(row.get("id")) for row in signal_payloads(events)}
+    for payload in board.get("ledger_signals") or []:
+        if not isinstance(payload, dict) or not payload.get("id"):
+            continue
+        if str(payload.get("reference_basis") or "") != "structure":
+            continue
+        if str(payload["id"]) in known:
+            continue
+        append_event(events, SIGNAL_EVENT, payload)
+        known.add(str(payload["id"]))
+    latest = _latest_outcomes(events)
+    as_of = now.astimezone(timezone.utc).isoformat()
+    for mark in board.get("ledger_marks") or []:
+        if not isinstance(mark, dict):
+            continue
+        sid = str(mark.get("signal_id") or "")
+        outcome = mark.get("outcome")
+        if not sid or not isinstance(outcome, dict) or sid not in known:
+            continue
+        previous = latest.get(sid)
+        if previous and _structure_fingerprint(previous) == _structure_fingerprint(outcome):
+            continue
+        append_event(
+            events,
+            EVAL_EVENT,
+            {"v": 1, "signal_id": sid, "as_of": as_of, "outcome": outcome},
+        )
+        latest[sid] = outcome
+
+
 def observe_snapshot(
     *,
     sure_winners: Any = None,
     option_flow: Any = None,
     scores: Any = None,
+    spx_board: dict[str, Any] | None = None,
     now: datetime | None = None,
     fetch_bars: FetchBars | None = None,
     force_eval: bool = False,
@@ -484,5 +573,6 @@ def observe_snapshot(
     if evaluate and _eval_enabled():
         _append_evaluations(events, now=moment, fetch_bars=fetch_bars or _default_fetch)
         _touch_stamp()
+    _append_spx_board(events, spx_board, moment)
     _persist(events)
     return fold(events, verify_chain(events))

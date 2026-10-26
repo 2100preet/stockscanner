@@ -462,6 +462,37 @@ def collect_trade_alerts(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             "0DTE $1K",
         )
 
+    board = snapshot.get("spx_strategy") if isinstance(snapshot.get("spx_strategy"), dict) else {}
+    for setup in board.get("setups") or []:
+        if not isinstance(setup, dict) or str(setup.get("action") or "").upper() != "ENTER":
+            continue
+        message = str(setup.get("message") or "").strip()
+        sym = str(setup.get("symbol") or "SPX").upper()
+        if not message or not sym:
+            continue
+        strategy = str(setup.get("strategy") or "")
+        contract = str(setup.get("structure") or "")
+        day = str(setup.get("day") or "")
+        key = f"SPX Strategy|ENTER|{sym}|{strategy}|{contract}|{day}"
+        if key in seen_local:
+            continue
+        seen_local.add(key)
+        out.append(
+            {
+                "key": key,
+                "side": "BUY",
+                "desk": "SPX Strategy",
+                "symbol": sym,
+                "action": "ENTER",
+                "contract": contract,
+                "strike": None,
+                "expiry": setup.get("expiry"),
+                "ask": setup.get("credit") if setup.get("credit") is not None else setup.get("debit"),
+                "message": message,
+                "row": setup,
+            }
+        )
+
     return _collapse_symbol_alerts(out)
 
 
