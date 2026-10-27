@@ -257,6 +257,10 @@ def render_scorecard_page(*, live: bool = False, initial: dict[str, Any] | None 
     if live:
         section = section.replace('href="data/scorecard_ledger.jsonl"', 'href="/scorecard/ledger.jsonl"')
         section = section.replace('href="scorecard.html"', 'href="/scorecard"')
+    from odte_scanner.edge.page import render_edge_static
+    from odte_scanner.edge.view import build_edge_report
+
+    edge_html = render_edge_static(build_edge_report(scorecard=initial if isinstance(initial, dict) else None))
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -310,6 +314,7 @@ def render_scorecard_page(*, live: bool = False, initial: dict[str, Any] | None 
   <div class="wrap" id="scorecardRoot">
     <p class="back"><a href="./">← ZeroLoss Desk</a></p>
     <h1>Public <em>Scorecard</em></h1>
+    {edge_html}
     <p class="disclaimer">{DISCLAIMER}</p>
     <p class="lede">{refresh} Times are US Central. The reference price is the underlying at signal time.</p>
     {section}

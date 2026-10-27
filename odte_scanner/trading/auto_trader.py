@@ -279,6 +279,8 @@ class AutoTrader:
         max_risk_per_trade_usd: float | None = None,
         sure_winner_max_contracts: int = 3,
         challenge_max_contracts: int = 2,
+        edge_gate: bool = False,
+        edge_route: set[str] | None = None,
     ):
         self.broker = broker
         self.require_perfect_hist = bool(require_perfect_hist)
@@ -320,6 +322,48 @@ class AutoTrader:
         self.max_golden_buys_per_sync = max(0, int(max_golden_buys_per_sync))
         self.filtered: list[dict[str, Any]] = []
         self._closed_contracts: set[str] = set()
+        # Off in tests. Production turns it on. An empty route blocks new buys
+        # and leaves exits alone. The route is option-dollar sources, not desks.
+        self.edge_gate = bool(edge_gate)
+        if edge_route is not None:
+            self.edge_route = {str(name) for name in edge_route}
+        elif self.edge_gate:
+            from odte_scanner.edge.view import option_route
+
+            self.edge_route = option_route()
+        else:
+            self.edge_route = set()
+
+    def _edge_allows_buy(self, desk: str) -> bool:
+        if not self.edge_gate:
+            return True
+        from odte_scanner.edge.gate import source_for_webull
+
+        return source_for_webull(desk) in self.edge_route
+
+    def _suppress_unproven_buys(self) -> None:
+        """Cancel unfilled entry buys the gate does not allow.
+
+        A staged row with no broker id is dropped any time, including overnight.
+        A submitted order is cancelled only while the option session is open,
+        so a night pulse does not call the broker.
+        """
+        if not self.edge_gate:
+            return
+        session = option_session_open(self._now)
+        for intent in list(self.broker.orders):
+            if intent.action != "BUY":
+                continue
+            # A fill price means this row is the open lot. Exits still manage it.
+            if intent.fill_price or intent.status in {"filled", "partial", "cancelled", "rejected", "skipped"}:
+                continue
+            if intent.status not in {"submitted", "deferred", "staged", "dry_run"}:
+                continue
+            if self._edge_allows_buy(intent.desk):
+                continue
+            if intent.broker_order_id and not session:
+                continue
+            self.broker.cancel(intent)
 
     @staticmethod
     def _is_position_buy(order: WebullOrderIntent) -> bool:
@@ -1368,6 +1412,9 @@ class AutoTrader:
         sym = str(row.get("symbol") or "").upper()
         if not sym:
             return None
+        if not self._edge_allows_buy(desk):
+            self._note_filtered(row, "edge gate: log-only")
+            return None
         blocked = entry_block_reason(row.get("expiry"), self._now, dte=_i(row.get("dte")))
         preopen = blocked == BEFORE_OPEN_REASON
         if blocked and not preopen:
@@ -1790,6 +1837,7 @@ class AutoTrader:
         self.broker._session_now = now
         self._closed_contracts = set()
         self.broker.refresh_working_buys()
+        self._suppress_unproven_buys()
         self._reconcile_positions(self._managed_positions())
         if self.golden_only and option_session_open(now):
             self._maintain_working_sells()
@@ -1990,6 +2038,8 @@ class AutoTrader:
             "skipped": skipped[:40],
             "submitted_n": len(submitted),
             "skipped_n": len(skipped),
+            "edge_gate": self.edge_gate,
+            "edge_route": sorted(self.edge_route),
             "recent": self.broker.recent(40),
             "activity": self.broker.activity(40),
             "disclaimer": self.broker.status()["disclaimer"],
