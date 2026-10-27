@@ -18,6 +18,7 @@ MIN_SAMPLES = 40
 ALERT_DESK_SOURCE = {
     "Gold Setup": "Gold Setup",
     "Diamond": "Diamond",
+    "Sniper": "Sniper",
     "Golden Flow": "Golden Flow",
     "Options": "Options",
     "Explosive": "Lottery",
@@ -34,6 +35,7 @@ ALERT_DESK_SOURCE = {
 TRACKED_SOURCES = (
     "Gold Setup",
     "Diamond",
+    "Sniper",
     "Golden Flow",
     "Options",
     "Challenge",
@@ -60,6 +62,8 @@ def source_for_webull(desk: str) -> str:
         return "Gold Setup"
     if key == "diamond":
         return "Diamond"
+    if key == "sniper":
+        return "Sniper"
     if key == "golden_flow":
         return "Golden Flow"
     if key == "challenge":
@@ -78,6 +82,8 @@ def source_for_alert(desk: str) -> str:
 def journal_source(trade: dict[str, Any], default: str = "Options") -> str:
     reason = f"{trade.get('entry_reason') or ''} {trade.get('exit_reason') or ''}".lower()
     bucket = str(trade.get("dte_bucket") or trade.get("horizon") or "").lower()
+    if "sniper" in reason:
+        return "Sniper"
     if "diamond" in reason:
         return "Diamond"
     if "sure" in reason or "gold setup" in reason:

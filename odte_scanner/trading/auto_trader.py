@@ -306,6 +306,7 @@ class AutoTrader:
             "sure_winner": True,
             "golden_flow": True,
             "diamond": True,
+            "sniper": True,
         }
         if desks:
             merged.update(desks)
@@ -404,7 +405,7 @@ class AutoTrader:
         if order.desk == self.second_desk:
             return True
         kind = str((order.meta or {}).get("golden_kind") or "")
-        if kind in {"sure_winner_gold", "diamond"}:
+        if kind in {"sure_winner_gold", "diamond", "sniper"}:
             return True
         if not self.close_legacy_positions:
             return False
@@ -706,8 +707,8 @@ class AutoTrader:
         and a 1 DTE that does not expire today, stays under the trail.
         Challenge still leaves same-day and next-session holds at 15:45 ET.
         """
-        if str(desk or "") == "diamond":
-            # The Diamond study flats at 10:30 CT the same session, including
+        if str(desk or "") in {"diamond", "sniper"}:
+            # Diamond and Sniper flat at 10:30 CT the same session, including
             # a weekly that does not expire today. Gold stays on 2:30 PM CT.
             return past_gold_flatten(now, "10:30")
         if str(desk or "") == self.second_desk:
@@ -971,13 +972,27 @@ class AutoTrader:
         peak_mark: float | None,
         force_short: bool = False,
     ):
+        from odte_scanner.signals.exit_rules import DEFAULT_SNIPER_EXIT
+
         spec = self._gold_spec()
         same_day = expiry_is_today(expiry, self._now)
         dte = trading_dte(expiry, self._now)
+        sniper = bool(
+            order is not None
+            and (
+                str((order.meta or {}).get("golden_kind") or "") == "sniper"
+                or str(order.desk or "") == "sniper"
+            )
+        )
         # Diamond banks +30% on the whole lot and uses the same-day −40% stop.
         # The 2+ DTE half-and-trail, and the −50% weekly stop, were not the
-        # sample that cleared.
-        if force_short:
+        # sample that cleared. Sniper sells half at +25% (when two contracts
+        # are open) and trails the rest, with the same −40% stop.
+        if sniper:
+            spec = DEFAULT_SNIPER_EXIT
+            short = False
+            same_day = True
+        elif force_short:
             short = True
             same_day = True
         else:
@@ -1111,6 +1126,8 @@ class AutoTrader:
                 peak_mark = _f((order.meta or {}).get("peak_mark"))
             if self._uses_gold_exit(desk, order):
                 kind = str((order.meta or {}).get("golden_kind") or "") if order is not None else ""
+                if str(desk or "") == "sniper":
+                    kind = "sniper"
                 decision = self._gold_decision(
                     order=order,
                     entry=entry,
@@ -1368,9 +1385,18 @@ class AutoTrader:
         next contract still fits. Lottery and the other desks stay put.
         Same-day expiry stays 1 contract and flattens on the clock.
         """
+        desk_l = str(desk or "").lower()
+        if desk_l == "sniper":
+            # Half off at +25% needs two contracts. Take two only when they
+            # fit the risk budget. Otherwise the one-lot trails after +25%.
+            premium = _f(limit_price)
+            risk = self.max_risk_per_trade_usd
+            if risk is not None and premium is not None and premium > 0:
+                if 2 * premium * 100.0 <= float(risk) + 1e-6:
+                    return 2
+            return 1
         if self.max_risk_per_trade_usd is None:
             return self.max_contracts
-        desk_l = str(desk or "").lower()
         if second or desk_l in {self.second_desk, "challenge"}:
             cap = self.challenge_max_contracts
         elif desk_l == "sure_winner":
@@ -1440,6 +1466,11 @@ class AutoTrader:
                     self._note_filtered(row, "SPX diamond is not a Webull order")
                     return None
                 desk = "diamond"
+            elif kind == "sniper":
+                if sym == "SPX" or row.get("webull") is False:
+                    self._note_filtered(row, "SPX sniper is not a Webull order")
+                    return None
+                desk = "sniper"
             else:
                 desk = "sure_winner" if kind == "sure_winner_gold" else "golden_flow"
             if kind == "sure_winner_gold" and self._symbol_has_unfilled_golden(sym):
@@ -1516,7 +1547,11 @@ class AutoTrader:
                 **(
                     {"gold_exit": True, "diamond_flat_ct": "10:30"}
                     if kind == "diamond"
-                    else (self._gold_order_plan(row) if kind and not second else {})
+                    else (
+                        {"gold_exit": True, "sniper_flat_ct": "10:30"}
+                        if kind == "sniper"
+                        else (self._gold_order_plan(row) if kind and not second else {})
+                    )
                 ),
             },
             )
@@ -1799,6 +1834,7 @@ class AutoTrader:
         sure_winners: dict[str, Any] | None = None,
         option_flow: dict[str, Any] | None = None,
         diamond: dict[str, Any] | None = None,
+        sniper: dict[str, Any] | None = None,
         now: datetime | None = None,
     ) -> dict[str, Any]:
         submitted: list[dict[str, Any]] = []
@@ -1828,7 +1864,7 @@ class AutoTrader:
             if (
                 intent.action == "BUY"
                 and (intent.meta or {}).get("golden_kind")
-                and (intent.meta or {}).get("golden_kind") != "diamond"
+                and (intent.meta or {}).get("golden_kind") not in {"diamond", "sniper"}
                 and intent.status in ("dry_run", "submitted", "staged", "deferred", "rejected", "filled")
             ):
                 golden_buys += 1
@@ -1969,7 +2005,7 @@ class AutoTrader:
                 if (
                     intent.action == "BUY"
                     and (intent.meta or {}).get("golden_kind")
-                    and (intent.meta or {}).get("golden_kind") != "diamond"
+                    and (intent.meta or {}).get("golden_kind") not in {"diamond", "sniper"}
                     and golden_buys >= self.max_golden_buys_per_sync
                 ):
                     continue
@@ -2013,6 +2049,28 @@ class AutoTrader:
                 _take(self._route_buy(desk="diamond", row=row, right="C"))
                 if len(submitted) > before:
                     diamond_buys += 1
+
+            from odte_scanner.signals.sniper import DAILY_CAP as SNIPER_CAP
+
+            sniper_buys = 0
+            for row in (sniper or {}).get("signals") or []:
+                if not isinstance(row, dict) or not row.get("send_order"):
+                    continue
+                if budget <= 0 or sniper_buys >= SNIPER_CAP:
+                    continue
+                from odte_scanner.options.quote_sanity import quote_reject_reason
+
+                reason = quote_reject_reason(row)
+                if reason:
+                    self._note_filtered(row, reason)
+                    continue
+                before = len(submitted)
+                right = str(row.get("right") or "C").upper()[:1]
+                if right not in {"C", "P"}:
+                    right = "C"
+                _take(self._route_buy(desk="sniper", row=row, right=right))
+                if len(submitted) > before:
+                    sniper_buys += 1
 
         if defer_challenge and challenge and budget > 0:
             for row in challenge.get("exit") or []:

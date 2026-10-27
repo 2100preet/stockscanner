@@ -184,7 +184,7 @@ def _compact_strike(strike: Any, right: str) -> str:
 
 def _signal_headline(row: dict[str, Any], desk: str) -> str | None:
     """Plain-text first line for Gold Setup and Golden Flow. No Markdown."""
-    if desk not in {"Gold Setup", "Golden Flow", "Diamond"}:
+    if desk not in {"Gold Setup", "Golden Flow", "Diamond", "Sniper"}:
         return None
     right, strike, expiry = _resolved_contract(row)
     parts: list[str] = []
@@ -192,6 +192,8 @@ def _signal_headline(row: dict[str, Any], desk: str) -> str | None:
         parts.extend(["⭐", _contract_circle(row), "SURE WINNER"])
     elif desk == "Diamond":
         parts.extend(["💎", "DIAMOND"])
+    elif desk == "Sniper":
+        parts.extend(["🎯", "SNIPER"])
     else:
         parts.extend([_contract_circle(row), "GOLDEN FLOW"])
     parts.append(str(row.get("symbol") or "?").upper())
@@ -416,6 +418,26 @@ def collect_trade_alerts(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         sent_symbols.add(sym)
         push(row, "BUY", "Diamond", force=True)
+
+    sniper = snapshot.get("sniper") if isinstance(snapshot.get("sniper"), dict) else {}
+    sniper_symbols: set[str] = set()
+    for raw in sniper.get("signals") or []:
+        if not isinstance(raw, dict) or not raw.get("send"):
+            continue
+        if len(sniper_symbols) >= 3:
+            break
+        row = dict(raw)
+        row["action"] = "SNIPER"
+        sym = str(row.get("symbol") or "").upper()
+        if not sym or sym in sniper_symbols:
+            continue
+        try:
+            if float(row.get("ask") or 0) <= 0:
+                continue
+        except (TypeError, ValueError):
+            continue
+        sniper_symbols.add(sym)
+        push(row, "BUY", "Sniper", force=True)
 
     from odte_scanner.edge.filters import golden_flow_skip_reason
 

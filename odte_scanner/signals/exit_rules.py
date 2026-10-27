@@ -88,6 +88,22 @@ class GoldExitSpec:
 
 DEFAULT_GOLD_EXIT = GoldExitSpec()
 
+# Sniper sells half at +25% when two contracts are open, then trails the rest
+# back to entry or half the peak gain. A one-lot cannot split, so it trails
+# the whole position once +25% prints. The hard stop is the same-day −40%,
+# and the clock is 10:30 CT. The runner target is intentionally out of reach
+# so the trail and the clock are the exits the 60-day sample used.
+DEFAULT_SNIPER_EXIT = GoldExitSpec(
+    arm_pct=25.0,
+    runner_target_pct=1000.0,
+    stop_loss_pct=40.0,
+    same_day_stop_pct=40.0,
+    partial_sell_pct=50.0,
+    trail_arm_pct=25.0,
+    trail_keep_fraction=0.5,
+    flatten_ct="10:30",
+)
+
 
 @dataclass(frozen=True)
 class ExitRule:

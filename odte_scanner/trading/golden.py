@@ -87,12 +87,18 @@ def is_golden_unusual_flow(row: dict[str, Any] | None) -> bool:
 
 
 def golden_signal_kind(row: dict[str, Any] | None) -> str | None:
-    """Return ``diamond``, ``sure_winner_gold``, or None.
+    """Return ``sniper``, ``diamond``, ``sure_winner_gold``, or None.
 
     Golden unusual-flow is intentionally not a route. A chart-pattern golden
-    triangle is not a Sure Winner card either. Diamond is its own book and
-    does not paint a Gold Setup card.
+    triangle is not a Sure Winner card either. Sniper and Diamond are their
+    own books and do not paint a Gold Setup card.
     """
+    if isinstance(row, dict) and (
+        row.get("sniper") is True
+        or str(row.get("action") or "").strip().upper() == "SNIPER"
+        or str(row.get("desk") or "") == "Sniper"
+    ):
+        return "sniper"
     if isinstance(row, dict) and (
         row.get("diamond") is True
         or str(row.get("action") or "").strip().upper() == "DIAMOND"
