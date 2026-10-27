@@ -166,8 +166,14 @@ def pulse_desk_alerts(
     from odte_scanner.alerts import dispatch_snapshot_alerts
     from odte_scanner.json_util import dumps_strict
 
+    from odte_scanner.config import load_config
+    from odte_scanner.edge.gate import edge_gate_enabled
+
     payload = build_offline_snapshot(config_path)
-    alert_meta = dispatch_snapshot_alerts(payload) or {"ok": False}
+    alert_meta = dispatch_snapshot_alerts(
+        payload,
+        edge_gate=edge_gate_enabled(load_config(config_path)),
+    ) or {"ok": False}
     try:
         append_alert_log(alert_meta.get("attempts") if isinstance(alert_meta, dict) else None)
     except Exception as exc:  # noqa: BLE001

@@ -192,6 +192,7 @@ def run_watch(
                     # Stage Webull BUY/SELL from the same action board
                     lt = cfg.get("live_trading") or {}
                     if bool(lt.get("auto_sync", True)):
+                        from odte_scanner.edge.gate import edge_gate_enabled
                         from odte_scanner.live_desk import resolve_webull_live_flags
                         from odte_scanner.trading.auto_trader import AutoTrader, paper_risk_kwargs
                         from odte_scanner.trading.webull import WebullBroker
@@ -224,6 +225,7 @@ def run_watch(
                             second_desk=str(lt.get("second_desk") or "challenge"),
                             exit_rules=_exit_rules,
                             **paper_risk_kwargs(lt, cfg.get("risk") or {}),
+                            edge_gate=edge_gate_enabled(cfg),
                         )
                         sure_rows = None
                         try:

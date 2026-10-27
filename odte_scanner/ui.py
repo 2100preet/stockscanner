@@ -66,7 +66,8 @@ PAGE = r"""
     .tabs { display: flex; flex-wrap: wrap; gap: .35rem; border-bottom: 1px solid var(--line); padding-bottom: .55rem; margin-bottom: 1rem; }
     .tabs button { background: transparent; border: none; color: var(--muted); border-radius: .4rem; padding: .45rem .75rem; }
     .tabs button.active { color: var(--ink); background: rgba(255,255,255,.07); }
-    .tabs button[data-tab="scorecard"] { color: var(--sure-gold); }
+    .tabs button[data-tab="scorecard"],
+    .tabs button[data-tab="edge"] { color: var(--sure-gold); }
     .sc-input {
       background: rgba(255,255,255,.03); color: var(--ink);
       border: 1px solid var(--line); border-radius: .45rem; padding: .28rem .45rem;
@@ -294,6 +295,7 @@ PAGE = r"""
       <button data-tab="pnl">P&amp;L</button>
       <button data-tab="journal">Journal</button>
       <button data-tab="scorecard">Scorecard</button>
+      <button data-tab="edge">Edge</button>
     </nav>
 
     <section class="tabpane active" id="tab-nowboard">
@@ -896,6 +898,7 @@ PAGE = r"""
       <div id="spxStrategy" class="empty">Waiting for the chain…</div>
     </section>
     <!--SCORECARD_SECTION-->
+    <!--EDGE_SECTION-->
 
     <footer>
       Quality gates require score + multiple confirming algos before a signal counts — fewer trades, higher measured win rates.
@@ -3971,6 +3974,7 @@ PAGE = r"""
     }
 
 /*SCORECARD_FN*/
+/*EDGE_FN*/
     function renderSpxStrategy() {
       const el = document.getElementById("spxStrategy");
       if (!el) return;
@@ -4028,6 +4032,7 @@ PAGE = r"""
     }
     function paint() {
       try { renderScorecard(); } catch (err) { console.error(err); }
+      try { renderEdge(); } catch (err) { console.error(err); }
       try { renderSpxStrategy(); } catch (err) { console.error(err); }
       renderMustTradeBanner();
       renderNowBoard();
@@ -4283,6 +4288,7 @@ PAGE = r"""
         const px = isBuy ? (row.ask ?? row.entry_ask) : (row.bid ?? row.mark ?? row.ask ?? row.exit_bid);
         out.push({
           key,
+          desk,
           kind: isBuy ? "buy" : "sell",
           title: `${isBuy ? "BUY" : "SELL"} ${row.symbol} ${right}`,
           body: [
@@ -4305,6 +4311,7 @@ PAGE = r"""
         const key = ["SURE", tier, String(r.symbol||"").toUpperCase(), right, r.contract||"", r.expiry||"", r.strike??""].join("|");
         out.push({
           key,
+          desk: "Gold Setup",
           kind: "sure",
           title: `${tier} · ${size} ${r.symbol} ${right}`,
           body: [
@@ -4390,8 +4397,10 @@ PAGE = r"""
         saveAlertSeen();
         return;
       }
+      const route = (DATA.edge && DATA.edge.alert_desks) || [];
       const fresh = alerts.filter(a => !alertSeen.has(a.key));
-      fresh.slice(0, 6).forEach(a => {
+      const audible = DATA.edge ? fresh.filter(a => route.indexOf(a.desk) >= 0) : fresh;
+      audible.slice(0, 6).forEach(a => {
         alertSeen.add(a.key);
         pushToast(a);
         beepAlert(a.kind);
@@ -4426,12 +4435,15 @@ PAGE = r"""
 </html>
 """
 
+from odte_scanner.edge.page import EDGE_JS, EDGE_SECTION
 from odte_scanner.scorecard.page import CLIENT_JS, SECTION_HTML
 from odte_scanner.trading.golden import SURE_WINNER_CARD_JS
 
 PAGE = PAGE.replace("/*SURE_WINNER_CARD_JS*/", SURE_WINNER_CARD_JS)
 PAGE = PAGE.replace("<!--SCORECARD_SECTION-->", SECTION_HTML)
+PAGE = PAGE.replace("<!--EDGE_SECTION-->", EDGE_SECTION)
 PAGE = PAGE.replace("/*SCORECARD_FN*/", CLIENT_JS)
+PAGE = PAGE.replace("/*EDGE_FN*/", EDGE_JS)
 
 
 def _read_json(path: Path) -> dict | list | None:
@@ -4569,6 +4581,27 @@ def _partial_snapshot(note: str) -> dict:
     }
 
 
+def _edge_report(scorecard: dict | None) -> dict:
+    from odte_scanner.edge.view import build_edge_report
+
+    try:
+        return build_edge_report(scorecard=scorecard if isinstance(scorecard, dict) else {})
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "verdict": "Edge report failed",
+            "route": [],
+            "alert_desks": [],
+            "kept": [],
+            "muted": [],
+            "option_sources": [],
+            "underlying": [],
+            "slices": [],
+            "study": [],
+            "limitations": [str(exc)[:200]],
+            "error": str(exc)[:200],
+        }
+
+
 def _annotate_snapshot(body: dict, note: str | None) -> dict:
     if not note:
         return body
@@ -4607,6 +4640,12 @@ def create_app(config_path: str | None = None) -> Flask:
         from odte_scanner.scorecard.service import public_view
 
         return jsonify(public_view())
+
+    @app.get("/api/edge")
+    def edge_api():
+        from odte_scanner.scorecard.service import public_view
+
+        return jsonify(_edge_report(public_view()))
 
     @app.get("/scorecard/ledger.jsonl")
     def scorecard_ledger():
@@ -7442,6 +7481,7 @@ def create_app(config_path: str | None = None) -> Flask:
                         "rec_log": rec_log_payload,
                         "webull": webull_payload,
                         "scorecard": scorecard_public,
+                        "edge": _edge_report(scorecard_public),
                         "spx_strategy": spx_strategy,
                         }
                     )
@@ -7745,6 +7785,7 @@ def create_app(config_path: str | None = None) -> Flask:
         return jsonify({"ok": True, "started": True, "mode": mode})
 
     def _webull_bundle():
+        from odte_scanner.edge.gate import edge_gate_enabled
         from odte_scanner.live_desk import resolve_webull_live_flags
         from odte_scanner.signals.exit_rules import load_exit_rules
         from odte_scanner.trading.auto_trader import AutoTrader, paper_risk_kwargs
@@ -7790,6 +7831,7 @@ def create_app(config_path: str | None = None) -> Flask:
             second_desk=str(lt.get("second_desk") or "challenge"),
             exit_rules=load_exit_rules(lt.get("exits")),
             **paper_risk_kwargs(lt, cfg.get("risk") or {}),
+            edge_gate=edge_gate_enabled(cfg),
         )
         return broker, trader
 
@@ -7808,6 +7850,8 @@ def create_app(config_path: str | None = None) -> Flask:
                 "min_hist_win_samples": trader.min_hist_win_samples,
                 "desks": trader.desks,
                 "golden_only": trader.golden_only,
+                "edge_gate": trader.edge_gate,
+                "edge_route": sorted(trader.edge_route),
                 "recent": broker.recent(40),
                 "activity": act,
                 "how_to_verify": act.get("how_to_verify") or [],

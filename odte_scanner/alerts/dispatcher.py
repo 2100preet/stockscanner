@@ -602,6 +602,7 @@ def dispatch_snapshot_alerts(
     seen_path: str | Path | None = None,
     dry_run: bool = False,
     max_send: int = 8,
+    edge_gate: bool = False,
 ) -> dict[str, Any]:
     """Send Telegram/WhatsApp for *new* BUY/SELL pulses. No-op if none configured."""
     # Global pause
@@ -656,6 +657,33 @@ def dispatch_snapshot_alerts(
         }
 
     fresh = [a for a in alerts if _alert_is_fresh(a, seen, strengths)]
+    log_only: list[dict[str, Any]] = []
+    if edge_gate:
+        from odte_scanner.edge.view import alert_desk_allowlist
+
+        allowed = alert_desk_allowlist()
+        kept: list[dict[str, Any]] = []
+        for alert in fresh:
+            if alert.get("desk") in allowed:
+                kept.append(alert)
+                continue
+            _mark_alert(alert, seen, strengths)
+            log_only.append(
+                {
+                    "time": datetime.now(timezone.utc).isoformat(),
+                    "symbol": alert.get("symbol"),
+                    "contract": alert.get("contract"),
+                    "kind": alert.get("desk"),
+                    "side": alert.get("side"),
+                    "ok": True,
+                    "log_only": True,
+                    "error": None,
+                    "note": "edge gate: no proven option expectancy",
+                }
+            )
+        if log_only:
+            _save_seen(path, seen, strengths)
+        fresh = kept
     if not fresh:
         return {
             "ok": True,
@@ -663,7 +691,9 @@ def dispatch_snapshot_alerts(
             "sent": 0,
             "candidates": len(alerts),
             "providers": providers,
-            "note": "no new pulses",
+            "log_only": len(log_only),
+            "attempts": log_only,
+            "note": "edge gate: log-only" if log_only else "no new pulses",
         }
 
     if not any_channel or dry_run:
@@ -679,6 +709,8 @@ def dispatch_snapshot_alerts(
             "sent": 0,
             "fresh": len(fresh),
             "skipped": not any_channel,
+            "log_only": len(log_only),
+            "attempts": log_only,
             "providers": providers,
             "error": None if any_channel else "No alert channel secrets set (Telegram or WhatsApp)",
         }
@@ -722,7 +754,8 @@ def dispatch_snapshot_alerts(
         "configured": True,
         "sent": len(sent),
         "results": sent,
-        "attempts": attempts,
+        "attempts": log_only + attempts,
+        "log_only": len(log_only),
         "fresh": len(fresh),
         "errors": errors[:8],
         "providers": providers,
