@@ -5,8 +5,10 @@ computed from volume, OI, and premium notional — not OPRA time & sales.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
+from odte_scanner.edge.filters import stamp_flow_prints
 from odte_scanner.trading.webull import parse_occ_contract
 
 
@@ -116,6 +118,8 @@ def build_option_flow(
 
     prints.sort(key=lambda p: (abs(float(p.get("flow_score") or 0)), float(p.get("premium_notional") or 0)), reverse=True)
     top = prints[:max_rows]
+    # The reason stays on the print. Telegram reads the same field and does not send it.
+    stamp_flow_prints(top, datetime.now(timezone.utc))
     golden = [p for p in top if p.get("tier") == "golden"]
     unusual = [p for p in top if p.get("tier") == "unusual"]
     aggressive = [p for p in top if p.get("tier") == "aggressive"]

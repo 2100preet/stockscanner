@@ -1312,6 +1312,13 @@ class WebullBroker:
             intent.status = "rejected" if broker_status == "REJECTED" else "cancelled"
         else:
             intent.status = "submitted"
+        if intent.action == "SELL" and intent.status in {"filled", "partial"}:
+            try:
+                from odte_scanner.edge.round_trips import record_sell_fill
+
+                record_sell_fill(intent, self.orders)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("paper round trip was not recorded: %s", exc)
 
     def _fetch_order_detail(self, intent: WebullOrderIntent) -> Any:
         def _once() -> Any:

@@ -322,12 +322,14 @@ class AutoTrader:
         self.max_golden_buys_per_sync = max(0, int(max_golden_buys_per_sync))
         self.filtered: list[dict[str, Any]] = []
         self._closed_contracts: set[str] = set()
-        # Off in tests. Production turns it on. An empty route blocks new buys
-        # and leaves exits alone. The route is option-dollar sources, not desks.
+        # The edge table is information. Sandbox paper buys stay on so a
+        # round trip can be recorded. A non-paper broker, if one is ever
+        # constructed, still refuses a new buy when the route is empty.
+        # Resting orders are not cancelled for the gate.
         self.edge_gate = bool(edge_gate)
         if edge_route is not None:
             self.edge_route = {str(name) for name in edge_route}
-        elif self.edge_gate:
+        elif self.edge_gate and not getattr(broker, "paper", True):
             from odte_scanner.edge.view import option_route
 
             self.edge_route = option_route()
@@ -335,35 +337,11 @@ class AutoTrader:
             self.edge_route = set()
 
     def _edge_allows_buy(self, desk: str) -> bool:
-        if not self.edge_gate:
+        if getattr(self.broker, "paper", True) or not self.edge_gate:
             return True
         from odte_scanner.edge.gate import source_for_webull
 
         return source_for_webull(desk) in self.edge_route
-
-    def _suppress_unproven_buys(self) -> None:
-        """Cancel unfilled entry buys the gate does not allow.
-
-        A staged row with no broker id is dropped any time, including overnight.
-        A submitted order is cancelled only while the option session is open,
-        so a night pulse does not call the broker.
-        """
-        if not self.edge_gate:
-            return
-        session = option_session_open(self._now)
-        for intent in list(self.broker.orders):
-            if intent.action != "BUY":
-                continue
-            # A fill price means this row is the open lot. Exits still manage it.
-            if intent.fill_price or intent.status in {"filled", "partial", "cancelled", "rejected", "skipped"}:
-                continue
-            if intent.status not in {"submitted", "deferred", "staged", "dry_run"}:
-                continue
-            if self._edge_allows_buy(intent.desk):
-                continue
-            if intent.broker_order_id and not session:
-                continue
-            self.broker.cancel(intent)
 
     @staticmethod
     def _is_position_buy(order: WebullOrderIntent) -> bool:
@@ -1413,7 +1391,7 @@ class AutoTrader:
         if not sym:
             return None
         if not self._edge_allows_buy(desk):
-            self._note_filtered(row, "edge gate: log-only")
+            self._note_filtered(row, "edge gate: live route empty")
             return None
         blocked = entry_block_reason(row.get("expiry"), self._now, dte=_i(row.get("dte")))
         preopen = blocked == BEFORE_OPEN_REASON
@@ -1696,6 +1674,9 @@ class AutoTrader:
                 account_id = str(position.get("account_id") or "")
             if not account_id:
                 account_id = str(getattr(self.broker, "account_id_2", "") or "")
+        entry_price = _f(opened.fill_price) if opened is not None else None
+        if entry_price is None and position is not None:
+            entry_price = _f(position.get("cost"))
         intent = self.broker.stage(
             desk=desk,
             action="SELL",
@@ -1715,6 +1696,7 @@ class AutoTrader:
                 "golden_kind": None if second else (exit_kind or ("golden_exit" if self.golden_only else kind)),
                 "limit_source": limit_source,
                 "closes_order_id": opened.id if opened is not None else None,
+                **({"entry_price": entry_price} if entry_price is not None else {}),
                 **({"sell_qty": int(row["sell_qty"])} if row.get("sell_qty") is not None else {}),
                 **({"scale_rungs": list(row.get("scale_rungs") or [])} if row.get("scale_rungs") else {}),
                 **({"account_id": account_id} if account_id else {}),
@@ -1837,7 +1819,6 @@ class AutoTrader:
         self.broker._session_now = now
         self._closed_contracts = set()
         self.broker.refresh_working_buys()
-        self._suppress_unproven_buys()
         self._reconcile_positions(self._managed_positions())
         if self.golden_only and option_session_open(now):
             self._maintain_working_sells()

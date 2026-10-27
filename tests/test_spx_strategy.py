@@ -157,6 +157,18 @@ def test_call_credit_when_ut3_fades_and_condor_when_pinned():
     assert condor["size"]["risk_pct"] == 0.01
 
 
+def test_rich_iv_does_not_fall_back_to_a_naked_long():
+    levels = dict(_levels())
+    levels["spot"] = 7688
+    options = _priced()
+    for row in options:
+        if row["right"] == "C" and row["strike"] >= 7690:
+            row["bid"] = 0
+    rows = select_strategies(levels, {"iv": "rich", "trend": "strong_up"}, options, now=CORE, symbol="SPX", wing=10)
+    assert all(row["strategy"] != "long_call" for row in rows)
+    assert all(row["strategy"] != "call_debit" for row in rows)
+
+
 def test_rich_trend_is_a_debit_spread_and_cheap_trend_is_a_long():
     levels = dict(_levels())
     levels["spot"] = 7688

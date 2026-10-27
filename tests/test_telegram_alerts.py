@@ -238,12 +238,26 @@ def test_collects_gold_setup_and_golden_flow_only():
             ]
         },
     }
+    snap["echo"]["option_flow"]["golden"].append(
+        {
+            "symbol": "NVDA",
+            "tier": "golden",
+            "flags": ["golden"],
+            "contract": "NVDA261023C00180000",
+            "right": "C",
+            "strike": 180,
+            "expiry": "2026-10-23",
+            "mid": 2.4,
+            "premium_notional": 250000,
+        }
+    )
     alerts = disp.collect_trade_alerts(snap)
     desks = [(a["desk"], a["symbol"]) for a in alerts]
     assert desks[0] == ("Gold Setup", "TSLA")
     assert ("Gold Setup", "F") not in desks
-    assert ("Golden Flow", "LRCX") in desks
-    assert sum(1 for desk, sym in desks if desk == "Golden Flow" and sym == "LRCX") == 1
+    # Puts stay on the card with a reason and are not sent.
+    assert ("Golden Flow", "LRCX") not in desks
+    assert ("Golden Flow", "NVDA") in desks
     assert all(sym != "AMD" for _, sym in desks)
     assert all(sym != "XYZ" for _, sym in desks)
     assert all(sym != "TRI" for _, sym in desks)
@@ -252,8 +266,10 @@ def test_collects_gold_setup_and_golden_flow_only():
     assert gold.splitlines()[0] == "⭐ 🟢 SURE WINNER TSLA 385C 10/23 HIGH"
     assert "parse_mode" not in gold
     flow = next(a for a in alerts if a["desk"] == "Golden Flow")
-    assert flow["ask"] == 3.4
-    assert flow["message"].splitlines()[0] == "🔴 GOLDEN FLOW LRCX 265P 10/23"
+    assert flow["ask"] == 2.4
+    assert flow["message"].splitlines()[0] == "🟢 GOLDEN FLOW NVDA 180C 10/23"
+    put_line = disp._fmt_alert(snap["echo"]["option_flow"]["golden"][0], "BUY", "Golden Flow")
+    assert put_line.splitlines()[0] == "🔴 GOLDEN FLOW LRCX 265P 10/23"
 
 
 def test_gold_and_golden_are_not_crowded_out(tmp_path, monkeypatch):

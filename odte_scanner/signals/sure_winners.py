@@ -482,6 +482,7 @@ def select_sure_winners(
     store: dict[str, Any] | None = None,
     prefer_tiers: tuple[str, ...] = ("MAX", "HIGH", "SOLID"),
     gold_exit: GoldExitSpec | None = None,
+    now: datetime | None = None,
 ) -> tuple[list[SureWinner], dict[str, Any]]:
     """Pick up to max_per_day winners; sticky within the CST day."""
     day = day or _day_cst()
@@ -491,8 +492,16 @@ def select_sure_winners(
         store = {"day": day, "picks": []}
 
     def _cand_rank(row: dict[str, Any]) -> tuple:
+        # After tier, not instead of it. 1 DTE or 12–2 CT leans positive
+        # in-sample (n=14 and n=12, both intervals include zero). Other gold
+        # stays eligible. No timestamp and no ``now`` means the clock is not
+        # applied, so a test without a clock does not change order.
+        from odte_scanner.edge.filters import gold_setup_preferred
+
+        favored = 0 if gold_setup_preferred(row, now) else 1
         return (
             TIER_RANK.get(str(row.get("confidence_tier")), 9),
+            favored,
             0 if str(row.get("certainty_tier")) == "perfect" else 1,
             -(float(row.get("win_pct") or 0)),
             -(float(row.get("hit_1pct") or 0)),
@@ -652,6 +661,7 @@ def build_sure_winner_board(
         store=store,
         prefer_tiers=prefer,
         gold_exit=gold_exit,
+        now=now,
     )
     save_day_store(store_path, store)
 

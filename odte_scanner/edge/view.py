@@ -22,6 +22,7 @@ from odte_scanner.edge.metrics import (
     summarize_pairs,
     tod_bucket,
 )
+from odte_scanner.edge.filters import GF_DTE, GF_MID, GF_NEAR, GF_OPEN, GF_PUT, GOLD_FAVOR_NOTE
 from odte_scanner.edge.study import PAPER_AUDIT, RECORDED_AT, SPREAD_NOTE, STUDY, UNDERLYING_NOTE
 from odte_scanner.scorecard.service import MOVE_NOTE
 
@@ -29,13 +30,13 @@ ROOT = Path(__file__).resolve().parents[2]
 
 LIMITATIONS = [
     "Tradier and Polygon keys were not available for this audit, so option prices were not rebuilt from the chain. Option dollars are paper fills and SPX structure marks.",
-    "The scorecard is the underlying move in the signal's direction. It is not an option fill, and it does not unlock Telegram or Webull.",
+    "The scorecard is the underlying move in the signal's direction. It is not an option fill. It does not mute Telegram or turn paper buys off.",
     "Rows whose stored reference price cannot be the underlying (AMAT, ALAB, CRM, NOW, and any strike that disagrees) are left out of the underlying table. The ledger itself is not rewritten.",
     "IV rich or cheap, and the bid-ask, are not stored on the scorecard, so those slices are not estimated.",
     "Each signal has no market-regime tag. The index study is separate and is not a scanner signal.",
     "Opening-range breakout uses about 60 days of 5-minute bars. The daily studies run from 2023-01-03 through 2026-10-26.",
     "The debit-spread column is a capped model of the underlying move, not a quoted vertical.",
-    "Webull stays on the sandbox paper host. This gate does not turn on live trading.",
+    "Webull stays on the sandbox paper host. Paper buys stay on. This panel does not turn on live trading.",
     "The recommendation log's pulse marks are not used. The same idea was counted many times.",
     "A contract that appears in both the signal journal and the Webull ledger is counted in each. The route still needs the combined sample to clear the bar.",
 ]
@@ -139,6 +140,7 @@ def _webull_samples(blob: Any) -> list[dict[str, Any]]:
                     "source": source_for_webull(str(lot["desk"])),
                     "pnl": (sell["px"] - float(lot["px"])) * 100.0,
                     "at": sell["at"],
+                    "contract": sell["contract"],
                 }
             )
             lot["left"] = int(lot["left"]) - take
@@ -176,7 +178,20 @@ def load_option_samples(scorecard: dict[str, Any] | None = None) -> list[dict[st
     samples.extend(_trade_samples(_read_json(ROOT / "outputs" / "signal_journal.json"), "Options"))
     samples.extend(_trade_samples(_read_json(ROOT / "outputs" / "challenge_ledger.json"), "Challenge"))
     samples.extend(_trade_samples(_read_json(ROOT / "outputs" / "odte_1k_ledger.json"), "0DTE $1K"))
-    samples.extend(_webull_samples(_read_json(ROOT / "outputs" / "webull_orders.json")))
+    from odte_scanner.edge.round_trips import load_round_trips
+
+    trips = load_round_trips()
+    seen = {
+        (str(row.get("contract") or ""), str(row.get("at") or ""), round(float(row["pnl"]), 2))
+        for row in trips
+    }
+    samples.extend(trips)
+    for row in _webull_samples(_read_json(ROOT / "outputs" / "webull_orders.json")):
+        key = (str(row.get("contract") or ""), str(row.get("at") or ""), round(float(row["pnl"]), 2))
+        if key in seen:
+            continue
+        seen.add(key)
+        samples.append(row)
     if isinstance(scorecard, dict):
         samples.extend(_spx_samples(scorecard))
     return samples
@@ -294,12 +309,17 @@ def build_edge_report(*, scorecard: dict[str, Any] | None = None, samples: list[
     desks = alert_desks_for(route)
     types, slices, dropped = underlying_rows(card.get("rows") or [])
     if route:
-        verdict = "Routing only " + ", ".join(route) + ". Everything else stays log-only."
+        verdict = (
+            "Information only. "
+            + ", ".join(route)
+            + " would clear the option-dollar bar. Telegram and Webull paper are not muted by this table."
+        )
     else:
         verdict = (
-            "No signal has a proven option edge. Telegram stays log-only and new "
-            "Webull paper buys stay off. Open paper lots still exit. The scorecard "
-            "keeps recording so a source can earn its way back."
+            "Information only. No signal has a proven option edge yet. Telegram still "
+            "sends, and Webull paper buys stay on so closed lots can fill this table. "
+            "Golden Flow skips are separate filters with a reason on the card. "
+            "Open paper lots still exit."
         )
     return {
         "as_of": card.get("as_of"),
@@ -325,10 +345,23 @@ def build_edge_report(*, scorecard: dict[str, Any] | None = None, samples: list[
         "paper_audit": PAPER_AUDIT,
         "paper_audit_at": "2026-10-27T03:04:05+00:00",
         "move_note": MOVE_NOTE,
+        "filters": [
+            {"applies_to": "Golden Flow alerts", "reason": GF_PUT},
+            {"applies_to": "Golden Flow alerts", "reason": GF_NEAR},
+            {"applies_to": "Golden Flow alerts", "reason": GF_DTE},
+            {"applies_to": "Golden Flow alerts", "reason": GF_OPEN},
+            {"applies_to": "Golden Flow alerts", "reason": GF_MID},
+            {
+                "applies_to": "Gold Setup rank and the standard strike band",
+                "reason": GOLD_FAVOR_NOTE
+                + " Standard board strikes aim inside 1% of the money instead of a 3% target. Chase caps above 3% are unchanged. SPX uses a debit spread when IV is rich and does not fall back to a naked long.",
+            },
+        ],
         "limitations": LIMITATIONS,
         "disclaimer": (
-            "There is no foolproof system. A source is routed only when its own "
-            "option trades clear the bar out of sample. Past results are not a promise."
+            "There is no foolproof system. This table does not mute alerts or paper "
+            "buys. A filter that improves the past sample is not proof the next "
+            "trade wins. Past results are not a promise."
         ),
     }
 

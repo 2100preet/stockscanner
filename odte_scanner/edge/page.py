@@ -10,17 +10,19 @@ EDGE_SECTION = """
       <h2>Edge</h2>
       <p class="lede" id="edgeVerdict">Checking which signals have a measured edge…</p>
       <p class="status" id="edgeBar"></p>
-      <h3>Option dollars — this is the gate</h3>
-      <p class="lede">Expectancy is dollars per 1 contract. A source is kept only when it has at least 40 settled trades, the 95% interval sits above zero, and the later half is also positive. Everything else is logged and not sent.</p>
+      <h3>Option dollars — information only</h3>
+      <p class="lede">Expectancy is dollars per 1 contract. A source clears the bar at 40 settled trades, a 95% interval above zero, and a positive later half. This table does not mute Telegram or paper buys.</p>
+      <h3>Filters on the card</h3>
+      <ul id="edgeFilters"></ul>
       <div style="overflow-x:auto"><table id="edgeOption"></table></div>
       <h3>Underlying scorecard — not the gate</h3>
       <p class="lede" id="edgeMove"></p>
       <div style="overflow-x:auto"><table id="edgeUnderlying"></table></div>
       <h3>Strongest and weakest slices</h3>
-      <p class="lede">Same underlying move, split by direction, DTE, time of day, moneyness, and symbol. Slices under 8 settled trades are hidden. None of these turn alerts on.</p>
+      <p class="lede">Same underlying move, split by direction, DTE, time of day, moneyness, and symbol. Slices under 8 settled trades are hidden. These numbers do not turn alerts off.</p>
       <div style="overflow-x:auto"><table id="edgeSlices"></table></div>
       <h3>Recorded paper audit, 27 Oct 2026</h3>
-      <p class="lede">Fly paper books at 03:04 UTC. The live table above is what the gate uses now. Zero-hold flats are not an edge.</p>
+      <p class="lede">Fly paper books at 03:04 UTC. The live table above is the same book, still information. Zero-hold flats are not an edge.</p>
       <div style="overflow-x:auto"><table id="edgeAudit"></table></div>
       <h3>Index studies, 2023–2026 — not routed</h3>
       <p class="lede" id="edgeStudyNote"></p>
@@ -78,6 +80,12 @@ EDGE_JS = r"""
       }
       var move = document.getElementById("edgeMove");
       if (move) move.textContent = edge.move_note || "";
+      var filterEl = document.getElementById("edgeFilters");
+      if (filterEl) {
+        filterEl.innerHTML = (edge.filters || []).map(function (item) {
+          return "<li><strong>" + edgeEsc(item.applies_to) + ".</strong> " + edgeEsc(item.reason) + "</li>";
+        }).join("");
+      }
       var optionEl = document.getElementById("edgeOption");
       if (optionEl) {
         optionEl.innerHTML = edgeTable(
@@ -91,7 +99,7 @@ EDGE_JS = r"""
               edgeNum(row.avg_loss),
               edgeCi(row.expectancy, row.lo, row.hi, 2),
               edgeEsc(row.h2_n) + " · " + edgeNum(row.h2_expectancy),
-              row.routed ? "kept" : "log-only"
+              row.routed ? "clears bar" : "does not"
             ];
           })
         );
@@ -190,7 +198,7 @@ def render_edge_static(report: dict[str, Any]) -> str:
                 item.get("expectancy"),
                 item.get("lo"),
                 item.get("hi"),
-                "kept" if item.get("routed") else "log-only",
+                "clears bar" if item.get("routed") else "does not",
             ]
         )
         for item in report.get("option_sources") or []
@@ -204,6 +212,9 @@ def render_edge_static(report: dict[str, Any]) -> str:
       <h2>Edge</h2>
       <p class="disclaimer">{_cell(report.get("verdict"))}</p>
       <p class="lede">{_cell(report.get("disclaimer"))}</p>
+      <ul>
+        {"".join(f"<li><strong>{_cell(item.get('applies_to'))}.</strong> {_cell(item.get('reason'))}</li>" for item in report.get("filters") or [])}
+      </ul>
       <h3>Option dollars per contract</h3>
       <table>
         <thead><tr><th>Source</th><th>n</th><th>Expectancy $</th><th>Low</th><th>High</th><th>Route</th></tr></thead>
