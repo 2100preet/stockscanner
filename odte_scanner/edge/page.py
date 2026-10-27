@@ -29,6 +29,8 @@ EDGE_SECTION = """
       <div style="overflow-x:auto"><table id="edgeStudy"></table></div>
       <h3>Diamond — its own book</h3>
       <div id="edgeDiamond"></div>
+      <h3>Sniper — its own book</h3>
+      <div id="edgeSniper"></div>
       <h3>Limits</h3>
       <ul id="edgeLimits"></ul>
     </section>
@@ -193,6 +195,26 @@ EDGE_JS = r"""
           + '<div><span>Second half</span><br><strong>' + pct(d.h2) + '</strong></div>'
           + '</div><p class="pc-why">' + edgeEsc(d.note || "") + '</p></article>';
       }
+      var sniperEl = document.getElementById("edgeSniper");
+      if (sniperEl) {
+        var s = edge.sniper || {};
+        var spct = function (value) {
+          if (value == null || Number.isNaN(Number(value))) return "—";
+          var n = Number(value);
+          return (n > 0 ? "+" : "") + n.toFixed(2) + "%";
+        };
+        sniperEl.innerHTML = '<article class="pulse-card sniper">'
+          + '<div class="pc-top"><div class="pc-sym">🎯 Sniper</div><div class="pc-tag sniper">'
+          + (s.routed ? "PAPER + TELEGRAM" : "NOT SENT") + '</div></div>'
+          + '<div class="pc-meta">'
+          + '<div><span>n</span><br><strong>' + edgeEsc(s.n) + '</strong></div>'
+          + '<div><span>Win rate</span><br><strong>' + edgePct(s.win_rate) + '</strong></div>'
+          + '<div><span>Option model</span><br><strong>' + spct(s.expectancy) + '</strong></div>'
+          + '<div><span>95% interval</span><br><strong>' + spct(s.lo) + ' to ' + spct(s.hi) + '</strong></div>'
+          + '<div><span>First half</span><br><strong>' + spct(s.h1) + '</strong></div>'
+          + '<div><span>Second half</span><br><strong>' + spct(s.h2) + '</strong></div>'
+          + '</div><p class="pc-why">' + edgeEsc(s.note || "") + '</p></article>';
+      }
       var limits = document.getElementById("edgeLimits");
       if (limits) {
         limits.innerHTML = (edge.limitations || []).map(function (line) {
@@ -250,6 +272,8 @@ def render_edge_static(report: dict[str, Any]) -> str:
       <p class="lede">Bad spot rows excluded: {_cell(report.get("bad_spots_excluded"))}. Full slices, the paper audit, and the index study are on the desk Edge tab.</p>
       <h3>Diamond</h3>
       {diamond_tile_html(report.get("diamond") or {})}
+      <h3>Sniper</h3>
+      {sniper_tile_html(report.get("sniper") or {})}
     </section>
     """
 
@@ -288,6 +312,53 @@ def diamond_tile_html(item: dict[str, Any]) -> str:
     </style>
     <article class="pulse-card diamond">
       <div class="pc-top"><div class="pc-sym">💎 Diamond</div><div class="pc-tag diamond">{_cell(routed)}</div></div>
+      <div class="pc-meta">
+        <div><span>n</span><br><strong>{_cell(item.get("n"))}</strong></div>
+        <div><span>Win rate</span><br><strong>{_cell(None if item.get("win_rate") is None else f"{float(item['win_rate']) * 100:.1f}%")}</strong></div>
+        <div><span>Option model</span><br><strong>{_cell(pct(item.get("expectancy")))}</strong></div>
+        <div><span>95% interval</span><br><strong>{_cell(pct(item.get("lo")))} to {_cell(pct(item.get("hi")))}</strong></div>
+        <div><span>First half</span><br><strong>{_cell(pct(item.get("h1")))}</strong></div>
+        <div><span>Second half</span><br><strong>{_cell(pct(item.get("h2")))}</strong></div>
+      </div>
+      <p class="pc-why">{_cell(item.get("note"))}</p>
+    </article>
+    """
+
+
+def sniper_tile_html(item: dict[str, Any]) -> str:
+    """Emerald card. Distinct from the gold Sure Winner tile and the ice-blue Diamond tile."""
+
+    def pct(value: Any) -> str:
+        if not isinstance(value, (int, float)):
+            return "—"
+        return f"{value:+.2f}%"
+
+    routed = "PAPER + TELEGRAM" if item.get("routed") else "NOT SENT"
+    return f"""
+    <style>
+      .pulse-card.sniper {{
+        border: 1px solid rgba(52, 211, 153, .8);
+        border-radius: .7rem;
+        padding: .7rem .8rem;
+        background: linear-gradient(165deg, #f0fdf8, #d1fae5 46%, #ffffff 100%);
+        box-shadow: inset 4px 0 0 #34d399, 0 8px 22px rgba(16, 185, 129, .16);
+        color: #064e3b;
+        margin: .6rem 0 1rem;
+      }}
+      .pulse-card.sniper .pc-top {{ display: flex; justify-content: space-between; gap: .5rem; align-items: baseline; }}
+      .pulse-card.sniper .pc-sym {{ font-family: "Instrument Serif", Georgia, serif; font-size: 1.35rem; }}
+      .pulse-card.sniper .pc-tag {{
+        font-family: "JetBrains Mono", monospace; font-size: .68rem; letter-spacing: .06em;
+        color: #047857; background: rgba(255,255,255,.8); border-radius: 999px; padding: .12rem .45rem;
+      }}
+      .pulse-card.sniper .pc-meta {{
+        display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .35rem .55rem; margin-top: .45rem;
+      }}
+      .pulse-card.sniper .pc-meta span {{ color: #065f46; font-size: .72rem; }}
+      .pulse-card.sniper .pc-why {{ color: #065f46; font-size: .75rem; line-height: 1.4; }}
+    </style>
+    <article class="pulse-card sniper">
+      <div class="pc-top"><div class="pc-sym">🎯 Sniper</div><div class="pc-tag sniper">{_cell(routed)}</div></div>
       <div class="pc-meta">
         <div><span>n</span><br><strong>{_cell(item.get("n"))}</strong></div>
         <div><span>Win rate</span><br><strong>{_cell(None if item.get("win_rate") is None else f"{float(item['win_rate']) * 100:.1f}%")}</strong></div>

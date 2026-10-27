@@ -186,6 +186,22 @@ PAGE = r"""
     .pulse-card.diamond .pc-meta span,
     .pulse-card.diamond .pc-why { color: #155e75; }
     .pulse-card.diamond .pc-meta strong { color: #082f49; }
+    .pulse-card.sniper {
+      border-color: rgba(52, 211, 153, .8);
+      background: linear-gradient(165deg, rgba(209, 250, 229, .94), rgba(167, 243, 208, .5) 42%, rgba(6, 24, 18, .9) 78%);
+      box-shadow: inset 4px 0 0 #34d399, 0 8px 22px rgba(16, 185, 129, .16);
+      color: #064e3b;
+    }
+    .pulse-card.sniper .pc-sym { color: #064e3b; }
+    .pulse-card.sniper .pc-tag.sniper {
+      color: #047857;
+      background: rgba(255, 255, 255, .72);
+      border-radius: 999px;
+      padding: .12rem .45rem;
+    }
+    .pulse-card.sniper .pc-meta span,
+    .pulse-card.sniper .pc-why { color: #065f46; }
+    .pulse-card.sniper .pc-meta strong { color: #022c22; }
     .pulse-card.sure-high {
       border-color: rgba(232,168,58,.4);
       background: linear-gradient(160deg, rgba(232,168,58,.14), rgba(8,16,14,.75) 55%);
@@ -289,6 +305,7 @@ PAGE = r"""
     </div>
     <div id="mustTradeBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="diamondBanner" class="pulse-banner" aria-live="polite"></div>
+    <div id="sniperBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="loadNote" class="loading" style="display:none;margin-bottom:.6rem"></div>
     <div id="alertToasts" aria-live="assertive"></div>
 
@@ -4087,11 +4104,52 @@ PAGE = r"""
         </div>
         <div class="pb-grid">${rows.map(card).join("")}</div>`;
     }
+    function renderSniperBanner() {
+      const el = document.getElementById("sniperBanner");
+      if (!el) return;
+      const board = DATA.sniper || {};
+      const rows = (board.signals || []).slice(0, 3);
+      if (!rows.length) {
+        el.classList.remove("active");
+        el.innerHTML = "";
+        return;
+      }
+      const card = (row) => {
+        const sent = !!row.send;
+        const right = String(row.right || "C").toUpperCase().startsWith("P") ? "p" : "c";
+        const strikeTxt = row.strike == null ? "—" : `${Number(row.strike).toFixed(Number(row.strike) % 1 ? 2 : 0)}${right}`;
+        const askTxt = row.ask == null ? "—" : `$${fmt(row.ask, 2)}`;
+        return `<div class="pulse-card sniper">
+          <div class="pc-top">
+            <div class="pc-sym">${row.symbol}</div>
+            <div class="pc-tag sniper">🎯 ${sent ? "SNIPER" : "NOT SENT"}</div>
+          </div>
+          <div class="pc-meta">
+            <div><span>Strike</span><br><strong>${strikeTxt}</strong></div>
+            <div><span>Expiry</span><br><strong>${row.expiry || "—"}${row.dte == null ? "" : " · " + row.dte + "DTE"}</strong></div>
+            <div><span>Signal</span><br><strong>${row.at_ct || "—"} CT</strong></div>
+            <div><span>Ask</span><br><strong>${askTxt}</strong></div>
+          </div>
+          <p class="pc-why">${row.detail || ""} · <strong>${row.exit_plan || ""}</strong></p>
+        </div>`;
+      };
+      el.classList.add("active");
+      el.innerHTML = `
+        <div class="pb-head">
+          <div>
+            <h2 class="pb-title">🎯 Sniper <em>calls and puts</em></h2>
+            <div class="pb-sub">${board.note || "Up to 3 names. Flat 10:30 CT. Separate from Diamond and Gold Setup."}</div>
+          </div>
+          <div class="status">SNIPER ${rows.length}${board.window_open ? "" : " · window closed"}</div>
+        </div>
+        <div class="pb-grid">${rows.map(card).join("")}</div>`;
+    }
 
     function paint() {
       try { renderScorecard(); } catch (err) { console.error(err); }
       try { renderEdge(); } catch (err) { console.error(err); }
       try { renderDiamondBanner(); } catch (err) { console.error(err); }
+      try { renderSniperBanner(); } catch (err) { console.error(err); }
       try { renderSpxStrategy(); } catch (err) { console.error(err); }
       renderMustTradeBanner();
       renderNowBoard();
@@ -7404,6 +7462,20 @@ def create_app(config_path: str | None = None) -> Flask:
                         "qualified": [],
                         "note": "Diamond board temporarily unavailable.",
                     }
+                sniper_board: dict = {"signals": [], "qualified": [], "note": "Sniper board unavailable."}
+                try:
+                    from odte_scanner.signals.sniper_board import load_sniper_board
+
+                    sniper_board = load_sniper_board()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("sniper board failed: %s", exc)
+                    sniper_board = {
+                        "ok": False,
+                        "error": str(exc)[:200],
+                        "signals": [],
+                        "qualified": [],
+                        "note": "Sniper board temporarily unavailable.",
+                    }
 
                 cache_path = ROOT / "outputs" / "ui_snapshot_cache.json"
                 try:
@@ -7426,6 +7498,7 @@ def create_app(config_path: str | None = None) -> Flask:
                                 "chart_patterns": chart_patterns,
                                 "sure_winners": sure_winners,
                                 "diamond": diamond_board,
+                                "sniper": sniper_board,
                                 "option_flow": (echo.get("option_flow") if isinstance(echo, dict) else None),
                             },
                             indent=2,
@@ -7447,6 +7520,7 @@ def create_app(config_path: str | None = None) -> Flask:
                             challenge=challenge,
                             sure_winners=sure_winners if isinstance(sure_winners, dict) else None,
                             diamond=diamond_board if isinstance(diamond_board, dict) else None,
+                            sniper=sniper_board if isinstance(sniper_board, dict) else None,
                             option_flow=(echo.get("option_flow") if isinstance(echo, dict) else None),
                         )
                     except Exception as exc:  # noqa: BLE001
@@ -7496,6 +7570,7 @@ def create_app(config_path: str | None = None) -> Flask:
                         sure_winners=sure_winners if isinstance(sure_winners, dict) else None,
                         option_flow=(echo.get("option_flow") if isinstance(echo, dict) else None),
                         diamond=diamond_board if isinstance(diamond_board, dict) else None,
+                        sniper=sniper_board if isinstance(sniper_board, dict) else None,
                         scores=scan.get("scores") or [],
                         spx_board=spx_strategy,
                     )
@@ -7537,6 +7612,7 @@ def create_app(config_path: str | None = None) -> Flask:
                         "chart_patterns": chart_patterns,
                         "sure_winners": sure_winners,
                         "diamond": diamond_board,
+                        "sniper": sniper_board,
                         "echo": echo,
                         "challenge": challenge,
                         "tradier": tradier_status,
@@ -7947,6 +8023,7 @@ def create_app(config_path: str | None = None) -> Flask:
         sure_winners: dict | None = None,
         option_flow: dict | None = None,
         diamond: dict | None = None,
+        sniper: dict | None = None,
     ) -> dict:
         """Route current boards to Webull ledger (preview/dry-run/live)."""
         import copy
@@ -7979,6 +8056,9 @@ def create_app(config_path: str | None = None) -> Flask:
         if not isinstance(diamond, dict):
             cached_diamond = snap_cache.get("diamond")
             diamond = cached_diamond if isinstance(cached_diamond, dict) else None
+        if not isinstance(sniper, dict):
+            cached_sniper = snap_cache.get("sniper")
+            sniper = cached_sniper if isinstance(cached_sniper, dict) else None
         try:
             from odte_scanner.backtest.win_rates import load_win_rate_table, lookup_win_stats
 
@@ -8033,6 +8113,7 @@ def create_app(config_path: str | None = None) -> Flask:
             sure_winners=sure_winners,
             option_flow=option_flow,
             diamond=diamond,
+            sniper=sniper,
         )
         lt = cfg.get("live_trading") or {}
         out["auto_sync"] = bool(lt.get("auto_sync", True))
