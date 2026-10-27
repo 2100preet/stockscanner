@@ -170,6 +170,22 @@ PAGE = r"""
       background: linear-gradient(160deg, rgba(240,193,75,.18), rgba(8,16,14,.75) 55%);
       box-shadow: inset 4px 0 0 var(--sure-gold), 0 6px 18px rgba(240,193,75,.12);
     }
+    .pulse-card.diamond {
+      border-color: rgba(125, 211, 252, .75);
+      background: linear-gradient(165deg, rgba(224, 242, 254, .92), rgba(186, 230, 253, .55) 42%, rgba(8, 16, 22, .88) 78%);
+      box-shadow: inset 4px 0 0 #7dd3fc, 0 8px 22px rgba(125, 211, 252, .18);
+      color: #082f49;
+    }
+    .pulse-card.diamond .pc-sym { color: #0c4a6e; }
+    .pulse-card.diamond .pc-tag.diamond {
+      color: #0369a1;
+      background: rgba(255, 255, 255, .72);
+      border-radius: 999px;
+      padding: .12rem .45rem;
+    }
+    .pulse-card.diamond .pc-meta span,
+    .pulse-card.diamond .pc-why { color: #155e75; }
+    .pulse-card.diamond .pc-meta strong { color: #082f49; }
     .pulse-card.sure-high {
       border-color: rgba(232,168,58,.4);
       background: linear-gradient(160deg, rgba(232,168,58,.14), rgba(8,16,14,.75) 55%);
@@ -272,6 +288,7 @@ PAGE = r"""
       <span class="status" id="updated">Loading…</span>
     </div>
     <div id="mustTradeBanner" class="pulse-banner" aria-live="polite"></div>
+    <div id="diamondBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="loadNote" class="loading" style="display:none;margin-bottom:.6rem"></div>
     <div id="alertToasts" aria-live="assertive"></div>
 
@@ -4031,9 +4048,50 @@ PAGE = r"""
         + '<p class="why">' + (board.paper_note || "") + "</p>"
         + (limits ? ("<ul>" + limits + "</ul>") : "");
     }
+    function renderDiamondBanner() {
+      const el = document.getElementById("diamondBanner");
+      if (!el) return;
+      const board = DATA.diamond || {};
+      const rows = (board.signals || []).slice(0, 3);
+      if (!rows.length) {
+        el.classList.remove("active");
+        el.innerHTML = "";
+        return;
+      }
+      const card = (row) => {
+        const sent = !!row.send;
+        const strikeTxt = row.strike == null ? "—" : `${Number(row.strike).toFixed(Number(row.strike) % 1 ? 2 : 0)}c`;
+        const askTxt = row.ask == null ? "—" : `$${fmt(row.ask, 2)}`;
+        return `<div class="pulse-card diamond">
+          <div class="pc-top">
+            <div class="pc-sym">${row.symbol}</div>
+            <div class="pc-tag diamond">💎 ${sent ? "DIAMOND" : "NOT SENT"}</div>
+          </div>
+          <div class="pc-meta">
+            <div><span>Strike</span><br><strong>${strikeTxt}</strong></div>
+            <div><span>Expiry</span><br><strong>${row.expiry || "—"}${row.dte == null ? "" : " · " + row.dte + "DTE"}</strong></div>
+            <div><span>Signal</span><br><strong>${row.at_ct || "—"} CT</strong></div>
+            <div><span>Ask</span><br><strong>${askTxt}</strong></div>
+          </div>
+          <p class="pc-why">${row.detail || ""} · <strong>${row.exit_plan || ""}</strong></p>
+        </div>`;
+      };
+      el.classList.add("active");
+      el.innerHTML = `
+        <div class="pb-head">
+          <div>
+            <h2 class="pb-title">💎 Diamond <em>calls</em></h2>
+            <div class="pb-sub">${board.note || "Up to 3 names. Flat 10:30 CT. Separate from Gold Setup."}</div>
+          </div>
+          <div class="status">DIAMOND ${rows.length}${board.window_open ? "" : " · window closed"}</div>
+        </div>
+        <div class="pb-grid">${rows.map(card).join("")}</div>`;
+    }
+
     function paint() {
       try { renderScorecard(); } catch (err) { console.error(err); }
       try { renderEdge(); } catch (err) { console.error(err); }
+      try { renderDiamondBanner(); } catch (err) { console.error(err); }
       try { renderSpxStrategy(); } catch (err) { console.error(err); }
       renderMustTradeBanner();
       renderNowBoard();
@@ -7332,6 +7390,21 @@ def create_app(config_path: str | None = None) -> Flask:
                             "note": "Sure-winner desk temporarily unavailable.",
                         }
 
+                diamond_board: dict = {"signals": [], "qualified": [], "note": "Diamond board unavailable."}
+                try:
+                    from odte_scanner.signals.diamond_board import load_diamond_board
+
+                    diamond_board = load_diamond_board()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("diamond board failed: %s", exc)
+                    diamond_board = {
+                        "ok": False,
+                        "error": str(exc)[:200],
+                        "signals": [],
+                        "qualified": [],
+                        "note": "Diamond board temporarily unavailable.",
+                    }
+
                 cache_path = ROOT / "outputs" / "ui_snapshot_cache.json"
                 try:
                     cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -7352,6 +7425,7 @@ def create_app(config_path: str | None = None) -> Flask:
                                 "level_watch": level_watch,
                                 "chart_patterns": chart_patterns,
                                 "sure_winners": sure_winners,
+                                "diamond": diamond_board,
                                 "option_flow": (echo.get("option_flow") if isinstance(echo, dict) else None),
                             },
                             indent=2,
@@ -7372,6 +7446,7 @@ def create_app(config_path: str | None = None) -> Flask:
                             lottery=lottery,
                             challenge=challenge,
                             sure_winners=sure_winners if isinstance(sure_winners, dict) else None,
+                            diamond=diamond_board if isinstance(diamond_board, dict) else None,
                             option_flow=(echo.get("option_flow") if isinstance(echo, dict) else None),
                         )
                     except Exception as exc:  # noqa: BLE001
@@ -7420,6 +7495,7 @@ def create_app(config_path: str | None = None) -> Flask:
                     scorecard_public = observe_snapshot(
                         sure_winners=sure_winners if isinstance(sure_winners, dict) else None,
                         option_flow=(echo.get("option_flow") if isinstance(echo, dict) else None),
+                        diamond=diamond_board if isinstance(diamond_board, dict) else None,
                         scores=scan.get("scores") or [],
                         spx_board=spx_strategy,
                     )
@@ -7460,6 +7536,7 @@ def create_app(config_path: str | None = None) -> Flask:
                         "level_watch": level_watch,
                         "chart_patterns": chart_patterns,
                         "sure_winners": sure_winners,
+                        "diamond": diamond_board,
                         "echo": echo,
                         "challenge": challenge,
                         "tradier": tradier_status,
@@ -7869,6 +7946,7 @@ def create_app(config_path: str | None = None) -> Flask:
         challenge: dict | None = None,
         sure_winners: dict | None = None,
         option_flow: dict | None = None,
+        diamond: dict | None = None,
     ) -> dict:
         """Route current boards to Webull ledger (preview/dry-run/live)."""
         import copy
@@ -7898,6 +7976,9 @@ def create_app(config_path: str | None = None) -> Flask:
             if not isinstance(cached_flow, dict) and isinstance(snap_cache.get("echo"), dict):
                 cached_flow = snap_cache["echo"].get("option_flow")
             option_flow = cached_flow if isinstance(cached_flow, dict) else None
+        if not isinstance(diamond, dict):
+            cached_diamond = snap_cache.get("diamond")
+            diamond = cached_diamond if isinstance(cached_diamond, dict) else None
         try:
             from odte_scanner.backtest.win_rates import load_win_rate_table, lookup_win_stats
 
@@ -7951,6 +8032,7 @@ def create_app(config_path: str | None = None) -> Flask:
             challenge=challenge,
             sure_winners=sure_winners,
             option_flow=option_flow,
+            diamond=diamond,
         )
         lt = cfg.get("live_trading") or {}
         out["auto_sync"] = bool(lt.get("auto_sync", True))

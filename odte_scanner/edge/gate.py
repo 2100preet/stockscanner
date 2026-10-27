@@ -17,6 +17,7 @@ MIN_SAMPLES = 40
 # Telegram desk name -> option-dollar source. Unknown desks stay muted.
 ALERT_DESK_SOURCE = {
     "Gold Setup": "Gold Setup",
+    "Diamond": "Diamond",
     "Golden Flow": "Golden Flow",
     "Options": "Options",
     "Explosive": "Lottery",
@@ -32,6 +33,7 @@ ALERT_DESK_SOURCE = {
 # Sources the panel always lists, even when the sample is empty.
 TRACKED_SOURCES = (
     "Gold Setup",
+    "Diamond",
     "Golden Flow",
     "Options",
     "Challenge",
@@ -56,6 +58,8 @@ def source_for_webull(desk: str) -> str:
     key = str(desk or "").strip().lower()
     if key in {"sure_winner", "golden_exit"}:
         return "Gold Setup"
+    if key == "diamond":
+        return "Diamond"
     if key == "golden_flow":
         return "Golden Flow"
     if key == "challenge":
@@ -74,6 +78,8 @@ def source_for_alert(desk: str) -> str:
 def journal_source(trade: dict[str, Any], default: str = "Options") -> str:
     reason = f"{trade.get('entry_reason') or ''} {trade.get('exit_reason') or ''}".lower()
     bucket = str(trade.get("dte_bucket") or trade.get("horizon") or "").lower()
+    if "diamond" in reason:
+        return "Diamond"
     if "sure" in reason or "gold setup" in reason:
         return "Gold Setup"
     if "golden flow" in reason:

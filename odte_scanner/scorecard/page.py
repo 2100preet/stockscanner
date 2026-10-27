@@ -19,6 +19,7 @@ SECTION_HTML = f"""
             <option value="all">All</option>
             <option value="Gold Setup">Gold Setup</option>
             <option value="Golden Flow">Golden Flow</option>
+            <option value="Diamond">Diamond</option>
           </select>
         </label>
         <label class="status">Direction
@@ -207,7 +208,8 @@ CLIENT_JS = r"""
         var signal = scEsc(row.signal_type || "");
         if (row.conviction) signal += ' · ' + scEsc(row.conviction);
         var dirCls = row.direction === "short" ? "down" : "up";
-        return '<tr>'
+        var rowCls = row.signal_type === "Diamond" ? "diamond-row" : "";
+        return '<tr class="' + rowCls + '">'
           + '<td class="mono">' + scEsc(row.signaled_at_ct || row.signaled_at || "—") + '</td>'
           + '<td class="mono">' + scEsc(row.ticker) + '</td>'
           + '<td>' + signal + '</td>'
@@ -302,6 +304,8 @@ def render_scorecard_page(*, live: bool = False, initial: dict[str, Any] | None 
     th {{ color: var(--muted); font-size: .68rem; text-transform: uppercase; letter-spacing: .05em; font-weight: 500; }}
     .mono {{ font-family: "JetBrains Mono", monospace; }}
     .up {{ color: var(--long); }} .down {{ color: var(--short); }}
+    tr.diamond-row {{ box-shadow: inset 3px 0 0 #7dd3fc; }}
+    tr.diamond-row td {{ background: linear-gradient(90deg, rgba(224,242,254,.16), transparent 55%); }}
     .empty {{ color: var(--muted); padding: .6rem 0; }}
     .sc-input {{
       display: block; margin-top: .2rem; background: rgba(255,255,255,.03); color: var(--ink);

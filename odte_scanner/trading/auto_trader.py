@@ -305,6 +305,7 @@ class AutoTrader:
             "challenge": True,
             "sure_winner": True,
             "golden_flow": True,
+            "diamond": True,
         }
         if desks:
             merged.update(desks)
@@ -403,7 +404,7 @@ class AutoTrader:
         if order.desk == self.second_desk:
             return True
         kind = str((order.meta or {}).get("golden_kind") or "")
-        if kind == "sure_winner_gold":
+        if kind in {"sure_winner_gold", "diamond"}:
             return True
         if not self.close_legacy_positions:
             return False
@@ -705,6 +706,10 @@ class AutoTrader:
         and a 1 DTE that does not expire today, stays under the trail.
         Challenge still leaves same-day and next-session holds at 15:45 ET.
         """
+        if str(desk or "") == "diamond":
+            # The Diamond study flats at 10:30 CT the same session, including
+            # a weekly that does not expire today. Gold stays on 2:30 PM CT.
+            return past_gold_flatten(now, "10:30")
         if str(desk or "") == self.second_desk:
             if not past_odte_flatten(now):
                 return False
@@ -964,11 +969,19 @@ class AutoTrader:
         original: int,
         expiry: str | None,
         peak_mark: float | None,
+        force_short: bool = False,
     ):
         spec = self._gold_spec()
         same_day = expiry_is_today(expiry, self._now)
         dte = trading_dte(expiry, self._now)
-        short = bool(same_day or (dte is not None and 0 <= dte <= 1))
+        # Diamond banks +30% on the whole lot and uses the same-day −40% stop.
+        # The 2+ DTE half-and-trail, and the −50% weekly stop, were not the
+        # sample that cleared.
+        if force_short:
+            short = True
+            same_day = True
+        else:
+            short = bool(same_day or (dte is not None and 0 <= dte <= 1))
         # A staged scale that never filled still holds the original quantity.
         # Count the half only once contracts have actually left the account.
         half_done = int(held) < int(original)
@@ -1097,6 +1110,7 @@ class AutoTrader:
                         rungs_done.add(number)
                 peak_mark = _f((order.meta or {}).get("peak_mark"))
             if self._uses_gold_exit(desk, order):
+                kind = str((order.meta or {}).get("golden_kind") or "") if order is not None else ""
                 decision = self._gold_decision(
                     order=order,
                     entry=entry,
@@ -1105,6 +1119,7 @@ class AutoTrader:
                     original=original,
                     expiry=str(expiry or "") or None,
                     peak_mark=peak_mark,
+                    force_short=kind == "diamond" or str(desk) == "diamond",
                 )
             else:
                 thresholds = self._exit_thresholds(desk, order)
@@ -1420,7 +1435,13 @@ class AutoTrader:
             if kind is None:
                 self._note_filtered(row, "not a golden signal")
                 return None
-            desk = "sure_winner" if kind == "sure_winner_gold" else "golden_flow"
+            if kind == "diamond":
+                if sym == "SPX" or row.get("webull") is False:
+                    self._note_filtered(row, "SPX diamond is not a Webull order")
+                    return None
+                desk = "diamond"
+            else:
+                desk = "sure_winner" if kind == "sure_winner_gold" else "golden_flow"
             if kind == "sure_winner_gold" and self._symbol_has_unfilled_golden(sym):
                 self._note_filtered(row, "golden working buy already open for this symbol")
                 return None
@@ -1492,7 +1513,11 @@ class AutoTrader:
                 "original_qty": quantity,
                 **({"account_id": str(self.broker.account_id_2)} if second else {}),
                 **self._exit_plan_meta(row),
-                **(self._gold_order_plan(row) if kind and not second else {}),
+                **(
+                    {"gold_exit": True, "diamond_flat_ct": "10:30"}
+                    if kind == "diamond"
+                    else (self._gold_order_plan(row) if kind and not second else {})
+                ),
             },
             )
         ready, missing = _option_order_ready(intent)
@@ -1773,6 +1798,7 @@ class AutoTrader:
         challenge: dict[str, Any] | None = None,
         sure_winners: dict[str, Any] | None = None,
         option_flow: dict[str, Any] | None = None,
+        diamond: dict[str, Any] | None = None,
         now: datetime | None = None,
     ) -> dict[str, Any]:
         submitted: list[dict[str, Any]] = []
@@ -1802,6 +1828,7 @@ class AutoTrader:
             if (
                 intent.action == "BUY"
                 and (intent.meta or {}).get("golden_kind")
+                and (intent.meta or {}).get("golden_kind") != "diamond"
                 and intent.status in ("dry_run", "submitted", "staged", "deferred", "rejected", "filled")
             ):
                 golden_buys += 1
@@ -1942,6 +1969,7 @@ class AutoTrader:
                 if (
                     intent.action == "BUY"
                     and (intent.meta or {}).get("golden_kind")
+                    and (intent.meta or {}).get("golden_kind") != "diamond"
                     and golden_buys >= self.max_golden_buys_per_sync
                 ):
                     continue
@@ -1967,6 +1995,24 @@ class AutoTrader:
                 _take(self._route_buy(desk="sure_winner", row=row, right=right))
             for row in _flow_rows(option_flow):
                 self._note_filtered(row, "unusual flow is not auto-traded")
+            from odte_scanner.signals.diamond import DAILY_CAP
+
+            diamond_buys = 0
+            for row in (diamond or {}).get("signals") or []:
+                if not isinstance(row, dict) or not row.get("send_order"):
+                    continue
+                if budget <= 0 or diamond_buys >= DAILY_CAP:
+                    continue
+                from odte_scanner.options.quote_sanity import quote_reject_reason
+
+                reason = quote_reject_reason(row)
+                if reason:
+                    self._note_filtered(row, reason)
+                    continue
+                before = len(submitted)
+                _take(self._route_buy(desk="diamond", row=row, right="C"))
+                if len(submitted) > before:
+                    diamond_buys += 1
 
         if defer_challenge and challenge and budget > 0:
             for row in challenge.get("exit") or []:

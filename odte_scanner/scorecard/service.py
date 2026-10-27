@@ -532,6 +532,7 @@ def observe_snapshot(
     *,
     sure_winners: Any = None,
     option_flow: Any = None,
+    diamond: Any = None,
     scores: Any = None,
     spx_board: dict[str, Any] | None = None,
     now: datetime | None = None,
@@ -553,6 +554,7 @@ def observe_snapshot(
     incoming = extract_signals(
         sure_winners=sure_winners,
         option_flow=option_flow,
+        diamond=diamond,
         scores=scores,
         now=moment,
     )

@@ -16,6 +16,7 @@ from odte_scanner.trading.golden import is_golden_unusual_flow, is_sure_winner_g
 
 GOLD_SETUP = "Gold Setup"
 GOLDEN_FLOW = "Golden Flow"
+DIAMOND = "Diamond"
 
 
 def _num(value: Any, places: int = 6) -> float | None:
@@ -198,12 +199,14 @@ def extract_signals(
     *,
     sure_winners: Any = None,
     option_flow: Any = None,
+    diamond: Any = None,
     scores: Any = None,
     now: datetime | None = None,
     recorded_at: str | None = None,
 ) -> list[dict[str, Any]]:
     """Gold Setup = gold Sure Winner cards. Golden Flow = golden flow prints.
 
+    Diamond rows are recorded only when the desk marked them sendable.
     SOLID cards, unusual/aggressive prints, and chart-pattern triangles are omitted.
     """
     moment = now or datetime.now(timezone.utc)
@@ -251,4 +254,14 @@ def extract_signals(
         if not quote_bundle_ok(row):
             continue
         add(_row_signal(row, signal_type=GOLDEN_FLOW, spots=spots, now=moment, recorded_at=stamped))
+
+    board_d = diamond if isinstance(diamond, dict) else {}
+    for row in _iter_dicts(board_d.get("signals")):
+        if not row.get("send"):
+            continue
+        from odte_scanner.options.quote_sanity import quote_bundle_ok
+
+        if not quote_bundle_ok(row) or _premium(row) is None:
+            continue
+        add(_row_signal(row, signal_type=DIAMOND, spots=spots, now=moment, recorded_at=stamped))
     return found

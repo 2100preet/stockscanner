@@ -184,12 +184,14 @@ def _compact_strike(strike: Any, right: str) -> str:
 
 def _signal_headline(row: dict[str, Any], desk: str) -> str | None:
     """Plain-text first line for Gold Setup and Golden Flow. No Markdown."""
-    if desk not in {"Gold Setup", "Golden Flow"}:
+    if desk not in {"Gold Setup", "Golden Flow", "Diamond"}:
         return None
     right, strike, expiry = _resolved_contract(row)
     parts: list[str] = []
     if desk == "Gold Setup":
         parts.extend(["⭐", _contract_circle(row), "SURE WINNER"])
+    elif desk == "Diamond":
+        parts.extend(["💎", "DIAMOND"])
     else:
         parts.extend([_contract_circle(row), "GOLDEN FLOW"])
     parts.append(str(row.get("symbol") or "?").upper())
@@ -394,6 +396,26 @@ def collect_trade_alerts(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             prefix = f"{tier} Gold Setup"
             row["detail"] = f"{prefix} · {row['detail']}" if row.get("detail") else prefix
         push(row, "BUY", "Gold Setup", force=True)
+
+    diamond = snapshot.get("diamond") if isinstance(snapshot.get("diamond"), dict) else {}
+    sent_symbols: set[str] = set()
+    for raw in diamond.get("signals") or []:
+        if not isinstance(raw, dict) or not raw.get("send"):
+            continue
+        if len(sent_symbols) >= 3:
+            break
+        row = dict(raw)
+        row["action"] = "DIAMOND"
+        sym = str(row.get("symbol") or "").upper()
+        if not sym or sym in sent_symbols:
+            continue
+        try:
+            if float(row.get("ask") or 0) <= 0:
+                continue
+        except (TypeError, ValueError):
+            continue
+        sent_symbols.add(sym)
+        push(row, "BUY", "Diamond", force=True)
 
     from odte_scanner.edge.filters import golden_flow_skip_reason
 
