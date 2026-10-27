@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from odte_scanner.signals.exit_rules import DEFAULT_GOLD_EXIT, GoldExitSpec, gold_exit_plan_text
 from odte_scanner.time_cst import CT, signal_timestamps, to_cst_label
 
 ET = ZoneInfo("America/New_York")
@@ -380,7 +381,22 @@ def collect_candidates(
     return out
 
 
-def _to_sure_winner(row: dict[str, Any], *, day: str) -> SureWinner:
+def _gold_card_plan(row: dict[str, Any], spec: GoldExitSpec | None = None) -> str:
+    """Sure Winner card text from the gold exit spec, not the source desk's string."""
+    raw = row.get("dte")
+    try:
+        dte = int(raw) if raw is not None and raw != "" else None
+    except (TypeError, ValueError):
+        dte = None
+    return gold_exit_plan_text(spec or DEFAULT_GOLD_EXIT, dte=dte, same_day=dte == 0)
+
+
+def _to_sure_winner(
+    row: dict[str, Any],
+    *,
+    day: str,
+    gold_exit: GoldExitSpec | None = None,
+) -> SureWinner:
     tier = str(row["confidence_tier"])
     sizing = SIZE_BY_TIER[tier]
     conf = confidence_pct_for(tier, row.get("win_pct"), row.get("score"))
@@ -444,7 +460,7 @@ def _to_sure_winner(row: dict[str, Any], *, day: str) -> SureWinner:
         hit_2pct=row.get("hit_2pct"),
         live_change_pct=row.get("live_change_pct") or row.get("session_change_pct"),
         spot=row.get("spot") or row.get("live_last") or row.get("live_spot"),
-        exit_plan=row.get("exit_plan") or row.get("wall_exit_hint"),
+        exit_plan=_gold_card_plan(row, gold_exit),
         call_wall=row.get("call_wall"),
         put_wall=row.get("put_wall"),
         soft_exit=row.get("soft_exit"),
@@ -465,6 +481,7 @@ def select_sure_winners(
     day: str | None = None,
     store: dict[str, Any] | None = None,
     prefer_tiers: tuple[str, ...] = ("MAX", "HIGH", "SOLID"),
+    gold_exit: GoldExitSpec | None = None,
 ) -> tuple[list[SureWinner], dict[str, Any]]:
     """Pick up to max_per_day winners; sticky within the CST day."""
     day = day or _day_cst()
@@ -533,7 +550,7 @@ def select_sure_winners(
         selected.append(cand)
         kept_symbols.append(sym)
 
-    winners = [_to_sure_winner(c, day=day) for c in selected[:max_n]]
+    winners = [_to_sure_winner(c, day=day, gold_exit=gold_exit) for c in selected[:max_n]]
     # Preserve first-seen time for sticky picks
     prior_by_symbol = {}
     for prior in store.get("picks") or []:
@@ -611,6 +628,7 @@ def build_sure_winner_board(
     now: datetime | None = None,
     red_flag: dict[str, Any] | None = None,
     respect_gex: bool = True,
+    gold_exit: GoldExitSpec | None = None,
 ) -> dict[str, Any]:
     """Build the capped sure-winner board and annotate source desks."""
     day = _day_cst(now)
@@ -633,6 +651,7 @@ def build_sure_winner_board(
         day=day,
         store=store,
         prefer_tiers=prefer,
+        gold_exit=gold_exit,
     )
     save_day_store(store_path, store)
 

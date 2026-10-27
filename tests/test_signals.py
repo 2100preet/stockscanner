@@ -95,7 +95,11 @@ def test_config_loads():
     assert cfg["live_trading"]["second_desk"] == "challenge"
     assert cfg["live_trading"]["exits"]["challenge"]["take_profit_pct"] == 100
     assert cfg["live_trading"]["exits"]["odte"]["mode"] == "eod"
-    assert cfg["live_trading"]["exits"]["sure_winner"]["take_profit_pct"] == 80
+    assert cfg["live_trading"]["exits"]["sure_winner"]["take_profit_pct"] == 30
+    assert cfg["live_trading"]["exits"]["sure_winner"]["runner_target_pct"] == 80
+    assert cfg["live_trading"]["exits"]["sure_winner"]["same_day_stop_pct"] == 40
+    assert cfg["live_trading"]["exits"]["sure_winner"]["flatten_ct"] == "14:30"
+    assert cfg["live_trading"]["exits"]["sure_winner"]["scale_out"] is False
     assert "universe" in cfg
 
 

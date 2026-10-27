@@ -141,7 +141,7 @@ def test_sure_winner_scales_then_trails_the_runner(tmp_path: Path, monkeypatch):
     expiry = iso_day(session_et(11, 0, weekday_offset=4))
     broker = _broker(tmp_path)
     trader = _trader(broker)
-    pos = _pos("NVDA", 120, expiry, cost=1.0, mark=1.40, quantity=3)
+    pos = _pos("NVDA", 120, expiry, cost=1.0, mark=1.30, quantity=3)
     _arm(broker, pos, qty=3)
 
     def positions(account_id=None):
@@ -154,16 +154,18 @@ def test_sure_winner_scales_then_trails_the_runner(tmp_path: Path, monkeypatch):
     sells = _sells(first)
     assert len(sells) == 1
     assert sells[0]["quantity"] == 1
-    assert "scale out +40%" in sells[0]["reason"]
+    assert "scale out +30%" in sells[0]["reason"]
     assert "sell 1 of 3" in sells[0]["reason"]
     assert "flatten" not in sells[0]["reason"].lower()
     assert sells[0]["meta"]["host"] == SANDBOX_TRADE_HOST
     assert sells[0]["meta"]["sandbox"] is True
     body = build_option_place_order(next(o for o in broker.orders if o.action == "SELL"))
     assert body["position_intent"] == "SELL_TO_CLOSE"
+    assert body["legs"][0]["position_intent"] == "SELL_TO_CLOSE"
     assert body["quantity"] == "1"
     buy = next(o for o in broker.orders if o.action == "BUY")
     assert buy.meta["scale_rungs_done"] == [0]
+    assert buy.meta["trail_armed"] is True
 
     _settle(broker)
     pos["quantity"] = 2
@@ -171,31 +173,27 @@ def test_sure_winner_scales_then_trails_the_runner(tmp_path: Path, monkeypatch):
     second = _sync(trader, morning)
     sells = _sells(second)
     assert len(sells) == 1
-    assert sells[0]["quantity"] == 1
-    assert "scale out +80%" in sells[0]["reason"]
-    assert "sell 1 of 3" in sells[0]["reason"]
-    assert buy.meta["scale_rungs_done"] == [0, 1]
-    assert buy.meta["trail_armed"] is True
+    assert sells[0]["quantity"] == 2
+    assert "take profit" in sells[0]["reason"]
+    assert "+80%" in sells[0]["reason"]
 
-    _settle(broker)
-    pos["quantity"] = 1
-    pos["mark"] = 1.80
-    at_peak = _sync(trader, morning)
-    assert _sells(at_peak) == []
-
-    pos["mark"] = 1.36
-    still = _sync(trader, morning)
-    assert _sells(still) == []
-
-    pos["mark"] = 1.35
-    trailed = _sync(trader, morning)
+    runner = _broker(tmp_path, "trail.json")
+    trail = _trader(runner)
+    left = _pos("AMD", 140, expiry, cost=1.0, mark=1.30, quantity=1)
+    _arm(runner, left, qty=1)
+    _install(
+        monkeypatch,
+        runner,
+        lambda account_id=None: [] if account_id == "cash-2" else [left],
+    )
+    assert _sells(_sync(trail, morning)) == []
+    left["mark"] = 1.15
+    trailed = _sync(trail, morning)
     sells = _sells(trailed)
     assert len(sells) == 1
     assert sells[0]["quantity"] == 1
-    assert "trail" in sells[0]["reason"]
-    assert "25" in sells[0]["reason"]
-    assert "flatten" not in sells[0]["reason"].lower()
-    assert sells[0]["limit_price"] == 1.35
+    assert "half the peak gain" in sells[0]["reason"]
+    assert sells[0]["limit_price"] == 1.15
 
 
 def test_gap_through_both_rungs_sells_them_together(tmp_path: Path, monkeypatch):
@@ -213,9 +211,9 @@ def test_gap_through_both_rungs_sells_them_together(tmp_path: Path, monkeypatch)
     sold = _sync(trader, morning)
     sells = _sells(sold)
     assert len(sells) == 1
-    assert sells[0]["quantity"] == 2
-    assert "scale out +40%/+80%" in sells[0]["reason"]
-    assert "sell 2 of 3" in sells[0]["reason"]
+    assert sells[0]["quantity"] == 3
+    assert "take profit" in sells[0]["reason"]
+    assert "+80%" in sells[0]["reason"]
 
 
 def test_one_contract_still_full_exits_and_small_lots_skip_the_ladder(tmp_path: Path, monkeypatch):
@@ -254,14 +252,10 @@ def test_one_contract_still_full_exits_and_small_lots_skip_the_ladder(tmp_path: 
     # dry-run. Mark it filled so it does not block the next name.
     _settle(broker)
     quiet = _sync(trader, morning)
-    assert all(row["symbol"] != "META" for row in _sells(quiet))
-    pair["mark"] = 1.80
-    full = _sync(trader, morning)
-    meta = [row for row in _sells(full) if row["symbol"] == "META"]
+    meta = [row for row in _sells(quiet) if row["symbol"] == "META"]
     assert len(meta) == 1
-    assert meta[0]["quantity"] == 2
-    assert "take profit" in meta[0]["reason"]
-    assert "scale" not in meta[0]["reason"]
+    assert meta[0]["quantity"] == 1
+    assert "scale out +30%" in meta[0]["reason"]
 
 
 def test_never_scales_into_a_loser(tmp_path: Path, monkeypatch):
@@ -279,20 +273,13 @@ def test_never_scales_into_a_loser(tmp_path: Path, monkeypatch):
     dipped = _sync(trader, morning)
     assert _sells(dipped) == []
 
-    pos["mark"] = 1.40
-    _sync(trader, morning)
-    _settle(broker)
-    pos["quantity"] = 2
-    pos["mark"] = 0.90
-    giveback = _sync(trader, morning)
-    assert _sells(giveback) == []
-
     pos["mark"] = 0.50
     stopped = _sync(trader, morning)
     sells = _sells(stopped)
     assert len(sells) == 1
-    assert sells[0]["quantity"] == 2
+    assert sells[0]["quantity"] == 3
     assert "stop loss" in sells[0]["reason"]
+    assert "−50%" in sells[0]["reason"]
     assert "scale" not in sells[0]["reason"]
     assert sells[0]["limit_price"] == 0.50
 
@@ -309,13 +296,12 @@ def test_same_day_stays_all_in_and_clock_flattens_the_lot(tmp_path: Path, monkey
         broker,
         lambda account_id=None: [] if account_id == "cash-2" else [pos],
     )
-    assert _sells(_sync(trader, morning)) == []
-    pos["mark"] = 1.80
     sold = _sync(trader, morning)
     sells = _sells(sold)
     assert len(sells) == 1
     assert sells[0]["quantity"] == 3
     assert "take profit" in sells[0]["reason"]
+    assert "+30%" in sells[0]["reason"]
 
     flat_broker = _broker(tmp_path, "flat.json")
     flat_trader = _trader(flat_broker)
@@ -326,11 +312,11 @@ def test_same_day_stays_all_in_and_clock_flattens_the_lot(tmp_path: Path, monkey
         flat_broker,
         lambda account_id=None: [] if account_id == "cash-2" else [flat],
     )
-    closed = _sync(flat_trader, session_et(15, 50))
+    closed = _sync(flat_trader, session_et(15, 30))
     sells = _sells(closed)
     assert len(sells) == 1
     assert sells[0]["quantity"] == 3
-    assert "15:45" in sells[0]["reason"]
+    assert "2:30 PM CT" in sells[0]["reason"]
 
 
 def test_challenge_ladder_trails_after_the_second_rung_floors_to_zero(tmp_path: Path, monkeypatch):
