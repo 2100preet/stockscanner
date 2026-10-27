@@ -986,11 +986,11 @@ class AutoTrader:
         )
         # Diamond banks +30% on the whole lot and uses the same-day −40% stop.
         # The 2+ DTE half-and-trail, and the −50% weekly stop, were not the
-        # sample that cleared. Sniper sells half at +25% (when two contracts
-        # are open) and trails the rest, with the same −40% stop.
+        # sample that cleared. Sniper banks +25% on the whole lot. The half
+        # trim plus a trail made less on the same entries.
         if sniper:
             spec = DEFAULT_SNIPER_EXIT
-            short = False
+            short = True
             same_day = True
         elif force_short:
             short = True
@@ -1386,15 +1386,6 @@ class AutoTrader:
         Same-day expiry stays 1 contract and flattens on the clock.
         """
         desk_l = str(desk or "").lower()
-        if desk_l == "sniper":
-            # Half off at +25% needs two contracts. Take two only when they
-            # fit the risk budget. Otherwise the one-lot trails after +25%.
-            premium = _f(limit_price)
-            risk = self.max_risk_per_trade_usd
-            if risk is not None and premium is not None and premium > 0:
-                if 2 * premium * 100.0 <= float(risk) + 1e-6:
-                    return 2
-            return 1
         if self.max_risk_per_trade_usd is None:
             return self.max_contracts
         if second or desk_l in {self.second_desk, "challenge"}:

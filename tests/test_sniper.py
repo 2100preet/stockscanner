@@ -154,7 +154,8 @@ def test_recorded_book_is_non_negative_and_puts_are_in_it():
     again = summarize(SAMPLE_TRADES)
     assert again["n"] == SUMMARY["n"]
     assert abs(again["expectancy"] - SUMMARY["expectancy"]) < 1e-9
-    assert abs(SUMMARY["expectancy"] - 4.1411) < 1e-3
+    assert abs(SUMMARY["expectancy"] - 5.8629) < 1e-3
+    assert "full1" in PRIMARY_RULES.rules_id()
     sent = [(row["symbol"], row["side"]) for row in TODAY_SENT]
     assert sent[:3] == [("MSFT", "P"), ("META", "P"), ("AAPL", "C")]
 
@@ -273,7 +274,7 @@ def test_paper_buys_a_sniper_put_and_skips_spx(tmp_path):
     assert [row["symbol"] for row in buys] == ["QQQ"]
     assert buys[0]["desk"] == "sniper"
     assert buys[0]["right"] == "P"
-    assert buys[0]["quantity"] == 2
+    assert buys[0]["quantity"] == 1
     assert buys[0]["meta"]["golden_kind"] == "sniper"
     assert "10:30" in buys[0]["meta"]["exit_plan"]
     assert golden_signal_kind(card) == "sniper"
@@ -282,7 +283,7 @@ def test_paper_buys_a_sniper_put_and_skips_spx(tmp_path):
     assert trader._paper_entry_qty(card, "sniper", False, 2.0) == 1
 
 
-def test_sniper_exit_sells_half_at_plus_25_and_flats_at_1030(tmp_path):
+def test_sniper_exit_sells_the_whole_lot_at_plus_25_and_flats_at_1030(tmp_path):
     broker = WebullBroker(
         enabled=True,
         dry_run=True,
@@ -293,7 +294,7 @@ def test_sniper_exit_sells_half_at_plus_25_and_flats_at_1030(tmp_path):
     trader = AutoTrader(broker, golden_only=True)
     trader._now = datetime(2026, 10, 27, 14, 10, tzinfo=timezone.utc)
     order = SimpleNamespace(desk="sniper", meta={"golden_kind": "sniper"})
-    half = trader._gold_decision(
+    whole = trader._gold_decision(
         order=order,
         entry=1.0,
         mark=1.25,
@@ -341,12 +342,12 @@ def test_sniper_exit_sells_half_at_plus_25_and_flats_at_1030(tmp_path):
         peak_mark=None,
         force_short=False,
     )
-    assert half is not None and half.quantity == 1
-    assert "25" in half.detail
-    assert one_lot is not None and one_lot.quantity == 0
+    assert whole is not None and whole.quantity == 2
+    assert "25" in whole.detail
+    assert one_lot is not None and one_lot.quantity == 1
     assert stopped is not None and stopped.quantity == 2
     assert "40" in stopped.detail
-    # A weekly gold lot waits for +30%. Sniper takes the half at +25%.
+    # A weekly gold lot waits for +30%. Sniper sells the whole lot at +25%.
     assert gold_early is not None and gold_early.quantity == 0
     assert gold is not None and gold.quantity == 1
     assert "30" in gold.detail
