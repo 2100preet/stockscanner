@@ -600,11 +600,12 @@ watch:
   quote_top_n: 50           # how many names to pull live/extended quotes for
   output_dir: outputs/watch
 
-# Edge gate, audited 2026-10-27. Nothing cleared 40 settled option trades,
+# Edge panel, audited 2026-10-27. Nothing cleared 40 settled option trades,
 # a 95% interval on dollars per contract above zero, and a positive later half.
-# Telegram and new Webull buys stay log-only until a source earns that bar.
-# Open paper lots still exit. The scorecard's underlying move does not unlock alerts.
-# Webull stays sandbox paper. ready_live is not changed here.
+# The panel is information. It does not mute Telegram and it does not block
+# Webull sandbox paper buys. Golden Flow skips live in odte_scanner/edge/filters.py
+# and print their reason on the card. Open paper lots still exit under the
+# gold exit plan. Webull stays sandbox paper. ready_live is not changed here.
 edge_gate:
   enabled: true
   min_samples: 40

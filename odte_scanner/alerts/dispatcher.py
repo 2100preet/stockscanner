@@ -395,8 +395,14 @@ def collect_trade_alerts(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             row["detail"] = f"{prefix} · {row['detail']}" if row.get("detail") else prefix
         push(row, "BUY", "Gold Setup", force=True)
 
+    from odte_scanner.edge.filters import golden_flow_skip_reason
+
     for raw in _golden_flow_rows(snapshot):
         row = dict(raw)
+        # A reason stamped at scan time, or the same check if this snapshot is older.
+        reason = row.get("edge_skip") or golden_flow_skip_reason(row)
+        if reason:
+            continue
         row["action"] = "GOLDEN_FLOW"
         if row.get("ask") is None and row.get("mid") is not None:
             row["ask"] = row["mid"]
@@ -604,7 +610,12 @@ def dispatch_snapshot_alerts(
     max_send: int = 8,
     edge_gate: bool = False,
 ) -> dict[str, Any]:
-    """Send Telegram/WhatsApp for *new* BUY/SELL pulses. No-op if none configured."""
+    """Send Telegram/WhatsApp for *new* BUY/SELL pulses. No-op if none configured.
+
+    ``edge_gate`` is accepted and ignored. The Edge tab is information. It does
+    not mute a desk. Golden Flow skips happen in ``collect_trade_alerts``.
+    """
+    del edge_gate
     # Global pause
     if not _env_flag("DESK_ALERTS_ENABLED", True):
         return {"ok": False, "skipped": True, "reason": "DESK_ALERTS_ENABLED=0"}
@@ -658,32 +669,6 @@ def dispatch_snapshot_alerts(
 
     fresh = [a for a in alerts if _alert_is_fresh(a, seen, strengths)]
     log_only: list[dict[str, Any]] = []
-    if edge_gate:
-        from odte_scanner.edge.view import alert_desk_allowlist
-
-        allowed = alert_desk_allowlist()
-        kept: list[dict[str, Any]] = []
-        for alert in fresh:
-            if alert.get("desk") in allowed:
-                kept.append(alert)
-                continue
-            _mark_alert(alert, seen, strengths)
-            log_only.append(
-                {
-                    "time": datetime.now(timezone.utc).isoformat(),
-                    "symbol": alert.get("symbol"),
-                    "contract": alert.get("contract"),
-                    "kind": alert.get("desk"),
-                    "side": alert.get("side"),
-                    "ok": True,
-                    "log_only": True,
-                    "error": None,
-                    "note": "edge gate: no proven option expectancy",
-                }
-            )
-        if log_only:
-            _save_seen(path, seen, strengths)
-        fresh = kept
     if not fresh:
         return {
             "ok": True,

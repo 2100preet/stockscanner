@@ -1,8 +1,9 @@
-"""Which desks may alert or open a new paper buy.
+"""Option-dollar bar for the Edge panel.
 
 The bar is fixed: at least 40 settled option trades, a 95% interval on
 expectancy per contract above zero, and a positive later half. The scorecard's
-underlying move is not this test. An empty route is the honest result.
+underlying move is not this test. An empty route is the honest result. The
+route does not mute Telegram and does not block sandbox paper buys.
 """
 
 from __future__ import annotations

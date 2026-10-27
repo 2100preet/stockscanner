@@ -1,4 +1,4 @@
-"""The edge gate stays shut until option dollars clear a fixed bar."""
+"""The edge panel keeps the bar. It does not mute Telegram or paper buys."""
 
 from __future__ import annotations
 
@@ -126,7 +126,7 @@ def test_zero_hold_flat_is_not_a_trade():
     assert rows[0]["pnl"] == -15.0
 
 
-def test_edge_gate_logs_without_sending(monkeypatch, tmp_path):
+def test_edge_gate_does_not_mute_telegram(monkeypatch, tmp_path):
     monkeypatch.setattr("odte_scanner.edge.view.alert_desk_allowlist", lambda: set())
     monkeypatch.setattr(
         disp,
@@ -156,10 +156,10 @@ def test_edge_gate_logs_without_sending(monkeypatch, tmp_path):
         }
     }
     result = disp.dispatch_snapshot_alerts(snap, seen_path=seen, edge_gate=True)
-    assert result["sent"] == 0
-    assert result["log_only"] == 1
-    assert sent == []
-    assert result["attempts"][0]["log_only"] is True
+    assert result["sent"] == 1
+    assert result["log_only"] == 0
+    assert sent
+    assert "NVDA" in sent[0]
 
 
 def test_open_route_still_sends(monkeypatch, tmp_path):
@@ -199,7 +199,7 @@ def test_open_route_still_sends(monkeypatch, tmp_path):
     assert sent
 
 
-def test_webull_buy_is_blocked_and_the_exit_still_sells(tmp_path, monkeypatch):
+def test_webull_paper_buy_stays_on_and_the_exit_still_sells(tmp_path, monkeypatch):
     broker = WebullBroker(enabled=True, dry_run=True, ledger_path=tmp_path / "wb.json")
     trader = AutoTrader(
         broker,
@@ -227,8 +227,10 @@ def test_webull_buy_is_blocked_and_the_exit_still_sells(tmp_path, monkeypatch):
     )
     assert out["edge_gate"] is True
     assert out["edge_route"] == []
-    assert [row for row in out["submitted"] if row["action"] == "BUY"] == []
-    assert any(row["reason"] == "edge gate: log-only" for row in out["filtered"])
+    buys = [row for row in out["submitted"] if row["action"] == "BUY"]
+    assert len(buys) == 1
+    assert buys[0]["symbol"] == "NVDA"
+    assert not any("edge gate" in str(row.get("reason") or "") for row in out["filtered"])
 
     today = iso_day(morning)
     yymmdd = f"{today[2:4]}{today[5:7]}{today[8:10]}"
@@ -298,7 +300,7 @@ def test_night_pulse_does_not_cancel_a_submitted_buy(tmp_path):
     broker.save()
     trader.sync(now=session_et(20, 0))
     by_symbol = {order.symbol: order.status for order in broker.orders}
-    assert by_symbol["NVDA"] == "cancelled"
+    assert by_symbol["NVDA"] == "staged"
     assert by_symbol["SPY"] == "submitted"
     assert staged.id
 

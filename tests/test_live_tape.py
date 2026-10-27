@@ -26,5 +26,9 @@ def test_momentum_from_closes_skips_a_short_tape():
 def test_slow_expected_move_tightens_the_otm_band():
     assert otm_band_for_expected_move(1.1, 3.0) == (0.25, 1.1)
     assert otm_band_for_expected_move(0.4, 3.0) == (0.25, 0.75)
-    assert otm_band_for_expected_move(2.4, 3.0) == (3.0, 3.0)
-    assert otm_band_for_expected_move(None, 3.0) == (3.0, 3.0)
+    # Fast names and a missing expected move used to target 3% OTM. The
+    # 1–3% Golden Flow slice was negative in-sample, so the standard board
+    # now aims inside 1%. A chase cap above 3% is left alone.
+    assert otm_band_for_expected_move(2.4, 3.0) == (0.25, 1.0)
+    assert otm_band_for_expected_move(None, 3.0) == (0.25, 1.0)
+    assert otm_band_for_expected_move(2.4, 8.0) == (3.0, 8.0)

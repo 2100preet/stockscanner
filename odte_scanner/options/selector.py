@@ -96,6 +96,11 @@ def _rank_call(
 # Names whose 0DTE expected move is under this do not pay a 1–3% OTM strike.
 SLOW_MOVE_MAX_PCT = 1.5
 SLOW_OTM_TARGET = 0.25
+# Golden Flow strikes 1–3% from the money were −0.62% in-sample (n=133,
+# [−1.06, −0.19]). The standard board aims inside 1% instead of a 3% target.
+# That is the scorecard's underlying move, not a filled option, and it is not
+# proof. Chase desks pass a cap above 3% and keep that wider band.
+NEAR_OTM_CAP = 1.0
 
 
 def otm_band_for_expected_move(
@@ -105,17 +110,21 @@ def otm_band_for_expected_move(
     """Return ``(otm_target, otm_cap)``.
 
     A low-ATR name (COST/UNH class, expected move under 1.5%) stays at or
-    just outside the money. Faster names keep the 3% target and the caller's cap.
+    just outside the money. The standard board (cap at or under 3%) also aims
+    at 0.25% and will not pick 1–3% OTM. A caller that asks for a chase cap
+    above 3% keeps the old 3% target and that wider cap.
     """
     cap = float(otm_pct_max)
     try:
         move = float(expected_move_pct) if expected_move_pct is not None else None
     except (TypeError, ValueError):
         move = None
-    if move is None or move >= SLOW_MOVE_MAX_PCT:
+    if move is not None and move < SLOW_MOVE_MAX_PCT:
+        near_cap = min(cap, max(0.75, move))
+        return SLOW_OTM_TARGET, near_cap
+    if cap > 3.0 + 1e-9:
         return 3.0, cap
-    near_cap = min(cap, max(0.75, move))
-    return SLOW_OTM_TARGET, near_cap
+    return SLOW_OTM_TARGET, min(cap, NEAR_OTM_CAP)
 
 
 def select_calls(

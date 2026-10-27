@@ -3172,9 +3172,10 @@ PAGE = r"""
           </tr></thead><tbody>${prints.slice(0,24).map(p=>{
             const flags = (p.flags||[]).filter(f=>f!==p.tier).slice(0,3).join(" · ") || "—";
             const earn = EARNINGS_FLOW_SYMS.has(p.symbol) ? ` <span class="tag">earn</span>` : "";
+            const skip = p.edge_skip ? `<div class="why">${String(p.edge_skip).replace(/[&<>]/g, "")}</div>` : "";
             return `<tr>
               <td><span class="badge ${p.tier||"aggressive"}">${(p.tier||"").toUpperCase()}</span></td>
-              <td><strong>${p.symbol}</strong>${earn}</td>
+              <td><strong>${p.symbol}</strong>${earn}${skip}</td>
               <td class="mono">${p.right}</td>
               <td class="mono">${fmt(p.strike,2)}</td>
               <td class="mono">${p.dte??"—"}</td>
@@ -4397,10 +4398,8 @@ PAGE = r"""
         saveAlertSeen();
         return;
       }
-      const route = (DATA.edge && DATA.edge.alert_desks) || [];
       const fresh = alerts.filter(a => !alertSeen.has(a.key));
-      const audible = DATA.edge ? fresh.filter(a => route.indexOf(a.desk) >= 0) : fresh;
-      audible.slice(0, 6).forEach(a => {
+      fresh.slice(0, 6).forEach(a => {
         alertSeen.add(a.key);
         pushToast(a);
         beepAlert(a.kind);

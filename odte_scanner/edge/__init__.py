@@ -1,4 +1,4 @@
-"""Measured-edge gate. Empty until a source proves positive option expectancy."""
+"""Measured-edge panel. Information until a source proves positive option expectancy."""
 
 from odte_scanner.edge.view import build_edge_report
 
