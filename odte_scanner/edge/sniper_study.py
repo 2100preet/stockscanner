@@ -72,9 +72,10 @@ def public_summary() -> dict[str, Any]:
         "puts_only": _BLOB.get("puts_only_cap3_expectancy"),
         "note": (
             "In-sample 60-session model. The live book is a 15-minute opening-range "
-            "retest with the 9/21 EMA stack, calls and puts, half off at +25%, "
-            "a −40% stop, and a 10:30 CT flat, capped at 3 names. The same entries "
-            "without the cap did not clear zero. A stop back inside the opening "
-            "range was tested and dropped. This is not a chain fill and it is not a promise."
+            "retest with the 9/21 EMA stack, calls and puts, a full exit at +25%, "
+            "a −40% stop, and a 10:30 CT flat, capped at 3 names. Selling half at "
+            "+25% and trailing the rest made less on these same entries. The book "
+            "without the cap is weaker. A stop back inside the opening range was "
+            "tested and dropped. This is not a chain fill and it is not a promise."
         ),
     }

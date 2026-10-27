@@ -23,9 +23,8 @@ logger = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_STORE = ROOT / "outputs" / "sniper_day.json"
 EXIT_PLAN = (
-    "EXIT plan (sniper) · sell half at +25% premium · stop the rest at breakeven "
-    "and trail half the peak gain · hard stop −40% · flat 10:30 AM CT. "
-    "In-sample model, not a promise."
+    "EXIT plan (sniper) · sell the whole position at +25% premium · "
+    "hard stop −40% · flat 10:30 AM CT. In-sample model, not a promise."
 )
 
 

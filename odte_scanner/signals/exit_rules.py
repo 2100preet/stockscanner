@@ -88,11 +88,10 @@ class GoldExitSpec:
 
 DEFAULT_GOLD_EXIT = GoldExitSpec()
 
-# Sniper sells half at +25% when two contracts are open, then trails the rest
-# back to entry or half the peak gain. A one-lot cannot split, so it trails
-# the whole position once +25% prints. The hard stop is the same-day −40%,
-# and the clock is 10:30 CT. The runner target is intentionally out of reach
-# so the trail and the clock are the exits the 60-day sample used.
+# Sniper sells the whole position at +25%. The half-and-trail version of the
+# same entries made less, so the live order is a full exit. The hard stop is
+# the same-day −40%, and the clock is 10:30 CT. short_dated=True in the
+# auto-trader is what sells the whole lot at arm_pct.
 DEFAULT_SNIPER_EXIT = GoldExitSpec(
     arm_pct=25.0,
     runner_target_pct=1000.0,

@@ -53,8 +53,9 @@ class SniperRules:
 
     A wick back inside the opening range was tested as a stop and rejected:
     it fired on most retests and the interval fell through zero. The hard
-    stop is −40% of premium. Half the position is marked off at +25%, and
-    the rest trails (give back half the favorable move) with a breakeven floor.
+    stop is −40% of premium. The live exit sells the whole position at +25%.
+    A half trim plus a trail was the earlier book; the full exit cleared a
+    higher average on the same entries, so that is the one that ships.
     """
 
     or_start: time = time(8, 30)
@@ -65,7 +66,8 @@ class SniperRules:
     max_extension: float = 0.0035
     trim_pct: float = 25.0
     stop_pct: float = -40.0
-    trail: bool = True
+    trail: bool = False
+    full_exit: bool = True
     or_stop: bool = False
     need_ema: bool = True
     premium_floor: float = 0.006
@@ -78,7 +80,7 @@ class SniperRules:
             f"-retest-ema{int(self.need_ema)}-until{self.entry_end.strftime('%H%M')}"
             f"-trim{int(self.trim_pct)}-stop{int(abs(self.stop_pct))}"
             f"-flat{self.flat_ct.strftime('%H%M')}-trail{int(self.trail)}"
-            f"-orstop{int(self.or_stop)}-cap{DAILY_CAP}"
+            f"-full{int(self.full_exit)}-orstop{int(self.or_stop)}-cap{DAILY_CAP}"
         )
 
 
@@ -93,14 +95,14 @@ RULES_TEXT = (
     "0.35% through the level. At most 3 symbols go out each day, the earliest "
     "ones, with SPY QQQ SPX NVDA TSLA AVGO winning a tie. The contract is at "
     "the money or one strike in the money: 0–2 DTE on the index products, the "
-    "nearest weekly on a single name. Sell half at +25% premium, move the rest "
-    "to breakeven, and trail it by giving back half the peak gain. Hard stop "
-    "−40%. Flat at 10:30 AM CT. A stop that treats any tick back inside the "
-    "opening range as an exit was tested and dropped: it stopped out the "
-    "retest itself. Puts are in the book; calls alone did not clear the "
-    "interval. Option P&L is a 0.50 delta model. Premium is the larger of "
-    "0.6% of spot and 40% of the opening-range width. No chain was available, "
-    "so this is not a fill."
+    "nearest weekly on a single name. Sell the whole position at +25% premium. "
+    "Hard stop −40%. Flat at 10:30 AM CT. Selling half at +25% and trailing "
+    "the rest was tested on the same entries and made less. A stop that treats "
+    "any tick back inside the opening range as an exit was tested and dropped: "
+    "it stopped out the retest itself. Puts are in the book; calls alone did "
+    "not clear the interval. Option P&L is a 0.50 delta model. Premium is the "
+    "larger of 0.6% of spot and 40% of the opening-range width. No chain was "
+    "available, so this is not a fill."
 )
 
 
@@ -193,9 +195,9 @@ def simulate(
 ) -> dict[str, Any]:
     """Mark the option from the signal close.
 
-    Half is taken at the trim. The rest stops at breakeven and, when the
-    trail is on, also leaves if it gives back half the peak gain. A bar that
-    can hit the stop and the trim takes the stop. A gap fills at the open.
+    The live rule sells the whole position at the target. The older half-trim
+    path remains for a rules object that turns ``full_exit`` off. A bar that
+    can hit the stop and the target takes the stop. A gap fills at the open.
     """
     rules = rules or PRIMARY_RULES
     entry_bar = session[entry_index]
@@ -255,6 +257,13 @@ def simulate(
                     )
                     reason = "or"
                 break
+            if hit and rules.full_exit:
+                raw = entry + side * trim_dist
+                if (side > 0 and bar.open > raw) or (side < 0 and bar.open < raw):
+                    raw = bar.open
+                exit_px = raw
+                reason = "target"
+                break
             if hit:
                 trimmed = True
                 peak = bar.high if side > 0 else bar.low
@@ -287,7 +296,10 @@ def simulate(
                 peak = bar.low
 
     full = opt(exit_px)
-    pnl = 0.5 * rules.trim_pct + 0.5 * full if trimmed and reason != "stop" else full
+    if rules.full_exit:
+        pnl = full
+    else:
+        pnl = 0.5 * rules.trim_pct + 0.5 * full if trimmed and reason != "stop" else full
     und = side * (exit_px - entry) / entry * 100.0 if entry else 0.0
     return {
         "symbol": symbol,
