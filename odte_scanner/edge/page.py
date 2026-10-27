@@ -27,6 +27,8 @@ EDGE_SECTION = """
       <h3>Index studies, 2023–2026 — not routed</h3>
       <p class="lede" id="edgeStudyNote"></p>
       <div style="overflow-x:auto"><table id="edgeStudy"></table></div>
+      <h3>Diamond — its own book</h3>
+      <div id="edgeDiamond"></div>
       <h3>Limits</h3>
       <ul id="edgeLimits"></ul>
     </section>
@@ -171,6 +173,26 @@ EDGE_JS = r"""
           })
         );
       }
+      var diamondEl = document.getElementById("edgeDiamond");
+      if (diamondEl) {
+        var d = edge.diamond || {};
+        var pct = function (value) {
+          if (value == null || Number.isNaN(Number(value))) return "—";
+          var n = Number(value);
+          return (n > 0 ? "+" : "") + n.toFixed(2) + "%";
+        };
+        diamondEl.innerHTML = '<article class="pulse-card diamond">'
+          + '<div class="pc-top"><div class="pc-sym">💎 Diamond</div><div class="pc-tag diamond">'
+          + (d.routed ? "PAPER + TELEGRAM" : "NOT SENT") + '</div></div>'
+          + '<div class="pc-meta">'
+          + '<div><span>n</span><br><strong>' + edgeEsc(d.n) + '</strong></div>'
+          + '<div><span>Win rate</span><br><strong>' + edgePct(d.win_rate) + '</strong></div>'
+          + '<div><span>Option model</span><br><strong>' + pct(d.expectancy) + '</strong></div>'
+          + '<div><span>95% interval</span><br><strong>' + pct(d.lo) + ' to ' + pct(d.hi) + '</strong></div>'
+          + '<div><span>First half</span><br><strong>' + pct(d.h1) + '</strong></div>'
+          + '<div><span>Second half</span><br><strong>' + pct(d.h2) + '</strong></div>'
+          + '</div><p class="pc-why">' + edgeEsc(d.note || "") + '</p></article>';
+      }
       var limits = document.getElementById("edgeLimits");
       if (limits) {
         limits.innerHTML = (edge.limitations || []).map(function (line) {
@@ -226,5 +248,54 @@ def render_edge_static(report: dict[str, Any]) -> str:
         <tbody>{under_rows or "<tr><td>No settled scorecard rows.</td></tr>"}</tbody>
       </table>
       <p class="lede">Bad spot rows excluded: {_cell(report.get("bad_spots_excluded"))}. Full slices, the paper audit, and the index study are on the desk Edge tab.</p>
+      <h3>Diamond</h3>
+      {diamond_tile_html(report.get("diamond") or {})}
     </section>
+    """
+
+
+def diamond_tile_html(item: dict[str, Any]) -> str:
+    """Ice-blue card. Shared by the desk study and the public scorecard."""
+
+    def pct(value: Any) -> str:
+        if not isinstance(value, (int, float)):
+            return "—"
+        return f"{value:+.2f}%"
+
+    routed = "PAPER + TELEGRAM" if item.get("routed") else "NOT SENT"
+    return f"""
+    <style>
+      .pulse-card.diamond {{
+        border: 1px solid rgba(125, 211, 252, .75);
+        border-radius: .7rem;
+        padding: .7rem .8rem;
+        background: linear-gradient(165deg, #f8fdff, #e0f2fe 46%, #ffffff 100%);
+        box-shadow: inset 4px 0 0 #7dd3fc, 0 8px 22px rgba(125, 211, 252, .18);
+        color: #082f49;
+        margin: .6rem 0 1rem;
+      }}
+      .pulse-card.diamond .pc-top {{ display: flex; justify-content: space-between; gap: .5rem; align-items: baseline; }}
+      .pulse-card.diamond .pc-sym {{ font-family: "Instrument Serif", Georgia, serif; font-size: 1.35rem; }}
+      .pulse-card.diamond .pc-tag {{
+        font-family: "JetBrains Mono", monospace; font-size: .68rem; letter-spacing: .06em;
+        color: #0369a1; background: rgba(255,255,255,.8); border-radius: 999px; padding: .12rem .45rem;
+      }}
+      .pulse-card.diamond .pc-meta {{
+        display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .35rem .55rem; margin-top: .45rem;
+      }}
+      .pulse-card.diamond .pc-meta span {{ color: #155e75; font-size: .72rem; }}
+      .pulse-card.diamond .pc-why {{ color: #155e75; font-size: .75rem; line-height: 1.4; }}
+    </style>
+    <article class="pulse-card diamond">
+      <div class="pc-top"><div class="pc-sym">💎 Diamond</div><div class="pc-tag diamond">{_cell(routed)}</div></div>
+      <div class="pc-meta">
+        <div><span>n</span><br><strong>{_cell(item.get("n"))}</strong></div>
+        <div><span>Win rate</span><br><strong>{_cell(None if item.get("win_rate") is None else f"{float(item['win_rate']) * 100:.1f}%")}</strong></div>
+        <div><span>Option model</span><br><strong>{_cell(pct(item.get("expectancy")))}</strong></div>
+        <div><span>95% interval</span><br><strong>{_cell(pct(item.get("lo")))} to {_cell(pct(item.get("hi")))}</strong></div>
+        <div><span>First half</span><br><strong>{_cell(pct(item.get("h1")))}</strong></div>
+        <div><span>Second half</span><br><strong>{_cell(pct(item.get("h2")))}</strong></div>
+      </div>
+      <p class="pc-why">{_cell(item.get("note"))}</p>
+    </article>
     """

@@ -23,6 +23,7 @@ from odte_scanner.edge.metrics import (
     tod_bucket,
 )
 from odte_scanner.edge.filters import GF_DTE, GF_MID, GF_NEAR, GF_OPEN, GF_PUT, GOLD_FAVOR_NOTE
+from odte_scanner.edge.diamond_study import public_summary as diamond_public_summary
 from odte_scanner.edge.study import PAPER_AUDIT, RECORDED_AT, SPREAD_NOTE, STUDY, UNDERLYING_NOTE
 from odte_scanner.scorecard.service import MOVE_NOTE
 
@@ -36,6 +37,7 @@ LIMITATIONS = [
     "Each signal has no market-regime tag. The index study is separate and is not a scanner signal.",
     "Opening-range breakout uses about 60 days of 5-minute bars. The daily studies run from 2023-01-03 through 2026-10-26.",
     "The debit-spread column is a capped model of the underlying move, not a quoted vertical.",
+    "Diamond is a separate book. Its 60-day figure is an in-sample 0.50-delta model on Yahoo 5-minute bars, not a chain fill. The live option-dollar row stays empty until paper sells close.",
     "Webull stays on the sandbox paper host. Paper buys stay on. This panel does not turn on live trading.",
     "The recommendation log's pulse marks are not used. The same idea was counted many times.",
     "A contract that appears in both the signal journal and the Webull ledger is counted in each. The route still needs the combined sample to clear the bar.",
@@ -342,6 +344,7 @@ def build_edge_report(*, scorecard: dict[str, Any] | None = None, samples: list[
         "study_recorded_at": RECORDED_AT,
         "study_note": UNDERLYING_NOTE,
         "spread_note": SPREAD_NOTE,
+        "diamond": diamond_public_summary(),
         "paper_audit": PAPER_AUDIT,
         "paper_audit_at": "2026-10-27T03:04:05+00:00",
         "move_note": MOVE_NOTE,
