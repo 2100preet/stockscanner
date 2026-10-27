@@ -427,6 +427,11 @@ def _position_identity(node: dict[str, Any]) -> dict[str, Any] | None:
     mark = _position_mark(node)
     if mark is not None:
         row["mark"] = mark
+    for key in ("position_id", "positionId"):
+        token = str(node.get(key) or "").strip()
+        if token:
+            row["position_id"] = token
+            break
     return row
 
 
@@ -490,6 +495,12 @@ def build_option_place_order(intent: WebullOrderIntent) -> dict[str, Any]:
     tif = "DAY" if side == "SELL" else str(intent.tif or "DAY").upper()
     if tif not in {"DAY", "GTC"}:
         tif = "DAY"
+    # A sell is a close of the long we already hold. The parent intent is what
+    # the US options schema documents. The leg repeats it so a sandbox that
+    # ignores the parent does not treat the call as a naked short. Buys keep
+    # the previous leg shape. Quantity is capped to the live long before this
+    # body is built.
+    position_intent = "BUY_TO_OPEN" if side == "BUY" else "SELL_TO_CLOSE"
     leg = {
         "side": side,
         "quantity": str(qty),
@@ -500,6 +511,8 @@ def build_option_place_order(intent: WebullOrderIntent) -> dict[str, Any]:
         "option_type": option_type,
         "market": "US",
     }
+    if side == "SELL":
+        leg["position_intent"] = position_intent
     return {
         "client_order_id": client_order_id,
         "combo_type": "NORMAL",
@@ -513,7 +526,7 @@ def build_option_place_order(intent: WebullOrderIntent) -> dict[str, Any]:
         "instrument_type": "OPTION",
         "market": "US",
         "symbol": symbol,
-        "position_intent": "BUY_TO_OPEN" if side == "BUY" else "SELL_TO_CLOSE",
+        "position_intent": position_intent,
         "legs": [leg],
     }
 
@@ -1243,11 +1256,18 @@ class WebullBroker:
 
     def refresh_working_buys(self) -> list[WebullOrderIntent]:
         """Update submitted/partial buys from order detail. Dry-run rows stay simulated."""
+        return self._refresh_working("BUY")
+
+    def refresh_working_sells(self) -> list[WebullOrderIntent]:
+        """Update submitted/partial sells. A resting sell is not a finished exit."""
+        return self._refresh_working("SELL")
+
+    def _refresh_working(self, action: str) -> list[WebullOrderIntent]:
         if self.dry_run or not self.enabled:
             return []
         out: list[WebullOrderIntent] = []
         for intent in list(self.orders):
-            if intent.action != "BUY" or intent.status not in {"submitted", "partial"}:
+            if intent.action != action or intent.status not in {"submitted", "partial"}:
                 continue
             out.append(self.refresh_fill(intent))
         return out
@@ -1288,7 +1308,8 @@ class WebullBroker:
         elif state == "partial":
             intent.status = "partial"
         elif state == "cancelled":
-            intent.status = "cancelled"
+            broker_status = str(classified.get("order_status") or "")
+            intent.status = "rejected" if broker_status == "REJECTED" else "cancelled"
         else:
             intent.status = "submitted"
 

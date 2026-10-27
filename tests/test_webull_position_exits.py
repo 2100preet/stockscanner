@@ -66,6 +66,9 @@ def test_exit_plan_percents_override_the_desk_default():
     assert _pcts_from_exit_plan(
         "EXIT when premium ≥$3.00 (+50%) or stop −50%, or max hold 2d"
     ) == (50.0, 50.0)
+    assert _pcts_from_exit_plan(
+        "EXIT at ≥$0.24 (+60% premium), or stop −45%, or after 20d max hold"
+    ) == (60.0, 45.0)
     assert _pcts_from_exit_plan("hold the winner") is None
 
 
@@ -344,7 +347,8 @@ def test_1545_flattens_same_day_and_challenge_next_session(tmp_path: Path, monke
     )
     sells = _sells(flat)
     assert {row["symbol"] for row in sells} == {"QQQ", "SPY", "BABA"}
-    assert all("15:45" in row["reason"] for row in sells)
+    assert all("2:30 PM CT" in row["reason"] for row in sells if row["symbol"] != "BABA")
+    assert "15:45" in next(row["reason"] for row in sells if row["symbol"] == "BABA")
     baba_sell = next(row for row in sells if row["symbol"] == "BABA")
     assert baba_sell["meta"]["account_id"] == "cash-2"
     assert "NVDA" not in {row["symbol"] for row in sells}

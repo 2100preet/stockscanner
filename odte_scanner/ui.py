@@ -7243,7 +7243,12 @@ def create_app(config_path: str | None = None) -> Flask:
                 }
                 if bool(actions_cfg.get("sure_winners_enabled", True)):
                     try:
+                        from odte_scanner.signals.exit_rules import load_exit_rules
                         from odte_scanner.signals.sure_winners import build_sure_winner_board
+
+                        _gold_rule = load_exit_rules((cfg.get("live_trading") or {}).get("exits")).get(
+                            "sure_winner"
+                        )
 
                         sw_path = Path(
                             actions_cfg.get("sure_winners_store_path") or "outputs/sure_winners_day.json"
@@ -7267,6 +7272,7 @@ def create_app(config_path: str | None = None) -> Flask:
                             store_path=sw_path,
                             red_flag=red_flag_snapshot if isinstance(red_flag_snapshot, dict) else None,
                             respect_gex=bool(actions_cfg.get("sure_winners_respect_gex", True)),
+                            gold_exit=None if _gold_rule is None else _gold_rule.gold,
                         )
                         # Re-bind annotated source desks so color flags land on BUY NOW cards
                         if isinstance(sure_board.get("actions"), dict):

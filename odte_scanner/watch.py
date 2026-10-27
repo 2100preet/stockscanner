@@ -229,7 +229,11 @@ def run_watch(
                         try:
                             from odte_scanner.signals.sure_winners import build_sure_winner_board
 
-                            sure_rows = build_sure_winner_board(actions=actions)
+                            _gold_rule = _exit_rules.get("sure_winner")
+                            sure_rows = build_sure_winner_board(
+                                actions=actions,
+                                gold_exit=None if _gold_rule is None else _gold_rule.gold,
+                            )
                         except Exception as exc:  # noqa: BLE001
                             logger.debug("watch sure winners skipped: %s", exc)
                         wb = trader.sync(

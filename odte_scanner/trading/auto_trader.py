@@ -3,13 +3,14 @@
 Default (golden_only):
   sure_winner → Sure Winner cards the desk renders gold (MAX and HIGH)
 
-Gold cards are entries. Exits come from open sandbox longs: a live premium
-(bid or mark versus entry/cost) that crosses the book TP/SL, a journal or
-desk SELL for that contract, or the 15:45 ET flatten. A lot opened with
-enough contracts scales out in steps and trails the runner. A 1-lot and a
-same-day expiry still leave in full at TP, SL, or the 15:45 flatten. The
-signal card does not have to stay gold, and the sell does not have to match
-an open golden order.
+Gold cards are entries. Exits come from open sandbox longs and the Sure
+Winner block in config: 0–1 DTE sells the whole lot at +30%, 2+ DTE sells
+half at +30% when quantity allows, and the remaining lot trails once the
+peak is +30% (back to entry, or half the peak gain, whichever comes first).
+Same-day stops at −40% and flattens at 2:30 PM CT. 2+ DTE keeps −50% and is
+not flattened by the clock. A rejected or still-working sell is unfinished.
+The signal card does not have to stay gold, and the sell does not have to
+match an open golden order. Sells are sell-to-close of a live long.
 
 Other desks stay on the board and are not staged. SOLID sure winners and
 unusual-flow prints (including Flow-desk Golden) are included in that exclusion.
@@ -31,12 +32,22 @@ import re
 from datetime import datetime
 from typing import Any
 
-from odte_scanner.signals.exit_rules import DEFAULT_EXIT_RULES, ScaleOut, plan_premium_exit
+from odte_scanner.signals.exit_rules import (
+    DEFAULT_EXIT_RULES,
+    DEFAULT_GOLD_EXIT,
+    GoldExitSpec,
+    ScaleOut,
+    gold_exit_plan_text,
+    plan_gold_exit,
+    plan_premium_exit,
+)
 from odte_scanner.signals.hold_rules import (
     BEFORE_OPEN_REASON,
+    contract_expired,
     entry_block_reason,
     expiry_is_today,
     option_session_open,
+    past_gold_flatten,
     past_odte_flatten,
     trading_dte,
 )
@@ -137,14 +148,23 @@ def _is_clock_flatten(row: dict[str, Any]) -> bool:
         str(row.get(key) or "")
         for key in ("detail", "headline", "reason", "exit_reason", "exit_plan")
     ).lower()
-    return any(token in text for token in ("15:45", "time-stop", "time stop", "flatten"))
+    return any(token in text for token in ("15:45", "2:30", "time-stop", "time stop", "flatten"))
 
 
 _TP_PLAN_RE = re.compile(
     r"(?:tp|take[\s-]*profit|target)\s*[+:]?\s*\+?\s*(\d+(?:\.\d+)?)\s*%",
     re.IGNORECASE,
 )
-_PLUS_PLAN_RE = re.compile(r"\(\s*\+\s*(\d+(?:\.\d+)?)\s*%\s*\)")
+# `(+60% premium)` and `(+60%)` both count. The gold book does not use this
+# parse — its numbers come from the Sure Winner config block.
+_PLUS_PLAN_RE = re.compile(
+    r"\(\s*\+\s*(\d+(?:\.\d+)?)\s*%(?:\s*premium)?\s*\)",
+    re.IGNORECASE,
+)
+_PREMIUM_PLAN_RE = re.compile(
+    r"\+\s*(\d+(?:\.\d+)?)\s*%\s*premium",
+    re.IGNORECASE,
+)
 _SL_PLAN_RE = re.compile(
     r"(?:sl|stop(?:[\s-]*loss)?)\s*[−\-–:]?\s*(\d+(?:\.\d+)?)\s*%",
     re.IGNORECASE,
@@ -161,7 +181,7 @@ def _pcts_from_exit_plan(text: str | None) -> tuple[float, float] | None:
     raw = str(text or "")
     if not raw.strip():
         return None
-    tp_match = _TP_PLAN_RE.search(raw) or _PLUS_PLAN_RE.search(raw)
+    tp_match = _TP_PLAN_RE.search(raw) or _PLUS_PLAN_RE.search(raw) or _PREMIUM_PLAN_RE.search(raw)
     sl_match = _SL_PLAN_RE.search(raw)
     if tp_match is None or sl_match is None:
         return None
@@ -639,22 +659,40 @@ class AutoTrader:
         other_expiry = str(other.get("expiry") or "")[:10]
         return bool(expiry and other_expiry and expiry == other_expiry)
 
-    def _lot_flattens(self, desk: str, expiry: str | None, now: datetime | None) -> bool:
-        """15:45 ET flatten.
+    def _gold_spec(self) -> GoldExitSpec:
+        rules = self.exit_rules or DEFAULT_EXIT_RULES
+        rule = rules.get("sure_winner")
+        gold = getattr(rule, "gold", None) if rule is not None else None
+        return gold or DEFAULT_GOLD_EXIT
 
-        Same-day expiry leaves on every book, including Sure Winner. Challenge
-        also leaves a 1 DTE hold so it does not gap overnight. A Sure Winner
-        weekly whose expiry is after today stays open.
-        """
-        if not past_odte_flatten(now):
+    def _uses_gold_exit(self, desk: str, order: WebullOrderIntent | None) -> bool:
+        """Primary sandbox book. Challenge and RIP keep their own ladders."""
+        if not self.golden_only:
             return False
-        if expiry_is_today(expiry, now):
-            return True
+        names = {self.second_desk, "challenge", "rip"}
+        if str(desk or "") in names:
+            return False
+        if order is not None and str(order.desk or "") in names:
+            return False
+        return True
+
+    def _lot_flattens(self, desk: str, expiry: str | None, now: datetime | None) -> bool:
+        """Clock flatten.
+
+        Sure Winner same-day lots leave at 2:30 PM CT. A Sure Winner weekly,
+        and a 1 DTE that does not expire today, stays under the trail.
+        Challenge still leaves same-day and next-session holds at 15:45 ET.
+        """
         if str(desk or "") == self.second_desk:
-            # Next session, including Friday into Monday. A 2-session hold stays.
+            if not past_odte_flatten(now):
+                return False
+            if expiry_is_today(expiry, now):
+                return True
             dte = trading_dte(expiry, now)
             return dte == 1
-        return False
+        if not expiry_is_today(expiry, now):
+            return False
+        return past_gold_flatten(now, self._gold_spec().flatten_ct)
 
     def _position_for_order(self, order: WebullOrderIntent) -> dict[str, Any] | None:
         book = self._positions_by_contract
@@ -704,12 +742,14 @@ class AutoTrader:
         desk: str,
         order: WebullOrderIntent | None,
     ) -> tuple[float, float] | None:
-        """TP/SL percents for an open lot. An exit_plan on the order wins.
+        """TP/SL percents for challenge and RIP. Sure Winner does not use this.
 
-        Primary Sure Winner is +80/−50. Challenge is +100/−50. A RIP ticket
-        that stored ``TP +50% / SL −50%`` uses those numbers instead. ``eod``
-        mode leaves the premium target off and lets the 15:45 clock run.
+        An exit_plan string wins for those desks. Sure Winner reads the config
+        spec in ``_gold_decision`` so a stale ``(+60% premium) / stop −45%``
+        card cannot move the live sell.
         """
+        if self._uses_gold_exit(desk, order):
+            return None
         plan = ""
         explicit_tp = None
         explicit_sl = None
@@ -892,13 +932,102 @@ class AutoTrader:
             row["scale_original_qty"] = int(scale_original_qty)
         return row
 
+    def _gold_decision(
+        self,
+        *,
+        order: WebullOrderIntent | None,
+        entry: float,
+        mark: float,
+        held: int,
+        original: int,
+        expiry: str | None,
+        peak_mark: float | None,
+    ):
+        spec = self._gold_spec()
+        same_day = expiry_is_today(expiry, self._now)
+        dte = trading_dte(expiry, self._now)
+        short = bool(same_day or (dte is not None and 0 <= dte <= 1))
+        # A staged scale that never filled still holds the original quantity.
+        # Count the half only once contracts have actually left the account.
+        half_done = int(held) < int(original)
+        return plan_gold_exit(
+            entry=entry,
+            mark=mark,
+            held=held,
+            original=original,
+            spec=spec,
+            same_day=same_day,
+            short_dated=short,
+            half_done=half_done,
+            peak_mark=peak_mark,
+        )
+
+    def _sell_limit_is_marketable(self, limit: float | None, bid: float | None) -> bool:
+        """A sell limit at or through the bid can fill. Above the bid it sits."""
+        if limit is None or limit <= 0:
+            return False
+        if bid is None or bid <= 0:
+            return limit <= FLATTEN_LIMIT + 1e-9
+        return limit <= float(bid) + 0.011
+
+    def _maintain_working_sells(self) -> None:
+        """Refresh resting sells during the option session and drop stale ones.
+
+        A rejected or still-working sell is not a finished exit. Filled sells
+        stay filled. A sell with no live long is cancelled so it cannot open
+        a short. Expired contracts are cancelled and not replaced. Nothing
+        here runs when the option session is closed.
+        """
+        if not option_session_open(self._now):
+            return
+        self.broker.refresh_working_sells()
+        for sell in list(self.broker.orders):
+            if sell.action != "SELL" or sell.status not in {"submitted", "partial"}:
+                continue
+            if contract_expired(sell.expiry, self._now):
+                sell.meta["cancel_reason"] = "expired contract — not resubmitted"
+                self.broker.cancel(sell)
+                continue
+            probe = {
+                "symbol": sell.symbol,
+                "right": sell.right,
+                "contract": sell.contract,
+                "expiry": sell.expiry,
+                "strike": sell.strike,
+            }
+            opened = self._find_open_long(probe, str(sell.right or "C"))
+            position = self._open_position(probe, str(sell.right or "C"))
+            held = 0.0
+            if self._positions_by_contract is not None:
+                if position is not None:
+                    held = float(position.get("quantity") or 0)
+            elif opened is not None:
+                held = self._held_qty(opened)
+            if held <= 0:
+                sell.meta["cancel_reason"] = "no long to close — refusing a short"
+                self.broker.cancel(sell)
+                continue
+            if int(sell.quantity or 1) > int(held + 1e-9):
+                sell.meta["cancel_reason"] = "sell qty above the live long"
+                self.broker.cancel(sell)
+                continue
+            bid = self._lot_mark(position)
+            if self._sell_limit_is_marketable(_f(sell.limit_price), bid):
+                continue
+            sell.meta["cancel_reason"] = "stale working sell — replace at a marketable limit"
+            self.broker.cancel(sell)
+
     def _premium_exit_rows(self) -> list[dict[str, Any]]:
-        """SELL rows when an open lot's premium crosses TP or SL.
+        """SELL rows when an open lot's premium crosses its exit.
 
         The gold board is not consulted. A lot is an open ledger buy we track,
         or a sandbox long that has no golden order. Legacy golden-flow buys
         stay put unless ``close_legacy_positions`` is on — this is not a wipe.
+        Closed sessions do not submit exits, so a night pulse cannot flatten
+        the open weekly lots.
         """
+        if not option_session_open(self._now):
+            return []
         rows: list[dict[str, Any]] = []
         seen: set[str] = set()
 
@@ -920,10 +1049,6 @@ class AutoTrader:
             entry = self._lot_entry(order, pos)
             if mark is None or entry is None or entry <= 0:
                 return
-            thresholds = self._exit_thresholds(desk, order)
-            if thresholds is None:
-                return
-            tp, sl = thresholds
             if order is not None:
                 held = int(self._held_qty(order) + 1e-9)
             else:
@@ -931,34 +1056,54 @@ class AutoTrader:
             if held < 1:
                 return
             expiry = (order.expiry if order is not None else None) or (pos or {}).get("expiry")
+            if contract_expired(str(expiry or ""), self._now):
+                return
+            # A live snapshot wins. Never sell more than the account is long.
+            if self._positions_by_contract is not None and pos is not None:
+                held = min(held, int(float(pos.get("quantity") or 0) + 1e-9))
+            if held < 1:
+                return
             same_day = expiry_is_today(expiry, self._now)
-            # Partials need the buy row so the next sync remembers which rungs
-            # already sold. A position with no ledger buy still full-exits.
-            scale = None
             original = held
             rungs_done: set[int] = set()
             peak_mark = None
             if order is not None:
                 original = self._original_qty(order, held)
-                if not same_day:
-                    scale = self._scale_for_lot(desk, order, tp, sl)
                 for rung in (order.meta or {}).get("scale_rungs_done") or []:
                     number = _i(rung)
                     if number is not None:
                         rungs_done.add(number)
                 peak_mark = _f((order.meta or {}).get("peak_mark"))
-            decision = plan_premium_exit(
-                entry=entry,
-                mark=mark,
-                held=held,
-                original=original,
-                take_profit_pct=tp,
-                stop_loss_pct=sl,
-                scale=scale,
-                same_day=same_day,
-                rungs_done=rungs_done,
-                peak_mark=peak_mark,
-            )
+            if self._uses_gold_exit(desk, order):
+                decision = self._gold_decision(
+                    order=order,
+                    entry=entry,
+                    mark=mark,
+                    held=held,
+                    original=original,
+                    expiry=str(expiry or "") or None,
+                    peak_mark=peak_mark,
+                )
+            else:
+                thresholds = self._exit_thresholds(desk, order)
+                if thresholds is None:
+                    return
+                tp, sl = thresholds
+                scale = None
+                if order is not None and not same_day:
+                    scale = self._scale_for_lot(desk, order, tp, sl)
+                decision = plan_premium_exit(
+                    entry=entry,
+                    mark=mark,
+                    held=held,
+                    original=original,
+                    take_profit_pct=tp,
+                    stop_loss_pct=sl,
+                    scale=scale,
+                    same_day=same_day,
+                    rungs_done=rungs_done,
+                    peak_mark=peak_mark,
+                )
             if decision is None:
                 return
             if order is not None and decision.peak_mark is not None:
@@ -1050,15 +1195,17 @@ class AutoTrader:
         return rows
 
     def _flatten_when_signal_leaves(self, now: datetime | None) -> list[dict[str, Any]]:
-        """After 15:45 ET, flatten same-day lots and challenge 0–1 DTE holds.
+        """Flatten Sure Winner same-day lots at 2:30 PM CT, and challenge at 15:45 ET.
 
-        Sure Winner weeklies stay open overnight. A same-day Sure Winner still
-        leaves, even when its gold card is gone. Challenge 1 DTE leaves too,
-        so a short-dated hold does not gap. Unfilled DAY limits are cancelled
-        at the cutoff for every expiry. Legacy golden-flow lots are included
-        only when ``close_legacy_positions`` is on.
+        Sure Winner weeklies stay open overnight. Challenge 1 DTE still leaves
+        at 15:45 ET so a short-dated hold does not gap. Unfilled DAY limits are
+        cancelled at 15:45 ET. Nothing is sent outside the option session.
         """
-        if not past_odte_flatten(now):
+        if not option_session_open(now):
+            return []
+        gold_due = past_gold_flatten(now, self._gold_spec().flatten_ct)
+        desk_due = past_odte_flatten(now)
+        if not gold_due and not desk_due:
             return []
         rows: list[dict[str, Any]] = []
         seen: set[str] = set()
@@ -1080,7 +1227,8 @@ class AutoTrader:
             # Unfilled DAY orders are pulled at the close even when the option
             # itself is a weekly. Filled weeklies and 2DTEs stay open.
             if self._is_working_buy(order):
-                pass
+                if not desk_due:
+                    continue
             elif not self._lot_flattens(order.desk, order.expiry, now):
                 continue
             elif self._held_qty(order) <= 0:
@@ -1093,11 +1241,11 @@ class AutoTrader:
                 detail = "challenge 0–1DTE time-stop — flatten by 15:45 ET"
             elif order.desk != self.second_desk and expiry_is_today(order.expiry, now):
                 detail = (
-                    "0DTE time-stop — flatten by 15:45 ET "
+                    "0DTE time-stop — flatten by 2:30 PM CT "
                     "(open golden contract left the board)"
                 )
             else:
-                detail = "0DTE time-stop — flatten by 15:45 ET (open position)"
+                detail = "0DTE time-stop — flatten by 2:30 PM CT (open position)"
             mark = self._lot_mark(self._position_for_order(order))
             rows.append(
                 self._exit_row_for_lot(
@@ -1133,7 +1281,7 @@ class AutoTrader:
             if desk == self.second_desk and not expiry_is_today(expiry, now):
                 detail = "challenge 0–1DTE time-stop — flatten by 15:45 ET"
             else:
-                detail = "0DTE time-stop — flatten by 15:45 ET (open position)"
+                detail = "0DTE time-stop — flatten by 2:30 PM CT (open position)"
             rows.append(
                 self._exit_row_for_lot(
                     symbol=str(pos.get("symbol") or ""),
@@ -1319,6 +1467,7 @@ class AutoTrader:
                 "original_qty": quantity,
                 **({"account_id": str(self.broker.account_id_2)} if second else {}),
                 **self._exit_plan_meta(row),
+                **(self._gold_order_plan(row) if kind and not second else {}),
             },
             )
         ready, missing = _option_order_ready(intent)
@@ -1331,6 +1480,16 @@ class AutoTrader:
         if preopen:
             return self._defer_until_open(intent)
         return self.broker.submit(intent)
+
+    def _gold_order_plan(self, row: dict[str, Any]) -> dict[str, Any]:
+        """Store the config exit text on the buy. The engine does not parse it."""
+        spec = self._gold_spec()
+        dte = _i(row.get("dte"))
+        same = expiry_is_today(row.get("expiry"), self._now) or dte == 0
+        return {
+            "exit_plan": gold_exit_plan_text(spec, dte=dte, same_day=same)[:320],
+            "gold_exit": True,
+        }
 
     @staticmethod
     def _exit_plan_meta(row: dict[str, Any]) -> dict[str, Any]:
@@ -1414,6 +1573,8 @@ class AutoTrader:
                 return None
             if self._sell_already_working(row, right):
                 return None
+            if position is None and opened is not None:
+                position = self._position_for_order(opened)
             if opened is not None:
                 # The sell follows the book that holds the long.
                 second = opened.desk == self.second_desk
@@ -1431,6 +1592,21 @@ class AutoTrader:
             if limit_price is None:
                 self._note_filtered(row, limit_source)
                 return None
+            if self._positions_by_contract is not None and position is None and opened is not None:
+                # The account snapshot is the source of the long. A ledger fill
+                # the sandbox does not hold must not be sold into a short.
+                if self._open_position(
+                    {
+                        "symbol": opened.symbol,
+                        "right": opened.right,
+                        "contract": opened.contract,
+                        "expiry": opened.expiry,
+                        "strike": opened.strike,
+                    },
+                    str(opened.right or right),
+                ) is None and self._held_qty(opened) <= 0:
+                    self._note_filtered(row, "no long to close — refusing a short")
+                    return None
             if opened is not None:
                 # The fill has to be the option we bought, not a nearby strike on the sell row.
                 contract = str(opened.contract or row.get("contract") or "") or None
@@ -1495,6 +1671,11 @@ class AutoTrader:
                 **({"sell_qty": int(row["sell_qty"])} if row.get("sell_qty") is not None else {}),
                 **({"scale_rungs": list(row.get("scale_rungs") or [])} if row.get("scale_rungs") else {}),
                 **({"account_id": account_id} if account_id else {}),
+                **(
+                    {"position_id": str(position.get("position_id"))}
+                    if position is not None and position.get("position_id")
+                    else {}
+                ),
             },
         )
         ready, missing = _option_order_ready(intent)
@@ -1610,7 +1791,9 @@ class AutoTrader:
         self._closed_contracts = set()
         self.broker.refresh_working_buys()
         self._reconcile_positions(self._managed_positions())
-        if self.golden_only and past_odte_flatten(now):
+        if self.golden_only and option_session_open(now):
+            self._maintain_working_sells()
+        if self.golden_only and past_odte_flatten(now) and option_session_open(now):
             self._cancel_unfilled_at_cutoff()
         if self.golden_only:
             # TP/SL from the open book, before board cards. A gold card is an

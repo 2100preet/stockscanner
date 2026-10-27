@@ -653,19 +653,24 @@ live_trading:
   # Exit study (docs/exit_study.md). premium uses the percents. eod turns the
   # premium target and stop off and leaves the 15:45 ET clock in place.
   exits:
+    # Sure Winner only. Golden Flow is not a Webull route.
+    # 0–1 DTE sells the whole lot at +30%. 2+ DTE sells half at +30% when
+    # quantity allows; the rest trails and can take +80%. A 1-lot, including
+    # a same-day lot, trails once the peak is +30%: exit at entry, or after
+    # giving back half the peak gain, whichever comes first. Same-day stop
+    # is −40%. 2+ DTE keeps −50%. Same-day flattens at 2:30 PM CT. Weeklies
+    # stay on the trail, not the clock. The card text is built from this block.
     sure_winner:
       mode: premium
-      take_profit_pct: 80
+      take_profit_pct: 30
+      runner_target_pct: 80
       stop_loss_pct: 50
-      # +40% sell 40% of original N, +80% sell 40%, trail the rest −25% from the peak.
-      # Below min_contracts, or a same-day expiry, the full +80/−50 exit still runs.
-      scale_out:
-        min_contracts: 3
-        trail_giveback_pct: 25
-        trail_after_pct: 80
-        steps:
-          - {at_pct: 40, sell_pct: 40}
-          - {at_pct: 80, sell_pct: 40}
+      same_day_stop_pct: 40
+      trail_arm_pct: 30
+      trail_keep_fraction: 0.5
+      partial_sell_pct: 50
+      flatten_ct: "14:30"
+      scale_out: false
     odte:
       mode: eod
       take_profit_pct: 80

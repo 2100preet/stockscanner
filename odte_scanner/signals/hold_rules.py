@@ -15,6 +15,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 ET = ZoneInfo("America/New_York")
+CT = ZoneInfo("America/Chicago")
 
 # Clock flatten for 0DTE (hour + minute as float, e.g. 15.75 = 15:45)
 ODTE_FLATTEN_ET_HOUR = 15.75  # 15:45 ET
@@ -115,6 +116,29 @@ def past_odte_flatten(now: datetime | None = None, flatten_et_hour: float = ODTE
         return False
     h = et_session_hour(n)
     return h >= float(flatten_et_hour)
+
+
+def past_gold_flatten(now: datetime | None = None, flatten_ct: str = "14:30") -> bool:
+    """True at or after 2:30 PM America/Chicago on a weekday.
+
+    Sure Winner same-day lots use this clock. Lottery, journal, challenge,
+    and the 15:45 ET action-board flatten do not.
+    """
+    if now is None:
+        n = datetime.now(tz=CT)
+    elif now.tzinfo is None:
+        n = now.replace(tzinfo=ET).astimezone(CT)
+    else:
+        n = now.astimezone(CT)
+    if n.weekday() >= 5:
+        return False
+    try:
+        hh, mm = str(flatten_ct).split(":")
+        cutoff = int(hh) + int(mm) / 60.0
+    except (TypeError, ValueError):
+        cutoff = 14.5
+    hour = n.hour + n.minute / 60.0 + n.second / 3600.0
+    return hour >= cutoff
 
 
 def past_no_new_0dte_entries(now: datetime | None = None) -> bool:
