@@ -17,6 +17,7 @@ from odte_scanner.signals.diamond import (
     DAILY_CAP,
     INDEX_ETFS,
     PRIORITY,
+    PRIMARY_RULES,
     UNIVERSE,
     YAHOO_SYMBOL,
     Bar,
@@ -124,6 +125,34 @@ def _read_store(path: Path) -> dict[str, Any]:
     return blob if isinstance(blob, dict) else {}
 
 
+def index_opening_range(
+    bars_by_symbol: dict[str, list[Bar]],
+    day: str,
+    *,
+    start: time,
+    end: time,
+    min_bars: int,
+) -> dict[str, dict[str, float]]:
+    """SPY, QQQ, and SPX high/low once the last bar of the range has printed."""
+    last_needed = (datetime.combine(date.today(), end) - timedelta(minutes=5)).time()
+    levels: dict[str, dict[str, float]] = {}
+    for symbol in ("SPY", "QQQ", "SPX"):
+        bars = [
+            bar
+            for bar in bars_by_symbol.get(symbol) or []
+            if bar.ct().date().isoformat() == day and start <= bar.ct().time() < end
+        ]
+        if len(bars) < min_bars:
+            continue
+        if max(bar.ct().time() for bar in bars) < last_needed:
+            continue
+        levels[symbol] = {
+            "high": round(max(bar.high for bar in bars), 2),
+            "low": round(min(bar.low for bar in bars), 2),
+        }
+    return levels
+
+
 def _write_store(path: Path, blob: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(blob), encoding="utf-8")
@@ -223,6 +252,13 @@ def build_diamond_board(
         "day": day,
         "window_open": window_open,
         "cap": DAILY_CAP,
+        "opening_range": index_opening_range(
+            bars_by_symbol,
+            day,
+            start=PRIMARY_RULES.or_start,
+            end=PRIMARY_RULES.or_end,
+            min_bars=PRIMARY_RULES.min_or_bars,
+        ),
         "signals": cards,
         "qualified": [
             {"symbol": row["symbol"], "at_ct": row["at_ct"]}
