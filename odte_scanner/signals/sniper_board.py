@@ -14,8 +14,15 @@ from pathlib import Path
 from typing import Any, Callable
 
 from odte_scanner.signals.diamond import INDEX_ETFS, YAHOO_SYMBOL, Bar
-from odte_scanner.signals.diamond_board import load_intraday_bars, occ_symbol
-from odte_scanner.signals.sniper import DAILY_CAP, PRIORITY, apply_daily_cap, run_universe, sniper_routed
+from odte_scanner.signals.diamond_board import index_opening_range, load_intraday_bars, occ_symbol
+from odte_scanner.signals.sniper import (
+    DAILY_CAP,
+    PRIORITY,
+    PRIMARY_RULES,
+    apply_daily_cap,
+    run_universe,
+    sniper_routed,
+)
 from odte_scanner.time_cst import CT
 
 logger = logging.getLogger(__name__)
@@ -201,6 +208,13 @@ def build_sniper_board(
         "day": day,
         "window_open": window_open,
         "cap": DAILY_CAP,
+        "opening_range": index_opening_range(
+            bars_by_symbol,
+            day,
+            start=PRIMARY_RULES.or_start,
+            end=PRIMARY_RULES.or_end,
+            min_bars=PRIMARY_RULES.min_or_bars,
+        ),
         "signals": cards,
         "qualified": [
             {"symbol": row["symbol"], "at_ct": row["at_ct"], "side": row.get("side")}

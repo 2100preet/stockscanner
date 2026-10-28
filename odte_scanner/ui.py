@@ -133,6 +133,18 @@ PAGE = r"""
       box-shadow: 0 10px 28px rgba(0,0,0,.28);
     }
     .pulse-banner.active { display: block; animation: fade .3s ease; }
+    .pulse-banner.diamond {
+      border-color: rgba(125, 211, 252, .7);
+      background: linear-gradient(105deg, rgba(224, 242, 254, .72), rgba(12, 36, 52, .78) 48%, rgba(125, 211, 252, .2));
+      box-shadow: 0 10px 28px rgba(125, 211, 252, .12), 0 10px 28px rgba(0,0,0,.28);
+    }
+    .pulse-banner.diamond .pb-title em { color: #0369a1; }
+    .pulse-banner.sniper {
+      border-color: rgba(52, 211, 153, .75);
+      background: linear-gradient(105deg, rgba(209, 250, 229, .7), rgba(6, 32, 24, .78) 48%, rgba(52, 211, 153, .18));
+      box-shadow: 0 10px 28px rgba(16, 185, 129, .14), 0 10px 28px rgba(0,0,0,.28);
+    }
+    .pulse-banner.sniper .pb-title em { color: #047857; }
     .pulse-banner.sure-active {
       border-color: rgba(240,193,75,.55);
       background:
@@ -4065,14 +4077,63 @@ PAGE = r"""
         + '<p class="why">' + (board.paper_note || "") + "</p>"
         + (limits ? ("<ul>" + limits + "</ul>") : "");
     }
+    function chicagoMinutes(now) {
+      const parts = new Intl.DateTimeFormat("en-US", {
+        timeZone: "America/Chicago",
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+      }).formatToParts(now || new Date());
+      let hour = 0;
+      let minute = 0;
+      parts.forEach((part) => {
+        if (part.type === "hour") hour = Number(part.value);
+        if (part.type === "minute") minute = Number(part.value);
+      });
+      return hour * 60 + minute;
+    }
+    function openingRangeText(range) {
+      if (!range || typeof range !== "object") return "";
+      const bits = [];
+      ["SPY", "QQQ", "SPX"].forEach((sym) => {
+        const row = range[sym];
+        if (!row || row.high == null || row.low == null) return;
+        bits.push(sym + " " + fmt(row.high, 2) + "–" + fmt(row.low, 2));
+      });
+      return bits.length ? ("OR " + bits.join(" · ")) : "";
+    }
+    function deskStatusLine(name, board) {
+      const now = chicagoMinutes();
+      const open = name === "Sniper" ? (8 * 60 + 45) : (9 * 60);
+      const close = 10 * 60 + 30;
+      const windowOpen = !!(board && board.window_open);
+      let line;
+      if (now >= close) line = name === "Sniper" ? "No Sniper today" : "No Diamond today";
+      else if (now < open && !windowOpen) {
+        line = name === "Sniper"
+          ? "Waiting — window opens 8:45 CT"
+          : "Waiting — window opens 9:00 CT";
+      } else line = "Scanning SPY QQQ … — no trigger yet";
+      const levels = openingRangeText(board && board.opening_range);
+      return levels ? (line + " · " + levels) : line;
+    }
     function renderDiamondBanner() {
       const el = document.getElementById("diamondBanner");
       if (!el) return;
       const board = DATA.diamond || {};
       const rows = (board.signals || []).slice(0, 3);
+      el.classList.add("active", "diamond");
       if (!rows.length) {
-        el.classList.remove("active");
-        el.innerHTML = "";
+        const line = deskStatusLine("Diamond", board);
+        el.innerHTML = `
+        <div class="pb-head">
+          <div>
+            <h2 class="pb-title">💎 Diamond <em>calls</em></h2>
+            <div class="pb-sub">${board.note || "Up to 3 names. Flat 10:30 CT. Separate from Gold Setup."}</div>
+          </div>
+          <div class="status">DIAMOND 0</div>
+        </div>
+        <div class="pb-grid"><div class="pulse-card diamond"><p class="pc-why">${line}</p></div></div>`;
         return;
       }
       const card = (row) => {
@@ -4093,7 +4154,6 @@ PAGE = r"""
           <p class="pc-why">${row.detail || ""} · <strong>${row.exit_plan || ""}</strong></p>
         </div>`;
       };
-      el.classList.add("active");
       el.innerHTML = `
         <div class="pb-head">
           <div>
@@ -4109,9 +4169,18 @@ PAGE = r"""
       if (!el) return;
       const board = DATA.sniper || {};
       const rows = (board.signals || []).slice(0, 3);
+      el.classList.add("active", "sniper");
       if (!rows.length) {
-        el.classList.remove("active");
-        el.innerHTML = "";
+        const line = deskStatusLine("Sniper", board);
+        el.innerHTML = `
+        <div class="pb-head">
+          <div>
+            <h2 class="pb-title">🎯 Sniper <em>calls and puts</em></h2>
+            <div class="pb-sub">${board.note || "Up to 3 names. Flat 10:30 CT. Separate from Diamond and Gold Setup."}</div>
+          </div>
+          <div class="status">SNIPER 0</div>
+        </div>
+        <div class="pb-grid"><div class="pulse-card sniper"><p class="pc-why">${line}</p></div></div>`;
         return;
       }
       const card = (row) => {
@@ -4133,7 +4202,6 @@ PAGE = r"""
           <p class="pc-why">${row.detail || ""} · <strong>${row.exit_plan || ""}</strong></p>
         </div>`;
       };
-      el.classList.add("active");
       el.innerHTML = `
         <div class="pb-head">
           <div>
