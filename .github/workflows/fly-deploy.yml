@@ -39,8 +39,14 @@ jobs:
           fi
           echo "Volumes:"
           flyctl volumes list -a stockscanner || true
+          DEPLOYED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           # Prefer config mounts; if volume name mismatches, --yes replaces the machine.
-          if ! flyctl deploy --remote-only -a stockscanner; then
+          # GIT_SHA / DEPLOYED_AT land on /api/version. They are not secrets.
+          if ! flyctl deploy --remote-only -a stockscanner \
+              --build-arg GIT_SHA="$GITHUB_SHA" \
+              --build-arg DEPLOYED_AT="$DEPLOYED_AT"; then
             echo "Deploy with mounts failed — retrying with --yes to replace machine"
-            flyctl deploy --remote-only -a stockscanner --yes
+            flyctl deploy --remote-only -a stockscanner --yes \
+              --build-arg GIT_SHA="$GITHUB_SHA" \
+              --build-arg DEPLOYED_AT="$DEPLOYED_AT"
           fi

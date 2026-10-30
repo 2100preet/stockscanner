@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,8 @@ from odte_scanner.alerts.whatsapp import send_whatsapp_text
 from odte_scanner.trading.golden import is_golden_unusual_flow, is_sure_winner_gold
 
 logger = logging.getLogger(__name__)
+
+_ALERT_LOCK = threading.Lock()
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SEEN = ROOT / "outputs" / "desk_alert_seen.json"
@@ -307,7 +310,15 @@ def _fmt_alert(
     for extra in extras or []:
         if isinstance(extra, dict):
             lines.append(_also_line(extra))
-    if when:
+    if desk in {"Sniper", "Diamond"}:
+        from odte_scanner.signals.detected import signal_sent_line
+
+        sent_line = signal_sent_line(str(row.get("at_ct") or ""), row.get("detected_at"))
+        if sent_line:
+            lines.append(sent_line)
+        elif when:
+            lines.append(f"Asked {when}")
+    elif when:
         lines.append(f"Asked {when}")
     if detail:
         lines.append(detail)
@@ -653,6 +664,32 @@ def dispatch_snapshot_alerts(
     dry_run: bool = False,
     max_send: int = 8,
     edge_gate: bool = False,
+    prime: bool = True,
+) -> dict[str, Any]:
+    """Send Telegram/WhatsApp for *new* BUY/SELL pulses. No-op if none configured.
+
+    The fast Sniper/Diamond path passes ``prime=False`` so an empty seen file
+    still sends. The focus-scan pulse keeps the first-run seed.
+    """
+    with _ALERT_LOCK:
+        return _dispatch_snapshot_alerts_locked(
+            snapshot,
+            seen_path=seen_path,
+            dry_run=dry_run,
+            max_send=max_send,
+            edge_gate=edge_gate,
+            prime=prime,
+        )
+
+
+def _dispatch_snapshot_alerts_locked(
+    snapshot: dict[str, Any],
+    *,
+    seen_path: str | Path | None = None,
+    dry_run: bool = False,
+    max_send: int = 8,
+    edge_gate: bool = False,
+    prime: bool = True,
 ) -> dict[str, Any]:
     """Send Telegram/WhatsApp for *new* BUY/SELL pulses. No-op if none configured.
 
@@ -683,7 +720,7 @@ def dispatch_snapshot_alerts(
         "yes",
         "on",
     }
-    if not seen and not prime_only:
+    if prime and not seen and not prime_only:
         if not any_channel:
             return {
                 "ok": False,

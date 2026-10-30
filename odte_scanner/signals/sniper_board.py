@@ -13,6 +13,12 @@ from datetime import date, datetime, time, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from odte_scanner.signals.detected import (
+    commit_day_store,
+    day_detected,
+    format_ct_hms,
+    remember_detected,
+)
 from odte_scanner.signals.diamond import INDEX_ETFS, YAHOO_SYMBOL, Bar
 from odte_scanner.signals.diamond_board import (
     index_opening_range,
@@ -145,10 +151,16 @@ def build_sniper_board(
     ]
     ranked = apply_daily_cap(trades)
     allowed = _lock_symbols(ranked, store, day)
-    if window_open and routed and allowed:
-        fresh = {"day": day, "symbols": allowed}
-        if fresh != {"day": store.get("day"), "symbols": store.get("symbols")}:
-            _write_store(path, fresh)
+    detected = day_detected(store, day)
+    commit_day_store(
+        store,
+        path,
+        _write_store,
+        day=day,
+        symbols=allowed,
+        detected=detected,
+        active=bool(window_open and routed and allowed),
+    )
     chain_book = chains or {}
     cards: list[dict[str, Any]] = []
     for row in ranked:
@@ -194,6 +206,17 @@ def build_sniper_board(
             "send": send_alert,
             "send_order": send_order,
         }
+        stamp = remember_detected(
+            detected,
+            symbol=symbol,
+            at_ct=str(row["at_ct"]),
+            side=side,
+            now=moment,
+            active=send_alert,
+        )
+        if stamp:
+            card["detected_at"] = stamp
+            card["detected_at_ct"] = format_ct_hms(stamp)
         if picked:
             card.update(
                 {
@@ -207,6 +230,15 @@ def build_sniper_board(
                 }
             )
         cards.append(card)
+    commit_day_store(
+        store,
+        path,
+        _write_store,
+        day=day,
+        symbols=allowed,
+        detected=detected,
+        active=bool(window_open and routed and (allowed or detected)),
+    )
     return {
         "ok": True,
         "routed": routed,
@@ -240,10 +272,16 @@ def build_sniper_board(
     }
 
 
-def load_sniper_board(*, now: datetime | None = None, store_path: Path | None = None) -> dict[str, Any]:
+def load_sniper_board(
+    *,
+    now: datetime | None = None,
+    store_path: Path | None = None,
+    bars: dict[str, list[Bar]] | None = None,
+) -> dict[str, Any]:
     """Live entry point used by the desk. Failures become an empty board."""
     try:
-        bars = load_intraday_bars()
+        if bars is None:
+            bars = load_intraday_bars()
         if not bars:
             return {
                 "ok": False,
