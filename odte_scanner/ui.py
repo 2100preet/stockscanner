@@ -2197,11 +2197,13 @@ PAGE = r"""
         </div>
         <div class="ac-meta">
           <div>Strike / expiry<strong>${strikeTxt(r)} · ${r.expiry||"—"}</strong></div>
-          <div>In ask → out bid<strong>${r.entry_price==null?"—":"$"+fmt(r.entry_price,2)} → ${r.exit_price==null?"—":"$"+fmt(r.exit_price,2)}</strong></div>
+          <div>Entry<strong>${r.entry_price==null?"—":"$"+fmt(r.entry_price,2)}</strong></div>
+          <div>Exit<strong>${r.exit_price==null?"—":"$"+fmt(r.exit_price,2)}</strong></div>
           <div>Entry (CST)<strong>${fmtCST(r.recommended_at)}</strong></div>
           <div>Exit (CST)<strong>${fmtCST(r.closed_at)}</strong></div>
           <div>Profit %<strong class="${r.profit_pct==null?"":pctClass(r.profit_pct)}">${pctLabel}</strong></div>
-          <div>P&amp;L (1ct)<strong class="${r.pnl_usd==null?"":pctClass(r.pnl_usd)}">${pnlLabel}</strong></div>
+          <div>P&amp;L $<strong class="${r.pnl_usd==null?"":pctClass(r.pnl_usd)}">${pnlLabel}</strong></div>
+          <div>Contracts<strong>${r.contracts==null?"—":r.contracts}</strong></div>
           ${levelsMeta(r)}
         </div>
         <p class="why" style="margin:.45rem 0 0">${r.exit_reason||r.reason||r.headline||""}</p>
@@ -3590,8 +3592,11 @@ PAGE = r"""
               <div>Entry (CST)<strong>${fmtCST(t.entered_at)}</strong></div>
               <div>Exit (CST)<strong>${fmtCST(t.exited_at||t.closed_at)}</strong></div>
               <div>Strike / expiry<strong>${t.strike==null?"—":fmt(t.strike,2)} · ${t.expiry||"—"}</strong></div>
-              <div>In → out $<strong>$${fmt(t.entry_ask,2)} → $${fmt(t.exit_bid,2)}</strong></div>
-              <div>Profit % / P&amp;L<strong class="${pctClass(t.profit_pct)}">${fmt(t.profit_pct,1)}% · $${fmt(t.pnl_usd,2)}</strong></div>
+              <div>Entry<strong>$${t.entry_ask==null?"—":fmt(t.entry_ask,2)}</strong></div>
+              <div>Exit<strong>$${t.exit_bid==null?"—":fmt(t.exit_bid,2)}</strong></div>
+              <div>Profit %<strong class="${pctClass(t.profit_pct)}">${t.profit_pct==null?"—":fmt(t.profit_pct,1)+"%"}</strong></div>
+              <div>P&amp;L $<strong class="${pctClass(t.pnl_usd)}">${t.pnl_usd==null?"—":"$"+fmt(t.pnl_usd,2)}</strong></div>
+              <div>Contracts<strong>${t.contracts==null?"—":t.contracts}</strong></div>
               <div>Hold<strong>${fmt(t.hold_minutes,0)}m</strong></div>
               <div>Cash before → after<strong>$${fmt(t.cash_before,0)} → $${fmt(t.cash_after,0)}</strong></div>
               <div>Balance after EXIT<strong class="up">$${fmt(t.equity_after!=null?t.equity_after:t.cash_after,0)}</strong></div>
@@ -3784,6 +3789,7 @@ PAGE = r"""
           hit_1pct: row.hit_1pct,
           profit_pct: row.profit_pct ?? row.option_unrealized_pct ?? row.unrealized_pct,
           pnl_usd: row.pnl_usd ?? row.unrealized_pnl_usd,
+          contracts: row.contracts ?? row.quantity ?? row.qty ?? null,
           exited_at: row.exited_at || row.closed_at,
           entered_at: row.entered_at,
           detail: row.exit_plan || row.wall_exit_hint || row.detail || row.headline || row.last_action_detail || "Exit now",
@@ -3854,9 +3860,12 @@ PAGE = r"""
         const nTxt = row.win_samples == null ? "" : ` n=${row.win_samples}`;
         const srTxt = row.hit_1pct == null ? "—" : `${fmt(row.hit_1pct, 0)}%`;
         const askTxt = row.ask == null ? "—" : `$${fmt(row.ask, 2)}`;
-        const pnlLine = kind === "exit" && (row.profit_pct != null || row.pnl_usd != null)
-          ? `<div><span>P&amp;L</span><br><strong class="${pctClass(row.profit_pct ?? row.pnl_usd)}">${row.profit_pct==null?"—":fmt(row.profit_pct,1)+"%"}${row.pnl_usd==null?"":" · $"+fmt(row.pnl_usd,2)}</strong></div>`
-          : "";
+        const exitFacts = kind === "exit" ? `
+            <div><span>Entry</span><br><strong>${row.entry_ask==null?"—":"$"+fmt(row.entry_ask,2)}</strong></div>
+            <div><span>Exit</span><br><strong>${askTxt}</strong></div>
+            <div><span>%</span><br><strong class="${pctClass(row.profit_pct)}">${row.profit_pct==null?"—":fmt(row.profit_pct,1)+"%"}</strong></div>
+            <div><span>$</span><br><strong class="${pctClass(row.pnl_usd)}">${row.pnl_usd==null?"—":"$"+fmt(row.pnl_usd,2)}</strong></div>
+            <div><span>Contracts</span><br><strong>${row.contracts==null?"—":row.contracts}</strong></div>` : "";
         const exitTime = kind === "exit" && row.exited_at
           ? `<div><span>Exited (CST)</span><br><strong>${fmtCST(row.exited_at)}</strong></div>`
           : "";
@@ -3879,7 +3888,7 @@ PAGE = r"""
             <div><span>${kind === "must" || kind === "radar" || isSure ? "Ask" : "Exit $"}</span><br><strong>${askTxt}</strong></div>
             <div><span>Contract</span><br><strong class="mono" style="font-size:.72rem">${row.contract || "—"}</strong></div>
             ${sizeLine}
-            ${pnlLine}${exitTime}
+            ${exitFacts}${exitTime}
             ${levelsMeta(row)}
           </div>
           <p class="pc-why">${row.detail || ""}${row.size_hint && isSure ? ` · <strong>${row.size_hint}</strong>` : ""}${row.exit_plan && (kind==="must" || isSure) ? ` · <strong>EXIT:</strong> ${row.exit_plan}` : ""}</p>

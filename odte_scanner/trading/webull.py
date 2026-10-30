@@ -714,6 +714,80 @@ def _response_body(res: Any) -> Any:
     return {"raw": _response_text(res)}
 
 
+_LEDGER_LIMIT = 500
+_LEDGER_OPEN = {"staged", "submitted", "deferred", "partial"}
+
+
+def _ledger_qty(order: WebullOrderIntent) -> float:
+    meta = order.meta or {}
+    try:
+        filled = float(meta.get("filled_qty"))
+    except (TypeError, ValueError):
+        filled = 0.0
+    if filled > 0:
+        return filled
+    try:
+        return float(order.quantity or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _ledger_filled(order: WebullOrderIntent) -> bool:
+    if order.status in {"filled", "partial"}:
+        return True
+    return str((order.meta or {}).get("fill_state") or "") in {"filled", "partial"}
+
+
+def _ledger_qty_by(orders: list[WebullOrderIntent], action: str) -> dict[str, float]:
+    totals: dict[str, float] = {}
+    for order in orders:
+        key = str(order.contract or "")
+        if order.action == action and _ledger_filled(order) and key:
+            totals[key] = totals.get(key, 0.0) + _ledger_qty(order)
+    return totals
+
+
+def orders_for_ledger(orders: list[WebullOrderIntent], limit: int = _LEDGER_LIMIT) -> list[WebullOrderIntent]:
+    """Newest orders, plus every filled buy a kept sell still has to match.
+
+    Edge pairs a sell with the buy on the same contract. Keeping only the
+    newest 500 dropped that buy while the sell was still in the file.
+    A buy with no sell yet stays too, so the exit can still find its entry.
+    """
+    if len(orders) <= limit:
+        return list(orders)
+    chosen_ids = {id(order) for order in orders[:limit]}
+    chosen_ids.update(id(order) for order in orders if order.status in _LEDGER_OPEN)
+    have = _ledger_qty_by([order for order in orders if id(order) in chosen_ids], "BUY")
+    gap = {
+        key: qty - have.get(key, 0.0)
+        for key, qty in _ledger_qty_by([order for order in orders if id(order) in chosen_ids], "SELL").items()
+        if qty - have.get(key, 0.0) > 1e-6
+    }
+    for order in reversed(orders):
+        key = str(order.contract or "")
+        if order.action != "BUY" or not _ledger_filled(order) or gap.get(key, 0.0) <= 1e-6:
+            continue
+        if id(order) in chosen_ids:
+            gap[key] = gap.get(key, 0.0) - _ledger_qty(order)
+            continue
+        gap[key] -= min(_ledger_qty(order), gap[key])
+        chosen_ids.add(id(order))
+    # Still-open buys are not in the newest window once the tape is busy.
+    left = _ledger_qty_by(orders, "SELL")
+    for order in reversed(orders):
+        if order.action != "BUY" or not _ledger_filled(order):
+            continue
+        key = str(order.contract or "")
+        qty = _ledger_qty(order)
+        cover = min(qty, left.get(key, 0.0)) if key else 0.0
+        if key:
+            left[key] = left.get(key, 0.0) - cover
+        if qty - cover > 1e-6:
+            chosen_ids.add(id(order))
+    return [order for order in orders if id(order) in chosen_ids]
+
+
 class WebullBroker:
     """Place option orders via Webull OpenAPI, or dry-run / deep-link only."""
 
@@ -786,6 +860,9 @@ class WebullBroker:
     def save(self) -> None:
         from odte_scanner.json_util import atomic_write_text
 
+        # The file used to keep the newest 500 and drop the buy before its
+        # sell, so the Edge tab could not match the exit. Unmatched buys stay.
+        self.orders = orders_for_ledger(self.orders)
         atomic_write_text(
             self.path,
             json.dumps(
@@ -796,7 +873,7 @@ class WebullBroker:
                     "sandbox": self.sandbox,
                     "paper": self.paper,
                     "host": webull_trade_host(sandbox=self.sandbox),
-                    "orders": [o.to_dict() for o in self.orders[:500]],
+                    "orders": [o.to_dict() for o in self.orders],
                 },
                 indent=2,
             ),

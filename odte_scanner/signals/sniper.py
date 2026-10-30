@@ -224,9 +224,11 @@ def simulate(
     trimmed = False
     peak = entry
     exit_px = session[-1].close
+    exit_at = session[-1].ct()
     reason = "close"
 
     for bar in session[entry_index + 1 :]:
+        exit_at = bar.ct()
         clock = bar.ct().time()
         if clock >= rules.flat_ct:
             exit_px = bar.open
@@ -313,6 +315,7 @@ def simulate(
         "underlying_pct": und,
         "premium": prem,
         "reason": reason,
+        "exit_at_ct": exit_at.strftime("%H:%M"),
         "index_product": symbol in INDEX_ETFS,
     }
 
