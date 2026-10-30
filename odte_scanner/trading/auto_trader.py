@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from odte_scanner.signals.exit_rules import (
@@ -148,7 +148,7 @@ def _is_clock_flatten(row: dict[str, Any]) -> bool:
         str(row.get(key) or "")
         for key in ("detail", "headline", "reason", "exit_reason", "exit_plan")
     ).lower()
-    return any(token in text for token in ("15:45", "2:30", "time-stop", "time stop", "flatten"))
+    return any(token in text for token in ("15:45", "2:30", "10:30", "time-stop", "time stop", "flatten"))
 
 
 _TP_PLAN_RE = re.compile(
@@ -516,6 +516,64 @@ class AutoTrader:
                     return True
         return False
 
+    def _resting_sells(self, row: dict[str, Any], right: str) -> list[WebullOrderIntent]:
+        """Open sells for this option. Same match as ``_sell_already_working``."""
+        sym = str(row.get("symbol") or "").upper()
+        contract = str(row.get("contract") or "")
+        right_u = str(right or "C").upper()
+        strike = _f(row.get("strike"))
+        expiry = str(row.get("expiry") or "")[:10]
+        found: list[WebullOrderIntent] = []
+        for order in self.broker.orders:
+            if order.action != "SELL" or order.status not in ("staged", "dry_run", "submitted", "partial"):
+                continue
+            if contract and order.contract and contract == order.contract:
+                found.append(order)
+                continue
+            if order.symbol == sym and order.right == right_u:
+                if contract or order.contract:
+                    continue
+                same_strike = (
+                    strike is not None
+                    and order.strike is not None
+                    and abs(float(strike) - float(order.strike)) <= 1e-6
+                )
+                same_expiry = bool(expiry and order.expiry and expiry == str(order.expiry)[:10])
+                if same_strike and same_expiry:
+                    found.append(order)
+        return found
+
+    def _flatten_sell_is_fresh(self, row: dict[str, Any], right: str, now: datetime | None) -> bool:
+        """Leave a flatten that is still inside the fill window. Replace an older one.
+
+        A 10:30 sell that never fills used to block every later pass. Cancelling
+        it here lets the next row go out until the position is flat.
+        """
+        resting = self._resting_sells(row, right)
+        if not resting:
+            return False
+        moment = now or datetime.now(timezone.utc)
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        fresh = False
+        for sell in resting:
+            raw_clock = str((sell.meta or {}).get("exit_clock") or sell.created_at or "")
+            clock = None
+            if raw_clock:
+                try:
+                    clock = datetime.fromisoformat(raw_clock.replace("Z", "+00:00"))
+                except ValueError:
+                    clock = None
+                if clock is not None and clock.tzinfo is None:
+                    clock = clock.replace(tzinfo=timezone.utc)
+            age = None if clock is None else (moment - clock.astimezone(timezone.utc)).total_seconds()
+            if age is not None and age < 120:
+                fresh = True
+                continue
+            sell.meta["cancel_reason"] = "flatten retry — position still open"
+            self.broker.cancel(sell)
+        return fresh
+
     def _held_qty(self, order: WebullOrderIntent) -> float:
         """Contracts still long. A live positions snapshot overrides the ledger."""
         book = self._positions_by_contract
@@ -752,14 +810,20 @@ class AutoTrader:
 
     @staticmethod
     def _lot_entry(order: WebullOrderIntent | None, pos: dict[str, Any] | None) -> float | None:
+        # The fill is what we paid. A later position cost can sit well below
+        # that print, and a −50% line off the lower cost exits past −50%.
+        if order is not None:
+            fill = _f(order.fill_price)
+            if fill is not None and fill > 0:
+                return fill
+            limit = _f(order.limit_price)
+            if limit is not None and limit > 0 and pos is None:
+                return limit
         cost = _f((pos or {}).get("cost"))
         if cost is not None and cost > 0:
             return cost
         if order is None:
             return None
-        fill = _f(order.fill_price)
-        if fill is not None and fill > 0:
-            return fill
         limit = _f(order.limit_price)
         if limit is not None and limit > 0:
             return limit
@@ -1012,6 +1076,34 @@ class AutoTrader:
             peak_mark=peak_mark,
         )
 
+    def _gold_stop_price(
+        self,
+        order: WebullOrderIntent | None,
+        desk: str,
+        entry: float,
+        expiry: str | None,
+    ) -> float | None:
+        """Premium where the gold stop sits. Diamond and Sniper use −40%."""
+        if entry <= 0:
+            return None
+        from odte_scanner.signals.exit_rules import DEFAULT_SNIPER_EXIT
+
+        kind = ""
+        if order is not None:
+            kind = str((order.meta or {}).get("golden_kind") or "")
+            if str(order.desk or "") == "sniper":
+                kind = "sniper"
+        if str(desk or "") == "sniper":
+            kind = "sniper"
+        if kind == "sniper":
+            pct = abs(float(DEFAULT_SNIPER_EXIT.same_day_stop_pct))
+        elif kind == "diamond" or str(desk or "") == "diamond":
+            pct = abs(float(self._gold_spec().same_day_stop_pct))
+        else:
+            spec = self._gold_spec()
+            pct = abs(float(spec.same_day_stop_pct if expiry_is_today(expiry, self._now) else spec.stop_loss_pct))
+        return round(float(entry) * (1.0 - pct / 100.0), 2)
+
     def _sell_limit_is_marketable(self, limit: float | None, bid: float | None) -> bool:
         """A sell limit at or through the bid can fill. Above the bid it sits."""
         if limit is None or limit <= 0:
@@ -1062,6 +1154,10 @@ class AutoTrader:
                 self.broker.cancel(sell)
                 continue
             bid = self._lot_mark(position)
+            if (sell.meta or {}).get("hard_stop"):
+                # A gold stop rests at the stop. Walking it down to each new
+                # bid is how a −50% stop filled at −67%.
+                continue
             if self._sell_limit_is_marketable(_f(sell.limit_price), bid):
                 continue
             sell.meta["cancel_reason"] = "stale working sell — replace at a marketable limit"
@@ -1177,23 +1273,28 @@ class AutoTrader:
                 seen.add(contract)
             exit_desk = self.second_desk if desk == self.second_desk else "golden_exit"
             scaled = decision.peak_mark is not None
-            rows.append(
-                self._exit_row_for_lot(
-                    symbol=str(probe["symbol"] or ""),
-                    right=str(probe["right"] or "C"),
-                    contract=str(probe["contract"] or "") or None,
-                    expiry=str(probe["expiry"] or "") or None,
-                    strike=_f(probe["strike"]),
-                    bid=mark,
-                    detail=decision.detail,
-                    exit_desk=exit_desk,
-                    sell_qty=decision.quantity if scaled else None,
-                    scale_rungs=decision.new_rungs if scaled else None,
-                    peak_mark=decision.peak_mark if scaled else None,
-                    trail_armed=decision.trail_armed if scaled else False,
-                    scale_original_qty=original if scaled else None,
-                )
+            hard_stop = str(decision.detail or "").startswith("stop loss") and self._uses_gold_exit(desk, order)
+            stop_px = self._gold_stop_price(order, desk, entry, str(expiry or "") or None) if hard_stop else None
+            # Rest the stop AT the stop. A limit at a gapped bid fills past it.
+            sell_bid = stop_px if stop_px is not None and stop_px > 0 else mark
+            exit_row = self._exit_row_for_lot(
+                symbol=str(probe["symbol"] or ""),
+                right=str(probe["right"] or "C"),
+                contract=str(probe["contract"] or "") or None,
+                expiry=str(probe["expiry"] or "") or None,
+                strike=_f(probe["strike"]),
+                bid=sell_bid,
+                detail=decision.detail,
+                exit_desk=exit_desk,
+                sell_qty=decision.quantity if scaled else None,
+                scale_rungs=decision.new_rungs if scaled else None,
+                peak_mark=decision.peak_mark if scaled else None,
+                trail_armed=decision.trail_armed if scaled else False,
+                scale_original_qty=original if scaled else None,
             )
+            if hard_stop:
+                exit_row["hard_stop"] = True
+            rows.append(exit_row)
 
         for order in self.broker.orders:
             if not self._is_position_buy(order) or not self._tracks_exit(order):
@@ -1257,9 +1358,13 @@ class AutoTrader:
         """
         if not option_session_open(now):
             return []
+        # Diamond and Sniper flat at 10:30 CT. Gold's 2:30 PM clock must not
+        # gate that pass — it used to return here until 14:30 and the 10:30
+        # lots never saw a sell.
+        desk_flat_due = past_gold_flatten(now, "10:30")
         gold_due = past_gold_flatten(now, self._gold_spec().flatten_ct)
         desk_due = past_odte_flatten(now)
-        if not gold_due and not desk_due:
+        if not desk_flat_due and not gold_due and not desk_due:
             return []
         rows: list[dict[str, Any]] = []
         seen: set[str] = set()
@@ -1276,8 +1381,6 @@ class AutoTrader:
                 "expiry": order.expiry,
                 "strike": order.strike,
             }
-            if self._sell_already_working(probe, order.right or "C"):
-                continue
             # Unfilled DAY orders are pulled at the close even when the option
             # itself is a weekly. Filled weeklies and 2DTEs stay open.
             if self._is_working_buy(order):
@@ -1287,11 +1390,16 @@ class AutoTrader:
                 continue
             elif self._held_qty(order) <= 0:
                 continue
+            if self._flatten_sell_is_fresh(probe, order.right or "C", now):
+                continue
             contract = str(order.contract or "")
             if contract:
                 seen.add(contract)
             exit_desk = self.second_desk if order.desk == self.second_desk else "golden_exit"
-            if order.desk == self.second_desk and not expiry_is_today(order.expiry, now):
+            kind = str((order.meta or {}).get("golden_kind") or "")
+            if str(order.desk or "") in {"diamond", "sniper"} or kind in {"diamond", "sniper"}:
+                detail = "flatten 10:30 CT"
+            elif order.desk == self.second_desk and not expiry_is_today(order.expiry, now):
                 detail = "challenge 0–1DTE time-stop — flatten by 15:45 ET"
             elif order.desk != self.second_desk and expiry_is_today(order.expiry, now):
                 detail = (
@@ -1327,7 +1435,7 @@ class AutoTrader:
             if not self._lot_flattens(desk, expiry, now):
                 continue
             right = str(pos.get("right") or "C")
-            if self._sell_already_working(pos, right):
+            if self._flatten_sell_is_fresh(pos, right, now):
                 continue
             if contract:
                 seen.add(contract)
@@ -1728,6 +1836,17 @@ class AutoTrader:
         entry_price = _f(opened.fill_price) if opened is not None else None
         if entry_price is None and position is not None:
             entry_price = _f(position.get("cost"))
+        exit_tier = None
+        entry_at = None
+        if opened is not None:
+            kind_name = str((opened.meta or {}).get("golden_kind") or "")
+            if kind_name == "diamond" or str(opened.desk or "") == "diamond":
+                exit_tier = "diamond"
+            elif kind_name == "sniper" or str(opened.desk or "") == "sniper":
+                exit_tier = "sniper"
+            elif kind_name in {"sure_winner_gold", "sure_winner"} or str(opened.desk or "") == "sure_winner":
+                exit_tier = "gold"
+            entry_at = opened.created_at or opened.updated_at
         intent = self.broker.stage(
             desk=desk,
             action="SELL",
@@ -1748,6 +1867,10 @@ class AutoTrader:
                 "limit_source": limit_source,
                 "closes_order_id": opened.id if opened is not None else None,
                 **({"entry_price": entry_price} if entry_price is not None else {}),
+                **({"entry_at": entry_at} if entry_at else {}),
+                **({"exit_tier": exit_tier} if exit_tier else {}),
+                **({"exit_clock": self._now.isoformat()} if self._now is not None else {}),
+                **({"hard_stop": True} if row.get("hard_stop") else {}),
                 **({"sell_qty": int(row["sell_qty"])} if row.get("sell_qty") is not None else {}),
                 **({"scale_rungs": list(row.get("scale_rungs") or [])} if row.get("scale_rungs") else {}),
                 **({"account_id": account_id} if account_id else {}),
@@ -1835,19 +1958,20 @@ class AutoTrader:
         budget = self.max_orders_per_sync
         golden_buys = 0
 
-        def _take(intent: WebullOrderIntent | None) -> None:
+        def _take(intent: WebullOrderIntent | None, *, count_budget: bool = True) -> None:
             nonlocal budget, golden_buys
             if intent is None:
                 return
             d = intent.to_dict()
             if intent.status in ("dry_run", "submitted", "staged", "cancelled", "filled", "partial"):
                 submitted.append(d)
-                budget -= 1
+                if count_budget:
+                    budget -= 1
             else:
                 skipped.append(d)
                 # A rejected or still-deferred HTTP call still hit Webull. Count
                 # it, or one cycle will fire every golden row and trip 429s.
-                if intent.status in ("rejected", "deferred"):
+                if count_budget and intent.status in ("rejected", "deferred"):
                     budget -= 1
                     err = str(intent.error or "").upper()
                     if "ACCOUNT_ACCESS_DENIED" in err or "INVALID ACCOUNT" in err:
@@ -1973,11 +2097,11 @@ class AutoTrader:
                     right = "C"
                 _take(self._route_sell(desk="golden_exit", row=row, right=right))
 
-        if self.golden_only and budget > 0:
+        if self.golden_only:
+            # Clock flattens are not part of the buy budget. A full tape used
+            # to consume every slot and leave Diamond and Sniper open past 10:30.
             for row in self._flatten_when_signal_leaves(now):
-                if budget <= 0:
-                    break
-                _take(self._route_exit_row(row))
+                _take(self._route_exit_row(row), count_budget=False)
 
         # Retry 429s after exits so a flatten can cancel a deferred id first.
         # The same client_order_id is submitted again. Nothing is sent outside
@@ -2098,6 +2222,18 @@ class AutoTrader:
                         price_key="ask",
                     )
                 )
+
+        try:
+            from odte_scanner.alerts.exits import dispatch_exit_alerts
+
+            dispatch_exit_alerts(
+                self.broker.orders,
+                now=self._now,
+                diamond=diamond if isinstance(diamond, dict) else None,
+                sniper=sniper if isinstance(sniper, dict) else None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("exit alert dispatch failed: %s", exc)
 
         return {
             "broker": self.broker.status(),

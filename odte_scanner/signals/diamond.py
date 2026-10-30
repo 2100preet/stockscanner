@@ -335,6 +335,7 @@ def simulate(
         "underlying_pct": und,
         "premium": premium,
         "reason": reason,
+        "exit_at_ct": exit_at.strftime("%H:%M"),
         "index_product": symbol in INDEX_ETFS,
     }
 

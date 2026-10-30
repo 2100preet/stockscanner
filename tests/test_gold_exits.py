@@ -299,7 +299,7 @@ def test_stale_working_sell_is_replaced_and_a_flat_book_is_not(tmp_path: Path, m
     assert cancelled == [stale.id]
     assert len(placed) == 1
     assert placed[0].quantity == 1
-    assert placed[0].limit_price == 0.08
+    assert placed[0].limit_price == 0.10
     body = build_option_place_order(placed[0])
     assert body["position_intent"] == "SELL_TO_CLOSE"
     assert body["legs"][0]["position_intent"] == "SELL_TO_CLOSE"

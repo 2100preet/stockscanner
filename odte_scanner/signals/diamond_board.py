@@ -37,6 +37,46 @@ EXIT_PLAN = (
     "EXIT plan (diamond) · sell all at +30% premium · stop −40% · flat 10:30 AM CT. "
     "In-sample model, not a promise."
 )
+_MODELED_EXIT_REASONS = frozenset({"stop", "target", "flat", "trail", "be"})
+
+
+def modeled_spx_exits(
+    trades: list[dict[str, Any]],
+    cards: list[dict[str, Any]],
+    allowed: list[str],
+    *,
+    tier: str = "diamond",
+) -> list[dict[str, Any]]:
+    """SPX is alert-only. The exit alert uses this model's option result."""
+    if "SPX" not in {str(sym).upper() for sym in allowed}:
+        return []
+    card = next((row for row in cards if str(row.get("symbol") or "").upper() == "SPX"), {})
+    out: list[dict[str, Any]] = []
+    for row in trades:
+        if str(row.get("symbol") or "").upper() != "SPX":
+            continue
+        reason = str(row.get("reason") or "")
+        if reason not in _MODELED_EXIT_REASONS:
+            continue
+        out.append(
+            {
+                "symbol": "SPX",
+                "reason": reason,
+                "option_pct": row.get("option_pct"),
+                "premium": row.get("premium"),
+                "at_ct": row.get("at_ct"),
+                "exit_at_ct": row.get("exit_at_ct"),
+                "day": row.get("day"),
+                "right": row.get("side") or card.get("right") or "C",
+                "strike": card.get("strike"),
+                "expiry": card.get("expiry"),
+                "ask": card.get("ask"),
+                "contracts": 1,
+                "order_id": f"spx-{tier}-{row.get('day')}",
+                "tier": tier,
+            }
+        )
+    return out
 
 
 def occ_symbol(symbol: str, expiry: str, strike: float, right: str = "C") -> str:
@@ -260,6 +300,7 @@ def build_diamond_board(
             min_bars=PRIMARY_RULES.min_or_bars,
         ),
         "signals": cards,
+        "spx_exits": modeled_spx_exits(trades, cards, allowed, tier="diamond"),
         "qualified": [
             {"symbol": row["symbol"], "at_ct": row["at_ct"]}
             for row in sorted(trades, key=lambda item: (item["at"], PRIORITY.index(item["symbol"]) if item["symbol"] in PRIORITY else 99))

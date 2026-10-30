@@ -14,7 +14,12 @@ from pathlib import Path
 from typing import Any, Callable
 
 from odte_scanner.signals.diamond import INDEX_ETFS, YAHOO_SYMBOL, Bar
-from odte_scanner.signals.diamond_board import index_opening_range, load_intraday_bars, occ_symbol
+from odte_scanner.signals.diamond_board import (
+    index_opening_range,
+    load_intraday_bars,
+    modeled_spx_exits,
+    occ_symbol,
+)
 from odte_scanner.signals.sniper import (
     DAILY_CAP,
     PRIORITY,
@@ -216,6 +221,7 @@ def build_sniper_board(
             min_bars=PRIMARY_RULES.min_or_bars,
         ),
         "signals": cards,
+        "spx_exits": modeled_spx_exits(trades, cards, allowed, tier="sniper"),
         "qualified": [
             {"symbol": row["symbol"], "at_ct": row["at_ct"], "side": row.get("side")}
             for row in sorted(
