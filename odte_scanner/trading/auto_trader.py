@@ -29,8 +29,9 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 from odte_scanner.signals.exit_rules import (
     DEFAULT_EXIT_RULES,
@@ -51,10 +52,14 @@ from odte_scanner.signals.hold_rules import (
     past_odte_flatten,
     trading_dte,
 )
+from odte_scanner.trading.chase import CHASE_MAX_AGE_SEC, chase_action, reprice_limit
 from odte_scanner.trading.golden import golden_signal_kind
 from odte_scanner.trading.webull import WebullBroker, WebullOrderIntent, parse_occ_contract
 
 logger = logging.getLogger(__name__)
+
+# The focus scan and the Sniper/Diamond hot path both write this ledger.
+_SYNC_LOCK = threading.Lock()
 
 
 def _f(v: Any) -> float | None:
@@ -1586,8 +1591,16 @@ class AutoTrader:
             return None
         if self._already_open(sym, desk, right, contract_id or None):
             return None
+        if kind in {"diamond", "sniper"} and self._entry_chase_abandoned(sym, contract_id, desk):
+            self._note_filtered(row, "chase stopped — not reopened")
+            return None
 
-        limit_for_size = _f(row.get(price_key) or row.get("ask") or row.get("mid") or row.get("mark"))
+        explicit_limit = _f(row.get("chase_limit"))
+        limit_for_size = (
+            explicit_limit
+            if explicit_limit is not None and explicit_limit > 0
+            else _f(row.get(price_key) or row.get("ask") or row.get("mid") or row.get("mark"))
+        )
         quantity = self._paper_entry_qty(row, desk, second, limit_for_size)
 
         ok, why = (True, "gate off")
@@ -1611,7 +1624,7 @@ class AutoTrader:
                 expiry=str(row.get("expiry") or "") or None,
                 strike=_f(row.get("strike")),
                 quantity=quantity,
-                limit_price=_f(row.get(price_key) or row.get("ask") or row.get("mark")),
+                limit_price=limit_for_size,
                 reason=str(row.get("detail") or row.get("headline") or row.get("thesis") or ""),
                 hist_win_pct=_f(row.get("hist_win_pct") if row.get("hist_win_pct") is not None else row.get("win_pct")),
                 hist_samples=_i(row.get("hist_samples") or row.get("win_samples") or row.get("hist_win_samples")),
@@ -1632,7 +1645,7 @@ class AutoTrader:
             expiry=str(row.get("expiry") or "") or None,
             strike=_f(row.get("strike")),
             quantity=quantity,
-            limit_price=_f(row.get(price_key) or row.get("ask") or row.get("mid") or row.get("mark")),
+            limit_price=limit_for_size,
             reason=str(row.get("detail") or row.get("headline") or row.get("thesis") or why),
             hist_win_pct=_f(row.get("hist_win_pct") if row.get("hist_win_pct") is not None else row.get("win_pct")),
             hist_samples=_i(row.get("hist_samples") or row.get("win_samples") or row.get("hist_win_samples")),
@@ -1654,6 +1667,21 @@ class AutoTrader:
                 ),
             },
             )
+        if kind in {"sniper", "diamond"}:
+            signal_ask = _f(row.get("signal_ask"))
+            if signal_ask is None or signal_ask <= 0:
+                signal_ask = _f(intent.limit_price)
+            if signal_ask is not None and signal_ask > 0:
+                intent.meta["signal_ask"] = signal_ask
+            started = str(row.get("chase_started_at") or intent.created_at or "")
+            if started:
+                intent.meta["chase_started_at"] = started
+            replaces = str(row.get("replaces") or "")
+            if replaces:
+                intent.meta["replaces"] = replaces
+            count = _i(row.get("reprice_count"))
+            if count:
+                intent.meta["reprice_count"] = count
         ready, missing = _option_order_ready(intent)
         if not ready:
             intent.status = "skipped"
@@ -1951,6 +1979,332 @@ class AutoTrader:
         sniper: dict[str, Any] | None = None,
         now: datetime | None = None,
     ) -> dict[str, Any]:
+        """Route every desk. Shares a lock with the Sniper/Diamond hot path."""
+        with _SYNC_LOCK:
+            return self._sync_under_lock(
+                actions=actions,
+                lottery=lottery,
+                challenge=challenge,
+                sure_winners=sure_winners,
+                option_flow=option_flow,
+                diamond=diamond,
+                sniper=sniper,
+                now=now,
+            )
+
+    def sync_hot(
+        self,
+        *,
+        diamond: dict[str, Any] | None = None,
+        sniper: dict[str, Any] | None = None,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Chase and route Sniper/Diamond only. Does not walk the focus board."""
+        with _SYNC_LOCK:
+            return self._sync_hot_locked(diamond=diamond, sniper=sniper, now=now)
+
+    def _sync_hot_locked(
+        self,
+        *,
+        diamond: dict[str, Any] | None,
+        sniper: dict[str, Any] | None,
+        now: datetime | None,
+    ) -> dict[str, Any]:
+        submitted: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        self.filtered = []
+        budget = self.max_orders_per_sync
+
+        def _take(intent: WebullOrderIntent | None, *, count_budget: bool = True) -> None:
+            nonlocal budget
+            if intent is None:
+                return
+            row = intent.to_dict()
+            if intent.status in ("dry_run", "submitted", "staged", "cancelled", "filled", "partial"):
+                submitted.append(row)
+                if count_budget:
+                    budget -= 1
+            else:
+                skipped.append(row)
+                if count_budget and intent.status in ("rejected", "deferred"):
+                    budget -= 1
+            if intent.contract and (
+                intent.action == "SELL" or (intent.action == "BUY" and intent.status == "cancelled")
+            ):
+                self._closed_contracts.add(str(intent.contract))
+
+        self._now = now
+        self.broker._session_now = now
+        self._closed_contracts = set()
+        try:
+            self.broker.refresh_working_buys()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("working buy refresh failed: %s", exc)
+        self._submit_hot_signals(diamond, sniper, _take, lambda: budget > 0)
+        return {
+            "submitted": submitted,
+            "skipped": skipped[:40],
+            "submitted_n": len(submitted),
+            "skipped_n": len(skipped),
+            "filtered": self.filtered[:40],
+        }
+
+    def _submit_hot_signals(
+        self,
+        diamond: dict[str, Any] | None,
+        sniper: dict[str, Any] | None,
+        take: Callable[..., None],
+        budget_left: Callable[[], bool],
+    ) -> None:
+        """Reprice working Sniper/Diamond buys, then route new ones."""
+        if not self.golden_only:
+            return
+        self._chase_working_entries(diamond, sniper, take)
+        from odte_scanner.options.quote_sanity import quote_reject_reason
+        from odte_scanner.signals.diamond import DAILY_CAP
+        from odte_scanner.signals.sniper import DAILY_CAP as SNIPER_CAP
+
+        placed = {"dry_run", "submitted", "staged", "filled", "partial"}
+        diamond_buys = 0
+        for row in (diamond or {}).get("signals") or []:
+            if not isinstance(row, dict) or not row.get("send_order"):
+                continue
+            if not budget_left() or diamond_buys >= DAILY_CAP:
+                continue
+            reason = quote_reject_reason(row)
+            if reason:
+                self._note_filtered(row, reason)
+                continue
+            intent = self._route_buy(desk="diamond", row=row, right="C")
+            take(intent)
+            if intent is not None and intent.status in placed:
+                diamond_buys += 1
+
+        sniper_buys = 0
+        for row in (sniper or {}).get("signals") or []:
+            if not isinstance(row, dict) or not row.get("send_order"):
+                continue
+            if not budget_left() or sniper_buys >= SNIPER_CAP:
+                continue
+            reason = quote_reject_reason(row)
+            if reason:
+                self._note_filtered(row, reason)
+                continue
+            right = str(row.get("right") or "C").upper()[:1]
+            if right not in {"C", "P"}:
+                right = "C"
+            intent = self._route_buy(desk="sniper", row=row, right=right)
+            take(intent)
+            if intent is not None and intent.status in placed:
+                sniper_buys += 1
+
+    @staticmethod
+    def _chase_kind(order: WebullOrderIntent) -> str | None:
+        kind = str((order.meta or {}).get("golden_kind") or "")
+        desk = str(order.desk or "")
+        if kind == "sniper" or desk == "sniper":
+            return "sniper"
+        if kind == "diamond" or desk == "diamond":
+            return "diamond"
+        return None
+
+    @staticmethod
+    def _chase_age_sec(order: WebullOrderIntent, now: datetime) -> float:
+        raw = str((order.meta or {}).get("chase_started_at") or order.created_at or "")
+        if not raw:
+            return 0.0
+        try:
+            started = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return 0.0
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        moment = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+        return (moment.astimezone(timezone.utc) - started.astimezone(timezone.utc)).total_seconds()
+
+    def _hot_ask(self, order: WebullOrderIntent, boards: list[dict[str, Any]]) -> float | None:
+        contract = str(order.contract or "")
+        sym = str(order.symbol or "").upper()
+        right = str(order.right or "C").upper()[:1]
+        strike = _f(order.strike)
+        fallback: float | None = None
+        for board in boards:
+            for row in board.get("signals") or []:
+                if not isinstance(row, dict):
+                    continue
+                ask = _f(row.get("ask"))
+                if ask is None or ask <= 0:
+                    continue
+                row_contract = str(row.get("contract") or "")
+                if contract and row_contract and contract == row_contract:
+                    return ask
+                if str(row.get("symbol") or "").upper() != sym:
+                    continue
+                row_right = str(row.get("right") or "C").upper()[:1]
+                if row_right != right:
+                    continue
+                row_strike = _f(row.get("strike"))
+                if strike is not None and row_strike is not None and abs(row_strike - strike) > 0.02:
+                    continue
+                fallback = ask
+        return fallback
+
+    def _entry_chase_abandoned(self, symbol: str, contract: str | None, desk: str) -> bool:
+        occ = str(contract or "")
+        sym = str(symbol or "").upper()
+        for order in self.broker.orders:
+            if order.action != "BUY" or order.status != "cancelled":
+                continue
+            if not (order.meta or {}).get("chase_abandoned"):
+                continue
+            if occ and order.contract and occ == str(order.contract):
+                return True
+            if not occ and order.symbol == sym and order.desk == desk:
+                return True
+        return False
+
+    def _chase_working_entries(
+        self,
+        diamond: dict[str, Any] | None,
+        sniper: dict[str, Any] | None,
+        take: Callable[..., None] | None,
+    ) -> None:
+        """Cancel or replace a working Sniper/Diamond buy. Exit math stays on the fill."""
+        boards = [board for board in (diamond, sniper) if isinstance(board, dict)]
+        now = self._now or datetime.now(timezone.utc)
+        past_window = past_gold_flatten(now, "10:30")
+        for order in list(self.broker.orders):
+            kind = self._chase_kind(order)
+            if kind is None or not self._is_working_buy(order):
+                continue
+            if str(order.symbol or "").upper() == "SPX":
+                order.meta["chase_abandoned"] = True
+                order.meta["cancel_reason"] = "SPX is not a Webull order"
+                logger.info("cancel unfilled SPX %s — alert only", order.contract or "")
+                self.broker.cancel(order)
+                continue
+            if not _f((order.meta or {}).get("signal_ask")) and _f(order.limit_price):
+                order.meta["signal_ask"] = order.limit_price
+            if not (order.meta or {}).get("chase_started_at") and order.created_at:
+                order.meta["chase_started_at"] = order.created_at
+            ask = self._hot_ask(order, boards)
+            signal_ask = _f((order.meta or {}).get("signal_ask"))
+            limit = _f(order.limit_price)
+            action = chase_action(
+                limit=limit,
+                ask=ask,
+                signal_ask=signal_ask,
+                age_sec=self._chase_age_sec(order, now),
+                past_window=past_window,
+            )
+            if action == "hold":
+                continue
+            if action == "cap":
+                if not order.meta.get("chase_capped"):
+                    order.meta["chase_capped"] = True
+                    self.broker.save()
+                    logger.info(
+                        "chase cap %s %s %s live ask %.2f is more than 25%% above signal ask %.2f — not replacing",
+                        kind,
+                        order.symbol,
+                        order.contract or "",
+                        float(ask or 0),
+                        float(signal_ask or 0),
+                    )
+                continue
+            if action == "cancel":
+                reason = (
+                    "past 10:30 CT entry window"
+                    if past_window
+                    else f"unfilled {CHASE_MAX_AGE_SEC // 60}m"
+                )
+                logger.info(
+                    "cancel unfilled %s %s %s — %s",
+                    kind,
+                    order.symbol,
+                    order.contract or "",
+                    reason,
+                )
+                order.meta["chase_abandoned"] = True
+                order.meta["cancel_reason"] = reason
+                self.broker.cancel(order)
+                if order.contract:
+                    self._closed_contracts.add(str(order.contract))
+                continue
+            if ask is None:
+                continue
+            new_limit = reprice_limit(float(ask), signal_ask, limit)
+            if new_limit is None:
+                continue
+            order.meta["cancel_reason"] = f"reprice {float(limit or 0):.2f} -> {new_limit:.2f} ask {float(ask):.2f}"
+            cancelled = self.broker.cancel(order)
+            if cancelled.status != "cancelled":
+                logger.info(
+                    "reprice %s %s %s left working — cancel did not land",
+                    kind,
+                    order.symbol,
+                    order.contract or "",
+                )
+                continue
+            fresh = self._route_buy(
+                desk=kind,
+                row={
+                    "symbol": order.symbol,
+                    "right": order.right,
+                    "contract": order.contract,
+                    "expiry": order.expiry,
+                    "strike": order.strike,
+                    "ask": ask,
+                    "chase_limit": new_limit,
+                    "signal_ask": signal_ask,
+                    "chase_started_at": (order.meta or {}).get("chase_started_at") or order.created_at,
+                    "reprice_count": int((order.meta or {}).get("reprice_count") or 0) + 1,
+                    "replaces": order.id,
+                    "sniper": kind == "sniper",
+                    "diamond": kind == "diamond",
+                    "action": "SNIPER" if kind == "sniper" else "DIAMOND",
+                    "desk": "Sniper" if kind == "sniper" else "Diamond",
+                    "webull": True,
+                    "detail": order.reason or "",
+                    "exit_plan": (order.meta or {}).get("exit_plan") or "",
+                },
+                right=str(order.right or "C"),
+                price_key="ask",
+            )
+            if take is not None:
+                take(fresh, count_budget=False)
+            if fresh is None or fresh.status in {"skipped", "rejected"}:
+                logger.info(
+                    "reprice %s %s %s did not replace (status=%s)",
+                    kind,
+                    order.symbol,
+                    order.contract or "",
+                    None if fresh is None else fresh.status,
+                )
+                continue
+            logger.info(
+                "reprice %s %s %s limit %.2f -> %.2f live ask %.2f signal ask %.2f",
+                kind,
+                order.symbol,
+                order.contract or "",
+                float(limit or 0),
+                float(fresh.limit_price or new_limit),
+                float(ask),
+                float(signal_ask or 0),
+            )
+
+    def _sync_under_lock(
+        self,
+        *,
+        actions: dict[str, Any] | None = None,
+        lottery: dict[str, Any] | None = None,
+        challenge: dict[str, Any] | None = None,
+        sure_winners: dict[str, Any] | None = None,
+        option_flow: dict[str, Any] | None = None,
+        diamond: dict[str, Any] | None = None,
+        sniper: dict[str, Any] | None = None,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
         submitted: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
         self.filtered = []
@@ -2146,46 +2500,7 @@ class AutoTrader:
                 _take(self._route_buy(desk="sure_winner", row=row, right=right))
             for row in _flow_rows(option_flow):
                 self._note_filtered(row, "unusual flow is not auto-traded")
-            from odte_scanner.signals.diamond import DAILY_CAP
-
-            diamond_buys = 0
-            for row in (diamond or {}).get("signals") or []:
-                if not isinstance(row, dict) or not row.get("send_order"):
-                    continue
-                if budget <= 0 or diamond_buys >= DAILY_CAP:
-                    continue
-                from odte_scanner.options.quote_sanity import quote_reject_reason
-
-                reason = quote_reject_reason(row)
-                if reason:
-                    self._note_filtered(row, reason)
-                    continue
-                before = len(submitted)
-                _take(self._route_buy(desk="diamond", row=row, right="C"))
-                if len(submitted) > before:
-                    diamond_buys += 1
-
-            from odte_scanner.signals.sniper import DAILY_CAP as SNIPER_CAP
-
-            sniper_buys = 0
-            for row in (sniper or {}).get("signals") or []:
-                if not isinstance(row, dict) or not row.get("send_order"):
-                    continue
-                if budget <= 0 or sniper_buys >= SNIPER_CAP:
-                    continue
-                from odte_scanner.options.quote_sanity import quote_reject_reason
-
-                reason = quote_reject_reason(row)
-                if reason:
-                    self._note_filtered(row, reason)
-                    continue
-                before = len(submitted)
-                right = str(row.get("right") or "C").upper()[:1]
-                if right not in {"C", "P"}:
-                    right = "C"
-                _take(self._route_buy(desk="sniper", row=row, right=right))
-                if len(submitted) > before:
-                    sniper_buys += 1
+            self._submit_hot_signals(diamond, sniper, _take, lambda: budget > 0)
 
         if defer_challenge and challenge and budget > 0:
             for row in challenge.get("exit") or []:

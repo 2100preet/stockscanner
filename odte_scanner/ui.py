@@ -3459,6 +3459,20 @@ PAGE = r"""
         }).join("")}</tbody></table>`;
     }
 
+    function orderPremiumLabel(o) {
+      const status = String((o && o.status) || "");
+      const money = (n) => (n == null || n === "" || Number.isNaN(Number(n))) ? null : ("$" + fmt(Number(n), 2));
+      const fill = money(o && o.fill_price);
+      const limit = money(o && o.limit_price);
+      if (o && o.premium_label) return o.premium_label;
+      if (status === "partial" && fill && limit) return "Filled @ " + fill + " · Limit (working) " + limit;
+      if ((status === "filled" || status === "partial") && fill) return "Filled @ " + fill;
+      if (status === "filled" && limit) return "Filled @ " + limit;
+      if (!limit) return "—";
+      if (status === "cancelled" || status === "rejected" || status === "skipped") return limit;
+      return "Limit (working) " + limit;
+    }
+
     function renderWebull(wb) {
       const metrics = document.getElementById("webullMetrics");
       const ordersEl = document.getElementById("webullOrders");
@@ -3494,7 +3508,7 @@ PAGE = r"""
         return;
       }
       ordersEl.innerHTML = `<table><thead><tr>
-        <th>When (CST)</th><th>Desk</th><th>Side</th><th>Symbol</th><th>Contract</th><th>Limit</th><th>Hist</th><th>Status</th><th>Broker id</th><th>Webull</th>
+        <th>When (CST)</th><th>Desk</th><th>Side</th><th>Symbol</th><th>Contract</th><th>Premium</th><th>Hist</th><th>Status</th><th>Broker id</th><th>Webull</th>
       </tr></thead><tbody>
       ${rows.slice(0,40).map(o=>`<tr>
         <td class="mono">${fmtCST(o.updated_at||o.created_at)}</td>
@@ -3502,7 +3516,7 @@ PAGE = r"""
         <td class="mono"><strong>${o.action||"—"}</strong></td>
         <td><strong>${o.symbol}</strong> ${o.right||"C"}</td>
         <td class="mono">${o.contract||((o.strike!=null?o.strike:"")+" "+(o.expiry||""))}</td>
-        <td class="mono">${o.limit_price==null?"—":"$"+fmt(o.limit_price,2)}${o.fill_price!=null?`<div class="why">fill $${fmt(o.fill_price,2)}</div>`:""}</td>
+        <td class="mono">${orderPremiumLabel(o)}</td>
         <td class="mono">${o.hist_win_pct==null?"—":fmt(o.hist_win_pct,0)+"%"}${(o.hist_samples!=null?` n=${o.hist_samples}`:"")}</td>
         <td><span class="badge ${o.status==="dry_run"||o.status==="submitted"?"buy":(o.status==="skipped"?"wait":"skip")}">${o.status||"—"}</span>
           <div class="why">${o.error||o.reason||(o.meta&&o.meta.note)||""}</div></td>
@@ -4157,8 +4171,8 @@ PAGE = r"""
           <div class="pc-meta">
             <div><span>Strike</span><br><strong>${strikeTxt}</strong></div>
             <div><span>Expiry</span><br><strong>${row.expiry || "—"}${row.dte == null ? "" : " · " + row.dte + "DTE"}</strong></div>
-            <div><span>Signal</span><br><strong>${row.at_ct || "—"} CT</strong></div>
-            <div><span>Ask</span><br><strong>${askTxt}</strong></div>
+            <div><span>Signal</span><br><strong>${row.at_ct || "—"} CT</strong>${row.detected_at_ct ? `<div class="why">sent ${row.detected_at_ct} CT</div>` : ""}</div>
+            <div><span>Live ask</span><br><strong>${askTxt}</strong></div>
           </div>
           <p class="pc-why">${row.detail || ""} · <strong>${row.exit_plan || ""}</strong></p>
         </div>`;
@@ -4205,8 +4219,8 @@ PAGE = r"""
           <div class="pc-meta">
             <div><span>Strike</span><br><strong>${strikeTxt}</strong></div>
             <div><span>Expiry</span><br><strong>${row.expiry || "—"}${row.dte == null ? "" : " · " + row.dte + "DTE"}</strong></div>
-            <div><span>Signal</span><br><strong>${row.at_ct || "—"} CT</strong></div>
-            <div><span>Ask</span><br><strong>${askTxt}</strong></div>
+            <div><span>Signal</span><br><strong>${row.at_ct || "—"} CT</strong>${row.detected_at_ct ? `<div class="why">sent ${row.detected_at_ct} CT</div>` : ""}</div>
+            <div><span>Live ask</span><br><strong>${askTxt}</strong></div>
           </div>
           <p class="pc-why">${row.detail || ""} · <strong>${row.exit_plan || ""}</strong></p>
         </div>`;
@@ -8230,6 +8244,13 @@ def create_app(config_path: str | None = None) -> Flask:
             take("second", broker.list_option_positions(second))
         return {"books": books, "positions": rows, "n": len(rows)}
 
+    @app.get("/api/version")
+    def version():
+        """Git SHA and deploy time. No secrets."""
+        from odte_scanner.version import version_payload
+
+        return jsonify(version_payload())
+
     @app.get("/api/alerts/status")
     def alerts_status():
         """Telegram/WhatsApp configured flags and the last pulse. No secret values."""
@@ -8286,7 +8307,7 @@ def run_ui(host: str = "0.0.0.0", port: int = 8787, config_path: str | None = No
 
         if start_live_desk_worker(config_path):
             logger.info(
-                "Live desk worker on — BUY/SELL board + Telegram + Webull refresh after each focus scan"
+                "Live desk worker on — focus scan plus a fast Sniper/Diamond path for entry alerts"
             )
     except Exception as exc:  # noqa: BLE001
         logger.warning("live desk worker not started: %s", exc)

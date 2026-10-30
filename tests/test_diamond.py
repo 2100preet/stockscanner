@@ -148,6 +148,14 @@ def test_board_sends_inside_the_window_and_not_after_it(tmp_path):
     assert symbols == ["QQQ", "SPY"] or symbols == ["SPY", "QQQ"]
     assert all(row["send"] and row["ask"] for row in board["signals"])
     assert all(row["action"] == "DIAMOND" for row in board["signals"])
+    assert all(row["detected_at_ct"] == "9:10:00" for row in board["signals"])
+    again = build_diamond_board(
+        bars,
+        now=datetime(2026, 10, 27, 14, 20, tzinfo=timezone.utc),
+        store_path=tmp_path / "diamond_day.json",
+        chains=chain,
+    )
+    assert [row["detected_at"] for row in again["signals"]] == [row["detected_at"] for row in board["signals"]]
     late = build_diamond_board(
         bars, now=datetime(2026, 10, 27, 21, 0, tzinfo=timezone.utc), store_path=tmp_path / "late.json", chains=chain
     )

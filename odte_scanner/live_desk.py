@@ -8,7 +8,8 @@ This worker runs *inside* the live Flask host and continuously:
   3. Offline snapshot rebuild → Webull auto_sync (stage or live submit)
 
 Cadence ≈ one focus-scan duration + short pause (back-to-back). That is the
-practical floor unless the scan universe is cut further.
+practical floor for the full board. Sniper and Diamond also run on their own
+thread (see ``fast_desk``) so a long scan cannot hold their entry alert.
 """
 
 from __future__ import annotations
@@ -109,15 +110,18 @@ def _worker_loop(config_path: str | None) -> None:
 def start_live_desk_worker(config_path: str | None = None) -> bool:
     """Start background live desk once per process. Returns True if started."""
     global _worker_started
-    if not _env_flag("LIVE_DESK_LOOP", True):
-        logger.info("LIVE_DESK_LOOP disabled — no background scan worker")
-        return False
     # Pages / offline export must never start the worker
     if _env_flag("SIGNAL_DESK_OFFLINE", False):
         return False
+    from odte_scanner.fast_desk import start_fast_desk_worker
+
+    fast_started = start_fast_desk_worker(config_path)
+    if not _env_flag("LIVE_DESK_LOOP", True):
+        logger.info("LIVE_DESK_LOOP disabled — no background scan worker")
+        return fast_started
     with _lock:
         if _worker_started:
-            return False
+            return fast_started
         _worker_started = True
     t = threading.Thread(
         target=_worker_loop,

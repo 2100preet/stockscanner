@@ -11,6 +11,8 @@ primary_region = "iad"
 [env]
   PORT = "8787"
   LIVE_DESK_LOOP = "1"
+  FAST_DESK_LOOP = "1"
+  FAST_DESK_PAUSE_SEC = "20"
   PYTHONUNBUFFERED = "1"
 
 [http_service]

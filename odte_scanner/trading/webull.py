@@ -1480,7 +1480,13 @@ class WebullBroker:
 
     def activity(self, limit: int = 40) -> dict[str, Any]:
         """BUY/SELL history summary for the Journal Webull panel."""
-        rows = [o.to_dict() for o in self.orders[:limit]]
+        from odte_scanner.trading.labels import activity_premium_label
+
+        rows = []
+        for order in self.orders[:limit]:
+            row = order.to_dict()
+            row["premium_label"] = activity_premium_label(row)
+            rows.append(row)
         buys = [r for r in rows if str(r.get("action") or "").upper() == "BUY"]
         sells = [r for r in rows if str(r.get("action") or "").upper() == "SELL"]
         liveish = [

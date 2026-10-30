@@ -17,6 +17,12 @@ COPY config.yaml ./config.yaml
 
 RUN pip install --no-cache-dir -r requirements.txt && pip install --no-cache-dir -e .
 
+# Stamped by Fly Deploy. Runtime only — does not bust the dependency layer.
+ARG GIT_SHA=unknown
+ARG DEPLOYED_AT=
+ENV GIT_SHA=${GIT_SHA} \
+    DEPLOYED_AT=${DEPLOYED_AT}
+
 EXPOSE 8787
 
 # Persist outputs via a volume mount in production

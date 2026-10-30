@@ -188,6 +188,14 @@ def test_board_sends_inside_the_window_and_not_after_it(tmp_path):
     assert by_symbol["SPY"]["right"] == "C"
     assert by_symbol["QQQ"]["right"] == "P"
     assert all(row["send"] and row["send_order"] and row["action"] == "SNIPER" for row in board["signals"])
+    assert all(row["at_ct"] and row["detected_at_ct"] == "9:10:00" for row in board["signals"])
+    later = build_sniper_board(
+        bars,
+        now=datetime(2026, 10, 27, 14, 18, tzinfo=timezone.utc),
+        store_path=tmp_path / "sniper_day.json",
+        chains=chain,
+    )
+    assert [row["detected_at"] for row in later["signals"]] == [row["detected_at"] for row in board["signals"]]
     late = build_sniper_board(
         bars,
         now=datetime(2026, 10, 27, 21, 0, tzinfo=timezone.utc),

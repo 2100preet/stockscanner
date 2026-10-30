@@ -13,6 +13,12 @@ from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from odte_scanner.signals.detected import (
+    commit_day_store,
+    day_detected,
+    format_ct_hms,
+    remember_detected,
+)
 from odte_scanner.signals.diamond import (
     DAILY_CAP,
     INDEX_ETFS,
@@ -226,10 +232,16 @@ def build_diamond_board(
     allowed = _lock_symbols(ranked, store, day)
     # Only persist a lock while a send can still happen, so a late scan does
     # not consume tomorrow's names or backfill a missed morning.
-    if window_open and routed and allowed:
-        fresh = {"day": day, "symbols": allowed}
-        if fresh != {"day": store.get("day"), "symbols": store.get("symbols")}:
-            _write_store(path, fresh)
+    detected = day_detected(store, day)
+    commit_day_store(
+        store,
+        path,
+        _write_store,
+        day=day,
+        symbols=allowed,
+        detected=detected,
+        active=bool(window_open and routed and allowed),
+    )
     chain_book = chains or {}
     cards: list[dict[str, Any]] = []
     for row in ranked:
@@ -274,6 +286,17 @@ def build_diamond_board(
             "send": send_alert,
             "send_order": send,
         }
+        stamp = remember_detected(
+            detected,
+            symbol=symbol,
+            at_ct=str(row["at_ct"]),
+            side="C",
+            now=moment,
+            active=send_alert,
+        )
+        if stamp:
+            card["detected_at"] = stamp
+            card["detected_at_ct"] = format_ct_hms(stamp)
         if picked:
             card.update(
                 {
@@ -286,6 +309,15 @@ def build_diamond_board(
                 }
             )
         cards.append(card)
+    commit_day_store(
+        store,
+        path,
+        _write_store,
+        day=day,
+        symbols=allowed,
+        detected=detected,
+        active=bool(window_open and routed and (allowed or detected)),
+    )
     return {
         "ok": True,
         "routed": routed,
@@ -387,10 +419,16 @@ def load_intraday_bars(symbols: list[str] | None = None) -> dict[str, list[Bar]]
     return {symbol: bars for symbol, bars in loaded.items() if bars}
 
 
-def load_diamond_board(*, now: datetime | None = None, store_path: Path | None = None) -> dict[str, Any]:
+def load_diamond_board(
+    *,
+    now: datetime | None = None,
+    store_path: Path | None = None,
+    bars: dict[str, list[Bar]] | None = None,
+) -> dict[str, Any]:
     """Live entry point used by the desk. Failures become an empty board."""
     try:
-        bars = load_intraday_bars()
+        if bars is None:
+            bars = load_intraday_bars()
         if "SPY" not in bars:
             return {
                 "ok": False,
