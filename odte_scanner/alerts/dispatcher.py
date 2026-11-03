@@ -27,9 +27,13 @@ from odte_scanner.trading.golden import is_golden_unusual_flow, is_sure_winner_g
 logger = logging.getLogger(__name__)
 
 _ALERT_LOCK = threading.Lock()
+_INFLIGHT: set[str] = set()
+_PINNED_PREFIXES = ("Sniper|", "Diamond|", "Gold Setup|", "Golden Flow|", "EXIT|")
+_HOT_BUY_STATUSES = {"submitted", "filled", "partial", "dry_run", "staged", "cancelled"}
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SEEN = ROOT / "outputs" / "desk_alert_seen.json"
+_ORIGINAL_SEEN = DEFAULT_SEEN
 LEGACY_SEEN = ROOT / "outputs" / "whatsapp_alert_seen.json"
 
 _BUY_ACTIONS = {
@@ -64,7 +68,13 @@ _GROUPED_DESKS = frozenset({"Gold Setup", "Golden Flow"})
 def _load_seen(path: Path) -> tuple[set[str], dict[str, list[float]]]:
     # Only fall back to legacy when using the default desk seen path
     candidates = [path]
-    if path.resolve() == DEFAULT_SEEN.resolve() and LEGACY_SEEN.exists():
+    # Only the real desk file falls back to the legacy store. A test path
+    # that happens to be assigned to DEFAULT_SEEN must not inherit it.
+    try:
+        use_legacy = path.resolve() == _ORIGINAL_SEEN.resolve() and LEGACY_SEEN.exists()
+    except OSError:
+        use_legacy = False
+    if use_legacy:
         candidates.append(LEGACY_SEEN)
     for p in candidates:
         if p is None or not p.exists():
@@ -91,12 +101,31 @@ def _save_seen(
     keys: set[str],
     strengths: dict[str, list[float]] | None = None,
     *,
-    keep: int = 400,
+    keep: int = 2000,
 ) -> None:
+    """Keep Sniper/Diamond keys. Alphabetical trim was re-sending Diamond all morning."""
+    from odte_scanner.json_util import load_json_state
+
+    prior: list[str] = []
+    if path.exists():
+        raw = load_json_state(path)
+        if isinstance(raw, dict) and isinstance(raw.get("keys"), list):
+            prior = [str(item) for item in raw["keys"]]
+        elif isinstance(raw, list):
+            prior = [str(item) for item in raw]
+    ordered = [key for key in prior if key in keys]
+    have = set(ordered)
+    for key in sorted(keys):
+        if key not in have:
+            ordered.append(key)
+            have.add(key)
+    pinned = [key for key in ordered if str(key).startswith(_PINNED_PREFIXES)][-4000:]
+    pinned_set = set(pinned)
+    rest = [key for key in ordered if key not in pinned_set]
+    ordered = pinned + rest[-keep:]
     from odte_scanner.json_util import atomic_write_text
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    ordered = sorted(keys)[-keep:]
     kept = set(ordered)
     stored = {
         key: value
@@ -105,10 +134,11 @@ def _save_seen(
     }
     payload = json.dumps({"keys": ordered, "strengths": stored}, indent=2)
     atomic_write_text(path, payload)
-    # Keep legacy file in sync for older caches
+    # Keep the legacy file in sync only for the real desk path.
     try:
-        LEGACY_SEEN.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_text(LEGACY_SEEN, payload)
+        if path.resolve() == _ORIGINAL_SEEN.resolve():
+            LEGACY_SEEN.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(LEGACY_SEEN, payload)
     except Exception:  # noqa: BLE001
         pass
 
@@ -373,7 +403,7 @@ def collect_trade_alerts(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             if side == "SELL" and act not in _SELL_ACTIONS and "SELL" not in act and act != "EXIT":
                 if "EXIT" not in act and "SELL" not in act:
                     return
-        if side == "BUY":
+        if side == "BUY" and not row.get("routed_order"):
             from odte_scanner.options.quote_sanity import quote_bundle_ok
 
             if not quote_bundle_ok(row):
@@ -657,6 +687,101 @@ def _send_all_channels(message: str) -> tuple[list[str], list[str]]:
     return ok_providers, errors
 
 
+def _hot_desk(row: dict[str, Any]) -> str | None:
+    meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
+    desk = str(row.get("desk") or "").lower()
+    kind = str(meta.get("golden_kind") or "").lower()
+    if desk == "sniper" or kind == "sniper":
+        return "sniper"
+    if desk == "diamond" or kind == "diamond":
+        return "diamond"
+    return None
+
+
+def promote_routed_hot_alerts(snapshot: dict[str, Any], orders: list[dict[str, Any]] | None) -> None:
+    """A routed Sniper/Diamond buy still alerts after ``send`` flips false.
+
+    The 10:30 window flag must not swallow an order that already went to the
+    paper account. SPX is never promoted: it is alert-only.
+    """
+    best: dict[tuple[str, str], dict[str, Any]] = {}
+    rank = {"filled": 0, "partial": 1, "submitted": 2, "staged": 3, "dry_run": 4, "cancelled": 5}
+    for row in orders or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("action") or "").upper() != "BUY":
+            continue
+        status = str(row.get("status") or "")
+        if status not in _HOT_BUY_STATUSES:
+            continue
+        desk = _hot_desk(row)
+        sym = str(row.get("symbol") or "").upper()
+        if not desk or not sym or sym == "SPX":
+            continue
+        current = best.get((desk, sym))
+        if current is None or rank.get(status, 9) < rank.get(str(current.get("status") or ""), 9):
+            best[(desk, sym)] = row
+    for name in ("sniper", "diamond"):
+        board = snapshot.get(name)
+        if not isinstance(board, dict):
+            continue
+        for card in board.get("signals") or []:
+            if not isinstance(card, dict):
+                continue
+            sym = str(card.get("symbol") or "").upper()
+            order = best.get((name, sym))
+            if order is None or sym == "SPX":
+                continue
+            card["send"] = True
+            card["routed_order"] = True
+            if order.get("contract"):
+                card["contract"] = order.get("contract")
+            if order.get("strike") is not None:
+                card["signal_strike"] = card.get("signal_strike", card.get("strike"))
+                card["strike"] = order.get("strike")
+            if order.get("expiry"):
+                card["expiry"] = order.get("expiry")
+            if order.get("right"):
+                card["right"] = order.get("right")
+            fill = order.get("fill_price")
+            if fill not in (None, "", 0):
+                card["ask"] = fill
+            else:
+                try:
+                    ask_ok = float(card.get("ask") or 0) > 0
+                except (TypeError, ValueError):
+                    ask_ok = False
+                if not ask_ok and order.get("limit_price") not in (None, "", 0):
+                    card["ask"] = order.get("limit_price")
+
+
+def dispatch_hot_alerts_async(
+    snapshot: dict[str, Any],
+    *,
+    seen_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Queue the hot Telegram send and return without waiting on the network."""
+    holder: dict[str, Any] = {}
+
+    def _run() -> None:
+        try:
+            meta = dispatch_snapshot_alerts(snapshot, seen_path=seen_path, prime=False)
+        except Exception as exc:  # noqa: BLE001
+            meta = {"ok": False, "error": str(exc)[:200], "attempts": []}
+            logger.exception("hot alert dispatch failed: %s", exc)
+        try:
+            from odte_scanner.alert_pulse import append_alert_log
+
+            append_alert_log(meta.get("attempts") if isinstance(meta, dict) else None)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("hot alert log failed: %s", exc)
+        holder["meta"] = meta
+
+    thread = threading.Thread(target=_run, name="hot-desk-alert", daemon=True)
+    thread.start()
+    return {"ok": True, "queued": True, "thread": thread, "holder": holder}
+
+
 def dispatch_snapshot_alerts(
     snapshot: dict[str, Any],
     *,
@@ -669,10 +794,11 @@ def dispatch_snapshot_alerts(
     """Send Telegram/WhatsApp for *new* BUY/SELL pulses. No-op if none configured.
 
     The fast Sniper/Diamond path passes ``prime=False`` so an empty seen file
-    still sends. The focus-scan pulse keeps the first-run seed.
+    still sends. The focus-scan pulse keeps the first-run seed. The HTTP send
+    is outside the alert lock so a slow focus pulse cannot hold the fast loop.
     """
     with _ALERT_LOCK:
-        return _dispatch_snapshot_alerts_locked(
+        plan = _plan_snapshot_alerts(
             snapshot,
             seen_path=seen_path,
             dry_run=dry_run,
@@ -680,9 +806,76 @@ def dispatch_snapshot_alerts(
             edge_gate=edge_gate,
             prime=prime,
         )
+    batch = plan.pop("_batch", None)
+    if not batch:
+        return plan
+    try:
+        sent_alerts, attempts, errors = _deliver_alerts(batch)
+    finally:
+        with _ALERT_LOCK:
+            for alert in batch:
+                _INFLIGHT.discard(str(alert.get("key") or ""))
+    if sent_alerts:
+        with _ALERT_LOCK:
+            path = Path(seen_path) if seen_path else DEFAULT_SEEN
+            seen, strengths = _load_seen(path)
+            for alert, _providers in sent_alerts:
+                _mark_alert(alert, seen, strengths)
+            _save_seen(path, seen, strengths)
+    sent = [
+        {
+            "key": alert["key"],
+            "symbol": alert["symbol"],
+            "contract": alert.get("contract"),
+            "side": alert["side"],
+            "desk": alert["desk"],
+            "providers": providers,
+            "provider": providers[0],
+        }
+        for alert, providers in sent_alerts
+    ]
+    return {
+        "ok": len(sent) > 0 or not errors,
+        "configured": True,
+        "sent": len(sent),
+        "results": sent,
+        "attempts": attempts,
+        "log_only": 0,
+        "fresh": plan.get("fresh", len(batch)),
+        "errors": errors[:8],
+        "providers": plan.get("providers") or [],
+        "provider": (plan.get("providers") or [None])[0],
+    }
 
 
-def _dispatch_snapshot_alerts_locked(
+def _deliver_alerts(
+    batch: list[dict[str, Any]],
+) -> tuple[list[tuple[dict[str, Any], list[str]]], list[dict[str, Any]], list[str]]:
+    """HTTP send. Caller must not hold the alert lock."""
+    sent: list[tuple[dict[str, Any], list[str]]] = []
+    attempts: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for alert in batch:
+        ok_providers, errs = _send_all_channels(alert["message"])
+        errors.extend(errs)
+        ok = bool(ok_providers)
+        attempts.append(
+            {
+                "time": datetime.now(timezone.utc).isoformat(),
+                "symbol": alert["symbol"],
+                "contract": alert.get("contract"),
+                "kind": alert["desk"],
+                "side": alert["side"],
+                "ok": ok,
+                "error": None if ok else "; ".join(str(err) for err in errs)[:200],
+            }
+        )
+        if ok_providers:
+            sent.append((alert, ok_providers))
+    return sent, attempts, errors
+
+
+def _plan_snapshot_alerts(
     snapshot: dict[str, Any],
     *,
     seen_path: str | Path | None = None,
@@ -781,49 +974,21 @@ def _dispatch_snapshot_alerts_locked(
             "error": None if any_channel else "No alert channel secrets set (Telegram or WhatsApp)",
         }
 
-    sent: list[dict[str, Any]] = []
-    attempts: list[dict[str, Any]] = []
-    errors: list[str] = []
-    for a in fresh[: max(1, int(max_send))]:
-        ok_providers, errs = _send_all_channels(a["message"])
-        errors.extend(errs)
-        ok = bool(ok_providers)
-        attempts.append(
-            {
-                "time": datetime.now(timezone.utc).isoformat(),
-                "symbol": a["symbol"],
-                "contract": a.get("contract"),
-                "kind": a["desk"],
-                "side": a["side"],
-                "ok": ok,
-                "error": None if ok else "; ".join(str(err) for err in errs)[:200],
-            }
-        )
-        if ok_providers:
-            _mark_alert(a, seen, strengths)
-            sent.append(
-                {
-                    "key": a["key"],
-                    "symbol": a["symbol"],
-                    "contract": a.get("contract"),
-                    "side": a["side"],
-                    "desk": a["desk"],
-                    "providers": ok_providers,
-                    "provider": ok_providers[0],
-                }
-            )
-        # If every channel failed, leave unseen for retry
-
-    _save_seen(path, seen, strengths)
-    return {
-        "ok": len(sent) > 0 or not errors,
-        "configured": True,
-        "sent": len(sent),
-        "results": sent,
-        "attempts": log_only + attempts,
-        "log_only": len(log_only),
-        "fresh": len(fresh),
-        "errors": errors[:8],
-        "providers": providers,
-        "provider": providers[0] if providers else None,
-    }
+    batch = []
+    for alert in fresh[: max(1, int(max_send))]:
+        key = str(alert.get("key") or "")
+        if not key or key in _INFLIGHT:
+            continue
+        _INFLIGHT.add(key)
+        batch.append(alert)
+    if not batch:
+        return {
+            "ok": True,
+            "configured": True,
+            "sent": 0,
+            "candidates": len(alerts),
+            "providers": providers,
+            "attempts": [],
+            "note": "no new pulses",
+        }
+    return {"_batch": batch, "fresh": len(fresh), "providers": providers}

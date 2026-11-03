@@ -1967,6 +1967,41 @@ class AutoTrader:
             ) or result
         return result
 
+    def _queue_exit_alerts(
+        self,
+        orders: list[Any],
+        now: datetime | None,
+        diamond: dict[str, Any] | None,
+        sniper: dict[str, Any] | None,
+    ) -> threading.Thread | None:
+        """Send exit Telegram off the order lock. A resting book with no sell is a no-op."""
+        interesting = [
+            order
+            for order in orders
+            if str(getattr(order, "action", "") or "").upper() == "SELL"
+            and str(getattr(order, "status", "") or "") in {"filled", "partial", "submitted"}
+        ]
+        if not interesting:
+            return None
+
+        def _run() -> None:
+            try:
+                from odte_scanner.alerts.exits import dispatch_exit_alerts
+
+                dispatch_exit_alerts(
+                    orders,
+                    now=now,
+                    diamond=diamond if isinstance(diamond, dict) else None,
+                    sniper=sniper if isinstance(sniper, dict) else None,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("exit alert dispatch failed: %s", exc)
+
+        thread = threading.Thread(target=_run, name="exit-alerts", daemon=True)
+        thread.start()
+        self._exit_alert_thread = thread
+        return thread
+
     def sync(
         self,
         *,
@@ -1981,7 +2016,7 @@ class AutoTrader:
     ) -> dict[str, Any]:
         """Route every desk. Shares a lock with the Sniper/Diamond hot path."""
         with _SYNC_LOCK:
-            return self._sync_under_lock(
+            result = self._sync_under_lock(
                 actions=actions,
                 lottery=lottery,
                 challenge=challenge,
@@ -1991,6 +2026,10 @@ class AutoTrader:
                 sniper=sniper,
                 now=now,
             )
+            orders = list(self.broker.orders)
+            moment = self._now
+        self._queue_exit_alerts(orders, moment, diamond, sniper)
+        return result
 
     def sync_hot(
         self,
@@ -2001,7 +2040,11 @@ class AutoTrader:
     ) -> dict[str, Any]:
         """Chase and route Sniper/Diamond only. Does not walk the focus board."""
         with _SYNC_LOCK:
-            return self._sync_hot_locked(diamond=diamond, sniper=sniper, now=now)
+            result = self._sync_hot_locked(diamond=diamond, sniper=sniper, now=now)
+            orders = list(self.broker.orders)
+            moment = self._now
+        self._queue_exit_alerts(orders, moment, diamond, sniper)
+        return result
 
     def _sync_hot_locked(
         self,
@@ -2040,6 +2083,10 @@ class AutoTrader:
             self.broker.refresh_working_buys()
         except Exception as exc:  # noqa: BLE001
             logger.warning("working buy refresh failed: %s", exc)
+        try:
+            self.broker.refresh_working_sells()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("working sell refresh failed: %s", exc)
         self._submit_hot_signals(diamond, sniper, _take, lambda: budget > 0)
         return {
             "submitted": submitted,
@@ -2047,6 +2094,7 @@ class AutoTrader:
             "submitted_n": len(submitted),
             "skipped_n": len(skipped),
             "filtered": self.filtered[:40],
+            "recent": self.broker.recent(80),
         }
 
     def _submit_hot_signals(
@@ -2537,18 +2585,6 @@ class AutoTrader:
                         price_key="ask",
                     )
                 )
-
-        try:
-            from odte_scanner.alerts.exits import dispatch_exit_alerts
-
-            dispatch_exit_alerts(
-                self.broker.orders,
-                now=self._now,
-                diamond=diamond if isinstance(diamond, dict) else None,
-                sniper=sniper if isinstance(sniper, dict) else None,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("exit alert dispatch failed: %s", exc)
 
         return {
             "broker": self.broker.status(),

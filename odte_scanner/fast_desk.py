@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 _worker_started = False
 _lock = threading.Lock()
+last_alert_thread: threading.Thread | None = None
 
 HOT_START = clock(8, 30)
 # 10:30 is the entry cutoff. The extra minutes let an unfilled buy cancel
@@ -71,11 +72,12 @@ def load_hot_boards(now: datetime | None = None) -> tuple[dict[str, Any], dict[s
 
 
 def _default_dispatch(snapshot: dict[str, Any]) -> dict[str, Any]:
-    from odte_scanner.alerts.dispatcher import dispatch_snapshot_alerts
+    from odte_scanner.alerts.dispatcher import dispatch_hot_alerts_async
 
     # Do not prime-seed an empty seen file. The first Sniper of the day has
-    # to leave the building, not get marked seen without a send.
-    return dispatch_snapshot_alerts(snapshot, prime=False)
+    # to leave the building, not get marked seen without a send. The HTTP
+    # call runs on a side thread so it cannot delay the paper order.
+    return dispatch_hot_alerts_async(snapshot)
 
 
 def _default_route(
@@ -138,7 +140,7 @@ def run_fast_desk_cycle(
     dispatch: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     route: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Refresh Sniper/Diamond, alert, then route. Does not run the focus scan."""
+    """Refresh Sniper/Diamond, route, then alert. Does not run the focus scan."""
     moment = now or datetime.now(timezone.utc)
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=timezone.utc)
@@ -164,6 +166,26 @@ def run_fast_desk_cycle(
         "diamond": diamond if isinstance(diamond, dict) else {},
         "sniper": sniper if isinstance(sniper, dict) else {},
     }
+    # Route first. A Telegram round-trip must not sit in front of the fill.
+    route_meta: dict[str, Any] = {"ok": False}
+    try:
+        if route is None:
+            route_meta = _default_route(snapshot["diamond"], snapshot["sniper"], moment, config_path)
+        else:
+            route_meta = route(snapshot["diamond"], snapshot["sniper"], moment) or {}
+    except Exception as exc:  # noqa: BLE001
+        route_meta = {"ok": False, "error": str(exc)[:200]}
+        logger.exception("fast desk route failed: %s", exc)
+
+    try:
+        from odte_scanner.alerts.dispatcher import promote_routed_hot_alerts
+
+        routed_rows = list((route_meta or {}).get("submitted") or [])
+        routed_rows.extend(list((route_meta or {}).get("recent") or []))
+        promote_routed_hot_alerts(snapshot, routed_rows)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("fast desk promote failed: %s", exc)
+
     sample = None
     try:
         from odte_scanner.alerts.dispatcher import collect_trade_alerts
@@ -178,19 +200,21 @@ def run_fast_desk_cycle(
     try:
         sender = dispatch or _default_dispatch
         alert_meta = sender(snapshot) or {"ok": False}
+        thread = alert_meta.get("thread") if isinstance(alert_meta, dict) else None
+        if isinstance(thread, threading.Thread):
+            global last_alert_thread
+            last_alert_thread = thread
+            alert_meta = {key: value for key, value in alert_meta.items() if key != "thread"}
     except Exception as exc:  # noqa: BLE001
         alert_meta = {"ok": False, "error": str(exc)[:200]}
         logger.exception("fast desk alert failed: %s", exc)
 
-    route_meta: dict[str, Any] = {"ok": False}
     try:
-        if route is None:
-            route_meta = _default_route(snapshot["diamond"], snapshot["sniper"], moment, config_path)
-        else:
-            route_meta = route(snapshot["diamond"], snapshot["sniper"], moment) or {}
+        from odte_scanner.hot_state import publish_hot
+
+        publish_hot(diamond=snapshot["diamond"], sniper=snapshot["sniper"])
     except Exception as exc:  # noqa: BLE001
-        route_meta = {"ok": False, "error": str(exc)[:200]}
-        logger.exception("fast desk route failed: %s", exc)
+        logger.info("fast desk publish failed: %s", exc)
 
     logger.info(
         "fast desk cycle sniper=%s diamond=%s sent=%s",

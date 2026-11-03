@@ -405,3 +405,125 @@ def test_ledger_keeps_the_buy_a_later_sell_still_needs(tmp_path: Path):
     assert buys[0].fill_price == 1.0
     kept = orders_for_ledger(reloaded.orders, limit=500)
     assert any(order.id == first.id for order in kept)
+
+
+def _spy_fill_pair(reason: str) -> list[WebullOrderIntent]:
+    """Nov 2: SPY 760C buy filled 1.80, sell filled 2.59, sell meta had no entry."""
+    buy = WebullOrderIntent(
+        id="buy-spy",
+        desk="sniper",
+        action="BUY",
+        symbol="SPY",
+        right="C",
+        contract="SPY261102C00760000",
+        expiry="2026-11-02",
+        strike=760,
+        quantity=1,
+        limit_price=1.80,
+        fill_price=1.80,
+        status="filled",
+        created_at="2026-11-02T14:50:15+00:00",
+        updated_at="2026-11-02T14:50:15+00:00",
+        meta={"golden_kind": "sniper"},
+    )
+    sell = WebullOrderIntent(
+        id=f"sell-{reason[:12]}",
+        desk="golden_exit",
+        action="SELL",
+        symbol="SPY",
+        right="C",
+        contract="SPY261102C00760000",
+        expiry="2026-11-02",
+        strike=760,
+        quantity=1,
+        limit_price=2.59,
+        fill_price=2.59,
+        status="filled",
+        reason=reason,
+        created_at="2026-11-02T15:15:01+00:00",
+        updated_at="2026-11-02T15:15:01+00:00",
+        meta={"golden_kind": "golden_exit"},
+    )
+    return [buy, sell]
+
+
+def test_filled_exit_alerts_when_the_sell_never_stored_the_entry(tmp_path: Path):
+    """Fills were on the book and no EXIT row was logged. The sell had no entry price."""
+    now = datetime(2026, 11, 2, 15, 16, tzinfo=timezone.utc)
+    orders = _spy_fill_pair("take profit +43% ≥ +25%")
+    assert collect_exit_alerts(orders, now=now, seen=set())
+    sent: list[str] = []
+    path = tmp_path / "seen.json"
+    from odte_scanner.alert_pulse import read_alert_log
+
+    import odte_scanner.alert_pulse as pulse
+
+    original = pulse.alert_log_path
+    pulse.alert_log_path = lambda: tmp_path / "alerts.jsonl"
+    try:
+        dispatch_exit_alerts(
+            orders,
+            now=now,
+            seen_path=path,
+            send=lambda message: sent.append(message) or {"ok": True},
+        )
+    finally:
+        pulse.alert_log_path = original
+    assert len(sent) == 1
+    text = sent[0]
+    assert "🎯 SNIPER EXIT — SPY 760C 11/2" in text
+    assert "Entry $1.80 @ 8:50 CT → Exit $2.59 @ 9:15 CT" in text
+    assert "+43.9%" in text
+    assert "+$79" in text
+    assert "Target +25% hit" in text
+    assert "Sure Winner" not in text
+    log = read_alert_log(day="2026-11-02", path=tmp_path / "alerts.jsonl")
+    assert log["alerts"][0]["kind"] == "EXIT"
+    assert log["alerts"][0]["symbol"] == "SPY"
+    assert log["alerts"][0]["ok"] is True
+
+
+def test_every_exit_reason_alerts_from_the_buy_fill():
+    now = datetime(2026, 11, 2, 15, 16, tzinfo=timezone.utc)
+    reasons = {
+        "take profit +43% ≥ +25%": "Target +25% hit",
+        "stop loss -40% ≤ −40%": "Stop −40% hit",
+        "flatten 10:30 CT": "10:30 CT flat",
+        "trail gave back half the peak gain": "Trail",
+        "scale out +30% — sell 1 of 2": "Scale-out",
+    }
+    for reason, label in reasons.items():
+        alerts = collect_exit_alerts(_spy_fill_pair(reason), now=now, seen=set())
+        assert len(alerts) == 1, reason
+        assert label in alerts[0]["message"]
+        assert round(alerts[0]["pnl"], 2) == 79.0
+        assert "Sure Winner" not in alerts[0]["message"]
+
+
+def test_hot_sync_sends_the_exit_the_slow_scan_missed(tmp_path: Path, monkeypatch):
+    sent: list[str] = []
+    monkeypatch.setattr("odte_scanner.alerts.exits.DEFAULT_SEEN", tmp_path / "exit_seen.json")
+    monkeypatch.setattr("odte_scanner.alerts.telegram.configured", lambda: {"ok": True})
+    monkeypatch.setattr(
+        "odte_scanner.alerts.telegram.send_telegram_text",
+        lambda message: sent.append(message) or {"ok": True},
+    )
+    monkeypatch.setattr("odte_scanner.alert_pulse.alert_log_path", lambda: tmp_path / "alerts.jsonl")
+    broker = WebullBroker(
+        enabled=True,
+        dry_run=True,
+        ledger_path=tmp_path / "wb.json",
+        account_id="paper-1",
+        submit_interval_sec=0,
+    )
+    broker.orders = _spy_fill_pair("take profit +43% ≥ +25%")
+    broker.save()
+    trader = AutoTrader(broker, golden_only=True, max_orders_per_sync=4)
+    trader.sync_hot(
+        sniper={"signals": [{"symbol": "SPY", "send": False, "send_order": False, "right": "C", "strike": 759}]},
+        now=datetime(2026, 11, 2, 15, 16, tzinfo=timezone.utc),
+    )
+    assert trader._exit_alert_thread is not None
+    trader._exit_alert_thread.join(3)
+    assert sent and "Entry $1.80 @ 8:50 CT" in sent[0]
+    assert "2.59" in sent[0]
