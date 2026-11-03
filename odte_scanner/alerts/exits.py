@@ -181,15 +181,15 @@ def format_exit_alert(
     when_in = clock_ct(entry_at)
     when_out = clock_ct(exit_at)
     why = plain_exit_reason(reason, tier=tier)
+    # The entry on this line is the buy fill. A working exit is still a limit.
+    exit_label = f"Limit ${exit_price:.2f} (working)" if pending else f"Filled @ ${exit_price:.2f}"
     line = (
         f"{emoji} {name} EXIT — {str(symbol or '').upper()} {contract} {_compact_expiry(expiry)}"
         f" · {qty} {noun}"
-        f" · Entry ${entry:.2f} @ {when_in} → Exit ${exit_price:.2f} @ {when_out}"
+        f" · Entry Filled @ ${entry:.2f} @ {when_in} → Exit {exit_label} @ {when_out}"
         f" · {_pct(pnl_pct)} / {_money(pnl_usd)}"
         f" · {why}"
     )
-    if pending:
-        line += " · pending fill"
     if tally:
         line += f" · {tally}"
     return line

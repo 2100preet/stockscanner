@@ -24,6 +24,8 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote
 
+from odte_scanner.trading.ticks import is_tick_reject, normalize_option_limit, rereound_after_reject
+
 logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -995,9 +997,46 @@ class WebullBroker:
         self.save()
         return intent
 
+    def _retry_tick_reject(self, intent: WebullOrderIntent, exc: BaseException) -> bool:
+        """Re-round a rejected limit and let submit try the same order once."""
+        if (intent.meta or {}).get("tick_retried"):
+            return False
+        if not is_tick_reject(exc):
+            return False
+        new_limit = rereound_after_reject(float(intent.limit_price or 0), side=str(intent.action or "BUY"))
+        if new_limit is None or intent.limit_price is None:
+            return False
+        if abs(float(new_limit) - float(intent.limit_price)) < 0.001:
+            return False
+        intent.meta["tick_retried"] = True
+        intent.meta["limit_before_tick_retry"] = intent.limit_price
+        intent.limit_price = new_limit
+        intent.status = "staged"
+        intent.error = None
+        return True
+
+    def _snap_limit(self, intent: WebullOrderIntent) -> None:
+        """Write a legal option tick back onto the intent before it is sent."""
+        if intent.limit_price is None:
+            return
+        side = str(intent.action or "BUY").upper()
+        cap = None
+        if side == "BUY":
+            try:
+                raw_cap = (intent.meta or {}).get("ask_cap")
+                cap = float(raw_cap) if raw_cap not in (None, "") else None
+            except (TypeError, ValueError):
+                cap = None
+            if cap is not None and cap <= 0:
+                cap = None
+        snapped = normalize_option_limit(float(intent.limit_price), side=side, cap=cap)
+        if snapped > 0:
+            intent.limit_price = snapped
+
     def submit(self, intent: WebullOrderIntent) -> WebullOrderIntent:
         """Submit staged intent — dry-run unless fully armed."""
         intent.updated_at = _now()
+        self._snap_limit(intent)
         if not self.enabled:
             # Still log dry-run previews so Journal history fills while learning the bridge
             if self.dry_run:
@@ -1078,6 +1117,8 @@ class WebullBroker:
             intent.meta["fill_state"] = "deferred"
             intent.meta["retryable"] = True
         except Exception as exc:  # noqa: BLE001
+            if self._retry_tick_reject(intent, exc):
+                return self.submit(intent)
             logger.exception("Webull submit failed: %s", exc)
             intent.status = "rejected"
             intent.error = str(exc)[:500]

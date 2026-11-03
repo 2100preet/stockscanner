@@ -75,7 +75,7 @@ def test_tile_prefers_the_traded_strike_and_the_fill():
     assert card["strike_differs"] is True
     assert card["fill_price"] == 1.80
     assert card["display_price"] == 1.80
-    assert card["display_price_label"] == "Fill"
+    assert card["display_price_label"] == "Filled @"
     assert card["order_status_label"] == "filled"
     assert card["exit_fill"] == 2.59
     assert "secret-account" not in str(card)

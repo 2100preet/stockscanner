@@ -134,7 +134,8 @@ def test_entry_alert_matches_sniper_shape_and_logs_the_desk_name():
     alerts = collect_trade_alerts({"afternoon_puts": {"signals": [card]}})
     text = alerts[0]["message"]
     assert text.splitlines()[0].startswith("🌅 AFTERNOON PUTS QQQ 693P 11/2")
-    assert "Ask $1.52" in text
+    assert "Bid $1.48 / Ask $1.52" in text
+    assert "Limit $" not in text
     assert "Signal 10:25 bar" in text
     assert "Sure Winner" not in text
     assert alerts[0]["desk"] == "AfternoonPuts"
@@ -156,8 +157,8 @@ def test_exit_line_carries_entry_exit_dollars_and_contracts():
         tally="Today 1W/0L · +$92",
     )
     assert text.startswith("🌅 AFTERNOON PUTS EXIT — SPY 759P 11/2 · 1 contract")
-    assert "Entry $0.98 @ 11:05 CT" in text
-    assert "Exit $1.84 @ 11:50 CT" in text
+    assert "Entry Filled @ $0.98 @ 11:05 CT" in text
+    assert "Exit Filled @ $1.84 @ 11:50 CT" in text
     assert "Sure Winner" not in text
 
 

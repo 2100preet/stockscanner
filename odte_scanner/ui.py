@@ -1384,6 +1384,7 @@ PAGE = r"""
         : (setup ? "SETUP · not BUY" : (wait ? "WAIT" : "SELL NOW")));
       const strike = r.strike == null ? "—" : `${fmt(r.strike, Number(r.strike) % 1 ? 2 : 0)}${right === "PUT" ? "p" : "c"}`;
       const px = (buy || log) ? (r.ask ?? r.entry_ask) : (r.bid ?? r.mark ?? r.ask ?? r.exit_bid);
+      const orderLine = orderPriceText(r.display_price_label, r.display_price);
       const when = rowAskedAt(r);
       const entryWhen = r.entered_at_cst || (r.entered_at ? fmtCST(r.entered_at) : "");
       const showEntry = entryWhen && entryWhen !== "—" && entryWhen !== when;
@@ -1400,7 +1401,7 @@ PAGE = r"""
         <div class="ac-conf">${r._desk} · ${when && when !== "—" ? when : "time —"}${confLine}${showEntry ? ` · entered ${entryWhen}` : ""}</div>
         <div class="ac-meta">
           <div>Strike / expiry<strong>${strike} · ${r.expiry || "—"}${r.dte != null ? ` (${r.dte}DTE)` : ""}</strong></div>
-          <div>${buy ? "Ask" : "Bid"}<strong>${px == null ? "—" : "$" + fmt(px, 2)}</strong></div>
+          <div>${orderLine ? "Bid / Ask" : (buy ? "Ask" : "Bid")}<strong>${orderLine ? quoteText(r) : (px == null ? "—" : "$" + fmt(px, 2))}</strong>${orderLine ? `<div class="why">${orderLine}</div>` : ""}</div>
           <div>Hist win<strong>${Number.isNaN(win) ? "—" : fmt(win, 0) + "%"}</strong></div>
           <div>Strike rate ≥1%<strong>${sr}</strong></div>
           ${isSure ? `<div>Size plan<strong>${r.size_label || "—"} (×${r.size_mult != null ? fmt(r.size_mult,1) : "—"})</strong></div><div>Certainty<strong>${r.certainty_tier || "—"}</strong></div>` : ""}
@@ -3761,7 +3762,8 @@ PAGE = r"""
           strike: row.strike,
           expiry: row.expiry || "—",
           dte: row.dte,
-          ask: row.display_price != null ? row.display_price : row.ask,
+          ask: row.strike_differs ? (row.live_ask != null ? row.live_ask : null) : (row.live_ask != null ? row.live_ask : row.ask),
+          bid: row.strike_differs ? (row.live_bid != null ? row.live_bid : null) : (row.live_bid != null ? row.live_bid : row.bid),
           contract: row.traded_contract || row.contract,
           traded_strike: row.traded_strike,
           traded_right: row.traded_right,
@@ -4160,6 +4162,30 @@ PAGE = r"""
       const levels = openingRangeText(board && board.opening_range);
       return levels ? (line + " · " + levels) : line;
     }
+    function quoteText(row) {
+      const num = (value) => {
+        if (value == null || value === "") return null;
+        const n = Number(value);
+        return Number.isNaN(n) ? null : n;
+      };
+      const traded = num(row.traded_strike);
+      const signal = num(row.signal_strike != null ? row.signal_strike : row.strike);
+      const differs = !!(row.strike_differs || (traded != null && signal != null && Math.abs(traded - signal) > 0.001));
+      const bid = num(differs ? row.live_bid : (row.live_bid != null ? row.live_bid : row.bid));
+      const ask = num(differs ? row.live_ask : (row.live_ask != null ? row.live_ask : row.ask));
+      const money = (n) => n == null ? "—" : ("$" + fmt(n, 2));
+      return "Bid " + money(bid) + " / Ask " + money(ask);
+    }
+    function orderPriceText(label, price) {
+      if (price == null || price === "" || Number.isNaN(Number(price)) || !label) return "";
+      const money = "$" + fmt(Number(price), 2);
+      const low = String(label).toLowerCase();
+      if (low.indexOf("filled") >= 0) return "Filled @ " + money;
+      if (low.indexOf("limit") >= 0) {
+        return low.indexOf("working") >= 0 ? ("Limit " + money + " (working)") : ("Limit " + money);
+      }
+      return "";
+    }
     function tradedView(row) {
       const rightSrc = row.traded_right || row.right || "C";
       const put = String(rightSrc).toUpperCase().startsWith("P");
@@ -4180,14 +4206,18 @@ PAGE = r"""
       const signal = num(row.signal_strike != null ? row.signal_strike : row.strike);
       const differs = !!(row.strike_differs || (traded != null && signal != null && Math.abs(traded - signal) > 0.001));
       const show = traded != null ? traded : signal;
-      const price = num(row.display_price != null ? row.display_price : row.ask);
+      const price = num(row.display_price);
+      const exitPx = num(row.exit_display != null ? row.exit_display : row.exit_fill);
       return {
         strike: fmtStrike(show, traded != null ? side : signalSide),
         signalNote: differs ? ("signal " + fmtStrike(signal, signalSide)) : "",
-        price: price == null ? "—" : ("$" + fmt(price, 2)),
-        priceLabel: row.display_price_label || "Live ask",
+        quote: quoteText(row),
+        price: price == null ? "" : ("$" + fmt(price, 2)),
+        priceLabel: row.display_price_label || "",
+        order: orderPriceText(row.display_price_label, row.display_price),
         status: row.order_status_label || "",
-        exit: num(row.exit_fill),
+        exit: exitPx,
+        exitText: orderPriceText(row.exit_price_label, exitPx),
         expiry: row.traded_expiry || row.expiry || "—",
         contract: row.traded_contract || row.contract || "—"
       };
@@ -4223,7 +4253,7 @@ PAGE = r"""
             <div><span>Strike</span><br><strong>${view.strike}</strong>${view.signalNote ? `<div class="why">${view.signalNote}</div>` : ""}${view.status ? `<div class="why">${view.status}</div>` : ""}</div>
             <div><span>Expiry</span><br><strong>${view.expiry}${row.dte == null ? "" : " · " + row.dte + "DTE"}</strong></div>
             <div><span>Signal</span><br><strong>${row.at_ct || "—"} CT</strong>${row.detected_at_ct ? `<div class="why">sent ${row.detected_at_ct} CT</div>` : ""}</div>
-            <div><span>${view.priceLabel}</span><br><strong>${view.price}</strong>${view.exit == null ? "" : `<div class="why">exit $${fmt(view.exit, 2)}</div>`}</div>
+            <div><span>Bid / Ask</span><br><strong>${view.quote}</strong>${view.order ? `<div class="why">${view.order}</div>` : ""}${view.exitText ? `<div class="why">exit ${view.exitText}</div>` : ""}</div>
           </div>
           <p class="pc-why">${row.detail || ""} · <strong>${row.exit_plan || ""}</strong></p>
         </div>`;
@@ -4269,7 +4299,7 @@ PAGE = r"""
             <div><span>Strike</span><br><strong>${view.strike}</strong>${view.signalNote ? `<div class="why">${view.signalNote}</div>` : ""}${view.status ? `<div class="why">${view.status}</div>` : ""}</div>
             <div><span>Expiry</span><br><strong>${view.expiry}${row.dte == null ? "" : " · " + row.dte + "DTE"}</strong></div>
             <div><span>Signal</span><br><strong>${row.at_ct || "—"} CT</strong>${row.detected_at_ct ? `<div class="why">sent ${row.detected_at_ct} CT</div>` : ""}</div>
-            <div><span>${view.priceLabel}</span><br><strong>${view.price}</strong>${view.exit == null ? "" : `<div class="why">exit $${fmt(view.exit, 2)}</div>`}</div>
+            <div><span>Bid / Ask</span><br><strong>${view.quote}</strong>${view.order ? `<div class="why">${view.order}</div>` : ""}${view.exitText ? `<div class="why">exit ${view.exitText}</div>` : ""}</div>
           </div>
           <p class="pc-why">${row.detail || ""} · <strong>${row.exit_plan || ""}</strong></p>
         </div>`;
@@ -4351,8 +4381,8 @@ PAGE = r"""
           <div class="pc-meta">
             <div><span>Strike</span><br><strong>${view.strike}</strong>${view.status ? `<div class="why">${view.status}</div>` : ""}</div>
             <div><span>Signal</span><br><strong>${row.at_ct || "—"} CT</strong></div>
-            <div><span>Entry</span><br><strong>${entryPx == null ? view.price : ("$" + fmt(entryPx, 2))}</strong></div>
-            <div><span>Exit</span><br><strong>${exitPx == null ? "—" : ("$" + fmt(exitPx, 2))}</strong><div class="why">${afternoonPct(pct)} · ${afternoonMoney(dollars)} · ${contracts} contract${contracts === 1 ? "" : "s"}</div></div>
+            <div><span>Bid / Ask</span><br><strong>${view.quote}</strong><div class="why">${view.order || (entryPx == null ? "—" : (row.order_status_label === "filled" ? ("Filled @ $" + fmt(entryPx, 2)) : ("$" + fmt(entryPx, 2))))}</div></div>
+            <div><span>Exit</span><br><strong>${view.exitText || (exitPx == null ? "—" : ("Filled @ $" + fmt(exitPx, 2)))}</strong><div class="why">${afternoonPct(pct)} · ${afternoonMoney(dollars)} · ${contracts} contract${contracts === 1 ? "" : "s"}</div></div>
           </div>
           <p class="pc-why">${row.detail || ""} · <strong>${row.exit_plan || ""}</strong></p>
         </div>`;

@@ -168,16 +168,30 @@ def annotate_card(card: dict[str, Any], orders: list[dict[str, Any]], tier: str)
     traded = _num(traded_strike)
     signal = _num(signal_strike)
     out["strike_differs"] = bool(traded is not None and signal is not None and abs(traded - signal) > 0.001)
+    if out["strike_differs"]:
+        # Quotes on the signal card belong to the other strike. The tile
+        # shows a live quote only when one was fetched for the traded contract.
+        out["signal_ask"] = card.get("signal_ask", card.get("ask"))
+        out["bid"] = None
+        out["ask"] = None
+    live_bid = _num(card.get("live_bid"))
+    live_ask = _num(card.get("live_ask"))
+    if live_bid is not None and live_bid > 0:
+        out["bid"] = live_bid
+        out["live_bid"] = live_bid
+    if live_ask is not None and live_ask > 0:
+        out["ask"] = live_ask
+        out["live_ask"] = live_ask
     label = status_label(entry)
     fill = _num(entry.get("fill_price"))
     limit = _num(entry.get("limit_price"))
     if label == "filled" and fill is not None and fill > 0:
         out["fill_price"] = fill
         out["display_price"] = fill
-        out["display_price_label"] = "Fill"
+        out["display_price_label"] = "Filled @"
     elif label == "working limit" and limit is not None and limit > 0:
         out["display_price"] = limit
-        out["display_price_label"] = "Working limit"
+        out["display_price_label"] = "Limit (working)"
     elif limit is not None and limit > 0:
         out["display_price"] = limit
         out["display_price_label"] = "Limit"
@@ -193,10 +207,17 @@ def annotate_card(card: dict[str, Any], orders: list[dict[str, Any]], tier: str)
     ]
     exit_order = _best([row for row in sells if str(row.get("status") or "").lower() in _FILLED]) or _best(sells)
     if exit_order is not None:
-        out["exit_status_label"] = status_label(exit_order)
+        exit_label = status_label(exit_order)
+        out["exit_status_label"] = exit_label
         exit_fill = _num(exit_order.get("fill_price"))
-        if exit_fill is not None and exit_fill > 0:
+        exit_limit = _num(exit_order.get("limit_price"))
+        if exit_label == "filled" and exit_fill is not None and exit_fill > 0:
             out["exit_fill"] = exit_fill
+            out["exit_display"] = exit_fill
+            out["exit_price_label"] = "Filled @"
+        elif exit_limit is not None and exit_limit > 0:
+            out["exit_display"] = exit_limit
+            out["exit_price_label"] = "Limit (working)" if exit_label == "working limit" else "Limit"
     return out
 
 

@@ -52,7 +52,8 @@ from odte_scanner.signals.hold_rules import (
     past_odte_flatten,
     trading_dte,
 )
-from odte_scanner.trading.chase import CHASE_MAX_AGE_SEC, chase_action, reprice_limit
+from odte_scanner.trading.chase import CHASE_SLIPPAGE, chase_action, repair_signal_ask, reprice_limit
+from odte_scanner.trading.ticks import initial_buy_limit, normalize_option_limit
 from odte_scanner.trading.golden import golden_signal_kind
 from odte_scanner.trading.webull import WebullBroker, WebullOrderIntent, parse_occ_contract
 
@@ -256,12 +257,26 @@ def _flow_rows(option_flow: dict[str, Any] | list[dict[str, Any]] | None) -> lis
 
 
 def _with_occ(row: dict[str, Any]) -> dict[str, Any]:
-    """Copy a signal and let its OCC symbol override a drifted right or expiry."""
+    """Copy a signal and let its OCC symbol override a drifted right or expiry.
+
+    A contract for a different strike keeps that strike. The previous bid and
+    ask belonged to the signal strike, so they are dropped instead of riding
+    along onto the traded contract.
+    """
     ident = parse_occ_contract(row.get("contract"))
     if not ident:
         return row
     merged = dict(row)
+    old_strike = _f(row.get("strike"))
+    new_strike = _f(ident.get("strike"))
     merged.update(ident)
+    if old_strike is not None and new_strike is not None and abs(old_strike - new_strike) > 0.02:
+        merged["signal_strike"] = row.get("signal_strike", old_strike)
+        merged["signal_ask"] = row.get("signal_ask", row.get("ask"))
+        merged["bid"] = None
+        merged["ask"] = None
+        merged["mid"] = None
+        merged["mark"] = None
     return merged
 
 
@@ -1546,6 +1561,10 @@ class AutoTrader:
         price_key: str = "ask",
     ) -> WebullOrderIntent | None:
         row = _with_occ(row)
+        if str(row.get("symbol") or "").upper() != "SPX":
+            from odte_scanner.options.contract_quote import refresh_traded_quote
+
+            refresh_traded_quote(row)
         right = str(row.get("right") or right or "C").upper()
         if right in {"PUT", "P"}:
             right = "P"
@@ -1575,7 +1594,7 @@ class AutoTrader:
                     "WEBULL_ACCOUNT_ID_2 is the account number, not the internal account_id",
                 )
                 return None
-            ready_row, missing = _row_has_option_fields(row, price_key, "ask", "mid", "mark")
+            ready_row, missing = _row_has_option_fields(row, price_key, "ask", "mid", "mark", "chase_limit")
             if not ready_row:
                 self._note_filtered(row, missing)
                 return None
@@ -1604,7 +1623,7 @@ class AutoTrader:
             if kind == "sure_winner_gold" and self._symbol_has_unfilled_golden(sym):
                 self._note_filtered(row, "golden working buy already open for this symbol")
                 return None
-            ready_row, missing = _row_has_option_fields(row, price_key, "ask", "mid", "mark")
+            ready_row, missing = _row_has_option_fields(row, price_key, "ask", "mid", "mark", "chase_limit")
             if not ready_row:
                 self._note_filtered(row, missing)
                 return None
@@ -1620,11 +1639,18 @@ class AutoTrader:
             return None
 
         explicit_limit = _f(row.get("chase_limit"))
-        limit_for_size = (
-            explicit_limit
-            if explicit_limit is not None and explicit_limit > 0
-            else _f(row.get(price_key) or row.get("ask") or row.get("mid") or row.get("mark"))
-        )
+        live_ask = _f(row.get("live_ask")) or _f(row.get(price_key) or row.get("ask") or row.get("mid") or row.get("mark"))
+        live_bid = _f(row.get("live_bid")) or _f(row.get("bid"))
+        if explicit_limit is not None and explicit_limit > 0:
+            limit_for_size = normalize_option_limit(
+                explicit_limit,
+                side="BUY",
+                cap=live_ask if live_ask is not None and live_ask > 0 else None,
+            )
+        elif live_ask is not None and live_ask > 0:
+            limit_for_size = initial_buy_limit(live_bid, live_ask)
+        else:
+            limit_for_size = None
         quantity = self._paper_entry_qty(row, desk, second, limit_for_size)
 
         ok, why = (True, "gate off")
@@ -1678,6 +1704,7 @@ class AutoTrader:
                 "gate_reason": why,
                 "golden_kind": kind,
                 "original_qty": quantity,
+                **({"ask_cap": live_ask} if live_ask else {}),
                 **({"account_id": str(self.broker.account_id_2)} if second else {}),
                 **self._exit_plan_meta(row),
                 **(
@@ -1696,11 +1723,17 @@ class AutoTrader:
             },
             )
         if kind in {"sniper", "diamond", "afternoon_puts"}:
-            signal_ask = _f(row.get("signal_ask"))
-            if signal_ask is None or signal_ask <= 0:
-                signal_ask = _f(intent.limit_price)
-            if signal_ask is not None and signal_ask > 0:
-                intent.meta["signal_ask"] = signal_ask
+            # The baseline is the live ask of this contract, never the limit.
+            # A chase replacement keeps the baseline it already froze.
+            passed = _f(row.get("signal_ask"))
+            quoted = _f(row.get("live_ask")) or _f(row.get("ask"))
+            if row.get("signal_ask_live") and passed is not None and passed > 0:
+                intent.meta["signal_ask"] = passed
+                intent.meta["signal_ask_live"] = True
+            elif quoted is not None and quoted > 0:
+                intent.meta["signal_ask"] = quoted
+                if row.get("quote_source") in {"tradier", "polygon"} or row.get("live_ask") not in (None, "", 0):
+                    intent.meta["signal_ask_live"] = True
             started = str(row.get("chase_started_at") or intent.created_at or "")
             if started:
                 intent.meta["chase_started_at"] = started
@@ -2224,12 +2257,34 @@ class AutoTrader:
         moment = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
         return (moment.astimezone(timezone.utc) - started.astimezone(timezone.utc)).total_seconds()
 
-    def _hot_ask(self, order: WebullOrderIntent, boards: list[dict[str, Any]]) -> float | None:
+    def _hot_quote(
+        self,
+        order: WebullOrderIntent,
+        boards: list[dict[str, Any]],
+    ) -> tuple[float | None, float | None]:
+        """Live ask and bid of this order's contract. The board is the fallback.
+
+        A card for a different strike is ignored, so the 280 put cannot reprice
+        the 277.5 put.
+        """
+        from odte_scanner.options.contract_quote import fetch_contract_quote
+
+        fresh = fetch_contract_quote(
+            {
+                "symbol": order.symbol,
+                "expiry": order.expiry,
+                "strike": order.strike,
+                "right": order.right,
+                "contract": order.contract,
+            }
+        )
+        if fresh and _f(fresh.get("ask")):
+            return _f(fresh.get("ask")), _f(fresh.get("bid"))
         contract = str(order.contract or "")
         sym = str(order.symbol or "").upper()
         right = str(order.right or "C").upper()[:1]
         strike = _f(order.strike)
-        fallback: float | None = None
+        fallback: tuple[float | None, float | None] | None = None
         for board in boards:
             for row in board.get("signals") or []:
                 if not isinstance(row, dict):
@@ -2237,9 +2292,10 @@ class AutoTrader:
                 ask = _f(row.get("ask"))
                 if ask is None or ask <= 0:
                     continue
+                bid = _f(row.get("bid"))
                 row_contract = str(row.get("contract") or "")
                 if contract and row_contract and contract == row_contract:
-                    return ask
+                    return ask, bid
                 if str(row.get("symbol") or "").upper() != sym:
                     continue
                 row_right = str(row.get("right") or "C").upper()[:1]
@@ -2248,7 +2304,9 @@ class AutoTrader:
                 row_strike = _f(row.get("strike"))
                 if strike is not None and row_strike is not None and abs(row_strike - strike) > 0.02:
                     continue
-                fallback = ask
+                fallback = (ask, bid)
+        if fallback is None:
+            return None, None
         return fallback
 
     def _entry_chase_abandoned(self, symbol: str, contract: str | None, desk: str) -> bool:
@@ -2264,6 +2322,15 @@ class AutoTrader:
             if not occ and order.symbol == sym and order.desk == desk:
                 return True
         return False
+
+    def _note_unfilled_cancel(self, order: WebullOrderIntent, kind: str) -> None:
+        """Short Telegram note so a cancelled buy is not scored as a fill."""
+        try:
+            from odte_scanner.alerts.dispatcher import notify_unfilled_cancel
+
+            notify_unfilled_cancel(order.to_dict(), kind)
+        except Exception:  # noqa: BLE001
+            logger.info("unfilled cancel note not sent for %s", order.symbol)
 
     def _chase_working_entries(
         self,
@@ -2287,12 +2354,19 @@ class AutoTrader:
                 logger.info("cancel unfilled SPX %s — alert only", order.contract or "")
                 self.broker.cancel(order)
                 continue
-            if not _f((order.meta or {}).get("signal_ask")) and _f(order.limit_price):
-                order.meta["signal_ask"] = order.limit_price
             if not (order.meta or {}).get("chase_started_at") and order.created_at:
                 order.meta["chase_started_at"] = order.created_at
-            ask = self._hot_ask(order, boards)
-            signal_ask = _f((order.meta or {}).get("signal_ask"))
+            ask, bid = self._hot_quote(order, boards)
+            signal_ask, live_baseline = repair_signal_ask(
+                _f((order.meta or {}).get("signal_ask")),
+                ask,
+                bid,
+                live=bool((order.meta or {}).get("signal_ask_live")),
+            )
+            if signal_ask is not None:
+                order.meta["signal_ask"] = signal_ask
+            if live_baseline:
+                order.meta["signal_ask_live"] = True
             limit = _f(order.limit_price)
             past_window = past_afternoon if kind == "afternoon_puts" else past_morning
             action = chase_action(
@@ -2301,6 +2375,7 @@ class AutoTrader:
                 signal_ask=signal_ask,
                 age_sec=self._chase_age_sec(order, now),
                 past_window=past_window,
+                bid=bid,
             )
             if action == "hold":
                 continue
@@ -2309,21 +2384,22 @@ class AutoTrader:
                     order.meta["chase_capped"] = True
                     self.broker.save()
                     logger.info(
-                        "chase cap %s %s %s live ask %.2f is more than 25%% above signal ask %.2f — not replacing",
+                        "chase cap %s %s %s live ask %.2f is more than %.0f%% above signal ask %.2f — not replacing",
                         kind,
                         order.symbol,
                         order.contract or "",
                         float(ask or 0),
+                        CHASE_SLIPPAGE * 100.0,
                         float(signal_ask or 0),
                     )
                 continue
             if action == "cancel":
                 if past_window and kind == "afternoon_puts":
-                    reason = "past 14:15 CT entry window"
+                    reason = "past 14:15 CT entry window · not filled — cancelled"
                 elif past_window:
-                    reason = "past 10:30 CT entry window"
+                    reason = "past 10:30 CT entry window · not filled — cancelled"
                 else:
-                    reason = f"unfilled {CHASE_MAX_AGE_SEC // 60}m"
+                    reason = "not filled — cancelled"
                 logger.info(
                     "cancel unfilled %s %s %s — %s",
                     kind,
@@ -2336,6 +2412,8 @@ class AutoTrader:
                 self.broker.cancel(order)
                 if order.contract:
                     self._closed_contracts.add(str(order.contract))
+                if str(order.symbol or "").upper() != "SPX" and order.status == "cancelled":
+                    self._note_unfilled_cancel(order, kind)
                 continue
             if ask is None:
                 continue
@@ -2361,8 +2439,10 @@ class AutoTrader:
                     "expiry": order.expiry,
                     "strike": order.strike,
                     "ask": ask,
+                    "bid": bid,
                     "chase_limit": new_limit,
                     "signal_ask": signal_ask,
+                    "signal_ask_live": bool((order.meta or {}).get("signal_ask_live")),
                     "chase_started_at": (order.meta or {}).get("chase_started_at") or order.created_at,
                     "reprice_count": int((order.meta or {}).get("reprice_count") or 0) + 1,
                     "replaces": order.id,

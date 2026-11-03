@@ -68,7 +68,7 @@ def test_sniper_exit_line_matches_the_customer_copy():
     )
     assert text == (
         "🎯 SNIPER EXIT — MSFT 525P 10/30 · 1 contract · "
-        "Entry $4.75 @ 9:13 CT → Exit $6.65 @ 9:47 CT · +40.0% / +$190 · "
+        "Entry Filled @ $4.75 @ 9:13 CT → Exit Filled @ $6.65 @ 9:47 CT · +40.0% / +$190 · "
         "Target +25% hit · Today 1W/0L · +$190"
     )
     assert "Sure Winner" not in text
@@ -137,7 +137,8 @@ def test_pending_fill_after_two_minutes_and_not_before(tmp_path: Path):
     due = datetime(2026, 10, 30, 14, 2, 5, tzinfo=timezone.utc)
     alerts = collect_exit_alerts([order], now=due, seen=set())
     assert len(alerts) == 1
-    assert "pending fill" in alerts[0]["message"]
+    assert "Limit $5.94 (working)" in alerts[0]["message"]
+    assert "Ask $" not in alerts[0]["message"]
     assert "Target +25% hit" in alerts[0]["message"]
     path = tmp_path / "seen.json"
     sent: list[str] = []
@@ -472,12 +473,12 @@ def test_filled_exit_alerts_when_the_sell_never_stored_the_entry(tmp_path: Path)
     assert len(sent) == 1
     text = sent[0]
     assert "🎯 SNIPER EXIT — SPY 760C 11/2" in text
-    assert "Entry $1.80 @ 8:50 CT → Exit $2.59 @ 9:15 CT" in text
+    assert "Entry Filled @ $1.80 @ 8:50 CT → Exit Filled @ $2.59 @ 9:15 CT" in text
     assert "+43.9%" in text
     assert "+$79" in text
     assert "Target +25% hit" in text
     assert "Sure Winner" not in text
-    log = read_alert_log(day="2026-11-02", path=tmp_path / "alerts.jsonl")
+    log = read_alert_log(day=datetime.now(CT).strftime("%Y-%m-%d"), path=tmp_path / "alerts.jsonl")
     assert log["alerts"][0]["kind"] == "EXIT"
     assert log["alerts"][0]["symbol"] == "SPY"
     assert log["alerts"][0]["ok"] is True
@@ -525,5 +526,5 @@ def test_hot_sync_sends_the_exit_the_slow_scan_missed(tmp_path: Path, monkeypatc
     )
     assert trader._exit_alert_thread is not None
     trader._exit_alert_thread.join(3)
-    assert sent and "Entry $1.80 @ 8:50 CT" in sent[0]
+    assert sent and "Entry Filled @ $1.80 @ 8:50 CT" in sent[0]
     assert "2.59" in sent[0]
