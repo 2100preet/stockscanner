@@ -4993,6 +4993,12 @@ def create_app(config_path: str | None = None) -> Flask:
 
         return jsonify(public_view())
 
+    @app.get("/api/scorecard/daily_pnl")
+    def scorecard_daily_pnl_api():
+        from odte_scanner.scorecard.daily_pnl import build_scorecard_daily_pnl
+
+        return jsonify(build_scorecard_daily_pnl())
+
     @app.get("/api/edge")
     def edge_api():
         from odte_scanner.scorecard.service import public_view

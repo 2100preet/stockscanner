@@ -104,4 +104,20 @@ def apply_hot_overlay(
         "trips": report["trips"],
     }
     body["hot_at"] = hot.get("updated_at")
+    try:
+        from odte_scanner.scorecard.daily_pnl import build_scorecard_daily_pnl
+
+        modeled: list[dict[str, Any]] = []
+        for key in ("diamond", "sniper", "afternoon_puts"):
+            board = body.get(key)
+            if isinstance(board, dict):
+                modeled.extend(row for row in (board.get("spx_exits") or []) if isinstance(row, dict))
+        body["scorecard_daily_pnl"] = build_scorecard_daily_pnl(
+            book,
+            spx_exits=modeled,
+            load_side=True,
+            ledger_path=Path(ledger_path) if ledger_path else None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        body["scorecard_daily_pnl"] = {"ok": False, "error": str(exc)[:200]}
     return body

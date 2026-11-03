@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from odte_scanner.scorecard.daily_pnl import PAPER_LABEL
 from odte_scanner.scorecard.service import DISCLAIMER, MOVE_NOTE
 
 SECTION_HTML = f"""
@@ -12,6 +13,16 @@ SECTION_HTML = f"""
       <h2>Scorecard</h2>
       <p class="lede" id="scorecardDisclaimer">{DISCLAIMER}</p>
       <p class="status" id="scorecardChain">Checking the public ledger…</p>
+      <h3>Daily P&amp;L</h3>
+      <p class="lede" id="dailyPnlLabel">{PAPER_LABEL}</p>
+      <p class="status" id="dailyPnlGap"></p>
+      <div id="dailyPnlChart"></div>
+      <p class="lede" id="dailyPnlOpen"></p>
+      <div style="overflow-x:auto">
+        <table id="dailyPnlTable"></table>
+      </div>
+      <h3>Not in the Webull total</h3>
+      <div id="dailyPnlSide" class="empty">SPX modeled results and the internal journal stay out of the paper total.</div>
       <div class="metric-row" id="scorecardMetrics"></div>
       <div class="toolbar" id="scorecardFilters">
         <label class="status">Type
@@ -106,9 +117,152 @@ CLIENT_JS = r"""
       }
       return { count: rows.length, eod: horizon("eod"), d1: horizon("d1"), d5: horizon("d5") };
     }
+    function dailyPnlMoney(value) {
+      if (value == null || Number.isNaN(Number(value))) return "—";
+      var n = Number(value);
+      var body = "$" + Math.abs(n).toFixed(2);
+      if (n > 0) return '<span class="up">+' + body + "</span>";
+      if (n < 0) return '<span class="down">−' + body + "</span>";
+      return body;
+    }
+    function dailyPnlRecord(cell) {
+      cell = cell || {};
+      var pnl = dailyPnlMoney(cell.pnl || 0);
+      var rec = (cell.wins || 0) + "W/" + (cell.losses || 0) + "L";
+      if (!cell.trades) return "—";
+      return pnl + " · " + rec;
+    }
+    function dailyPnlChart(chart) {
+      if (!chart || !chart.length) return "";
+      var w = 640, h = 150, padL = 8, padR = 8, padT = 12, padB = 22;
+      var pnls = chart.map(function (row) { return Number(row.pnl) || 0; });
+      var cums = chart.map(function (row) { return Number(row.cumulative) || 0; });
+      var max = 1;
+      pnls.concat(cums).forEach(function (n) { max = Math.max(max, Math.abs(n)); });
+      var innerW = w - padL - padR;
+      var innerH = h - padT - padB;
+      var mid = padT + innerH / 2;
+      var step = innerW / chart.length;
+      var y = function (n) { return mid - (n / max) * (innerH / 2); };
+      var bars = chart.map(function (row, i) {
+        var pnl = Number(row.pnl) || 0;
+        var x = padL + i * step + step * 0.2;
+        var bw = Math.max(2, step * 0.6);
+        var y0 = y(0), y1 = y(pnl);
+        var top = Math.min(y0, y1);
+        var color = pnl > 0 ? "#3ecf8e" : (pnl < 0 ? "#ff6b5a" : "#8b9e94");
+        return '<rect x="' + x.toFixed(1) + '" y="' + top.toFixed(1) + '" width="' + bw.toFixed(1)
+          + '" height="' + Math.max(1, Math.abs(y1 - y0)).toFixed(1) + '" fill="' + color + '"></rect>';
+      }).join("");
+      var line = chart.map(function (row, i) {
+        var x = padL + i * step + step * 0.5;
+        return x.toFixed(1) + "," + y(Number(row.cumulative) || 0).toFixed(1);
+      }).join(" ");
+      var label = chart.length ? (scEsc(chart[0].day) + " → " + scEsc(chart[chart.length - 1].day)) : "";
+      return '<svg viewBox="0 0 ' + w + " " + h + '" width="100%" height="150" role="img" aria-label="Daily realized bars and cumulative line">'
+        + '<line x1="' + padL + '" y1="' + mid + '" x2="' + (w - padR) + '" y2="' + mid + '" stroke="rgba(238,244,240,.25)"></line>'
+        + bars
+        + '<polyline fill="none" stroke="#f0c14b" stroke-width="2" points="' + line + '"></polyline>'
+        + '<text x="' + padL + '" y="' + (h - 6) + '" fill="#8b9e94" font-size="11">' + label + " · bars daily, line cumulative</text>"
+        + "</svg>";
+    }
+    function renderSideDays(block) {
+      var days = (block && block.days) || [];
+      if (!days.length) return "<p class='empty'>" + scEsc((block && block.label) || "None yet.") + "</p>";
+      var rows = days.map(function (row) {
+        var extra = row.unrealized_pnl_usd ? (" · unrealized " + dailyPnlMoney(row.unrealized_pnl_usd)) : "";
+        return "<tr><td class='mono'>" + scEsc(row.day) + "</td><td class='mono'>" + dailyPnlMoney(row.realized_pnl_usd)
+          + "</td><td class='mono'>" + scEsc(row.trades || 0) + extra + "</td></tr>";
+      }).join("");
+      return "<p class='lede'>" + scEsc(block.label || "") + "</p><table><thead><tr><th>Day</th><th>Realized</th><th>Trades</th></tr></thead><tbody>"
+        + rows + "</tbody></table>";
+    }
+    function renderScorecardDailyPnl() {
+      var table = document.getElementById("dailyPnlTable");
+      if (!table) return;
+      var board = window.SCORECARD_DAILY_PNL || (DATA && DATA.scorecard_daily_pnl) || null;
+      var gap = document.getElementById("dailyPnlGap");
+      var chart = document.getElementById("dailyPnlChart");
+      var openEl = document.getElementById("dailyPnlOpen");
+      var side = document.getElementById("dailyPnlSide");
+      var label = document.getElementById("dailyPnlLabel");
+      if (label && board && board.label) label.textContent = board.label;
+      if (!board || board.ok === false) {
+        if (gap) gap.textContent = (board && board.error) ? "Daily P&L is not available yet." : "Loading the paper ledger…";
+        return;
+      }
+      if (gap) gap.textContent = board.gap_note || "";
+      if (chart) chart.innerHTML = dailyPnlChart(board.chart || []);
+      var totals = board.totals || {};
+      if (openEl) {
+        if (!totals.open_n) {
+          openEl.textContent = "No open Webull paper positions.";
+        } else if (totals.unrealized_pnl_usd == null) {
+          openEl.textContent = totals.open_n + " open today. Unrealized mark unavailable.";
+        } else {
+          openEl.innerHTML = totals.open_n + " open today · " + (totals.unrealized_label || "unrealized")
+            + " " + dailyPnlMoney(totals.unrealized_pnl_usd) + " (unrealized, not in the realized total).";
+        }
+      }
+      var desks = board.desks || [];
+      var head = "<thead><tr><th>Day</th><th>Realized</th><th>Cumulative</th><th>W / L</th><th>Win rate</th><th>Trades</th>"
+        + desks.map(function (name) { return "<th>" + scEsc(name) + "</th>"; }).join("")
+        + "</tr></thead>";
+      var rows = (board.days || []).map(function (row) {
+        var rate = row.win_rate_pct == null ? "—" : (Number(row.win_rate_pct).toFixed(1) + "%");
+        var openNote = row.open_n ? ("<div class='why'>" + row.open_n + " open"
+          + (row.unrealized_label ? (" · " + scEsc(row.unrealized_label)) : "")
+          + (row.unrealized_pnl_usd == null ? "" : (" " + dailyPnlMoney(row.unrealized_pnl_usd)))
+          + "</div>") : "";
+        var contractNote = row.contracts_note ? ("<div class='why'>" + scEsc(row.contracts_note) + "</div>") : "";
+        var logNote = row.from_retained_log ? "<div class='why'>retained round-trip log</div>" : "";
+        var cells = desks.map(function (name) {
+          return "<td class='mono'>" + dailyPnlRecord((row.desks || {})[name]) + "</td>";
+        }).join("");
+        return "<tr><td class='mono'>" + scEsc(row.day) + openNote + "</td>"
+          + "<td class='mono'>" + dailyPnlMoney(row.realized_pnl_usd) + "</td>"
+          + "<td class='mono'>" + dailyPnlMoney(row.cumulative_pnl_usd) + "</td>"
+          + "<td class='mono'>" + scEsc((row.wins || 0) + "W/" + (row.losses || 0) + "L") + "</td>"
+          + "<td class='mono'>" + scEsc(rate) + "</td>"
+          + "<td class='mono'>" + scEsc(row.trades || 0) + contractNote + logNote + "</td>"
+          + cells + "</tr>";
+      }).join("");
+      table.innerHTML = head + "<tbody>" + (rows || "<tr><td class='empty'>No closed paper fills in the retained history.</td></tr>") + "</tbody>";
+      if (side) {
+        var journal = board.journal || {};
+        var sleeve = journal.webull_sleeve_fills || [];
+        var sleeveHtml = "";
+        if (sleeve.length) {
+          sleeveHtml = "<p class='lede'>Webull fills on journal sleeves, still not in the paper total.</p><table><tbody>"
+            + sleeve.map(function (row) {
+              return "<tr><td class='mono'>" + scEsc(row.day) + "</td><td>" + scEsc(row.desk)
+                + "</td><td class='mono'>" + dailyPnlMoney(row.realized_pnl_usd) + "</td></tr>";
+            }).join("") + "</tbody></table>";
+        }
+        side.innerHTML = renderSideDays(board.spx_modeled) + renderSideDays(journal) + sleeveHtml;
+      }
+    }
+    function ensureDailyPnlPoll() {
+      if (window.__dailyPnlPoll || window.SIGNAL_DESK_STATIC) return;
+      window.__dailyPnlPoll = 1;
+      function pull() {
+        fetch("/api/scorecard/daily_pnl?t=" + Date.now(), { cache: "no-store" })
+          .then(function (res) { return res.ok ? res.json() : null; })
+          .then(function (body) {
+            if (!body || !body.days) return;
+            window.SCORECARD_DAILY_PNL = body;
+            renderScorecardDailyPnl();
+          })
+          .catch(function () {});
+      }
+      pull();
+      setInterval(pull, 5000);
+    }
     function renderScorecard() {
       var root = document.getElementById("tab-scorecard") || document.getElementById("scorecardRoot");
       if (!root) return;
+      ensureDailyPnlPoll();
+      renderScorecardDailyPnl();
       if (!root.dataset.bound) {
         root.dataset.bound = "1";
         root.querySelectorAll("select,input").forEach(function (el) {
@@ -254,6 +408,13 @@ def render_scorecard_page(*, live: bool = False, initial: dict[str, Any] | None 
     """Standalone public page. ``initial`` is embedded so the static file still renders offline."""
     blob = json.dumps(initial or {"rows": [], "summary": {}, "chain": {"ok": True, "entries": 0}, "disclaimer": DISCLAIMER, "move_note": MOVE_NOTE})
     blob = blob.replace("<", "\\u003c")
+    try:
+        from odte_scanner.scorecard.daily_pnl import build_scorecard_daily_pnl
+
+        daily_payload = build_scorecard_daily_pnl()
+    except Exception as exc:  # noqa: BLE001
+        daily_payload = {"ok": False, "label": PAPER_LABEL, "days": [], "error": str(exc)[:200]}
+    daily_blob = json.dumps(daily_payload).replace("<", "\\u003c")
     refresh = "This page reloads the ledger about once a minute." if live else "This page is the public snapshot published with the desk."
     section = SECTION_HTML.replace('class="tabpane" id="tab-scorecard"', 'id="scorecardEmbedded"').replace(
         "<h2>Scorecard</h2>", ""
@@ -329,6 +490,7 @@ def render_scorecard_page(*, live: bool = False, initial: dict[str, Any] | None 
   </div>
   <script>
     let DATA = {blob};
+    window.SCORECARD_DAILY_PNL = {daily_blob};
     {CLIENT_JS}
     {_boot_js(live=live)}
   </script>

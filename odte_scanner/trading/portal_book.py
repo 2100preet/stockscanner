@@ -61,6 +61,40 @@ def status_label(order: dict[str, Any] | None) -> str:
     return status or "working limit"
 
 
+def public_desk_name(
+    tier: str | None,
+    order: dict[str, Any] | None = None,
+    buy: dict[str, Any] | None = None,
+) -> str:
+    """Customer-facing desk. The internal sure-winner name is never returned."""
+    if tier == "diamond":
+        return "Diamond"
+    if tier == "sniper":
+        return "Sniper"
+    if tier == "afternoon":
+        return "Afternoon Puts"
+    if tier == "gold":
+        return "Gold Setup"
+    desk = ""
+    for src in (buy, order):
+        if isinstance(src, dict) and src.get("desk"):
+            desk = str(src.get("desk") or "")
+            break
+    from odte_scanner.edge.gate import source_for_webull
+
+    name = source_for_webull(desk)
+    low = name.lower().replace("-", " ").replace("_", " ")
+    if "sure winner" in low or low in {"sure winner", "gold"}:
+        return "Gold Setup"
+    if low in {"afternoon", "afternoon puts"}:
+        return "Afternoon Puts"
+    if name in {"Diamond", "Sniper", "Gold Setup", "Afternoon Puts"}:
+        return name
+    if not name or name == "unknown":
+        return "Other"
+    return name
+
+
 def tier_of(order: dict[str, Any] | None) -> str | None:
     """Sniper, Diamond, Afternoon Puts, or Gold. Other desks are not this book."""
     if not isinstance(order, dict):
@@ -202,8 +236,18 @@ def _qty(order: dict[str, Any]) -> int:
         return 1
 
 
-def round_trips(orders: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
-    """One row per filled sell. Entry is the sell's stored price or the buy fill."""
+def round_trips(
+    orders: list[dict[str, Any]] | None,
+    *,
+    include_other_desks: bool = False,
+) -> list[dict[str, Any]]:
+    """One row per filled sell. Entry is the sell's stored price or the buy fill.
+
+    The default book is Diamond, Sniper, Afternoon Puts, and Gold Setup — the
+    same rows the Edge tab and the exit alerts price. ``include_other_desks``
+    keeps every other non-SPX Webull fill with the same entry rule. SPX is
+    never a row.
+    """
     book = [order for order in (orders or []) if isinstance(order, dict)]
     buys: dict[str, dict[str, Any]] = {}
     for order in book:
@@ -230,7 +274,10 @@ def round_trips(orders: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
         contract = str(order.get("contract") or "")
         buy = buys.get(contract)
         tier = tier_of(order) or (tier_of(buy) if buy is not None else None)
-        if tier not in {"sniper", "diamond", "gold", "afternoon"} or exit_px is None or exit_px <= 0:
+        routed = tier in {"sniper", "diamond", "gold", "afternoon"}
+        if exit_px is None or exit_px <= 0:
+            continue
+        if not routed and not include_other_desks:
             continue
         entry = _num(_meta(order).get("entry_price"))
         if (entry is None or entry <= 0) and buy is not None:
@@ -243,6 +290,7 @@ def round_trips(orders: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
         trips.append(
             {
                 "tier": tier,
+                "desk": public_desk_name(tier, order, buy),
                 "symbol": str(order.get("symbol") or "").upper(),
                 "contract": contract,
                 "strike": order.get("strike"),
@@ -255,6 +303,15 @@ def round_trips(orders: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
                 "contracts": qty,
                 "pnl": round(pnl, 2),
                 "reason": str(order.get("reason") or ""),
+                "order_id": str(order.get("id") or ""),
+                "raw_desk": str((buy or {}).get("desk") or order.get("desk") or ""),
+                "exited_at": str(order.get("updated_at") or order.get("created_at") or ""),
+                "entered_at": str(
+                    (buy or {}).get("updated_at")
+                    or (buy or {}).get("created_at")
+                    or _meta(order).get("entry_at")
+                    or ""
+                ),
             }
         )
     return trips

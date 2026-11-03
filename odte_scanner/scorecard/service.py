@@ -27,8 +27,8 @@ ROOT = Path(__file__).resolve().parents[2]
 logger = logging.getLogger(__name__)
 
 DISCLAIMER = (
-    "Hypothetical model-signal results, not actual trades and not real-money returns. "
-    "Webull paper or sandbox activity is not shown here and is not real performance. "
+    "The signal table is hypothetical model-signal results, not actual trades and not real-money returns. "
+    "Daily P&L is the Webull paper account, labeled in that section, and is not real-money performance. "
     "Past performance does not guarantee future results. This is not investment advice."
 )
 
