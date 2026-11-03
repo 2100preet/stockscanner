@@ -145,6 +145,12 @@ PAGE = r"""
       box-shadow: 0 10px 28px rgba(16, 185, 129, .14), 0 10px 28px rgba(0,0,0,.28);
     }
     .pulse-banner.sniper .pb-title em { color: #047857; }
+    .pulse-banner.afternoon {
+      border-color: rgba(251, 146, 60, .75);
+      background: linear-gradient(105deg, rgba(255, 237, 213, .72), rgba(40, 18, 8, .78) 48%, rgba(251, 146, 60, .18));
+      box-shadow: 0 10px 28px rgba(234, 88, 12, .14), 0 10px 28px rgba(0,0,0,.28);
+    }
+    .pulse-banner.afternoon .pb-title em { color: #c2410c; }
     .pulse-banner.sure-active {
       border-color: rgba(240,193,75,.55);
       background:
@@ -318,6 +324,7 @@ PAGE = r"""
     <div id="mustTradeBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="diamondBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="sniperBanner" class="pulse-banner" aria-live="polite"></div>
+    <div id="afternoonBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="loadNote" class="loading" style="display:none;margin-bottom:.6rem"></div>
     <div id="alertToasts" aria-live="assertive"></div>
 
@@ -4278,11 +4285,95 @@ PAGE = r"""
         <div class="pb-grid">${rows.map(card).join("")}</div>`;
     }
 
+    function afternoonMoney(value) {
+      if (value == null || value === "" || Number.isNaN(Number(value))) return "—";
+      const n = Number(value);
+      const sign = n > 0 ? "+" : (n < 0 ? "−" : "");
+      return sign + "$" + Math.abs(n).toFixed(Math.abs(n - Math.round(n)) < 0.005 ? 0 : 2);
+    }
+    function afternoonPct(value) {
+      if (value == null || value === "" || Number.isNaN(Number(value))) return "—";
+      const n = Number(value);
+      const sign = n > 0 ? "+" : (n < 0 ? "−" : "");
+      return sign + Math.abs(n).toFixed(1) + "%";
+    }
+    function renderAfternoonBanner() {
+      const el = document.getElementById("afternoonBanner");
+      if (!el) return;
+      const board = DATA.afternoon_puts || {};
+      const rows = (board.signals || []).slice(0, 2);
+      el.classList.add("active", "afternoon");
+      const now = chicagoMinutes();
+      const open = 10 * 60;
+      const close = 14 * 60 + 15;
+      let phase = board.phase || "";
+      if (!phase) {
+        if (now < open) phase = "waiting";
+        else if (!rows.length && now < close) phase = "scanning";
+        else if (!rows.length) phase = "closed";
+        else phase = rows.some(function (row) { return !row.closed; }) ? "triggered" : "closed";
+      }
+      const label = phase === "waiting" ? "Waiting — window opens 10:00 CT"
+        : phase === "scanning" ? "Scanning SPY QQQ SPX — no trigger yet"
+        : phase === "triggered" ? "Triggered"
+        : (rows.length ? "Closed" : "No Afternoon Puts today");
+      if (!rows.length) {
+        el.innerHTML = `
+        <div class="pb-head">
+          <div>
+            <h2 class="pb-title">🌅 Afternoon <em>Puts</em></h2>
+            <div class="pb-sub">${board.note || "SPY and QQQ paper. SPX alert only. Flat 2:45 PM CT."}</div>
+          </div>
+          <div class="status">${label.toUpperCase()}</div>
+        </div>
+        <div class="pb-grid"><div class="pulse-card afternoon"><p class="pc-why">${label}</p></div></div>`;
+        return;
+      }
+      const card = (row) => {
+        const view = tradedView(row);
+        const state = row.closed ? "closed" : "triggered";
+        const entryPx = row.fill_price != null ? row.fill_price : row.entry_premium;
+        const exitPx = row.exit_fill != null ? row.exit_fill : row.exit_premium;
+        const contracts = row.contracts || 1;
+        let pct = row.option_pct;
+        let dollars = row.pnl_usd;
+        if (row.fill_price != null && row.exit_fill != null && Number(row.fill_price) > 0) {
+          const entry = Number(row.fill_price);
+          const exit = Number(row.exit_fill);
+          pct = (exit - entry) / entry * 100;
+          dollars = (exit - entry) * 100 * contracts;
+        }
+        return `<div class="pulse-card afternoon">
+          <div class="pc-top">
+            <div class="pc-sym">${row.symbol}</div>
+            <div class="pc-tag afternoon">🌅 ${state.toUpperCase()}</div>
+          </div>
+          <div class="pc-meta">
+            <div><span>Strike</span><br><strong>${view.strike}</strong>${view.status ? `<div class="why">${view.status}</div>` : ""}</div>
+            <div><span>Signal</span><br><strong>${row.at_ct || "—"} CT</strong></div>
+            <div><span>Entry</span><br><strong>${entryPx == null ? view.price : ("$" + fmt(entryPx, 2))}</strong></div>
+            <div><span>Exit</span><br><strong>${exitPx == null ? "—" : ("$" + fmt(exitPx, 2))}</strong><div class="why">${afternoonPct(pct)} · ${afternoonMoney(dollars)} · ${contracts} contract${contracts === 1 ? "" : "s"}</div></div>
+          </div>
+          <p class="pc-why">${row.detail || ""} · <strong>${row.exit_plan || ""}</strong></p>
+        </div>`;
+      };
+      el.innerHTML = `
+        <div class="pb-head">
+          <div>
+            <h2 class="pb-title">🌅 Afternoon <em>Puts</em></h2>
+            <div class="pb-sub">${board.note || "SPY and QQQ paper. SPX alert only. Flat 2:45 PM CT."}</div>
+          </div>
+          <div class="status">${label.toUpperCase()} ${rows.length}</div>
+        </div>
+        <div class="pb-grid">${rows.map(card).join("")}</div>`;
+    }
+
     function paint() {
       try { renderScorecard(); } catch (err) { console.error(err); }
       try { renderEdge(); } catch (err) { console.error(err); }
       try { renderDiamondBanner(); } catch (err) { console.error(err); }
       try { renderSniperBanner(); } catch (err) { console.error(err); }
+      try { renderAfternoonBanner(); } catch (err) { console.error(err); }
       try { renderSpxStrategy(); } catch (err) { console.error(err); }
       renderMustTradeBanner();
       renderNowBoard();

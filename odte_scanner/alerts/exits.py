@@ -26,10 +26,11 @@ PENDING_AFTER_SEC = 120
 _TIER_LABEL = {
     "diamond": ("💎", "DIAMOND"),
     "sniper": ("🎯", "SNIPER"),
+    "afternoon": ("🌅", "AFTERNOON PUTS"),
     "gold": ("⭐", "GOLD SETUP"),
 }
-_TIER_TARGET = {"diamond": 30, "sniper": 25, "gold": 30}
-_TIER_STOP = {"diamond": 40, "sniper": 40, "gold": 50}
+_TIER_TARGET = {"diamond": 30, "sniper": 25, "afternoon": 100, "gold": 30}
+_TIER_STOP = {"diamond": 40, "sniper": 40, "afternoon": 40, "gold": 50}
 _FILLED = {"filled", "partial"}
 _WORKING = {"submitted", "partial"}
 
@@ -137,6 +138,8 @@ def plain_exit_reason(detail: str, *, tier: str = "") -> str:
         return "Trail"
     if "10:30" in text or "10:30" in low:
         return "10:30 CT flat"
+    if "2:45" in text or "14:45" in low:
+        return "2:45 PM CT flat"
     if "2:30" in text or "14:30" in low:
         return "2:30 PM CT flat"
     if low in {"flat", "flatten"}:
@@ -226,6 +229,8 @@ def _tier_of_buy(order: Any) -> str | None:
         return "diamond"
     if kind == "sniper" or desk == "sniper":
         return "sniper"
+    if kind == "afternoon_puts" or desk == "afternoon_puts":
+        return "afternoon"
     if kind in {"sure_winner_gold", "sure_winner"} or desk == "sure_winner":
         return "gold"
     return None
@@ -469,6 +474,7 @@ def dispatch_exit_alerts(
     seen_path: str | Path | None = None,
     diamond: dict[str, Any] | None = None,
     sniper: dict[str, Any] | None = None,
+    afternoon: dict[str, Any] | None = None,
     send: Callable[[str], dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Send at most one Telegram line per order id. Returns the lines that went out."""
@@ -476,7 +482,7 @@ def dispatch_exit_alerts(
     path = Path(seen_path) if seen_path else DEFAULT_SEEN
     seen = _load_seen(path)
     spx: list[dict[str, Any]] = []
-    for board, tier in ((diamond, "diamond"), (sniper, "sniper")):
+    for board, tier in ((diamond, "diamond"), (sniper, "sniper"), (afternoon, "afternoon")):
         if not isinstance(board, dict):
             continue
         for row in board.get("spx_exits") or []:

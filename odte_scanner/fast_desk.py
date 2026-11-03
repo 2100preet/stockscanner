@@ -30,6 +30,9 @@ HOT_START = clock(8, 30)
 # 10:30 is the entry cutoff. The extra minutes let an unfilled buy cancel
 # on this loop instead of waiting for the next focus scan.
 HOT_END = clock(10, 40)
+# Afternoon Puts enters 10:00–14:15 CT. The loop stays up through the 14:45 flat.
+AFTERNOON_START = clock(10, 0)
+AFTERNOON_END = clock(14, 50)
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -58,6 +61,18 @@ def in_hot_window(now: datetime | None = None) -> bool:
         return False
     current = ct.time()
     return HOT_START <= current < HOT_END
+
+
+def in_afternoon_window(now: datetime | None = None) -> bool:
+    """Weekday 10:00–14:50 America/Chicago. Entries stop at 14:15; exits run to 14:45."""
+    moment = now or datetime.now(timezone.utc)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    ct = moment.astimezone(CT)
+    if ct.weekday() >= 5:
+        return False
+    current = ct.time()
+    return AFTERNOON_START <= current < AFTERNOON_END
 
 
 def load_hot_boards(now: datetime | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -234,16 +249,166 @@ def run_fast_desk_cycle(
     }
 
 
+def _default_afternoon_route(board: dict[str, Any], now: datetime, config_path: str | None) -> dict[str, Any]:
+    """Paper route for Afternoon Puts. Does not submit a Sniper or Diamond buy."""
+    from odte_scanner.config import load_config
+    from odte_scanner.edge.gate import edge_gate_enabled
+    from odte_scanner.live_desk import resolve_webull_live_flags
+    from odte_scanner.signals.exit_rules import load_exit_rules
+    from odte_scanner.trading.auto_trader import AutoTrader, paper_risk_kwargs
+    from odte_scanner.trading.webull import WebullBroker
+
+    cfg = load_config(config_path)
+    lt = cfg.get("live_trading") or {}
+    flags = resolve_webull_live_flags(lt)
+    ledger = Path(lt.get("ledger_path", "outputs/webull_orders.json"))
+    if not ledger.is_absolute():
+        ledger = ROOT / ledger
+    broker = WebullBroker(
+        enabled=bool(flags["enabled"]),
+        dry_run=bool(flags["dry_run"]),
+        region=str(lt.get("region") or "us"),
+        sandbox=bool(flags["sandbox"]),
+        paper=bool(flags["paper"]),
+        account_id=flags.get("account_id") or lt.get("account_id"),
+        app_key=lt.get("app_key"),
+        app_secret=lt.get("app_secret"),
+        ledger_path=ledger,
+        submit_interval_sec=float(lt.get("submit_interval_sec", 1.5)),
+    )
+    trader = AutoTrader(
+        broker,
+        require_perfect_hist=bool(lt.get("require_perfect_hist", True)),
+        min_hist_win_pct=float(lt.get("min_hist_win_pct", 100)),
+        min_hist_win_samples=int(lt.get("min_hist_win_samples", 3)),
+        desks=dict(lt.get("desks") or {}) or None,
+        max_contracts=int(lt.get("max_contracts", 1)),
+        max_orders_per_sync=int(lt.get("max_orders_per_sync", 3)),
+        max_golden_buys_per_sync=int(lt.get("max_golden_buys_per_sync", 2)),
+        golden_only=bool(flags.get("golden_only", True)),
+        close_legacy_positions=bool(lt.get("close_legacy_positions", False)),
+        second_desk=str(lt.get("second_desk") or "challenge"),
+        exit_rules=load_exit_rules(lt.get("exits")),
+        **paper_risk_kwargs(lt, cfg.get("risk") or {}),
+        edge_gate=edge_gate_enabled(cfg),
+    )
+    return trader.sync_hot(afternoon=board, now=now)
+
+
+def run_afternoon_puts_cycle(
+    config_path: str | None = None,
+    *,
+    now: datetime | None = None,
+    board: dict[str, Any] | None = None,
+    load_board: Callable[..., dict[str, Any]] | None = None,
+    dispatch: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    route: Callable[..., dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Refresh Afternoon Puts, route the paper buy, then alert. The focus scan is not used."""
+    moment = now or datetime.now(timezone.utc)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    if not in_afternoon_window(moment) and not _env_flag("FAST_DESK_ALWAYS", False):
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "outside 10:00-14:50 CT",
+            "scan": "not_used",
+        }
+    if board is None:
+        try:
+            loader = load_board
+            if loader is None:
+                from odte_scanner.signals.afternoon_puts_board import load_afternoon_board
+
+                loader = load_afternoon_board
+            board = loader(moment)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("afternoon puts board failed: %s", exc)
+            return {"ok": False, "error": str(exc)[:200], "scan": "not_used"}
+    board = board if isinstance(board, dict) else {}
+    snapshot = {"afternoon_puts": board}
+    route_meta: dict[str, Any] = {"ok": False}
+    try:
+        if route is None:
+            route_meta = _default_afternoon_route(board, moment, config_path)
+        else:
+            route_meta = route(board, moment) or {}
+    except Exception as exc:  # noqa: BLE001
+        route_meta = {"ok": False, "error": str(exc)[:200]}
+        logger.exception("afternoon puts route failed: %s", exc)
+    try:
+        from odte_scanner.alerts.dispatcher import promote_routed_hot_alerts
+
+        routed_rows = list((route_meta or {}).get("submitted") or [])
+        routed_rows.extend(list((route_meta or {}).get("recent") or []))
+        promote_routed_hot_alerts(snapshot, routed_rows)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("afternoon puts promote failed: %s", exc)
+    sample = None
+    try:
+        from odte_scanner.alerts.dispatcher import collect_trade_alerts
+
+        preview = collect_trade_alerts(snapshot)
+        if preview:
+            sample = preview[0].get("message")
+    except Exception as exc:  # noqa: BLE001
+        logger.info("afternoon puts preview failed: %s", exc)
+    alert_meta: dict[str, Any] = {"ok": False}
+    try:
+        sender = dispatch or _default_dispatch
+        alert_meta = sender(snapshot) or {"ok": False}
+        thread = alert_meta.get("thread") if isinstance(alert_meta, dict) else None
+        if isinstance(thread, threading.Thread):
+            global last_alert_thread
+            last_alert_thread = thread
+            alert_meta = {key: value for key, value in alert_meta.items() if key != "thread"}
+    except Exception as exc:  # noqa: BLE001
+        alert_meta = {"ok": False, "error": str(exc)[:200]}
+        logger.exception("afternoon puts alert failed: %s", exc)
+    try:
+        from odte_scanner.hot_state import publish_hot
+
+        publish_hot(afternoon=board)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("afternoon puts publish failed: %s", exc)
+    try:
+        from odte_scanner.scorecard.service import observe_snapshot
+
+        observe_snapshot(afternoon=board, now=moment, skip_eval=True)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("afternoon puts scorecard failed: %s", exc)
+    logger.info(
+        "afternoon puts cycle signals=%s sent=%s",
+        len(board.get("signals") or []),
+        (alert_meta or {}).get("sent"),
+    )
+    return {
+        "ok": True,
+        "skipped": False,
+        "scan": "not_used",
+        "alerts": alert_meta,
+        "route": route_meta,
+        "sample_alert": sample,
+        "afternoon_signals": len(board.get("signals") or []),
+        "phase": board.get("phase"),
+    }
+
+
 def _worker_loop(config_path: str | None) -> None:
     pause = fast_pause_sec()
-    logger.info("Fast Sniper/Diamond desk started pause=%ss", pause)
+    logger.info("Fast desk started pause=%ss", pause)
     while True:
         try:
-            if in_hot_window() or _env_flag("FAST_DESK_ALWAYS", False):
-                run_fast_desk_cycle(config_path)
-            else:
+            hot = in_hot_window() or _env_flag("FAST_DESK_ALWAYS", False)
+            afternoon = in_afternoon_window() or _env_flag("FAST_DESK_ALWAYS", False)
+            if not hot and not afternoon:
                 time.sleep(30)
                 continue
+            if hot:
+                run_fast_desk_cycle(config_path)
+            if afternoon:
+                run_afternoon_puts_cycle(config_path)
         except Exception as exc:  # noqa: BLE001
             logger.exception("fast desk worker crash: %s", exc)
         time.sleep(fast_pause_sec())

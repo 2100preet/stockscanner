@@ -62,7 +62,7 @@ def status_label(order: dict[str, Any] | None) -> str:
 
 
 def tier_of(order: dict[str, Any] | None) -> str | None:
-    """Sniper, Diamond, or Gold. Other desks are not this book."""
+    """Sniper, Diamond, Afternoon Puts, or Gold. Other desks are not this book."""
     if not isinstance(order, dict):
         return None
     meta = _meta(order)
@@ -70,6 +70,8 @@ def tier_of(order: dict[str, Any] | None) -> str | None:
         text = str(value or "").lower()
         if text in {"sniper", "diamond"}:
             return text
+        if text in {"afternoon", "afternoon_puts", "afternoonputs"}:
+            return "afternoon"
         if text in {"sure_winner", "sure_winner_gold", "gold"}:
             return "gold"
     return None
@@ -228,7 +230,7 @@ def round_trips(orders: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
         contract = str(order.get("contract") or "")
         buy = buys.get(contract)
         tier = tier_of(order) or (tier_of(buy) if buy is not None else None)
-        if tier not in {"sniper", "diamond", "gold"} or exit_px is None or exit_px <= 0:
+        if tier not in {"sniper", "diamond", "gold", "afternoon"} or exit_px is None or exit_px <= 0:
             continue
         entry = _num(_meta(order).get("entry_price"))
         if (entry is None or entry <= 0) and buy is not None:

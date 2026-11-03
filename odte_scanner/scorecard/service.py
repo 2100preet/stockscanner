@@ -534,11 +534,13 @@ def observe_snapshot(
     option_flow: Any = None,
     diamond: Any = None,
     sniper: Any = None,
+    afternoon: Any = None,
     scores: Any = None,
     spx_board: dict[str, Any] | None = None,
     now: datetime | None = None,
     fetch_bars: FetchBars | None = None,
     force_eval: bool = False,
+    skip_eval: bool = False,
 ) -> dict[str, Any]:
     """Append newly fired signals, then evaluate due outcomes.
 
@@ -557,6 +559,7 @@ def observe_snapshot(
         option_flow=option_flow,
         diamond=diamond,
         sniper=sniper,
+        afternoon=afternoon,
         scores=scores,
         now=moment,
     )
@@ -573,7 +576,7 @@ def observe_snapshot(
             payload.get("direction"),
         )
 
-    evaluate = fetch_bars is not None or force_eval or _due_for_eval(False)
+    evaluate = False if skip_eval else (fetch_bars is not None or force_eval or _due_for_eval(False))
     if evaluate and _eval_enabled():
         _append_evaluations(events, now=moment, fetch_bars=fetch_bars or _default_fetch)
         _touch_stamp()

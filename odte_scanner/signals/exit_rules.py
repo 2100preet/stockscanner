@@ -103,6 +103,21 @@ DEFAULT_SNIPER_EXIT = GoldExitSpec(
     flatten_ct="10:30",
 )
 
+# Afternoon Puts sells half at +100% when the lot can split, then trails.
+# A one-lot cannot split, so the live order trails the contract after +100%
+# and still uses the −40% stop and the 2:45 PM CT flat. The Yahoo replay
+# books the half on one contract.
+DEFAULT_AFTERNOON_PUTS_EXIT = GoldExitSpec(
+    arm_pct=100.0,
+    runner_target_pct=1000.0,
+    stop_loss_pct=40.0,
+    same_day_stop_pct=40.0,
+    partial_sell_pct=50.0,
+    trail_arm_pct=100.0,
+    trail_keep_fraction=0.5,
+    flatten_ct="14:45",
+)
+
 
 @dataclass(frozen=True)
 class ExitRule:

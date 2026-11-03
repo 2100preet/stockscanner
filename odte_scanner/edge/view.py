@@ -45,6 +45,28 @@ LIMITATIONS = [
 ]
 
 
+def _afternoon_public_summary() -> dict[str, Any]:
+    """Nov 2 2026 Yahoo 5-minute put replay. Not a chain fill and not a mute."""
+    from odte_scanner.signals.afternoon_puts import PRIMARY_RULES, RULES_TEXT
+
+    return {
+        "routed": True,
+        "rules_id": PRIMARY_RULES.rules_id(),
+        "rules": RULES_TEXT,
+        "n": 2,
+        "win_rate": 1.0,
+        "dollars": 229.0,
+        "expectancy": None,
+        "note": (
+            "Nov 2 2026 Yahoo 5-minute puts, one contract each. "
+            "QQQ 693P at 10:25 CT entered $1.52 and trailed out +$137. "
+            "SPY 759P at 11:05 CT entered $0.98 and trailed out +$92. "
+            "SPY and QQQ are Webull paper. SPX is an alert only. "
+            "This tile does not mute Telegram or paper buys."
+        ),
+    }
+
+
 def _sniper_public_summary() -> dict[str, Any]:
     """Lazy import. Sniper's module loads this package, so a top-level import cycles."""
     from odte_scanner.edge.sniper_study import public_summary
@@ -354,6 +376,7 @@ def build_edge_report(*, scorecard: dict[str, Any] | None = None, samples: list[
         "spread_note": SPREAD_NOTE,
         "diamond": diamond_public_summary(),
         "sniper": _sniper_public_summary(),
+        "afternoon_puts": _afternoon_public_summary(),
         "paper_audit": PAPER_AUDIT,
         "paper_audit_at": "2026-10-27T03:04:05+00:00",
         "move_note": MOVE_NOTE,

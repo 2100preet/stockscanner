@@ -217,7 +217,7 @@ def _compact_strike(strike: Any, right: str) -> str:
 
 def _signal_headline(row: dict[str, Any], desk: str) -> str | None:
     """Plain-text first line for Gold Setup and Golden Flow. No Markdown."""
-    if desk not in {"Gold Setup", "Golden Flow", "Diamond", "Sniper"}:
+    if desk not in {"Gold Setup", "Golden Flow", "Diamond", "Sniper", "AfternoonPuts"}:
         return None
     right, strike, expiry = _resolved_contract(row)
     parts: list[str] = []
@@ -227,6 +227,8 @@ def _signal_headline(row: dict[str, Any], desk: str) -> str | None:
         parts.extend(["💎", "DIAMOND"])
     elif desk == "Sniper":
         parts.extend(["🎯", "SNIPER"])
+    elif desk == "AfternoonPuts":
+        parts.extend(["🌅", "AFTERNOON", "PUTS"])
     else:
         parts.extend([_contract_circle(row), "GOLDEN FLOW"])
     parts.append(str(row.get("symbol") or "?").upper())
@@ -340,7 +342,7 @@ def _fmt_alert(
     for extra in extras or []:
         if isinstance(extra, dict):
             lines.append(_also_line(extra))
-    if desk in {"Sniper", "Diamond"}:
+    if desk in {"Sniper", "Diamond", "AfternoonPuts"}:
         from odte_scanner.signals.detected import signal_sent_line
 
         sent_line = signal_sent_line(str(row.get("at_ct") or ""), row.get("detected_at"))
@@ -479,6 +481,26 @@ def collect_trade_alerts(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         sniper_symbols.add(sym)
         push(row, "BUY", "Sniper", force=True)
+
+    afternoon = snapshot.get("afternoon_puts") if isinstance(snapshot.get("afternoon_puts"), dict) else {}
+    afternoon_symbols: set[str] = set()
+    for raw in afternoon.get("signals") or []:
+        if not isinstance(raw, dict) or not raw.get("send"):
+            continue
+        if len(afternoon_symbols) >= 2:
+            break
+        row = dict(raw)
+        row["action"] = "AFTERNOON_PUTS"
+        sym = str(row.get("symbol") or "").upper()
+        if not sym or sym in afternoon_symbols:
+            continue
+        try:
+            if float(row.get("ask") or 0) <= 0:
+                continue
+        except (TypeError, ValueError):
+            continue
+        afternoon_symbols.add(sym)
+        push(row, "BUY", "AfternoonPuts", force=True)
 
     from odte_scanner.edge.filters import golden_flow_skip_reason
 
@@ -695,6 +717,8 @@ def _hot_desk(row: dict[str, Any]) -> str | None:
         return "sniper"
     if desk == "diamond" or kind == "diamond":
         return "diamond"
+    if desk == "afternoon_puts" or kind == "afternoon_puts":
+        return "afternoon"
     return None
 
 
@@ -721,8 +745,9 @@ def promote_routed_hot_alerts(snapshot: dict[str, Any], orders: list[dict[str, A
         current = best.get((desk, sym))
         if current is None or rank.get(status, 9) < rank.get(str(current.get("status") or ""), 9):
             best[(desk, sym)] = row
-    for name in ("sniper", "diamond"):
-        board = snapshot.get(name)
+    boards = (("sniper", "sniper"), ("diamond", "diamond"), ("afternoon", "afternoon_puts"))
+    for name, key in boards:
+        board = snapshot.get(key)
         if not isinstance(board, dict):
             continue
         for card in board.get("signals") or []:

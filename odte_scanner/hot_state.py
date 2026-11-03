@@ -19,16 +19,23 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_LEDGER = ROOT / "outputs" / "webull_orders.json"
 
 _lock = threading.Lock()
-_state: dict[str, Any] = {"updated_at": None, "sniper": None, "diamond": None}
+_state: dict[str, Any] = {"updated_at": None, "sniper": None, "diamond": None, "afternoon_puts": None}
 
 
-def publish_hot(*, sniper: dict[str, Any] | None = None, diamond: dict[str, Any] | None = None) -> None:
+def publish_hot(
+    *,
+    sniper: dict[str, Any] | None = None,
+    diamond: dict[str, Any] | None = None,
+    afternoon: dict[str, Any] | None = None,
+) -> None:
     """Remember the latest fast-loop boards. A failed load does not wipe a good one."""
     with _lock:
         if isinstance(sniper, dict) and sniper.get("ok") is not False:
             _state["sniper"] = sniper
         if isinstance(diamond, dict) and diamond.get("ok") is not False:
             _state["diamond"] = diamond
+        if isinstance(afternoon, dict) and afternoon.get("ok") is not False:
+            _state["afternoon_puts"] = afternoon
         _state["updated_at"] = datetime.now(timezone.utc).isoformat()
 
 
@@ -37,6 +44,7 @@ def clear_hot() -> None:
         _state["updated_at"] = None
         _state["sniper"] = None
         _state["diamond"] = None
+        _state["afternoon_puts"] = None
 
 
 def hot_snapshot() -> dict[str, Any]:
@@ -45,6 +53,7 @@ def hot_snapshot() -> dict[str, Any]:
             "updated_at": _state.get("updated_at"),
             "sniper": _state.get("sniper"),
             "diamond": _state.get("diamond"),
+            "afternoon_puts": _state.get("afternoon_puts"),
         }
 
 
@@ -76,9 +85,16 @@ def apply_hot_overlay(
         body["sniper"] = hot["sniper"]
     if isinstance(hot.get("diamond"), dict):
         body["diamond"] = hot["diamond"]
+    if isinstance(hot.get("afternoon_puts"), dict):
+        body["afternoon_puts"] = hot["afternoon_puts"]
     book = list(orders) if orders is not None else read_ledger_orders(ledger_path)
     body["sniper"] = annotate_board(body.get("sniper") if isinstance(body.get("sniper"), dict) else None, book, "sniper")
     body["diamond"] = annotate_board(body.get("diamond") if isinstance(body.get("diamond"), dict) else None, book, "diamond")
+    body["afternoon_puts"] = annotate_board(
+        body.get("afternoon_puts") if isinstance(body.get("afternoon_puts"), dict) else None,
+        book,
+        "afternoon",
+    )
     if isinstance(body.get("sure_winners"), dict):
         body["sure_winners"] = annotate_sure(body.get("sure_winners"), book)
     report = reconcile_pnl(book)

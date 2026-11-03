@@ -726,6 +726,7 @@ live_trading:
     weekly: true
     swing: true
     challenge: true       # ENTRY/EXIT calls & puts
+    afternoon_puts: true  # 10:00–14:15 CT index puts, paper only
 
 algos:
   # Legacy flat weights (merged into each horizon as a base)

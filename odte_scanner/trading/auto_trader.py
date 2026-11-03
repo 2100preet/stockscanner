@@ -312,6 +312,7 @@ class AutoTrader:
             "golden_flow": True,
             "diamond": True,
             "sniper": True,
+            "afternoon_puts": True,
         }
         if desks:
             merged.update(desks)
@@ -410,7 +411,7 @@ class AutoTrader:
         if order.desk == self.second_desk:
             return True
         kind = str((order.meta or {}).get("golden_kind") or "")
-        if kind in {"sure_winner_gold", "diamond", "sniper"}:
+        if kind in {"sure_winner_gold", "diamond", "sniper", "afternoon_puts"}:
             return True
         if not self.close_legacy_positions:
             return False
@@ -774,6 +775,8 @@ class AutoTrader:
             # Diamond and Sniper flat at 10:30 CT the same session, including
             # a weekly that does not expire today. Gold stays on 2:30 PM CT.
             return past_gold_flatten(now, "10:30")
+        if str(desk or "") == "afternoon_puts":
+            return past_gold_flatten(now, "14:45")
         if str(desk or "") == self.second_desk:
             if not past_odte_flatten(now):
                 return False
@@ -1041,25 +1044,31 @@ class AutoTrader:
         peak_mark: float | None,
         force_short: bool = False,
     ):
-        from odte_scanner.signals.exit_rules import DEFAULT_SNIPER_EXIT
+        from odte_scanner.signals.exit_rules import DEFAULT_AFTERNOON_PUTS_EXIT, DEFAULT_SNIPER_EXIT
 
         spec = self._gold_spec()
         same_day = expiry_is_today(expiry, self._now)
         dte = trading_dte(expiry, self._now)
-        sniper = bool(
-            order is not None
-            and (
-                str((order.meta or {}).get("golden_kind") or "") == "sniper"
-                or str(order.desk or "") == "sniper"
-            )
-        )
+        kind_name = ""
+        if order is not None:
+            kind_name = str((order.meta or {}).get("golden_kind") or "")
+            if str(order.desk or "") in {"sniper", "afternoon_puts"}:
+                kind_name = str(order.desk or "")
+        sniper = kind_name == "sniper"
+        afternoon = kind_name == "afternoon_puts"
         # Diamond banks +30% on the whole lot and uses the same-day −40% stop.
         # The 2+ DTE half-and-trail, and the −50% weekly stop, were not the
         # sample that cleared. Sniper banks +25% on the whole lot. The half
-        # trim plus a trail made less on the same entries.
+        # trim plus a trail made less on the same entries. Afternoon Puts
+        # sells half at +100% when two contracts are open and trails a 1-lot
+        # after that print. The hard stop is −40% and the clock is 2:45 PM CT.
         if sniper:
             spec = DEFAULT_SNIPER_EXIT
             short = True
+            same_day = True
+        elif afternoon:
+            spec = DEFAULT_AFTERNOON_PUTS_EXIT
+            short = False
             same_day = True
         elif force_short:
             short = True
@@ -1091,17 +1100,23 @@ class AutoTrader:
         """Premium where the gold stop sits. Diamond and Sniper use −40%."""
         if entry <= 0:
             return None
-        from odte_scanner.signals.exit_rules import DEFAULT_SNIPER_EXIT
+        from odte_scanner.signals.exit_rules import DEFAULT_AFTERNOON_PUTS_EXIT, DEFAULT_SNIPER_EXIT
 
         kind = ""
         if order is not None:
             kind = str((order.meta or {}).get("golden_kind") or "")
             if str(order.desk or "") == "sniper":
                 kind = "sniper"
+            if str(order.desk or "") == "afternoon_puts":
+                kind = "afternoon_puts"
         if str(desk or "") == "sniper":
             kind = "sniper"
+        if str(desk or "") == "afternoon_puts":
+            kind = "afternoon_puts"
         if kind == "sniper":
             pct = abs(float(DEFAULT_SNIPER_EXIT.same_day_stop_pct))
+        elif kind == "afternoon_puts":
+            pct = abs(float(DEFAULT_AFTERNOON_PUTS_EXIT.same_day_stop_pct))
         elif kind == "diamond" or str(desk or "") == "diamond":
             pct = abs(float(self._gold_spec().same_day_stop_pct))
         else:
@@ -1402,7 +1417,9 @@ class AutoTrader:
                 seen.add(contract)
             exit_desk = self.second_desk if order.desk == self.second_desk else "golden_exit"
             kind = str((order.meta or {}).get("golden_kind") or "")
-            if str(order.desk or "") in {"diamond", "sniper"} or kind in {"diamond", "sniper"}:
+            if str(order.desk or "") == "afternoon_puts" or kind == "afternoon_puts":
+                detail = "flatten 2:45 PM CT"
+            elif str(order.desk or "") in {"diamond", "sniper"} or kind in {"diamond", "sniper"}:
                 detail = "flatten 10:30 CT"
             elif order.desk == self.second_desk and not expiry_is_today(order.expiry, now):
                 detail = "challenge 0–1DTE time-stop — flatten by 15:45 ET"
@@ -1499,6 +1516,8 @@ class AutoTrader:
         Same-day expiry stays 1 contract and flattens on the clock.
         """
         desk_l = str(desk or "").lower()
+        if desk_l == "afternoon_puts":
+            return 1
         if self.max_risk_per_trade_usd is None:
             return self.max_contracts
         if second or desk_l in {self.second_desk, "challenge"}:
@@ -1575,6 +1594,11 @@ class AutoTrader:
                     self._note_filtered(row, "SPX sniper is not a Webull order")
                     return None
                 desk = "sniper"
+            elif kind == "afternoon_puts":
+                if sym == "SPX" or row.get("webull") is False:
+                    self._note_filtered(row, "SPX afternoon puts is not a Webull order")
+                    return None
+                desk = "afternoon_puts"
             else:
                 desk = "sure_winner" if kind == "sure_winner_gold" else "golden_flow"
             if kind == "sure_winner_gold" and self._symbol_has_unfilled_golden(sym):
@@ -1591,7 +1615,7 @@ class AutoTrader:
             return None
         if self._already_open(sym, desk, right, contract_id or None):
             return None
-        if kind in {"diamond", "sniper"} and self._entry_chase_abandoned(sym, contract_id, desk):
+        if kind in {"diamond", "sniper", "afternoon_puts"} and self._entry_chase_abandoned(sym, contract_id, desk):
             self._note_filtered(row, "chase stopped — not reopened")
             return None
 
@@ -1662,12 +1686,16 @@ class AutoTrader:
                     else (
                         {"gold_exit": True, "sniper_flat_ct": "10:30"}
                         if kind == "sniper"
-                        else (self._gold_order_plan(row) if kind and not second else {})
+                        else (
+                            {"gold_exit": True, "afternoon_flat_ct": "14:45"}
+                            if kind == "afternoon_puts"
+                            else (self._gold_order_plan(row) if kind and not second else {})
+                        )
                     )
                 ),
             },
             )
-        if kind in {"sniper", "diamond"}:
+        if kind in {"sniper", "diamond", "afternoon_puts"}:
             signal_ask = _f(row.get("signal_ask"))
             if signal_ask is None or signal_ask <= 0:
                 signal_ask = _f(intent.limit_price)
@@ -1872,6 +1900,8 @@ class AutoTrader:
                 exit_tier = "diamond"
             elif kind_name == "sniper" or str(opened.desk or "") == "sniper":
                 exit_tier = "sniper"
+            elif kind_name == "afternoon_puts" or str(opened.desk or "") == "afternoon_puts":
+                exit_tier = "afternoon"
             elif kind_name in {"sure_winner_gold", "sure_winner"} or str(opened.desk or "") == "sure_winner":
                 exit_tier = "gold"
             entry_at = opened.created_at or opened.updated_at
@@ -1973,6 +2003,7 @@ class AutoTrader:
         now: datetime | None,
         diamond: dict[str, Any] | None,
         sniper: dict[str, Any] | None,
+        afternoon: dict[str, Any] | None = None,
     ) -> threading.Thread | None:
         """Send exit Telegram off the order lock. A resting book with no sell is a no-op."""
         interesting = [
@@ -1993,6 +2024,7 @@ class AutoTrader:
                     now=now,
                     diamond=diamond if isinstance(diamond, dict) else None,
                     sniper=sniper if isinstance(sniper, dict) else None,
+                    afternoon=afternoon if isinstance(afternoon, dict) else None,
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("exit alert dispatch failed: %s", exc)
@@ -2036,14 +2068,15 @@ class AutoTrader:
         *,
         diamond: dict[str, Any] | None = None,
         sniper: dict[str, Any] | None = None,
+        afternoon: dict[str, Any] | None = None,
         now: datetime | None = None,
     ) -> dict[str, Any]:
-        """Chase and route Sniper/Diamond only. Does not walk the focus board."""
+        """Chase and route Sniper, Diamond, and Afternoon Puts. Does not walk the focus board."""
         with _SYNC_LOCK:
-            result = self._sync_hot_locked(diamond=diamond, sniper=sniper, now=now)
+            result = self._sync_hot_locked(diamond=diamond, sniper=sniper, afternoon=afternoon, now=now)
             orders = list(self.broker.orders)
             moment = self._now
-        self._queue_exit_alerts(orders, moment, diamond, sniper)
+        self._queue_exit_alerts(orders, moment, diamond, sniper, afternoon)
         return result
 
     def _sync_hot_locked(
@@ -2052,6 +2085,7 @@ class AutoTrader:
         diamond: dict[str, Any] | None,
         sniper: dict[str, Any] | None,
         now: datetime | None,
+        afternoon: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         submitted: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
@@ -2087,7 +2121,7 @@ class AutoTrader:
             self.broker.refresh_working_sells()
         except Exception as exc:  # noqa: BLE001
             logger.warning("working sell refresh failed: %s", exc)
-        self._submit_hot_signals(diamond, sniper, _take, lambda: budget > 0)
+        self._submit_hot_signals(diamond, sniper, _take, lambda: budget > 0, afternoon=afternoon)
         return {
             "submitted": submitted,
             "skipped": skipped[:40],
@@ -2103,11 +2137,12 @@ class AutoTrader:
         sniper: dict[str, Any] | None,
         take: Callable[..., None],
         budget_left: Callable[[], bool],
+        afternoon: dict[str, Any] | None = None,
     ) -> None:
-        """Reprice working Sniper/Diamond buys, then route new ones."""
+        """Reprice working Sniper/Diamond/Afternoon Puts buys, then route new ones."""
         if not self.golden_only:
             return
-        self._chase_working_entries(diamond, sniper, take)
+        self._chase_working_entries(diamond, sniper, take, afternoon=afternoon)
         from odte_scanner.options.quote_sanity import quote_reject_reason
         from odte_scanner.signals.diamond import DAILY_CAP
         from odte_scanner.signals.sniper import DAILY_CAP as SNIPER_CAP
@@ -2146,6 +2181,23 @@ class AutoTrader:
             if intent is not None and intent.status in placed:
                 sniper_buys += 1
 
+        from odte_scanner.signals.afternoon_puts import DAILY_CAP as AFTERNOON_CAP
+
+        afternoon_buys = 0
+        for row in (afternoon or {}).get("signals") or []:
+            if not isinstance(row, dict) or not row.get("send_order"):
+                continue
+            if not budget_left() or afternoon_buys >= AFTERNOON_CAP:
+                continue
+            reason = quote_reject_reason(row)
+            if reason:
+                self._note_filtered(row, reason)
+                continue
+            intent = self._route_buy(desk="afternoon_puts", row=row, right="P")
+            take(intent)
+            if intent is not None and intent.status in placed:
+                afternoon_buys += 1
+
     @staticmethod
     def _chase_kind(order: WebullOrderIntent) -> str | None:
         kind = str((order.meta or {}).get("golden_kind") or "")
@@ -2154,6 +2206,8 @@ class AutoTrader:
             return "sniper"
         if kind == "diamond" or desk == "diamond":
             return "diamond"
+        if kind == "afternoon_puts" or desk == "afternoon_puts":
+            return "afternoon_puts"
         return None
 
     @staticmethod
@@ -2216,11 +2270,13 @@ class AutoTrader:
         diamond: dict[str, Any] | None,
         sniper: dict[str, Any] | None,
         take: Callable[..., None] | None,
+        afternoon: dict[str, Any] | None = None,
     ) -> None:
-        """Cancel or replace a working Sniper/Diamond buy. Exit math stays on the fill."""
-        boards = [board for board in (diamond, sniper) if isinstance(board, dict)]
+        """Cancel or replace a working hot-desk buy. Exit math stays on the fill."""
+        boards = [board for board in (diamond, sniper, afternoon) if isinstance(board, dict)]
         now = self._now or datetime.now(timezone.utc)
-        past_window = past_gold_flatten(now, "10:30")
+        past_morning = past_gold_flatten(now, "10:30")
+        past_afternoon = past_gold_flatten(now, "14:15")
         for order in list(self.broker.orders):
             kind = self._chase_kind(order)
             if kind is None or not self._is_working_buy(order):
@@ -2238,6 +2294,7 @@ class AutoTrader:
             ask = self._hot_ask(order, boards)
             signal_ask = _f((order.meta or {}).get("signal_ask"))
             limit = _f(order.limit_price)
+            past_window = past_afternoon if kind == "afternoon_puts" else past_morning
             action = chase_action(
                 limit=limit,
                 ask=ask,
@@ -2261,11 +2318,12 @@ class AutoTrader:
                     )
                 continue
             if action == "cancel":
-                reason = (
-                    "past 10:30 CT entry window"
-                    if past_window
-                    else f"unfilled {CHASE_MAX_AGE_SEC // 60}m"
-                )
+                if past_window and kind == "afternoon_puts":
+                    reason = "past 14:15 CT entry window"
+                elif past_window:
+                    reason = "past 10:30 CT entry window"
+                else:
+                    reason = f"unfilled {CHASE_MAX_AGE_SEC // 60}m"
                 logger.info(
                     "cancel unfilled %s %s %s — %s",
                     kind,
@@ -2310,8 +2368,17 @@ class AutoTrader:
                     "replaces": order.id,
                     "sniper": kind == "sniper",
                     "diamond": kind == "diamond",
-                    "action": "SNIPER" if kind == "sniper" else "DIAMOND",
-                    "desk": "Sniper" if kind == "sniper" else "Diamond",
+                    "afternoon_puts": kind == "afternoon_puts",
+                    "action": (
+                        "SNIPER"
+                        if kind == "sniper"
+                        else ("AFTERNOON_PUTS" if kind == "afternoon_puts" else "DIAMOND")
+                    ),
+                    "desk": (
+                        "Sniper"
+                        if kind == "sniper"
+                        else ("AfternoonPuts" if kind == "afternoon_puts" else "Diamond")
+                    ),
                     "webull": True,
                     "detail": order.reason or "",
                     "exit_plan": (order.meta or {}).get("exit_plan") or "",

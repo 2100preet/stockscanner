@@ -31,6 +31,8 @@ EDGE_SECTION = """
       <div id="edgeDiamond"></div>
       <h3>Sniper — its own book</h3>
       <div id="edgeSniper"></div>
+      <h3>Afternoon Puts — its own book</h3>
+      <div id="edgeAfternoon"></div>
       <h3>Today's Webull paper</h3>
       <p class="lede" id="edgeReconcile">Paper fills are the source of truth for the contract, the price, and the day's P&amp;L.</p>
       <div style="overflow-x:auto"><table id="edgeWebullBook"></table></div>
@@ -218,6 +220,24 @@ EDGE_JS = r"""
           + '<div><span>Second half</span><br><strong>' + spct(s.h2) + '</strong></div>'
           + '</div><p class="pc-why">' + edgeEsc(s.note || "") + '</p></article>';
       }
+      var afternoonEl = document.getElementById("edgeAfternoon");
+      if (afternoonEl) {
+        var a = edge.afternoon_puts || {};
+        var apct = function (value) {
+          if (value == null || Number.isNaN(Number(value))) return "—";
+          var n = Number(value);
+          return (n > 0 ? "+" : "") + n.toFixed(2) + "%";
+        };
+        afternoonEl.innerHTML = '<article class="pulse-card afternoon">'
+          + '<div class="pc-top"><div class="pc-sym">🌅 Afternoon Puts</div><div class="pc-tag afternoon">'
+          + (a.routed ? "PAPER + TELEGRAM" : "NOT SENT") + '</div></div>'
+          + '<div class="pc-meta">'
+          + '<div><span>Replay n</span><br><strong>' + edgeEsc(a.n) + '</strong></div>'
+          + '<div><span>Win rate</span><br><strong>' + edgePct(a.win_rate) + '</strong></div>'
+          + '<div><span>Dollars</span><br><strong>' + edgeNum(a.dollars, 0) + '</strong></div>'
+          + '<div><span>Option model</span><br><strong>' + apct(a.expectancy) + '</strong></div>'
+          + '</div><p class="pc-why">' + edgeEsc(a.note || "") + '</p></article>';
+      }
       var bookEl = document.getElementById("edgeWebullBook");
       var reconcileEl = document.getElementById("edgeReconcile");
       var reconcile = (DATA && DATA.pnl_reconcile) || {};
@@ -231,6 +251,7 @@ EDGE_JS = r"""
         var deskName = function (tier) {
           if (tier === "diamond") return "Diamond";
           if (tier === "sniper") return "Sniper";
+          if (tier === "afternoon") return "Afternoon Puts";
           return "Gold Setup";
         };
         bookEl.innerHTML = edgeTable(
@@ -307,6 +328,8 @@ def render_edge_static(report: dict[str, Any]) -> str:
       {diamond_tile_html(report.get("diamond") or {})}
       <h3>Sniper</h3>
       {sniper_tile_html(report.get("sniper") or {})}
+      <h3>Afternoon Puts</h3>
+      {afternoon_tile_html(report.get("afternoon_puts") or {})}
     </section>
     """
 
@@ -399,6 +422,27 @@ def sniper_tile_html(item: dict[str, Any]) -> str:
         <div><span>95% interval</span><br><strong>{_cell(pct(item.get("lo")))} to {_cell(pct(item.get("hi")))}</strong></div>
         <div><span>First half</span><br><strong>{_cell(pct(item.get("h1")))}</strong></div>
         <div><span>Second half</span><br><strong>{_cell(pct(item.get("h2")))}</strong></div>
+      </div>
+      <p class="pc-why">{_cell(item.get("note"))}</p>
+    </article>
+    """
+
+
+def afternoon_tile_html(item: dict[str, Any]) -> str:
+    """Dusk card for Afternoon Puts. Separate from the gold Sure Winner tile."""
+
+    routed = "PAPER + TELEGRAM" if item.get("routed") else "NOT SENT"
+    dollars = item.get("dollars")
+    dollar_text = "—" if not isinstance(dollars, (int, float)) else f"${dollars:,.0f}"
+    win = item.get("win_rate")
+    win_text = "—" if not isinstance(win, (int, float)) else f"{float(win) * 100:.0f}%"
+    return f"""
+    <article class="pulse-card afternoon">
+      <div class="pc-top"><div class="pc-sym">🌅 Afternoon Puts</div><div class="pc-tag afternoon">{_cell(routed)}</div></div>
+      <div class="pc-meta">
+        <div><span>Replay n</span><br><strong>{_cell(item.get("n"))}</strong></div>
+        <div><span>Win rate</span><br><strong>{_cell(win_text)}</strong></div>
+        <div><span>Dollars</span><br><strong>{_cell(dollar_text)}</strong></div>
       </div>
       <p class="pc-why">{_cell(item.get("note"))}</p>
     </article>

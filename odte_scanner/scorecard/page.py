@@ -21,6 +21,7 @@ SECTION_HTML = f"""
             <option value="Golden Flow">Golden Flow</option>
             <option value="Diamond">Diamond</option>
             <option value="Sniper">Sniper</option>
+            <option value="Afternoon Puts">Afternoon Puts</option>
           </select>
         </label>
         <label class="status">Direction

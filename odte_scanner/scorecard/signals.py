@@ -18,6 +18,7 @@ GOLD_SETUP = "Gold Setup"
 GOLDEN_FLOW = "Golden Flow"
 DIAMOND = "Diamond"
 SNIPER = "Sniper"
+AFTERNOON_PUTS = "Afternoon Puts"
 
 
 def _num(value: Any, places: int = 6) -> float | None:
@@ -202,6 +203,7 @@ def extract_signals(
     option_flow: Any = None,
     diamond: Any = None,
     sniper: Any = None,
+    afternoon: Any = None,
     scores: Any = None,
     now: datetime | None = None,
     recorded_at: str | None = None,
@@ -276,4 +278,14 @@ def extract_signals(
         if not quote_bundle_ok(row) or _premium(row) is None:
             continue
         add(_row_signal(row, signal_type=SNIPER, spots=spots, now=moment, recorded_at=stamped))
+
+    board_a = afternoon if isinstance(afternoon, dict) else {}
+    for row in _iter_dicts(board_a.get("signals")):
+        if not row.get("send"):
+            continue
+        from odte_scanner.options.quote_sanity import quote_bundle_ok
+
+        if not quote_bundle_ok(row) or _premium(row) is None:
+            continue
+        add(_row_signal(row, signal_type=AFTERNOON_PUTS, spots=spots, now=moment, recorded_at=stamped))
     return found
