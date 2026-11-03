@@ -727,6 +727,7 @@ live_trading:
     swing: true
     challenge: true       # ENTRY/EXIT calls & puts
     afternoon_puts: true  # 10:00–14:15 CT index puts, paper only
+    lunch_credit: true    # 12:00–14:15 CT bullish put credit, paper only
 
 algos:
   # Legacy flat weights (merged into each horizon as a base)

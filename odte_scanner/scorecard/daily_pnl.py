@@ -23,7 +23,7 @@ HISTORY_FLOOR = "2026-10-28"
 PAPER_LABEL = (
     "Paper trading — Webull paper account, 1 contract unless noted, not financial advice"
 )
-CORE_DESKS = ("Diamond", "Sniper", "Gold Setup", "Afternoon Puts")
+CORE_DESKS = ("Diamond", "Sniper", "Gold Setup", "Afternoon Puts", "Lunch-Break Credit")
 JOURNAL_CATS = {"lottery", "challenge", "weekly", "0dte", "swing", "odte_1k", "rip", "ml6"}
 # Webull orders for these sleeves stay with the internal journal, not the paper total.
 JOURNAL_DESKS = {
@@ -255,6 +255,11 @@ def _open_positions(orders: list[dict[str, Any]], marks: Any) -> list[dict[str, 
         if str(order.get("symbol") or "").upper() == "SPX":
             continue
         if str(order.get("desk") or "").lower() in JOURNAL_DESKS:
+            continue
+        if str(order.get("desk") or "").lower() == "lunch_credit":
+            continue
+        meta = order.get("meta") if isinstance(order.get("meta"), dict) else {}
+        if str(meta.get("golden_kind") or "") == "lunch_credit":
             continue
         if str(order.get("status") or "").lower() not in {"filled", "partial"}:
             continue

@@ -33,6 +33,7 @@ SECTION_HTML = f"""
             <option value="Diamond">Diamond</option>
             <option value="Sniper">Sniper</option>
             <option value="Afternoon Puts">Afternoon Puts</option>
+            <option value="Lunch-Break Credit">Lunch-Break Credit</option>
           </select>
         </label>
         <label class="status">Direction

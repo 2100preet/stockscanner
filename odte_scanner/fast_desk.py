@@ -415,6 +415,152 @@ def run_afternoon_puts_cycle(
     }
 
 
+def in_lunch_window(now: datetime | None = None) -> bool:
+    """Weekday 10:00–14:50 CT. The range starts at 10:00 and the flat is 14:45."""
+    return in_afternoon_window(now)
+
+
+def _publish_lunch_failure(error: str) -> None:
+    try:
+        from odte_scanner.hot_state import publish_hot
+
+        publish_hot(
+            lunch={
+                "ok": False,
+                "error": error,
+                "signals": [],
+                "qualified": [],
+            }
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.info("lunch credit publish failed: %s", exc)
+
+
+def _default_lunch_route(board: dict[str, Any], now: datetime, config_path: str | None) -> dict[str, Any]:
+    """Paper route for Lunch-Break Credit. Does not submit another desk's order."""
+    from odte_scanner.config import load_config
+    from odte_scanner.live_desk import resolve_webull_live_flags
+    from odte_scanner.trading.lunch_router import LunchRouter
+    from odte_scanner.trading.webull import WebullBroker
+
+    cfg = load_config(config_path)
+    lt = cfg.get("live_trading") or {}
+    desks = dict(lt.get("desks") or {})
+    enabled = bool(desks.get("lunch_credit", True))
+    flags = resolve_webull_live_flags(lt)
+    ledger = Path(lt.get("ledger_path", "outputs/webull_orders.json"))
+    if not ledger.is_absolute():
+        ledger = ROOT / ledger
+    broker = WebullBroker(
+        enabled=bool(flags["enabled"]),
+        dry_run=bool(flags["dry_run"]),
+        region=str(lt.get("region") or "us"),
+        sandbox=bool(flags["sandbox"]),
+        paper=bool(flags["paper"]),
+        account_id=flags.get("account_id") or lt.get("account_id"),
+        app_key=lt.get("app_key"),
+        app_secret=lt.get("app_secret"),
+        ledger_path=ledger,
+        submit_interval_sec=float(lt.get("submit_interval_sec", 1.5)),
+    )
+    if not enabled:
+        for card in board.get("signals") or []:
+            if isinstance(card, dict):
+                card["send"] = False
+                card["send_order"] = False
+    return LunchRouter(broker, enabled=enabled).sync(board, now)
+
+
+def run_lunch_credit_cycle(
+    config_path: str | None = None,
+    *,
+    now: datetime | None = None,
+    board: dict[str, Any] | None = None,
+    load_board: Callable[..., dict[str, Any]] | None = None,
+    dispatch: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    route: Callable[..., dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Refresh Lunch-Break Credit, route the paper spread, then alert."""
+    moment = now or datetime.now(timezone.utc)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    if not in_lunch_window(moment) and not _env_flag("FAST_DESK_ALWAYS", False):
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "outside 10:00-14:50 CT",
+            "scan": "not_used",
+        }
+    if board is None:
+        try:
+            loader = load_board
+            if loader is None:
+                from odte_scanner.signals.lunch_credit_board import load_lunch_board
+
+                loader = load_lunch_board
+            board = loader(now=moment)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("lunch credit board failed: %s", exc)
+            error = str(exc)[:200]
+            _publish_lunch_failure(error)
+            return {"ok": False, "error": error, "scan": "not_used"}
+    board = board if isinstance(board, dict) else {}
+    route_meta: dict[str, Any] = {"ok": False}
+    try:
+        if route is None:
+            route_meta = _default_lunch_route(board, moment, config_path)
+        else:
+            route_meta = route(board, moment) or {}
+    except Exception as exc:  # noqa: BLE001
+        route_meta = {"ok": False, "error": str(exc)[:200]}
+        logger.exception("lunch credit route failed: %s", exc)
+    snapshot = {"lunch_credit": board}
+    sample = None
+    try:
+        from odte_scanner.alerts.dispatcher import collect_trade_alerts
+
+        preview = collect_trade_alerts(snapshot)
+        if preview:
+            sample = preview[0].get("message")
+    except Exception as exc:  # noqa: BLE001
+        logger.info("lunch credit preview failed: %s", exc)
+    alert_meta: dict[str, Any] = {"ok": False}
+    try:
+        sender = dispatch or _default_dispatch
+        alert_meta = sender(snapshot) or {"ok": False}
+        thread = alert_meta.get("thread") if isinstance(alert_meta, dict) else None
+        if isinstance(thread, threading.Thread):
+            global last_alert_thread
+            last_alert_thread = thread
+            alert_meta = {key: value for key, value in alert_meta.items() if key != "thread"}
+    except Exception as exc:  # noqa: BLE001
+        alert_meta = {"ok": False, "error": str(exc)[:200]}
+        logger.exception("lunch credit alert failed: %s", exc)
+    try:
+        from odte_scanner.hot_state import publish_hot
+
+        publish_hot(lunch=board)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("lunch credit publish failed: %s", exc)
+    logger.info(
+        "lunch credit cycle signals=%s sent=%s path=%s",
+        len(board.get("signals") or []),
+        (alert_meta or {}).get("sent"),
+        board.get("order_path"),
+    )
+    return {
+        "ok": True,
+        "skipped": False,
+        "scan": "not_used",
+        "alerts": alert_meta,
+        "route": route_meta,
+        "sample_alert": sample,
+        "lunch_signals": len(board.get("signals") or []),
+        "phase": board.get("phase"),
+        "order_path": board.get("order_path"),
+    }
+
+
 def _worker_loop(config_path: str | None) -> None:
     pause = fast_pause_sec()
     logger.info("Fast desk started pause=%ss", pause)
@@ -429,6 +575,7 @@ def _worker_loop(config_path: str | None) -> None:
                 run_fast_desk_cycle(config_path)
             if afternoon:
                 run_afternoon_puts_cycle(config_path)
+                run_lunch_credit_cycle(config_path)
         except Exception as exc:  # noqa: BLE001
             logger.exception("fast desk worker crash: %s", exc)
         time.sleep(fast_pause_sec())
