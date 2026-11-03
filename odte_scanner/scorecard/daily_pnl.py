@@ -37,6 +37,7 @@ JOURNAL_DESKS = {
     "ml6",
     "odte_1k",
 }
+JOURNAL_LABELS = {"Lottery", "Challenge", "Options", "RIP", "0DTE $1K", "ML6", "Weekly", "Swing"}
 SPX_LABEL = "SPX modeled — not a Webull order and not included in the paper total."
 JOURNAL_LABEL = (
     "Internal journal (lottery, challenge, weekly, and other sleeves). "
@@ -531,7 +532,8 @@ def build_scorecard_daily_pnl(
     routed: list[dict[str, Any]] = []
     for trip in trips:
         raw = str(trip.get("raw_desk") or "").lower()
-        if raw in JOURNAL_DESKS:
+        desk_name = str(trip.get("desk") or "")
+        if raw in JOURNAL_DESKS or desk_name in JOURNAL_LABELS:
             journal_fills.append(trip)
         else:
             routed.append(trip)

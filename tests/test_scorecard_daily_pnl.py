@@ -370,6 +370,18 @@ def test_retained_log_backfills_a_dropped_sell_without_double_counting(tmp_path)
     assert board["totals"]["realized_pnl_usd"] == 217.0
 
 
+def test_retained_journal_sleeves_stay_out_of_the_webull_total(tmp_path):
+    path = tmp_path / "paper_round_trips.jsonl"
+    path.write_text(
+        '{"id":"c:1","sell_id":"c","source":"Challenge","contract":"JPM","pnl":-14.0,"at":"2026-10-27T18:00:00+00:00","qty":1}\n',
+        encoding="utf-8",
+    )
+    board = build_scorecard_daily_pnl([], now=NOW, round_trip_path=path)
+    assert board["totals"]["realized_pnl_usd"] == 0.0
+    assert board["journal"]["webull_sleeve_pnl_usd"] == -14.0
+    assert board["journal"]["included_in_webull_total"] is False
+
+
 def test_unpriced_sell_is_omitted_instead_of_invented():
     orders = [
         _order(id="s", action="SELL", desk="golden_exit", fill_price=2.0, contract="MISSING", meta={"exit_tier": "sniper"}),
