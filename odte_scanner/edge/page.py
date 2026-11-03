@@ -31,6 +31,9 @@ EDGE_SECTION = """
       <div id="edgeDiamond"></div>
       <h3>Sniper — its own book</h3>
       <div id="edgeSniper"></div>
+      <h3>Today's Webull paper</h3>
+      <p class="lede" id="edgeReconcile">Paper fills are the source of truth for the contract, the price, and the day's P&amp;L.</p>
+      <div style="overflow-x:auto"><table id="edgeWebullBook"></table></div>
       <h3>Limits</h3>
       <ul id="edgeLimits"></ul>
     </section>
@@ -214,6 +217,36 @@ EDGE_JS = r"""
           + '<div><span>First half</span><br><strong>' + spct(s.h1) + '</strong></div>'
           + '<div><span>Second half</span><br><strong>' + spct(s.h2) + '</strong></div>'
           + '</div><p class="pc-why">' + edgeEsc(s.note || "") + '</p></article>';
+      }
+      var bookEl = document.getElementById("edgeWebullBook");
+      var reconcileEl = document.getElementById("edgeReconcile");
+      var reconcile = (DATA && DATA.pnl_reconcile) || {};
+      var trips = reconcile.trips || [];
+      if (reconcileEl && reconcile.fill_pnl != null) {
+        reconcileEl.textContent = reconcile.match
+          ? ("Webull paper P&L $" + edgeNum(reconcile.fill_pnl, 2) + " matches the exit alerts.")
+          : ("Webull paper P&L $" + edgeNum(reconcile.fill_pnl, 2) + " vs alerts $" + edgeNum(reconcile.alert_pnl, 2) + ".");
+      }
+      if (bookEl) {
+        var deskName = function (tier) {
+          if (tier === "diamond") return "Diamond";
+          if (tier === "sniper") return "Sniper";
+          return "Gold Setup";
+        };
+        bookEl.innerHTML = edgeTable(
+          ["Desk", "Contract", "Status", "Entry", "Exit", "P&L"],
+          trips.map(function (row) {
+            var contract = (row.symbol || "") + " " + (row.strike == null ? "" : row.strike) + (row.right || "") + " " + (row.expiry || "");
+            return [
+              edgeEsc(deskName(row.tier)),
+              edgeEsc(contract),
+              edgeEsc(row.status),
+              edgeNum(row.entry, 2),
+              edgeNum(row.exit, 2),
+              edgeNum(row.pnl, 2)
+            ];
+          })
+        );
       }
       var limits = document.getElementById("edgeLimits");
       if (limits) {

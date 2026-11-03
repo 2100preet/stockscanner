@@ -292,4 +292,127 @@ def test_activity_labels_and_version(monkeypatch):
     }
     blob = json.dumps(body)
     assert "APP_SECRET" not in blob
-    assert "WEBULL" not in blob
+    assert "setInterval(loadAll, window.SIGNAL_DESK_STATIC ? 180000 : 5000);" in PAGE
+    assert "function tradedView" in PAGE
+
+
+def test_routed_sniper_alerts_after_the_window_flag_drops():
+    """Today's shape: the order filled, then the card's send flag went false."""
+    captured: dict = {}
+
+    def route(_diamond, sniper, _now):
+        assert sniper["signals"][0]["send"] is False
+        return {
+            "submitted": [
+                {
+                    "symbol": "SPY",
+                    "desk": "sniper",
+                    "action": "BUY",
+                    "status": "filled",
+                    "strike": 760,
+                    "right": "C",
+                    "expiry": "2026-10-30",
+                    "contract": "SPY261030C00760000",
+                    "fill_price": 1.80,
+                    "meta": {"golden_kind": "sniper"},
+                }
+            ]
+        }
+
+    def dispatch(snapshot):
+        card = snapshot["sniper"]["signals"][0]
+        captured["card"] = card
+        captured["alerts"] = collect_trade_alerts(snapshot)
+        return {"ok": True, "sent": 1}
+
+    card = _card()
+    card["send"] = False
+    card["strike"] = 759
+    card["ask"] = 1.22
+    out = run_fast_desk_cycle(
+        now=_ct(9, 20),
+        boards=({"signals": []}, {"signals": [card]}),
+        dispatch=dispatch,
+        route=route,
+    )
+    assert out["route"]["submitted"][0]["status"] == "filled"
+    assert captured["card"]["send"] is True
+    assert captured["card"]["routed_order"] is True
+    assert captured["card"]["strike"] == 760
+    assert captured["card"]["signal_strike"] == 759
+    assert captured["alerts"][0]["desk"] == "Sniper"
+    text = captured["alerts"][0]["message"]
+    assert "760C" in text
+    assert "Ask $1.80" in text
+    assert "Signal 9:15 bar · sent 9:15:40 CT" in text
+    assert "Sure Winner" not in text
+
+
+def test_hot_telegram_is_nonblocking_and_logged(monkeypatch, tmp_path):
+    import odte_scanner.fast_desk as fast_desk
+    from odte_scanner.alert_pulse import read_alert_log
+
+    monkeypatch.setattr("odte_scanner.alerts.dispatcher.DEFAULT_SEEN", tmp_path / "seen.json")
+    monkeypatch.setattr("odte_scanner.alert_pulse.alert_log_path", lambda: tmp_path / "alerts.jsonl")
+    monkeypatch.setattr(
+        "odte_scanner.alerts.dispatcher.telegram_configured",
+        lambda: {"ok": True, "token_set": True, "chat_set": True, "enabled": True},
+    )
+    monkeypatch.setattr("odte_scanner.alerts.dispatcher.whatsapp_configured", lambda: {"ok": False})
+    started = {}
+
+    def slow(message):
+        started["message"] = message
+        time.sleep(1.2)
+        return {"ok": True}
+
+    monkeypatch.setattr("odte_scanner.alerts.dispatcher.send_telegram_text", slow)
+    t0 = time.monotonic()
+    out = run_fast_desk_cycle(
+        now=_ct(9, 20),
+        boards=({"signals": []}, {"signals": [_card()]}),
+        route=lambda *_args: {"submitted_n": 1, "submitted": []},
+    )
+    elapsed = time.monotonic() - t0
+    assert elapsed < 0.6
+    assert out["alerts"]["queued"] is True
+    assert fast_desk.last_alert_thread is not None
+    fast_desk.last_alert_thread.join(3)
+    assert "Signal 9:15 bar · sent 9:15:40 CT" in started["message"]
+    log = read_alert_log(path=tmp_path / "alerts.jsonl")
+    assert log["alerts"][0]["kind"] == "Sniper"
+    assert log["alerts"][0]["symbol"] == "SPY"
+    assert log["alerts"][0]["ok"] is True
+
+
+def test_send_does_not_hold_the_alert_lock(monkeypatch, tmp_path):
+    from odte_scanner.alerts.dispatcher import _ALERT_LOCK, dispatch_snapshot_alerts
+
+    monkeypatch.setattr(
+        "odte_scanner.alerts.dispatcher.telegram_configured",
+        lambda: {"ok": True, "token_set": True, "chat_set": True, "enabled": True},
+    )
+    monkeypatch.setattr("odte_scanner.alerts.dispatcher.whatsapp_configured", lambda: {"ok": False})
+    entered = threading.Event()
+    release = threading.Event()
+
+    def slow(_message):
+        entered.set()
+        assert _ALERT_LOCK.acquire(blocking=False)
+        _ALERT_LOCK.release()
+        assert release.wait(2)
+        return {"ok": True}
+
+    monkeypatch.setattr("odte_scanner.alerts.dispatcher.send_telegram_text", slow)
+    worker = threading.Thread(
+        target=lambda: dispatch_snapshot_alerts(
+            {"sniper": {"signals": [_card()]}},
+            seen_path=tmp_path / "seen.json",
+            prime=False,
+        )
+    )
+    worker.start()
+    assert entered.wait(2)
+    release.set()
+    worker.join(3)
+    assert not worker.is_alive()

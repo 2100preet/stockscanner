@@ -3754,8 +3754,18 @@ PAGE = r"""
           strike: row.strike,
           expiry: row.expiry || "—",
           dte: row.dte,
-          ask: row.ask,
-          contract: row.contract,
+          ask: row.display_price != null ? row.display_price : row.ask,
+          contract: row.traded_contract || row.contract,
+          traded_strike: row.traded_strike,
+          traded_right: row.traded_right,
+          traded_expiry: row.traded_expiry,
+          traded_contract: row.traded_contract,
+          signal_strike: row.signal_strike,
+          strike_differs: row.strike_differs,
+          display_price: row.display_price,
+          display_price_label: row.display_price_label,
+          order_status_label: row.order_status_label,
+          exit_fill: row.exit_fill,
           win_pct: row.win_pct ?? row.hist_win_pct,
           win_samples: row.win_samples ?? row.hist_samples,
           hit_1pct: row.hit_1pct,
@@ -3868,12 +3878,13 @@ PAGE = r"""
         const tag = isSure
           ? `${sureTier || "SURE"} · ${row.size_label || "GO HUGE"}`
           : (kind === "must" ? "MUST TRADE" : (kind === "radar" ? "RADAR HOT" : "EXIT NOW"));
-        const strikeTxt = row.strike == null ? "—" : `${Number(row.strike).toFixed(Number(row.strike) % 1 ? 2 : 0)}${(row.right || "C") === "P" ? "p" : "c"}`;
+        const view = tradedView(row);
+        const strikeTxt = view.strike;
         const dteTxt = row.dte == null ? "" : ` · ${row.dte}DTE`;
         const winTxt = row.win_pct == null ? "—" : `${fmt(row.win_pct, 0)}%`;
         const nTxt = row.win_samples == null ? "" : ` n=${row.win_samples}`;
         const srTxt = row.hit_1pct == null ? "—" : `${fmt(row.hit_1pct, 0)}%`;
-        const askTxt = row.ask == null ? "—" : `$${fmt(row.ask, 2)}`;
+        const askTxt = view.price;
         const exitFacts = kind === "exit" ? `
             <div><span>Entry</span><br><strong>${row.entry_ask==null?"—":"$"+fmt(row.entry_ask,2)}</strong></div>
             <div><span>Exit</span><br><strong>${askTxt}</strong></div>
@@ -3895,11 +3906,11 @@ PAGE = r"""
             <div class="pc-tag ${tagCls}">${tag} · ${row.desk}</div>
           </div>
           <div class="pc-meta">
-            <div><span>Strike</span><br><strong>${strikeTxt}</strong></div>
-            <div><span>Expiry</span><br><strong>${row.expiry || "—"}${dteTxt}</strong></div>
+            <div><span>Strike</span><br><strong>${strikeTxt}</strong>${view.signalNote ? `<div class="why">${view.signalNote}</div>` : ""}${view.status ? `<div class="why">${view.status}</div>` : ""}</div>
+            <div><span>Expiry</span><br><strong>${view.expiry || row.expiry || "—"}${dteTxt}</strong></div>
             <div><span>${kind === "radar" ? "OTM %" : "Hist win"}</span><br><strong class="up">${kind === "radar" ? (row.moneyness_pct==null?"—":fmt(row.moneyness_pct,2)+"%") : winTxt}</strong><span>${kind === "radar" ? "" : nTxt}</span></div>
             <div><span>${kind === "radar" ? "~1% mult" : "Strike rate ≥1%"}</span><br><strong>${kind === "radar" ? (row.mult_at_1pct==null?"—":fmt(row.mult_at_1pct,1)+"×") : srTxt}</strong></div>
-            <div><span>${kind === "must" || kind === "radar" || isSure ? "Ask" : "Exit $"}</span><br><strong>${askTxt}</strong></div>
+            <div><span>${kind === "must" || kind === "radar" || isSure ? view.priceLabel : "Exit $"}</span><br><strong>${askTxt}</strong></div>
             <div><span>Contract</span><br><strong class="mono" style="font-size:.72rem">${row.contract || "—"}</strong></div>
             ${sizeLine}
             ${exitFacts}${exitTime}
@@ -3951,6 +3962,8 @@ PAGE = r"""
         m("Closed", `${t.closed_n||0} · W${t.win_n||0}/L${t.loss_n||0}`),
         m("Open", String(t.open_n||0)),
         m("Desk conf", conf.pct==null?"—":`${fmt(conf.pct,0)}%`, conf.pct>=75?"up":""),
+        m("Webull paper", (DATA.pnl_reconcile||{}).fill_pnl==null?"—":`$${fmt((DATA.pnl_reconcile||{}).fill_pnl,2)}`, (DATA.pnl_reconcile||{}).match?"up":""),
+        m("Vs alerts", (DATA.pnl_reconcile||{}).match ? "match" : ((DATA.pnl_reconcile||{}).alert_pnl==null?"—":`$${fmt((DATA.pnl_reconcile||{}).alert_pnl,2)}`), (DATA.pnl_reconcile||{}).match?"up":"down"),
       ].join("");
 
       const nameLine = (wins, losses) => {
@@ -4140,6 +4153,38 @@ PAGE = r"""
       const levels = openingRangeText(board && board.opening_range);
       return levels ? (line + " · " + levels) : line;
     }
+    function tradedView(row) {
+      const rightSrc = row.traded_right || row.right || "C";
+      const put = String(rightSrc).toUpperCase().startsWith("P");
+      const side = put ? "p" : "c";
+      const signalPut = String(row.right || rightSrc).toUpperCase().startsWith("P");
+      const signalSide = signalPut ? "p" : "c";
+      const num = (value) => {
+        if (value == null || value === "") return null;
+        const n = Number(value);
+        return Number.isNaN(n) ? null : n;
+      };
+      const fmtStrike = (value, suffix) => {
+        const n = num(value);
+        if (n == null) return "—";
+        return n.toFixed(n % 1 ? 2 : 0) + suffix;
+      };
+      const traded = num(row.traded_strike);
+      const signal = num(row.signal_strike != null ? row.signal_strike : row.strike);
+      const differs = !!(row.strike_differs || (traded != null && signal != null && Math.abs(traded - signal) > 0.001));
+      const show = traded != null ? traded : signal;
+      const price = num(row.display_price != null ? row.display_price : row.ask);
+      return {
+        strike: fmtStrike(show, traded != null ? side : signalSide),
+        signalNote: differs ? ("signal " + fmtStrike(signal, signalSide)) : "",
+        price: price == null ? "—" : ("$" + fmt(price, 2)),
+        priceLabel: row.display_price_label || "Live ask",
+        status: row.order_status_label || "",
+        exit: num(row.exit_fill),
+        expiry: row.traded_expiry || row.expiry || "—",
+        contract: row.traded_contract || row.contract || "—"
+      };
+    }
     function renderDiamondBanner() {
       const el = document.getElementById("diamondBanner");
       if (!el) return;
@@ -4161,18 +4206,17 @@ PAGE = r"""
       }
       const card = (row) => {
         const sent = !!row.send;
-        const strikeTxt = row.strike == null ? "—" : `${Number(row.strike).toFixed(Number(row.strike) % 1 ? 2 : 0)}c`;
-        const askTxt = row.ask == null ? "—" : `$${fmt(row.ask, 2)}`;
+        const view = tradedView(row);
         return `<div class="pulse-card diamond">
           <div class="pc-top">
             <div class="pc-sym">${row.symbol}</div>
             <div class="pc-tag diamond">💎 ${sent ? "DIAMOND" : "NOT SENT"}</div>
           </div>
           <div class="pc-meta">
-            <div><span>Strike</span><br><strong>${strikeTxt}</strong></div>
-            <div><span>Expiry</span><br><strong>${row.expiry || "—"}${row.dte == null ? "" : " · " + row.dte + "DTE"}</strong></div>
+            <div><span>Strike</span><br><strong>${view.strike}</strong>${view.signalNote ? `<div class="why">${view.signalNote}</div>` : ""}${view.status ? `<div class="why">${view.status}</div>` : ""}</div>
+            <div><span>Expiry</span><br><strong>${view.expiry}${row.dte == null ? "" : " · " + row.dte + "DTE"}</strong></div>
             <div><span>Signal</span><br><strong>${row.at_ct || "—"} CT</strong>${row.detected_at_ct ? `<div class="why">sent ${row.detected_at_ct} CT</div>` : ""}</div>
-            <div><span>Live ask</span><br><strong>${askTxt}</strong></div>
+            <div><span>${view.priceLabel}</span><br><strong>${view.price}</strong>${view.exit == null ? "" : `<div class="why">exit $${fmt(view.exit, 2)}</div>`}</div>
           </div>
           <p class="pc-why">${row.detail || ""} · <strong>${row.exit_plan || ""}</strong></p>
         </div>`;
@@ -4208,19 +4252,17 @@ PAGE = r"""
       }
       const card = (row) => {
         const sent = !!row.send;
-        const right = String(row.right || "C").toUpperCase().startsWith("P") ? "p" : "c";
-        const strikeTxt = row.strike == null ? "—" : `${Number(row.strike).toFixed(Number(row.strike) % 1 ? 2 : 0)}${right}`;
-        const askTxt = row.ask == null ? "—" : `$${fmt(row.ask, 2)}`;
+        const view = tradedView(row);
         return `<div class="pulse-card sniper">
           <div class="pc-top">
             <div class="pc-sym">${row.symbol}</div>
             <div class="pc-tag sniper">🎯 ${sent ? "SNIPER" : "NOT SENT"}</div>
           </div>
           <div class="pc-meta">
-            <div><span>Strike</span><br><strong>${strikeTxt}</strong></div>
-            <div><span>Expiry</span><br><strong>${row.expiry || "—"}${row.dte == null ? "" : " · " + row.dte + "DTE"}</strong></div>
+            <div><span>Strike</span><br><strong>${view.strike}</strong>${view.signalNote ? `<div class="why">${view.signalNote}</div>` : ""}${view.status ? `<div class="why">${view.status}</div>` : ""}</div>
+            <div><span>Expiry</span><br><strong>${view.expiry}${row.dte == null ? "" : " · " + row.dte + "DTE"}</strong></div>
             <div><span>Signal</span><br><strong>${row.at_ct || "—"} CT</strong>${row.detected_at_ct ? `<div class="why">sent ${row.detected_at_ct} CT</div>` : ""}</div>
-            <div><span>Live ask</span><br><strong>${askTxt}</strong></div>
+            <div><span>${view.priceLabel}</span><br><strong>${view.price}</strong>${view.exit == null ? "" : `<div class="why">exit $${fmt(view.exit, 2)}</div>`}</div>
           </div>
           <p class="pc-why">${row.detail || ""} · <strong>${row.exit_plan || ""}</strong></p>
         </div>`;
@@ -4635,7 +4677,7 @@ PAGE = r"""
     loadAll();
     // Live host: poll often so BUY/SELL updates as soon as the background scan finishes.
     // Pages static: slower (file only changes on Actions deploy).
-    setInterval(loadAll, window.SIGNAL_DESK_STATIC ? 180000 : 15000);
+    setInterval(loadAll, window.SIGNAL_DESK_STATIC ? 180000 : 5000);
   </script>
 </body>
 </html>
@@ -4808,6 +4850,19 @@ def _edge_report(scorecard: dict | None) -> dict:
         }
 
 
+def _overlay_live(body: dict | None) -> dict | None:
+    """Merge the fast-loop boards and the paper ledger into a cached snapshot."""
+    if not isinstance(body, dict):
+        return body
+    try:
+        from odte_scanner.hot_state import apply_hot_overlay
+
+        return apply_hot_overlay(body)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("hot overlay failed: %s", exc)
+        return body
+
+
 def _annotate_snapshot(body: dict, note: str | None) -> dict:
     if not note:
         return body
@@ -4897,7 +4952,7 @@ def create_app(config_path: str | None = None) -> Flask:
             "sure_winners" not in cached or cached.get("host") == "github-pages"
         )
         if (not force) and cached is not None and age < ttl and not stale_shape:
-            return jsonify(cached)
+            return jsonify(_overlay_live(cached))
 
         wait_sec = float(os.environ.get("SNAPSHOT_LOCK_WAIT_SEC") or "8")
         got_lock = _snap_gate.acquire(blocking=False)
@@ -4905,15 +4960,15 @@ def create_app(config_path: str | None = None) -> Flask:
             # Never block the browser — return last good board (even if a bit stale).
             # A Pages-shaped or older board is still better than HTTP 503.
             if cached is not None and age < soft_ttl:
-                return jsonify(cached)
+                return jsonify(_overlay_live(cached))
             got_lock = _snap_gate.acquire(timeout=max(0.0, wait_sec))
             if not got_lock:
                 fresh = _snap_memo.get("body")
                 if isinstance(fresh, dict):
-                    return jsonify(fresh)
+                    return jsonify(_overlay_live(fresh))
                 if isinstance(cached, dict):
-                    return jsonify(cached)
-                return jsonify(_partial_snapshot("snapshot busy"))
+                    return jsonify(_overlay_live(cached))
+                return jsonify(_overlay_live(_partial_snapshot("snapshot busy")))
         try:
             cached = _snap_memo.get("body")
             cached_t = float(_snap_memo.get("t") or 0.0)
@@ -4922,7 +4977,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 "sure_winners" not in cached or cached.get("host") == "github-pages"
             )
             if (not force) and cached is not None and age < ttl and not stale_shape:
-                return jsonify(cached)
+                return jsonify(_overlay_live(cached))
 
             def _build_snapshot_payload():
                 _free_desk_disk()
@@ -7736,8 +7791,8 @@ def create_app(config_path: str | None = None) -> Flask:
                 note = _public_snapshot_error(exc)
                 fresh = _snap_memo.get("body")
                 if isinstance(fresh, dict):
-                    return jsonify(_annotate_snapshot(fresh, note))
-                return jsonify(_partial_snapshot(note))
+                    return jsonify(_overlay_live(_annotate_snapshot(fresh, note)))
+                return jsonify(_overlay_live(_partial_snapshot(note)))
             if not isinstance(payload, dict):
                 payload = _partial_snapshot("snapshot payload was not an object")
             _snap_memo["body"] = payload
@@ -7749,10 +7804,10 @@ def create_app(config_path: str | None = None) -> Flask:
             except Exception:
                 pass
             try:
-                return jsonify(payload)
+                return jsonify(_overlay_live(payload))
             except Exception as exc:  # noqa: BLE001
                 logger.exception("snapshot encode failed")
-                return jsonify(_partial_snapshot(_public_snapshot_error(exc)))
+                return jsonify(_overlay_live(_partial_snapshot(_public_snapshot_error(exc))))
         finally:
             _snap_gate.release()
 

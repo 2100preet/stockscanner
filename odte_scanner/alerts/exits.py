@@ -238,18 +238,46 @@ def _is_target_or_stop(detail: str) -> bool:
     return "stop" in low or "take profit" in low or "target" in low
 
 
+def _matching_buy(order: Any, orders: list[Any]) -> Any | None:
+    """The buy this sell closes. Prefer a fill over a cancelled reprice."""
+    meta = getattr(order, "meta", None) or {}
+    closes = str(meta.get("closes_order_id") or "")
+    contract = str(getattr(order, "contract", "") or "")
+    same: list[Any] = []
+    for other in orders:
+        if str(getattr(other, "action", "") or "").upper() != "BUY":
+            continue
+        if closes and str(getattr(other, "id", "") or "") == closes:
+            return other
+        if contract and str(getattr(other, "contract", "") or "") == contract:
+            same.append(other)
+    filled = [
+        other
+        for other in same
+        if str(getattr(other, "status", "") or "") in _FILLED and _num(getattr(other, "fill_price", None)) not in (None, 0)
+    ]
+    if filled:
+        return filled[-1]
+    return same[-1] if same else None
+
+
 def _event_from_order(order: Any, orders: list[Any], now: datetime) -> dict[str, Any] | None:
     if str(getattr(order, "action", "") or "").upper() != "SELL":
         return None
     desk = str(getattr(order, "desk", "") or "")
     if desk not in {"golden_exit", "diamond", "sniper", "sure_winner"}:
         return None
+    buy = _matching_buy(order, orders)
     tier = _tier_of(order, orders)
+    if tier is None and buy is not None:
+        tier = _tier_of_buy(buy)
     if tier is None:
         return None
     status = str(getattr(order, "status", "") or "")
     meta = getattr(order, "meta", None) or {}
     entry = _num(meta.get("entry_price"))
+    if (entry is None or entry <= 0) and buy is not None:
+        entry = _num(getattr(buy, "fill_price", None))
     if entry is None or entry <= 0:
         return None
     filled = status in _FILLED and _num(getattr(order, "fill_price", None)) not in (None, 0)
@@ -276,10 +304,14 @@ def _event_from_order(order: Any, orders: list[Any], now: datetime) -> dict[str,
     except (TypeError, ValueError):
         qty = 1
     qty = max(1, qty)
+    if not meta.get("entry_at") and buy is not None:
+        meta = dict(meta)
+        meta["entry_at"] = getattr(buy, "updated_at", None) or getattr(buy, "created_at", None) or ""
     return {
         "order_id": str(getattr(order, "id", "") or ""),
         "tier": tier,
         "symbol": getattr(order, "symbol", ""),
+        "contract": getattr(order, "contract", None),
         "strike": getattr(order, "strike", None),
         "right": getattr(order, "right", "") or "C",
         "expiry": getattr(order, "expiry", ""),
@@ -394,7 +426,17 @@ def collect_exit_alerts(
             tally=tally,
             pending=bool(event["pending"]),
         )
-        out.append({"order_id": order_id, "tier": event["tier"], "message": message, "pending": event["pending"]})
+        out.append(
+            {
+                "order_id": order_id,
+                "tier": event["tier"],
+                "symbol": event.get("symbol"),
+                "contract": event.get("contract"),
+                "message": message,
+                "pending": event["pending"],
+                "pnl": event["pnl"],
+            }
+        )
     return out
 
 
@@ -453,6 +495,7 @@ def dispatch_exit_alerts(
             return []
         sender = send_telegram_text
     sent: list[dict[str, Any]] = []
+    attempts: list[dict[str, Any]] = []
     changed = False
     for alert in pending:
         if alert["order_id"] in seen:
@@ -461,12 +504,31 @@ def dispatch_exit_alerts(
             result = sender(alert["message"])
         except Exception as exc:  # noqa: BLE001
             logger.warning("exit alert failed for %s: %s", alert["order_id"], exc)
-            continue
-        if not isinstance(result, dict) or not result.get("ok"):
+            result = {"ok": False, "error": str(exc)[:200]}
+        ok = isinstance(result, dict) and bool(result.get("ok"))
+        attempts.append(
+            {
+                "time": datetime.now(timezone.utc).isoformat(),
+                "symbol": alert.get("symbol"),
+                "contract": alert.get("contract"),
+                "kind": "EXIT",
+                "side": "SELL",
+                "ok": ok,
+                "error": None if ok else str((result or {}).get("error") or "send failed")[:200],
+            }
+        )
+        if not ok:
             continue
         seen.add(alert["order_id"])
         changed = True
         sent.append(alert)
     if changed:
         _save_seen(path, seen)
+    if attempts:
+        try:
+            from odte_scanner.alert_pulse import append_alert_log
+
+            append_alert_log(attempts)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("exit alert log failed: %s", exc)
     return sent
