@@ -263,7 +263,7 @@ def test_collects_gold_setup_and_golden_flow_only():
     assert all(sym != "TRI" for _, sym in desks)
     assert all(sym != "JNJ" for _, sym in desks)
     gold = alerts[0]["message"]
-    assert gold.splitlines()[0] == "⭐ 🟢 SURE WINNER TSLA 385C 10/23 HIGH"
+    assert gold.splitlines()[0] == "⭐ 🟢 GOLD SETUP TSLA 385C 10/23 HIGH"
     assert "parse_mode" not in gold
     flow = next(a for a in alerts if a["desk"] == "Golden Flow")
     assert flow["ask"] == 2.4
@@ -351,9 +351,9 @@ def test_gold_and_golden_are_not_crowded_out(tmp_path, monkeypatch):
     result = disp.dispatch_snapshot_alerts(snap, seen_path=seen)
     assert result.get("sent") == 8
     assert result.get("errors") in ([], None)
-    assert any("SURE WINNER" in body and "TSLA" in body for body in sent)
+    assert any("GOLD SETUP" in body and "TSLA" in body for body in sent)
     assert any("GOLDEN FLOW" in body and "AMAT" in body for body in sent)
-    assert sent[0].splitlines()[0] == "⭐ 🟢 SURE WINNER TSLA 385C 10/23 MAX"
+    assert sent[0].splitlines()[0] == "⭐ 🟢 GOLD SETUP TSLA 385C 10/23 MAX"
     assert sent[1].splitlines()[0] == "🟢 GOLDEN FLOW AMAT 420C 10/23"
 
 
@@ -377,7 +377,7 @@ def test_signal_headline_uses_sentiment_when_right_is_missing():
         "Gold Setup",
     )
     assert bear.splitlines()[0] == "🔴 GOLDEN FLOW SPY 500 10/16"
-    assert bull.splitlines()[0] == "⭐ 🟢 SURE WINNER QQQ 480C 10/16 MAX"
+    assert bull.splitlines()[0] == "⭐ 🟢 GOLD SETUP QQQ 480C 10/16 MAX"
     from_occ = disp._fmt_alert(
         {
             "symbol": "TSLA",
@@ -389,7 +389,7 @@ def test_signal_headline_uses_sentiment_when_right_is_missing():
         "BUY",
         "Gold Setup",
     )
-    assert from_occ.splitlines()[0] == "⭐ 🔴 SURE WINNER TSLA 385P 10/23 HIGH"
+    assert from_occ.splitlines()[0] == "⭐ 🔴 GOLD SETUP TSLA 385P 10/23 HIGH"
     assert "parse_mode" not in bear
     assert "parse_mode" not in bull
 
@@ -500,14 +500,14 @@ def test_golden_flow_and_gold_setup_collapse_to_one_message_per_symbol():
     desks = [(a["desk"], a["symbol"]) for a in alerts]
     assert desks == [("Gold Setup", "TSLA"), ("Golden Flow", "NBIS"), ("Golden Flow", "AMD")]
     gold = alerts[0]["message"]
-    assert gold.splitlines()[0] == "⭐ 🟢 SURE WINNER TSLA 400C 10/23 MAX"
-    assert "Also 🟢 385C 10/23 · ask $7.60" in gold.splitlines()
+    assert gold.splitlines()[0] == "⭐ 🟢 GOLD SETUP TSLA 400C 10/23 MAX"
+    assert "Also 🟢 385C 10/23 · Bid — / Ask $7.60" in gold.splitlines()
     assert "parse_mode" not in gold
     flow = alerts[1]["message"]
     lines = flow.splitlines()
     assert lines[0] == "🟢 GOLDEN FLOW NBIS 180C 10/24"
-    assert "Also 🟢 175C 10/24 · ask $2.10" in lines
-    assert "Also 🟢 170C 10/24 · ask $3.40" in lines
+    assert "Also 🟢 175C 10/24 · Bid — / Ask $2.10" in lines
+    assert "Also 🟢 170C 10/24 · Bid — / Ask $3.40" in lines
     assert sum(1 for line in lines if line.startswith("Also ")) == 2
     assert "190C" not in flow
     assert "160P" not in flow
@@ -561,7 +561,7 @@ def test_session_suppresses_same_symbol_until_a_stronger_contract(tmp_path, monk
     r4 = disp.dispatch_snapshot_alerts(stronger, seen_path=seen)
     assert r4.get("sent") == 1
     assert sent[-1].splitlines()[0] == "🟢 GOLDEN FLOW NBIS 200C 10/24"
-    assert "Also 🟢 180C 10/24 · ask $4.20" in sent[-1].splitlines()
+    assert "Also 🟢 180C 10/24 · Bid — / Ask $4.20" in sent[-1].splitlines()
 
 
 def test_send_cap_counts_symbols_not_contracts(tmp_path, monkeypatch):

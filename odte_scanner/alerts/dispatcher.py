@@ -222,7 +222,7 @@ def _signal_headline(row: dict[str, Any], desk: str) -> str | None:
     right, strike, expiry = _resolved_contract(row)
     parts: list[str] = []
     if desk == "Gold Setup":
-        parts.extend(["⭐", _contract_circle(row), "SURE WINNER"])
+        parts.extend(["⭐", _contract_circle(row), "GOLD SETUP"])
     elif desk == "Diamond":
         parts.extend(["💎", "DIAMOND"])
     elif desk == "Sniper":
@@ -290,6 +290,27 @@ def _contract_id(row: dict[str, Any]) -> str:
     return f"{strike}:{expiry}:{right}"
 
 
+def _positive_price(row: dict[str, Any], *keys: str) -> bool:
+    """True when the row has a live quote or a paper limit/fill to show."""
+    for key in keys:
+        try:
+            if float(row.get(key) or 0) > 0:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
+def _money(value: Any) -> str | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number or number <= 0:  # NaN
+        return None
+    return f"${number:.2f}"
+
+
 def _also_line(row: dict[str, Any]) -> str:
     right, strike, expiry = _resolved_contract(row)
     strike_s = _compact_strike(strike, right)
@@ -297,13 +318,81 @@ def _also_line(row: dict[str, Any]) -> str:
     ask = row.get("ask")
     if ask is None and row.get("mid") is not None:
         ask = row.get("mid")
-    ask_s = f"${float(ask):.2f}" if ask is not None else "—"
+    bid_s = _money(row.get("bid")) or "—"
+    ask_s = _money(ask) or "—"
     bits = [_contract_circle(row)]
     if strike_s:
         bits.append(strike_s)
     if expiry_s:
         bits.append(expiry_s)
-    return f"Also {' '.join(bits)} · ask {ask_s}"
+    return f"Also {' '.join(bits)} · Bid {bid_s} / Ask {ask_s}"
+
+
+_QUOTE_DESKS = {"Sniper", "Diamond", "Gold Setup", "AfternoonPuts"}
+
+
+def _quote_line(row: dict[str, Any]) -> str:
+    """Live bid and ask. A missing side stays a dash and is never the limit."""
+    bid = row.get("live_bid") if row.get("live_bid") not in (None, "") else row.get("bid")
+    ask = row.get("live_ask") if row.get("live_ask") not in (None, "") else row.get("ask")
+    bid_s = _money(bid) or "—"
+    ask_s = _money(ask) or "—"
+    spot_s = _money(row.get("spot") or row.get("last"))
+    quote = f"Bid {bid_s} / Ask {ask_s}"
+    if spot_s:
+        return f"{quote} · spot {spot_s}"
+    return quote
+
+
+def _order_price_line(row: dict[str, Any]) -> str | None:
+    """Paper order, labeled Limit or Filled. Never called an ask."""
+    status = str(row.get("order_status") or "").lower()
+    fill = _money(row.get("order_fill") if row.get("order_fill") not in (None, "") else row.get("fill_price"))
+    limit = _money(row.get("order_limit") if row.get("order_limit") not in (None, "") else row.get("limit_price"))
+    if status in {"filled", "partial"} and fill:
+        return f"Filled @ {fill}"
+    if status in {"submitted", "staged", "deferred", "dry_run"} and limit:
+        return f"Limit {limit} (working)"
+    if status in {"cancelled", "rejected"} and limit:
+        return f"Limit {limit}"
+    return None
+
+
+def format_unfilled_cancel(order: dict[str, Any], kind: str) -> str:
+    """Short note: the paper buy did not fill and was cancelled."""
+    labels = {
+        "sniper": ("🎯", "SNIPER"),
+        "diamond": ("💎", "DIAMOND"),
+        "afternoon_puts": ("🌅", "AFTERNOON PUTS"),
+        "gold": ("⭐", "GOLD SETUP"),
+    }
+    emoji, name = labels.get(kind, ("🎯", "SNIPER"))
+    sym = str(order.get("symbol") or "").upper()
+    right = str(order.get("right") or "C").upper()[:1]
+    strike = _compact_strike(order.get("strike"), right)
+    expiry = _compact_expiry(order.get("expiry"))
+    bits = [emoji, name, sym]
+    if strike:
+        bits.append(strike)
+    if expiry:
+        bits.append(expiry)
+    head = " ".join(bits)
+    limit_s = _money(order.get("limit_price"))
+    if limit_s:
+        return f"{head} · Limit {limit_s} · not filled — cancelled"
+    return f"{head} · not filled — cancelled"
+
+
+def notify_unfilled_cancel(order: dict[str, Any], kind: str) -> str:
+    """Send the cancel note. SPX is not a Webull order and gets no note."""
+    text = format_unfilled_cancel(order, kind)
+    if str(order.get("symbol") or "").upper() == "SPX":
+        return text
+    try:
+        send_telegram_text(text)
+    except Exception:  # noqa: BLE001
+        logger.info("unfilled cancel note failed for %s", order.get("symbol"))
+    return text
 
 
 def _fmt_alert(
@@ -321,24 +410,26 @@ def _fmt_alert(
         right = str(row.get("right") or "C").upper()[:1]
         strike = row.get("strike")
         exp = str(row.get("expiry") or "")[:10]
-    ask = row.get("ask")
-    spot = row.get("spot") or row.get("last")
     when = row.get("signaled_at_cst") or ""
     detail = str(row.get("detail") or row.get("headline") or row.get("reason") or "")[:180]
     strike_s = f"{strike}{right}" if strike is not None else right
-    ask_s = f"${float(ask):.2f}" if ask is not None else "—"
-    spot_s = f"${float(spot):.2f}" if spot is not None else "—"
     if headline:
         lines = [headline]
     else:
         emoji = "🟢" if side == "BUY" else "🔴"
         lines = [f"{emoji} {side} · {desk}"]
-    lines.extend(
-        [
-            f"{sym} {strike_s} · exp {exp or '—'}",
-            f"Ask {ask_s} · spot {spot_s}",
-        ]
-    )
+    lines.append(f"{sym} {strike_s} · exp {exp or '—'}")
+    if desk in _QUOTE_DESKS:
+        lines.append(_quote_line(row))
+        order_line = _order_price_line(row)
+        if order_line:
+            lines.append(order_line)
+    else:
+        ask = row.get("ask")
+        spot = row.get("spot") or row.get("last")
+        ask_s = f"${float(ask):.2f}" if ask is not None else "—"
+        spot_s = f"${float(spot):.2f}" if spot is not None else "—"
+        lines.append(f"Ask {ask_s} · spot {spot_s}")
     for extra in extras or []:
         if isinstance(extra, dict):
             lines.append(_also_line(extra))
@@ -414,6 +505,10 @@ def collect_trade_alerts(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
         if key in seen_local:
             return
         seen_local.add(key)
+        if desk in _QUOTE_DESKS and str(sym).upper() != "SPX":
+            from odte_scanner.options.contract_quote import refresh_traded_quote
+
+            refresh_traded_quote(row)
         out.append(
             {
                 "key": key,
@@ -454,10 +549,7 @@ def collect_trade_alerts(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
         sym = str(row.get("symbol") or "").upper()
         if not sym or sym in sent_symbols:
             continue
-        try:
-            if float(row.get("ask") or 0) <= 0:
-                continue
-        except (TypeError, ValueError):
+        if not _positive_price(row, "ask", "live_ask", "order_fill", "fill_price", "order_limit", "limit_price"):
             continue
         sent_symbols.add(sym)
         push(row, "BUY", "Diamond", force=True)
@@ -474,10 +566,7 @@ def collect_trade_alerts(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
         sym = str(row.get("symbol") or "").upper()
         if not sym or sym in sniper_symbols:
             continue
-        try:
-            if float(row.get("ask") or 0) <= 0:
-                continue
-        except (TypeError, ValueError):
+        if not _positive_price(row, "ask", "live_ask", "order_fill", "fill_price", "order_limit", "limit_price"):
             continue
         sniper_symbols.add(sym)
         push(row, "BUY", "Sniper", force=True)
@@ -494,10 +583,7 @@ def collect_trade_alerts(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
         sym = str(row.get("symbol") or "").upper()
         if not sym or sym in afternoon_symbols:
             continue
-        try:
-            if float(row.get("ask") or 0) <= 0:
-                continue
-        except (TypeError, ValueError):
+        if not _positive_price(row, "ask", "live_ask", "order_fill", "fill_price", "order_limit", "limit_price"):
             continue
         afternoon_symbols.add(sym)
         push(row, "BUY", "AfternoonPuts", force=True)
@@ -768,16 +854,25 @@ def promote_routed_hot_alerts(snapshot: dict[str, Any], orders: list[dict[str, A
                 card["expiry"] = order.get("expiry")
             if order.get("right"):
                 card["right"] = order.get("right")
-            fill = order.get("fill_price")
-            if fill not in (None, "", 0):
-                card["ask"] = fill
-            else:
-                try:
-                    ask_ok = float(card.get("ask") or 0) > 0
-                except (TypeError, ValueError):
-                    ask_ok = False
-                if not ask_ok and order.get("limit_price") not in (None, "", 0):
-                    card["ask"] = order.get("limit_price")
+            card["order_status"] = order.get("status")
+            card["order_limit"] = order.get("limit_price")
+            card["order_fill"] = order.get("fill_price")
+            try:
+                traded = float(card.get("strike"))
+                signal = float(card.get("signal_strike"))
+                differs = abs(traded - signal) > 0.001
+            except (TypeError, ValueError):
+                differs = False
+            if differs:
+                # The card's bid/ask were the signal strike. Do not keep them,
+                # and never copy the paper limit into the ask.
+                card["signal_ask"] = card.get("signal_ask", card.get("ask"))
+                card["bid"] = None
+                card["ask"] = None
+            if str(sym).upper() != "SPX":
+                from odte_scanner.options.contract_quote import refresh_traded_quote
+
+                refresh_traded_quote(card)
 
 
 def dispatch_hot_alerts_async(

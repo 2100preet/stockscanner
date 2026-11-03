@@ -7,7 +7,7 @@ import json
 import logging
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from odte_scanner.alerts.dispatcher import collect_trade_alerts, dispatch_snapshot_alerts
@@ -147,11 +147,16 @@ def test_alert_is_sent_once(tmp_path):
 
 
 def test_chase_math_reprices_under_the_cap_and_stops_past_it():
-    assert chase_action(limit=1.05, ask=1.09, signal_ask=1.05, age_sec=30, past_window=False) == "hold"
-    assert chase_action(limit=1.05, ask=1.22, signal_ask=1.05, age_sec=30, past_window=False) == "reprice"
-    assert reprice_limit(1.22, 1.05, 1.05) == 1.23
-    assert chase_action(limit=1.05, ask=1.40, signal_ask=1.05, age_sec=30, past_window=False) == "cap"
-    assert chase_action(limit=1.05, ask=1.06, signal_ask=1.05, age_sec=8 * 60, past_window=False) == "cancel"
+    from odte_scanner.trading.chase import CHASE_MAX_AGE_SEC
+
+    # Already at the ask: hold. Below the ask and inside the cap: reprice.
+    assert chase_action(limit=1.22, ask=1.22, signal_ask=1.22, age_sec=30, past_window=False) == "hold"
+    assert chase_action(limit=1.05, ask=1.22, signal_ask=1.22, age_sec=30, past_window=False) == "reprice"
+    assert reprice_limit(1.22, 1.22, 1.05) == 1.22
+    capped = reprice_limit(1.40, 1.22, 1.22)
+    assert capped is not None and capped < 1.40
+    assert chase_action(limit=capped, ask=1.40, signal_ask=1.22, age_sec=30, past_window=False) == "cap"
+    assert chase_action(limit=1.05, ask=1.06, signal_ask=1.05, age_sec=CHASE_MAX_AGE_SEC, past_window=False) == "cancel"
     assert chase_action(limit=1.05, ask=1.06, signal_ask=1.05, age_sec=30, past_window=True) == "cancel"
 
 
@@ -194,29 +199,37 @@ def _quote(ask: float) -> dict:
 
 def test_working_buy_reprices_to_the_live_ask_and_keeps_the_signal_ask(tmp_path, caplog):
     broker, trader = _broker(tmp_path)
-    started = "2026-10-30T14:16:00+00:00"
-    original = _working_buy(broker, started=started)
     now = _ct(9, 18)
+    started = (now - timedelta(seconds=20)).astimezone(timezone.utc).isoformat()
+    original = _working_buy(broker, started=started)
     with caplog.at_level(logging.INFO, logger="odte_scanner.trading.auto_trader"):
         trader.sync_hot(sniper=_quote(1.22), now=now)
     assert original.status == "cancelled"
     assert original.meta.get("chase_abandoned") is not True
     replacement = next(order for order in broker.orders if order.status == "dry_run")
-    assert replacement.limit_price == 1.23
+    # The stored 1.05 was below the 1.18 bid, so the baseline becomes the live ask.
+    assert replacement.limit_price == 1.22
     assert replacement.fill_price is None
-    assert replacement.meta["signal_ask"] == 1.05
+    assert replacement.meta["signal_ask"] == 1.22
     assert replacement.meta["reprice_count"] == 1
     assert replacement.meta["sniper_flat_ct"] == "10:30"
     assert "reprice sniper SPY" in caplog.text
     replacement.status = "submitted"
     replacement.meta["fill_state"] = "working"
     trader.sync_hot(sniper=_quote(1.40), now=now)
-    assert replacement.status == "submitted"
-    assert replacement.meta.get("chase_capped") is True
-    assert replacement.limit_price == 1.23
-    replacement.fill_price = 1.23
-    assert trader._lot_entry(replacement, {"cost": 0.90}) == 1.23
-    assert trader._gold_stop_price(replacement, "sniper", 1.23, "2026-10-30") == round(1.23 * 0.6, 2)
+    assert replacement.status == "cancelled"
+    chased = next(order for order in broker.orders if order.status == "dry_run")
+    assert chased.limit_price == reprice_limit(1.40, 1.22, 1.22)
+    assert chased.meta["signal_ask"] == 1.22
+    chased.status = "submitted"
+    chased.meta["fill_state"] = "working"
+    trader.sync_hot(sniper=_quote(1.40), now=now)
+    assert chased.status == "submitted"
+    assert chased.meta.get("chase_capped") is True
+    assert chased.limit_price == reprice_limit(1.40, 1.22, 1.22)
+    chased.fill_price = chased.limit_price
+    assert trader._lot_entry(chased, {"cost": 0.90}) == chased.limit_price
+    assert trader._gold_stop_price(chased, "sniper", chased.limit_price, "2026-10-30") == round(chased.limit_price * 0.6, 2)
 
 
 def test_chase_cancels_at_the_cap_clock_and_does_not_reopen(tmp_path, caplog):
@@ -228,7 +241,7 @@ def test_chase_cancels_at_the_cap_clock_and_does_not_reopen(tmp_path, caplog):
     cancelled = broker.orders[0]
     assert cancelled.status == "cancelled"
     assert cancelled.meta.get("chase_abandoned") is True
-    assert "unfilled 8m" in caplog.text
+    assert "not filled — cancelled" in caplog.text
     card = {**_card(), "ask": 1.06, "send_order": True}
     again = trader.sync_hot(sniper={"signals": [card]}, now=now)
     assert [row for row in again["submitted"] if row["action"] == "BUY"] == []
@@ -277,7 +290,9 @@ def test_activity_labels_and_version(monkeypatch):
     assert "function orderPremiumLabel" in PAGE
     assert "Limit (working)" in PAGE
     assert "Filled @" in PAGE
-    assert "Live ask" in PAGE
+    assert "function quoteText" in PAGE
+    assert "Bid " in PAGE
+    assert "Limit " in PAGE
     assert 'o.limit_price==null?"—"' not in PAGE
     monkeypatch.setenv("GIT_SHA", "abc123def")
     monkeypatch.setenv("DEPLOYED_AT", "2026-10-30T14:25:00Z")
@@ -343,7 +358,9 @@ def test_routed_sniper_alerts_after_the_window_flag_drops():
     assert captured["alerts"][0]["desk"] == "Sniper"
     text = captured["alerts"][0]["message"]
     assert "760C" in text
-    assert "Ask $1.80" in text
+    assert "Filled @ $1.80" in text
+    assert "Ask $1.80" not in text
+    assert "Ask $1.22" not in text
     assert "Signal 9:15 bar · sent 9:15:40 CT" in text
     assert "Sure Winner" not in text
 
