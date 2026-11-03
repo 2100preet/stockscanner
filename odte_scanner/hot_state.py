@@ -28,15 +28,27 @@ def publish_hot(
     diamond: dict[str, Any] | None = None,
     afternoon: dict[str, Any] | None = None,
 ) -> None:
-    """Remember the latest fast-loop boards. A failed load does not wipe a good one."""
+    """Remember the latest fast-loop boards.
+
+    A failed Sniper or Diamond load does not wipe a good one. An Afternoon
+    Puts cycle that crashed does: ``{ok: false, error: ...}`` replaces null
+    so /api/snapshot can tell a crash from an empty candidate list.
+    """
     with _lock:
         if isinstance(sniper, dict) and sniper.get("ok") is not False:
             _state["sniper"] = sniper
         if isinstance(diamond, dict) and diamond.get("ok") is not False:
             _state["diamond"] = diamond
-        if isinstance(afternoon, dict) and afternoon.get("ok") is not False:
+        if isinstance(afternoon, dict) and _publish_afternoon(afternoon):
             _state["afternoon_puts"] = afternoon
         _state["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+
+def _publish_afternoon(board: dict[str, Any]) -> bool:
+    """Keep a good board. A crash board (ok false plus error) is still published."""
+    if board.get("ok") is not False:
+        return True
+    return bool(board.get("error"))
 
 
 def clear_hot() -> None:
