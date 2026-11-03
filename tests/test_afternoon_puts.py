@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -9,6 +10,7 @@ from zoneinfo import ZoneInfo
 from odte_scanner.alerts.dispatcher import collect_trade_alerts
 from odte_scanner.alerts.exits import format_exit_alert
 from odte_scanner.fast_desk import in_afternoon_window, in_hot_window, run_afternoon_puts_cycle, run_fast_desk_cycle
+from odte_scanner.hot_state import apply_hot_overlay, clear_hot, hot_snapshot, publish_hot
 from odte_scanner.live_desk import resolve_webull_live_flags
 from odte_scanner.signals.afternoon_puts import (
     HOD_DROP_PCT,
@@ -17,7 +19,7 @@ from odte_scanner.signals.afternoon_puts import (
     load_replay_fixture,
     replay,
 )
-from odte_scanner.signals.afternoon_puts_board import LOG_KIND, build_afternoon_board
+from odte_scanner.signals.afternoon_puts_board import LOG_KIND, build_afternoon_board, load_afternoon_board
 from odte_scanner.trading.auto_trader import AutoTrader
 from odte_scanner.trading.webull import WebullBroker
 from odte_scanner.ui import PAGE
@@ -242,3 +244,81 @@ def test_portal_tile_states_are_on_the_page():
     banner = PAGE[PAGE.index("function renderAfternoonBanner") : PAGE.index("function paint")]
     assert "Sure Winner" not in banner
     assert "setInterval(loadAll, window.SIGNAL_DESK_STATIC ? 180000 : 5000);" in PAGE
+
+
+def test_cycle_uses_the_real_loader_signature_and_publishes(monkeypatch, tmp_path):
+    """The live loader is keyword-only. A positional moment crashes every cycle."""
+    params = inspect.signature(load_afternoon_board).parameters
+    assert list(params) == ["now", "store_path", "bars"]
+    assert all(item.kind is inspect.Parameter.KEYWORD_ONLY for item in params.values())
+
+    underlying, _puts = load_replay_fixture(str(FIXTURE))
+    import odte_scanner.signals.afternoon_puts_board as board_mod
+
+    monkeypatch.setattr(board_mod, "load_intraday_bars", lambda symbols=None: underlying)
+    monkeypatch.setattr(board_mod, "DEFAULT_STORE", tmp_path / "afternoon_puts_day.json")
+    monkeypatch.setattr(board_mod, "_yahoo_chain", lambda symbol, side, *, now=None: [])
+    monkeypatch.setattr("odte_scanner.scorecard.service.observe_snapshot", lambda **_k: {"rows": []})
+    clear_hot()
+    try:
+        out = run_afternoon_puts_cycle(
+            now=_ct(11, 5),
+            route=lambda board, _now: {"submitted": [], "recent": [], "symbols": [row["symbol"] for row in board["signals"]]},
+            dispatch=lambda _snapshot: {"ok": True, "sent": 0},
+        )
+        assert out["ok"] is True
+        assert out["skipped"] is False
+        assert out["scan"] == "not_used"
+        assert "QQQ" in (out.get("route") or {}).get("symbols", [])
+        hot = hot_snapshot()["afternoon_puts"]
+        assert isinstance(hot, dict)
+        assert hot.get("ok") is True
+        assert any(row.get("symbol") == "QQQ" for row in hot.get("signals") or [])
+        snap = apply_hot_overlay({"afternoon_puts": None})
+        board = snap["afternoon_puts"]
+        assert isinstance(board, dict)
+        assert board.get("ok") is True
+        assert board is not None
+        assert any(row.get("symbol") == "QQQ" for row in board.get("signals") or [])
+        assert board.get("error") in (None, "")
+    finally:
+        clear_hot()
+
+
+def test_failed_cycle_publishes_an_error_board_not_null():
+    """A crash is {ok: false, error: ...}. Null is reserved for no board yet."""
+
+    def explode(*, now=None):
+        raise RuntimeError("afternoon board exploded")
+
+    clear_hot()
+    try:
+        publish_hot(sniper={"ok": True, "signals": [{"symbol": "SPY"}]})
+        publish_hot(diamond={"ok": True, "signals": [{"symbol": "IWM"}]})
+        out = run_afternoon_puts_cycle(
+            now=_ct(11, 5),
+            load_board=explode,
+            route=lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("route ran after a crash")),
+            dispatch=lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("alert ran after a crash")),
+        )
+        assert out["ok"] is False
+        assert "afternoon board exploded" in out["error"]
+        snap = apply_hot_overlay({"afternoon_puts": None, "sniper": None, "diamond": None})
+        board = snap["afternoon_puts"]
+        assert board["ok"] is False
+        assert "afternoon board exploded" in board["error"]
+        assert board.get("signals") == []
+        assert snap["sniper"]["signals"][0]["symbol"] == "SPY"
+        assert snap["diamond"]["signals"][0]["symbol"] == "IWM"
+        # A soft miss (ok false, no error) must not wipe a good afternoon board.
+        publish_hot(afternoon={"ok": True, "signals": [{"symbol": "QQQ"}], "phase": "scanning"})
+        publish_hot(afternoon={"ok": False, "signals": []})
+        assert hot_snapshot()["afternoon_puts"]["ok"] is True
+        # Sniper and Diamond still keep the last good board.
+        publish_hot(sniper={"ok": False, "error": "bars down"})
+        publish_hot(diamond={"ok": False, "error": "bars down"})
+        kept = hot_snapshot()
+        assert kept["sniper"]["ok"] is True
+        assert kept["diamond"]["ok"] is True
+    finally:
+        clear_hot()

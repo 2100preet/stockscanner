@@ -358,8 +358,8 @@ def simulate(
         walked = _walk_marks(premium, marks, rules)
         walked["priced"] = "model"
     exit_at = walked.get("exit_at") or session[-1].ct()
-    und = (spot - float(walked["exit_premium"])) / spot * 100.0 if spot else 0.0
     # Underlying percent is the spot change through the exit bar, not the premium.
+    # An open trade has no exit premium; do not coerce that None.
     exit_spot = spot
     exit_clock = exit_at.strftime("%H:%M") if isinstance(exit_at, datetime) else ""
     for bar in session[entry_index:]:

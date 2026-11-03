@@ -295,6 +295,23 @@ def _default_afternoon_route(board: dict[str, Any], now: datetime, config_path: 
     return trader.sync_hot(afternoon=board, now=now)
 
 
+def _publish_afternoon_failure(error: str) -> None:
+    """Put a crashed cycle on the hot board so /api/snapshot is not null."""
+    try:
+        from odte_scanner.hot_state import publish_hot
+
+        publish_hot(
+            afternoon={
+                "ok": False,
+                "error": error,
+                "signals": [],
+                "qualified": [],
+            }
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.info("afternoon puts publish failed: %s", exc)
+
+
 def run_afternoon_puts_cycle(
     config_path: str | None = None,
     *,
@@ -322,10 +339,13 @@ def run_afternoon_puts_cycle(
                 from odte_scanner.signals.afternoon_puts_board import load_afternoon_board
 
                 loader = load_afternoon_board
-            board = loader(moment)
+            # Keyword-only: load_afternoon_board(*, now=..., store_path=..., bars=...).
+            board = loader(now=moment)
         except Exception as exc:  # noqa: BLE001
             logger.exception("afternoon puts board failed: %s", exc)
-            return {"ok": False, "error": str(exc)[:200], "scan": "not_used"}
+            error = str(exc)[:200]
+            _publish_afternoon_failure(error)
+            return {"ok": False, "error": error, "scan": "not_used"}
     board = board if isinstance(board, dict) else {}
     snapshot = {"afternoon_puts": board}
     route_meta: dict[str, Any] = {"ok": False}
