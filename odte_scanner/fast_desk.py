@@ -561,6 +561,47 @@ def run_lunch_credit_cycle(
     }
 
 
+def _board_or_error(loader: Callable[..., dict[str, Any]], now: datetime) -> dict[str, Any]:
+    """A dict the hot overlay can publish. Null is only for 'not loaded yet'."""
+    try:
+        board = loader(now=now)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)[:200], "signals": [], "qualified": []}
+    if not isinstance(board, dict):
+        return {"ok": False, "error": "board was empty", "signals": [], "qualified": []}
+    if board.get("ok") is False and not board.get("error"):
+        board = dict(board)
+        board["error"] = str(board.get("note") or "board unavailable")[:200]
+    return board
+
+
+def publish_index_boards_if_missing(now: datetime | None = None) -> dict[str, Any]:
+    """Publish Afternoon Puts and Lunch-Break Credit once when the loop is quiet.
+
+    After 14:50 CT the trading cycles do not run, so a fresh process would
+    leave both keys null on /api/snapshot. This loads the boards and does
+    not route an order or send an alert.
+    """
+    from odte_scanner.hot_state import hot_snapshot, publish_hot
+
+    moment = now or datetime.now(timezone.utc)
+    hot = hot_snapshot()
+    published: dict[str, Any] = {}
+    if not isinstance(hot.get("afternoon_puts"), dict):
+        from odte_scanner.signals.afternoon_puts_board import load_afternoon_board
+
+        board = _board_or_error(load_afternoon_board, moment)
+        publish_hot(afternoon=board)
+        published["afternoon_puts"] = board.get("ok")
+    if not isinstance(hot.get("lunch_credit"), dict):
+        from odte_scanner.signals.lunch_credit_board import load_lunch_board
+
+        board = _board_or_error(load_lunch_board, moment)
+        publish_hot(lunch=board)
+        published["lunch_credit"] = board.get("ok")
+    return published
+
+
 def _worker_loop(config_path: str | None) -> None:
     pause = fast_pause_sec()
     logger.info("Fast desk started pause=%ss", pause)
@@ -569,6 +610,7 @@ def _worker_loop(config_path: str | None) -> None:
             hot = in_hot_window() or _env_flag("FAST_DESK_ALWAYS", False)
             afternoon = in_afternoon_window() or _env_flag("FAST_DESK_ALWAYS", False)
             if not hot and not afternoon:
+                publish_index_boards_if_missing()
                 time.sleep(30)
                 continue
             if hot:

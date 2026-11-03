@@ -434,6 +434,37 @@ def test_scorecard_attributes_the_lunch_fill_on_its_own_row():
     assert "Sure Winner" not in str(board)
 
 
+def test_quiet_hours_publish_boards_without_routing(monkeypatch):
+    from odte_scanner.fast_desk import publish_index_boards_if_missing
+    from odte_scanner.hot_state import clear_hot, hot_snapshot
+
+    calls = {"afternoon": 0, "lunch": 0, "route": 0}
+
+    def afternoon(*, now=None):
+        calls["afternoon"] += 1
+        return {"ok": True, "signals": [{"symbol": "QQQ"}], "qualified": [], "phase": "closed"}
+
+    def lunch(*, now=None):
+        calls["lunch"] += 1
+        return {"ok": True, "signals": [], "qualified": [], "phase": "closed", "customer": "🌤️ Lunch-Break Credit"}
+
+    monkeypatch.setattr("odte_scanner.signals.afternoon_puts_board.load_afternoon_board", afternoon)
+    monkeypatch.setattr("odte_scanner.signals.lunch_credit_board.load_lunch_board", lunch)
+    clear_hot()
+    try:
+        first = publish_index_boards_if_missing(now=_ct(15, 10))
+        assert first == {"afternoon_puts": True, "lunch_credit": True}
+        hot = hot_snapshot()
+        assert hot["afternoon_puts"]["ok"] is True
+        assert hot["lunch_credit"]["ok"] is True
+        assert hot["lunch_credit"]["customer"] == "🌤️ Lunch-Break Credit"
+        again = publish_index_boards_if_missing(now=_ct(15, 11))
+        assert again == {}
+        assert calls == {"afternoon": 1, "lunch": 1, "route": 0}
+    finally:
+        clear_hot()
+
+
 def test_portal_tile_and_edge_line_and_the_config_flag():
     assert 'id="lunchBanner"' in PAGE
     assert "function renderLunchBanner" in PAGE
