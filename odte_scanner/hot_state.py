@@ -19,7 +19,13 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_LEDGER = ROOT / "outputs" / "webull_orders.json"
 
 _lock = threading.Lock()
-_state: dict[str, Any] = {"updated_at": None, "sniper": None, "diamond": None, "afternoon_puts": None}
+_state: dict[str, Any] = {
+    "updated_at": None,
+    "sniper": None,
+    "diamond": None,
+    "afternoon_puts": None,
+    "lunch_credit": None,
+}
 
 
 def publish_hot(
@@ -27,6 +33,7 @@ def publish_hot(
     sniper: dict[str, Any] | None = None,
     diamond: dict[str, Any] | None = None,
     afternoon: dict[str, Any] | None = None,
+    lunch: dict[str, Any] | None = None,
 ) -> None:
     """Remember the latest fast-loop boards.
 
@@ -41,6 +48,8 @@ def publish_hot(
             _state["diamond"] = diamond
         if isinstance(afternoon, dict) and _publish_afternoon(afternoon):
             _state["afternoon_puts"] = afternoon
+        if isinstance(lunch, dict) and _publish_afternoon(lunch):
+            _state["lunch_credit"] = lunch
         _state["updated_at"] = datetime.now(timezone.utc).isoformat()
 
 
@@ -57,6 +66,7 @@ def clear_hot() -> None:
         _state["sniper"] = None
         _state["diamond"] = None
         _state["afternoon_puts"] = None
+        _state["lunch_credit"] = None
 
 
 def hot_snapshot() -> dict[str, Any]:
@@ -66,6 +76,7 @@ def hot_snapshot() -> dict[str, Any]:
             "sniper": _state.get("sniper"),
             "diamond": _state.get("diamond"),
             "afternoon_puts": _state.get("afternoon_puts"),
+            "lunch_credit": _state.get("lunch_credit"),
         }
 
 
@@ -99,6 +110,8 @@ def apply_hot_overlay(
         body["diamond"] = hot["diamond"]
     if isinstance(hot.get("afternoon_puts"), dict):
         body["afternoon_puts"] = hot["afternoon_puts"]
+    if isinstance(hot.get("lunch_credit"), dict):
+        body["lunch_credit"] = hot["lunch_credit"]
     book = list(orders) if orders is not None else read_ledger_orders(ledger_path)
     body["sniper"] = annotate_board(body.get("sniper") if isinstance(body.get("sniper"), dict) else None, book, "sniper")
     body["diamond"] = annotate_board(body.get("diamond") if isinstance(body.get("diamond"), dict) else None, book, "diamond")
@@ -106,6 +119,11 @@ def apply_hot_overlay(
         body.get("afternoon_puts") if isinstance(body.get("afternoon_puts"), dict) else None,
         book,
         "afternoon",
+    )
+    body["lunch_credit"] = annotate_board(
+        body.get("lunch_credit") if isinstance(body.get("lunch_credit"), dict) else None,
+        book,
+        "lunch",
     )
     if isinstance(body.get("sure_winners"), dict):
         body["sure_winners"] = annotate_sure(body.get("sure_winners"), book)
@@ -120,7 +138,7 @@ def apply_hot_overlay(
         from odte_scanner.scorecard.daily_pnl import build_scorecard_daily_pnl
 
         modeled: list[dict[str, Any]] = []
-        for key in ("diamond", "sniper", "afternoon_puts"):
+        for key in ("diamond", "sniper", "afternoon_puts", "lunch_credit"):
             board = body.get(key)
             if isinstance(board, dict):
                 modeled.extend(row for row in (board.get("spx_exits") or []) if isinstance(row, dict))

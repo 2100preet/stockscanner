@@ -328,6 +328,7 @@ class AutoTrader:
             "diamond": True,
             "sniper": True,
             "afternoon_puts": True,
+            "lunch_credit": True,
         }
         if desks:
             merged.update(desks)

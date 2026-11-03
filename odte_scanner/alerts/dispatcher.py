@@ -588,6 +588,68 @@ def collect_trade_alerts(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
         afternoon_symbols.add(sym)
         push(row, "BUY", "AfternoonPuts", force=True)
 
+    lunch = snapshot.get("lunch_credit") if isinstance(snapshot.get("lunch_credit"), dict) else {}
+    from odte_scanner.alerts.lunch_credit import format_lunch_entry, format_lunch_exit
+
+    lunch_symbols: set[str] = set()
+    for raw in lunch.get("signals") or []:
+        if not isinstance(raw, dict) or not raw.get("send"):
+            continue
+        if len(lunch_symbols) >= 2:
+            break
+        row = dict(raw)
+        row["action"] = "LUNCH_CREDIT"
+        sym = str(row.get("symbol") or "").upper()
+        if not sym or sym in lunch_symbols:
+            continue
+        if sym in {"SPY", "QQQ"} and not _positive_price(row, "ask", "live_ask", "order_fill", "fill_price", "order_limit", "limit_price"):
+            continue
+        lunch_symbols.add(sym)
+        message = format_lunch_entry(row)
+        key = _row_key(row, "BUY", "LunchCredit")
+        if key in seen_local:
+            continue
+        seen_local.add(key)
+        out.append(
+            {
+                "key": key,
+                "side": "BUY",
+                "desk": "LunchCredit",
+                "symbol": sym,
+                "action": "LUNCH_CREDIT",
+                "contract": row.get("contract"),
+                "strike": row.get("short_strike"),
+                "expiry": row.get("expiry"),
+                "ask": row.get("ask"),
+                "message": message,
+                "row": row,
+            }
+        )
+    for raw in lunch.get("notices") or []:
+        if not isinstance(raw, dict) or not raw.get("message"):
+            continue
+        sym = str(raw.get("symbol") or "").upper()
+        side = str(raw.get("side") or "EXIT").upper()
+        text = str(raw.get("message"))
+        if side == "EXIT" and "P&L" not in text:
+            text = format_lunch_exit(raw.get("card") if isinstance(raw.get("card"), dict) else raw)
+        key = f"lunch|{side}|{sym}|{text[:40]}"
+        if key in seen_local:
+            continue
+        seen_local.add(key)
+        out.append(
+            {
+                "key": key,
+                "side": side,
+                "desk": "LunchCredit",
+                "symbol": sym,
+                "action": side,
+                "contract": raw.get("contract"),
+                "message": text,
+                "row": raw,
+            }
+        )
+
     from odte_scanner.edge.filters import golden_flow_skip_reason
 
     for raw in _golden_flow_rows(snapshot):

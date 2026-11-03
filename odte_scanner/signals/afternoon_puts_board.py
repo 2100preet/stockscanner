@@ -20,8 +20,8 @@ from odte_scanner.signals.afternoon_puts import (
     WEBULL_SYMBOLS,
     AfternoonRules,
     bar_is_closed,
+    live_entries,
     one_strike_otm_put,
-    replay,
 )
 from odte_scanner.signals.detected import (
     commit_day_store,
@@ -139,7 +139,13 @@ def build_afternoon_board(
         symbol: [bar for bar in (bars_by_symbol.get(symbol) or []) if bar_is_closed(bar, moment)]
         for symbol in SYMBOLS
     }
-    trades = [row for row in replay(visible, option_bars, rules) if row.get("day") == day]
+    booked = live_entries(visible, option_bars, rules, now=moment)
+    trades = [row for row in booked["trades"] if row.get("day") == day]
+    waiting = [row for row in booked["waiting"] if row.get("day") == day]
+    # Both ETFs fill the cap of two. SPX alerts only when a slot is left.
+    paper = [row for row in trades if str(row.get("symbol") or "") in WEBULL_SYMBOLS]
+    spx_rows = [row for row in trades if str(row.get("symbol") or "") == "SPX"]
+    trades = (paper + spx_rows)[: rules.daily_cap]
     path = store_path or DEFAULT_STORE
     store = _read_store(path)
     stopped = set()
@@ -242,6 +248,34 @@ def build_afternoon_board(
             card["detected_at"] = stamp
             card["detected_at_ct"] = format_ct_hms(stamp)
         cards.append(card)
+    for row in waiting:
+        symbol = str(row.get("symbol") or "").upper()
+        if any(str(card.get("symbol") or "").upper() == symbol for card in cards):
+            continue
+        cards.append(
+            {
+                "symbol": symbol,
+                "action": "AFTERNOON_PUTS",
+                "desk": LOG_KIND,
+                "customer": CUSTOMER_NAME,
+                "afternoon_puts": True,
+                "breadth": "waiting",
+                "right": "P",
+                "webull": symbol in WEBULL_SYMBOLS,
+                "send": False,
+                "send_order": False,
+                "closed": False,
+                "contracts": 1,
+                "at_ct": row.get("at_ct") or row.get("gate_at_ct"),
+                "day_cst": day,
+                "detail": (
+                    f"{CUSTOMER_NAME} · {symbol} met the put gates at "
+                    f"{row.get('gate_at_ct')} CT and is waiting for SPY and QQQ "
+                    "both to confirm. No order until the second name confirms."
+                ),
+                "exit_plan": EXIT_PLAN,
+            }
+        )
     commit_day_store(
         store,
         path,
@@ -277,8 +311,9 @@ def build_afternoon_board(
         ],
         "note": (
             f"{CUSTOMER_NAME}. At most {rules.daily_cap} names, one each. "
-            "Sent from 10:00 to 2:15 PM CT after the 5-minute bar closes. "
-            "SPX is not a Webull order. Flat 2:45 PM CT."
+            "SPY and QQQ enter together when the second name confirms, at that "
+            "bar's prices, through 2:15 PM CT. SPX is not part of that check "
+            "and is not a Webull order. Flat 2:45 PM CT."
         ),
     }
 

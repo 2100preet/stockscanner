@@ -16,7 +16,10 @@ from odte_scanner.signals.afternoon_puts import (
     HOD_DROP_PCT,
     PRIMARY_RULES,
     Bar,
+    bar_is_closed,
+    live_entries,
     load_replay_fixture,
+    plan_breadth,
     replay,
 )
 from odte_scanner.signals.afternoon_puts_board import LOG_KIND, build_afternoon_board, load_afternoon_board
@@ -69,6 +72,58 @@ def test_one_signal_per_symbol_and_cap_two():
     rows = replay(underlying, puts, PRIMARY_RULES)
     assert len(rows) <= 2
     assert len({row["symbol"] for row in rows}) == len(rows)
+
+
+def test_breadth_waits_then_enters_both_at_the_confirming_bar():
+    """The first ETF waits. Both enter at the later bar. SPX is not the second name."""
+    lone = plan_breadth({"SPY": _ct(10, 30)}, now=_ct(11, 0))
+    assert lone["entries"] == {}
+    assert lone["waiting"] == ["SPY"]
+    both = plan_breadth({"QQQ": _ct(10, 25), "SPY": _ct(11, 5)})
+    assert both["entries"]["QQQ"] == _ct(11, 5)
+    assert both["entries"]["SPY"] == _ct(11, 5)
+    assert both["waiting"] == []
+    late = plan_breadth({"SPY": _ct(10, 30), "QQQ": _ct(14, 15)})
+    assert "SPY" not in late["entries"]
+    assert "QQQ" not in late["entries"]
+    expired = plan_breadth({"QQQ": _ct(10, 25)}, now=_ct(14, 15))
+    assert expired["waiting"] == []
+    assert expired["entries"] == {}
+    spx = plan_breadth({"SPX": _ct(11, 0), "SPY": _ct(10, 40)}, now=_ct(11, 30))
+    assert spx["entries"].keys() == {"SPX"}
+    assert spx["waiting"] == ["SPY"]
+
+
+def test_nov2_breadth_reprices_qqq_on_the_spy_bar():
+    underlying, puts = load_replay_fixture(str(FIXTURE))
+    raw = {row["symbol"]: row for row in replay(underlying, puts)}
+    assert raw["QQQ"]["at_ct"] == "10:25"
+    moment = _ct(15, 0)
+    visible = {
+        symbol: [bar for bar in bars if bar_is_closed(bar, moment)]
+        for symbol, bars in underlying.items()
+    }
+    booked = live_entries(visible, puts, now=moment)
+    rows = {row["symbol"]: row for row in booked["trades"]}
+    assert booked["waiting"] == []
+    assert rows["QQQ"]["gate_at_ct"] == "10:25"
+    assert rows["SPY"]["gate_at_ct"] == "11:05"
+    assert rows["QQQ"]["at_ct"] == "11:05"
+    assert rows["SPY"]["at_ct"] == "11:05"
+    qqq_bar = next(bar for bar in underlying["QQQ"] if bar.ct().strftime("%H:%M") == "11:05")
+    assert rows["QQQ"]["entry"] == round(qqq_bar.close, 4)
+    assert rows["QQQ"]["entry"] != raw["QQQ"]["entry"]
+    early = _ct(11, 5)
+    early_bars = {
+        symbol: [bar for bar in bars if bar_is_closed(bar, early)]
+        for symbol, bars in underlying.items()
+    }
+    waiting = live_entries(early_bars, puts, now=early)
+    assert [row["symbol"] for row in waiting["trades"] if row["symbol"] in {"SPY", "QQQ"}] == []
+    assert [row["symbol"] for row in waiting["waiting"]] == ["QQQ"]
+    only = live_entries({"QQQ": underlying["QQQ"]}, now=_ct(15, 0))
+    assert only["trades"] == []
+    assert only["waiting"] == []
 
 
 def test_flat_tape_does_not_trigger():

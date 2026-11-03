@@ -67,6 +67,28 @@ def _afternoon_public_summary() -> dict[str, Any]:
     }
 
 
+def _lunch_public_summary() -> dict[str, Any]:
+    """Rules for the Lunch-Break Credit line. Not a mute and not a live fill."""
+    from odte_scanner.signals.lunch_credit import ORDER_PATH, PRIMARY_RULES, RULES_TEXT
+
+    return {
+        "routed": True,
+        "rules_id": PRIMARY_RULES.rules_id(),
+        "rules": RULES_TEXT,
+        "order_path": ORDER_PATH,
+        "n": 0,
+        "win_rate": None,
+        "dollars": None,
+        "expectancy": None,
+        "note": (
+            "Bullish put credit spread. SPY and QQQ are Webull paper, one combo "
+            "when the sandbox accepts a vertical, otherwise the long put first "
+            "and then the short put. SPX is an alert only. "
+            "This line does not mute Telegram or paper buys."
+        ),
+    }
+
+
 def _sniper_public_summary() -> dict[str, Any]:
     """Lazy import. Sniper's module loads this package, so a top-level import cycles."""
     from odte_scanner.edge.sniper_study import public_summary
@@ -377,6 +399,7 @@ def build_edge_report(*, scorecard: dict[str, Any] | None = None, samples: list[
         "diamond": diamond_public_summary(),
         "sniper": _sniper_public_summary(),
         "afternoon_puts": _afternoon_public_summary(),
+        "lunch_credit": _lunch_public_summary(),
         "paper_audit": PAPER_AUDIT,
         "paper_audit_at": "2026-10-27T03:04:05+00:00",
         "move_note": MOVE_NOTE,

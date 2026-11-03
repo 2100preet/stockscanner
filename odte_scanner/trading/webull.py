@@ -533,6 +533,121 @@ def build_option_place_order(intent: WebullOrderIntent) -> dict[str, Any]:
     }
 
 
+def multi_leg_rejected(error: str | None) -> bool:
+    """True when the sandbox refused the order because it is a multi-leg strategy.
+
+    A price, tick, or buying-power reject is not this. Those stay rejected
+    instead of turning into two naked legs.
+    """
+    blob = str(error or "").upper()
+    if not blob:
+        return False
+    phrases = (
+        "UNSUPPORTED STRATEGY",
+        "STRATEGY_NOT_SUPPORT",
+        "STRATEGY NOT SUPPORT",
+        "INVALID_STRATEGY",
+        "INVALID STRATEGY",
+        "OPTION_STRATEGY",
+        "MULTI_LEG_NOT",
+        "MULTI-LEG NOT",
+        "MULTI LEG NOT",
+        "COMBO_NOT",
+        "DOES NOT SUPPORT MULTI",
+        "NOT SUPPORT MULTI",
+    )
+    return any(phrase in blob for phrase in phrases)
+
+
+def build_vertical_spread_order(
+    *,
+    client_order_id: str,
+    symbol: str,
+    expiry: str,
+    short_strike: float,
+    long_strike: float,
+    quantity: int = 1,
+    limit_price: float,
+    opening: bool = True,
+    right: str = "P",
+) -> dict[str, Any]:
+    """One Webull vertical. Opening a credit uses side SELL and a credit limit.
+
+    The short strike is sold to open and the long strike is bought to open.
+    Closing buys the short strike back and sells the long strike. The limit
+    is the net credit when opening and the net debit when closing.
+    ``option_strategy`` is VERTICAL. The sandbox derives the structure from
+    the legs; the field is the documented reference value.
+    """
+    symbol_u = str(symbol or "").upper().strip()
+    if not symbol_u:
+        raise ValueError("symbol required")
+    if str(symbol_u) == "SPX":
+        raise ValueError("SPX is not a Webull order")
+    expiry_s = str(expiry or "").strip()
+    if len(expiry_s) < 10 or expiry_s[4] != "-" or expiry_s[7] != "-":
+        raise ValueError("expiry must be YYYY-MM-DD")
+    try:
+        short_k = float(short_strike)
+        long_k = float(long_strike)
+        limit_f = float(limit_price)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("strikes and limit are required") from exc
+    if short_k <= 0 or long_k <= 0 or abs(short_k - long_k) < 0.01:
+        raise ValueError("vertical needs two different strikes")
+    if limit_f <= 0:
+        raise ValueError("limit price required (Webull options do not accept MARKET)")
+    right_u = str(right or "P").upper()
+    if right_u in {"CALL", "C"}:
+        option_type = "CALL"
+    elif right_u in {"PUT", "P"}:
+        option_type = "PUT"
+    else:
+        raise ValueError(f"unsupported right {right}")
+    # A put credit sells the higher strike. Keep the caller's short/long even
+    # if a call credit would flip them: short is the sold strike.
+    order_id = str(client_order_id or "").strip()[:32]
+    if not order_id:
+        raise ValueError("client_order_id required")
+    qty = max(1, int(quantity or 1))
+    side = "SELL" if opening else "BUY"
+
+    def leg(strike: float, leg_side: str, intent: str) -> dict[str, Any]:
+        return {
+            "side": leg_side,
+            "quantity": str(qty),
+            "symbol": symbol_u,
+            "strike_price": f"{float(strike):.2f}",
+            "option_expire_date": expiry_s[:10],
+            "instrument_type": "OPTION",
+            "option_type": option_type,
+            "market": "US",
+            "position_intent": intent,
+        }
+
+    if opening:
+        short_leg = leg(short_k, "SELL", "SELL_TO_OPEN")
+        long_leg = leg(long_k, "BUY", "BUY_TO_OPEN")
+    else:
+        short_leg = leg(short_k, "BUY", "BUY_TO_CLOSE")
+        long_leg = leg(long_k, "SELL", "SELL_TO_CLOSE")
+    return {
+        "client_order_id": order_id,
+        "combo_type": "NORMAL",
+        "order_type": "LIMIT",
+        "quantity": str(qty),
+        "limit_price": f"{limit_f:.2f}",
+        "option_strategy": "VERTICAL",
+        "side": side,
+        "time_in_force": "DAY",
+        "entrust_type": "QTY",
+        "instrument_type": "OPTION",
+        "market": "US",
+        "symbol": symbol_u,
+        "legs": [short_leg, long_leg],
+    }
+
+
 def _broker_order_id(res: Any, fallback: str) -> str:
     """Pull an order id out of an OpenAPI SDK response. Raise on HTTP errors."""
     status = getattr(res, "status_code", None)
@@ -1292,7 +1407,13 @@ class WebullBroker:
         return find_account_id(payload, account_number)
 
     def _post_option(self, intent: WebullOrderIntent) -> str:
-        order = build_option_place_order(intent)
+        custom = (intent.meta or {}).get("openapi_body")
+        if isinstance(custom, dict) and custom.get("legs"):
+            order = dict(custom)
+            if intent.limit_price:
+                order["limit_price"] = f"{float(intent.limit_price):.2f}"
+        else:
+            order = build_option_place_order(intent)
         account_id = self._order_account(intent)
         if not account_id or account_id.upper() == CASH_ACCOUNT_NUMBER:
             raise RuntimeError(

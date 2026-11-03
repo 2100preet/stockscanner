@@ -77,7 +77,10 @@ RULES_TEXT = (
     "The contract is the 0DTE put one strike out of the money, one contract. "
     "Sell half at +100% and trail the rest, out if it gives back half of the "
     "peak gain. Hard stop −40% from the fill. Flat at 2:45 PM CT. No second "
-    "entry after a stop. SPX is an alert, not a Webull order."
+    "entry after a stop. SPY and QQQ are entered only when both have met "
+    "these gates the same day. The first name waits until 2:15 PM CT. When "
+    "the second confirms, both are entered on that bar at its prices. SPX "
+    "is an alert and is not part of that check. SPX is not a Webull order."
 )
 
 
@@ -435,6 +438,150 @@ def apply_daily_cap(
         picked.extend(kept)
     picked.sort(key=lambda row: (str(row.get("at") or ""), rank.get(str(row.get("symbol") or ""), 99)))
     return picked
+
+
+def plan_breadth(
+    gates: dict[str, datetime],
+    *,
+    entry_end: time = time(14, 15),
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Decide which names enter.
+
+    SPY and QQQ enter together, at the later gate, only when both gates are
+    inside the entry window. A lone ETF gate waits until ``entry_end``. SPX
+    keeps its own gate and does not confirm the other two.
+    """
+    def _aware(moment: datetime) -> datetime:
+        if moment.tzinfo is None:
+            from odte_scanner.time_cst import CT
+
+            return moment.replace(tzinfo=CT)
+        return moment
+
+    usable = {symbol: _aware(moment) for symbol, moment in gates.items() if isinstance(moment, datetime)}
+    entries: dict[str, datetime] = {}
+    waiting: list[str] = []
+    spy = usable.get("SPY")
+    qqq = usable.get("QQQ")
+    if spy is not None and qqq is not None:
+        confirm = spy if spy >= qqq else qqq
+        if confirm.time() < entry_end and spy.time() < entry_end and qqq.time() < entry_end:
+            entries["SPY"] = confirm
+            entries["QQQ"] = confirm
+    else:
+        lone = "SPY" if spy is not None else ("QQQ" if qqq is not None else None)
+        if lone is not None:
+            expired = False
+            if now is not None:
+                clock = _aware(now)
+                expired = clock.time() >= entry_end
+            if not expired and usable[lone].time() < entry_end:
+                waiting.append(lone)
+    spx = usable.get("SPX")
+    if spx is not None and spx.time() < entry_end:
+        entries["SPX"] = spx
+    return {"entries": entries, "waiting": waiting}
+
+
+def _index_at(session: list[Bar], moment: datetime) -> int | None:
+    """Last bar at or before ``moment``. Prices on that bar are the current ones."""
+    target = moment
+    found: int | None = None
+    for i, bar in enumerate(session):
+        if bar.ct() <= target:
+            found = i
+        else:
+            break
+    return found
+
+
+def _option_series(
+    option_bars: dict[str, list[Bar]] | None,
+    symbol: str,
+    strike: float,
+) -> list[Bar] | None:
+    if not option_bars:
+        return None
+    series = option_bars.get(f"{symbol}|{strike:g}")
+    return series or None
+
+
+def live_entries(
+    bars_by_symbol: dict[str, list[Bar]],
+    option_bars: dict[str, list[Bar]] | None = None,
+    rules: AfternoonRules | None = None,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Breadth book for the live desk.
+
+    ``replay`` stays the ungated study of each gate. This is what the desk
+    enters: both ETFs at the confirming bar, or a waiting row for the first
+    one. SPX is unchanged.
+    """
+    rules = rules or PRIMARY_RULES
+    sessions = {symbol: group_sessions(bars or []) for symbol, bars in bars_by_symbol.items()}
+    days: set[date] = set()
+    for book in sessions.values():
+        days.update(book)
+    trades: list[dict[str, Any]] = []
+    waiting: list[dict[str, Any]] = []
+    for day in sorted(days):
+        day_sessions: dict[str, list[Bar]] = {}
+        gates: dict[str, datetime] = {}
+        gate_index: dict[str, int] = {}
+        for symbol in SYMBOLS:
+            session = (sessions.get(symbol) or {}).get(day)
+            if not session:
+                continue
+            day_sessions[symbol] = session
+            found = first_signal(session, rules)
+            if found is None:
+                continue
+            gates[symbol] = session[found].ct()
+            gate_index[symbol] = found
+        plan = plan_breadth(gates, entry_end=rules.entry_end, now=now)
+        for symbol, entry_at in plan["entries"].items():
+            session = day_sessions.get(symbol)
+            if not session:
+                continue
+            entry_i = _index_at(session, entry_at)
+            gate_i = gate_index.get(symbol, entry_i or 0)
+            if entry_i is None:
+                continue
+            clock = session[entry_i].ct().time()
+            if clock < rules.entry_start or clock >= rules.entry_end:
+                continue
+            strike = one_strike_otm_put(session[entry_i].close, symbol)
+            option = _option_series(option_bars, symbol, strike)
+            row = simulate(symbol, session, entry_i, option, rules)
+            gate_bar = session[gate_i]
+            row["gate_at"] = gate_bar.ct().isoformat()
+            row["gate_at_ct"] = gate_bar.ct().strftime("%H:%M")
+            row["breadth"] = "confirmed"
+            trades.append(row)
+        for symbol in plan["waiting"]:
+            session = day_sessions.get(symbol)
+            gate_i = gate_index.get(symbol)
+            if session is None or gate_i is None:
+                continue
+            bar = session[gate_i]
+            waiting.append(
+                {
+                    "symbol": symbol,
+                    "day": day.isoformat(),
+                    "gate_at": bar.ct().isoformat(),
+                    "gate_at_ct": bar.ct().strftime("%H:%M"),
+                    "at_ct": bar.ct().strftime("%H:%M"),
+                    "side": "P",
+                    "breadth": "waiting",
+                    "webull": symbol in WEBULL_SYMBOLS,
+                }
+            )
+    rank = {symbol: i for i, symbol in enumerate(PRIORITY)}
+    trades.sort(key=lambda row: (str(row.get("gate_at") or row.get("at") or ""), rank.get(str(row.get("symbol") or ""), 99)))
+    return {"trades": trades, "waiting": waiting}
 
 
 def replay(

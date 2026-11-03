@@ -33,6 +33,8 @@ EDGE_SECTION = """
       <div id="edgeSniper"></div>
       <h3>Afternoon Puts — its own book</h3>
       <div id="edgeAfternoon"></div>
+      <h3>Lunch-Break Credit — its own book</h3>
+      <div id="edgeLunch"></div>
       <h3>Today's Webull paper</h3>
       <p class="lede" id="edgeReconcile">Paper fills are the source of truth for the contract, the price, and the day's P&amp;L.</p>
       <div style="overflow-x:auto"><table id="edgeWebullBook"></table></div>
@@ -238,6 +240,14 @@ EDGE_JS = r"""
           + '<div><span>Option model</span><br><strong>' + apct(a.expectancy) + '</strong></div>'
           + '</div><p class="pc-why">' + edgeEsc(a.note || "") + '</p></article>';
       }
+      var lunchEl = document.getElementById("edgeLunch");
+      if (lunchEl) {
+        var lc = edge.lunch_credit || {};
+        lunchEl.innerHTML = '<article class="pulse-card lunch">'
+          + '<div class="pc-top"><div class="pc-sym">🌤️ Lunch-Break Credit</div><div class="pc-tag lunch">'
+          + (lc.routed ? "PAPER + TELEGRAM" : "NOT SENT") + '</div></div>'
+          + '<p class="pc-why">' + edgeEsc(lc.rules || lc.note || "") + '</p></article>';
+      }
       var bookEl = document.getElementById("edgeWebullBook");
       var reconcileEl = document.getElementById("edgeReconcile");
       var reconcile = (DATA && DATA.pnl_reconcile) || {};
@@ -252,6 +262,7 @@ EDGE_JS = r"""
           if (tier === "diamond") return "Diamond";
           if (tier === "sniper") return "Sniper";
           if (tier === "afternoon") return "Afternoon Puts";
+          if (tier === "lunch") return "Lunch-Break Credit";
           return "Gold Setup";
         };
         bookEl.innerHTML = edgeTable(
@@ -330,6 +341,8 @@ def render_edge_static(report: dict[str, Any]) -> str:
       {sniper_tile_html(report.get("sniper") or {})}
       <h3>Afternoon Puts</h3>
       {afternoon_tile_html(report.get("afternoon_puts") or {})}
+      <h3>Lunch-Break Credit</h3>
+      {lunch_tile_html(report.get("lunch_credit") or {})}
     </section>
     """
 
@@ -445,5 +458,17 @@ def afternoon_tile_html(item: dict[str, Any]) -> str:
         <div><span>Dollars</span><br><strong>{_cell(dollar_text)}</strong></div>
       </div>
       <p class="pc-why">{_cell(item.get("note"))}</p>
+    </article>
+    """
+
+
+def lunch_tile_html(item: dict[str, Any]) -> str:
+    """Own line for Lunch-Break Credit. Separate from Afternoon Puts."""
+
+    routed = "PAPER + TELEGRAM" if item.get("routed") else "NOT SENT"
+    return f"""
+    <article class="pulse-card lunch">
+      <div class="pc-top"><div class="pc-sym">🌤️ Lunch-Break Credit</div><div class="pc-tag lunch">{_cell(routed)}</div></div>
+      <p class="pc-why">{_cell(item.get("rules") or item.get("note"))}</p>
     </article>
     """

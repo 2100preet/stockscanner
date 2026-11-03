@@ -73,6 +73,8 @@ def public_desk_name(
         return "Sniper"
     if tier == "afternoon":
         return "Afternoon Puts"
+    if tier == "lunch":
+        return "Lunch-Break Credit"
     if tier == "gold":
         return "Gold Setup"
     desk = ""
@@ -88,7 +90,9 @@ def public_desk_name(
         return "Gold Setup"
     if low in {"afternoon", "afternoon puts"}:
         return "Afternoon Puts"
-    if name in {"Diamond", "Sniper", "Gold Setup", "Afternoon Puts"}:
+    if low in {"lunch", "lunch credit", "lunchcredit", "lunch break credit", "lunch-break credit"}:
+        return "Lunch-Break Credit"
+    if name in {"Diamond", "Sniper", "Gold Setup", "Afternoon Puts", "Lunch-Break Credit"}:
         return name
     if not name or name == "unknown":
         return "Other"
@@ -106,6 +110,8 @@ def tier_of(order: dict[str, Any] | None) -> str | None:
             return text
         if text in {"afternoon", "afternoon_puts", "afternoonputs"}:
             return "afternoon"
+        if text in {"lunch", "lunch_credit", "lunchcredit"}:
+            return "lunch"
         if text in {"sure_winner", "sure_winner_gold", "gold"}:
             return "gold"
     return None
@@ -145,8 +151,18 @@ def _match(orders: list[dict[str, Any]], *, symbol: str, tier: str, action: str)
     return found
 
 
+def _lunch_order(order: dict[str, Any]) -> bool:
+    meta = _meta(order)
+    if meta.get("leg") or meta.get("exclude_pnl"):
+        return False
+    text = f"{order.get('desk') or ''} {meta.get('golden_kind') or ''} {meta.get('exit_tier') or ''}".lower()
+    return "lunch" in text
+
+
 def annotate_card(card: dict[str, Any], orders: list[dict[str, Any]], tier: str) -> dict[str, Any]:
     """Stamp the traded contract onto a signal card. The signal strike remains."""
+    if tier == "lunch":
+        return _annotate_lunch(card, orders)
     out = dict(card)
     symbol = str(card.get("symbol") or "").upper()
     if symbol == "SPX":
@@ -221,6 +237,62 @@ def annotate_card(card: dict[str, Any], orders: list[dict[str, Any]], tier: str)
     return out
 
 
+def _annotate_lunch(card: dict[str, Any], orders: list[dict[str, Any]]) -> dict[str, Any]:
+    """A credit is a sell to open and a buy to close. The tile keeps both legs."""
+    out = dict(card)
+    if str(card.get("symbol") or "").upper() == "SPX":
+        return out
+    symbol = str(card.get("symbol") or "").upper()
+    opens = [
+        order
+        for order in orders
+        if _lunch_order(order)
+        and str(order.get("symbol") or "").upper() == symbol
+        and str(order.get("action") or "").upper() == "SELL"
+        and str(_meta(order).get("role") or "open") == "open"
+    ]
+    entry = _best(opens)
+    if entry is None:
+        return out
+    out["order_status"] = entry.get("status")
+    out["order_status_label"] = status_label(entry)
+    fill = _num(entry.get("fill_price"))
+    limit = _num(entry.get("limit_price"))
+    label = status_label(entry)
+    if label == "filled" and fill is not None and fill > 0:
+        out["fill_price"] = fill
+        out["credit"] = fill
+        out["display_price"] = fill
+        out["display_price_label"] = "Filled @"
+    elif label == "working limit" and limit is not None and limit > 0:
+        out["limit_price"] = limit
+        out["display_price"] = limit
+        out["display_price_label"] = "Limit (working)"
+    spread_id = str(_meta(entry).get("spread_id") or entry.get("contract") or "")
+    closes = [
+        order
+        for order in orders
+        if _lunch_order(order)
+        and str(_meta(order).get("role") or "") == "close"
+        and str(_meta(order).get("spread_id") or order.get("contract") or "") == spread_id
+    ]
+    exit_order = _best([row for row in closes if str(row.get("status") or "").lower() in _FILLED]) or _best(closes)
+    if exit_order is not None:
+        exit_label = status_label(exit_order)
+        out["exit_status_label"] = exit_label
+        exit_fill = _num(exit_order.get("fill_price"))
+        exit_limit = _num(exit_order.get("limit_price"))
+        if exit_label == "filled" and exit_fill is not None and exit_fill > 0:
+            out["exit_fill"] = exit_fill
+            out["exit_debit"] = exit_fill
+            out["exit_display"] = exit_fill
+            out["exit_price_label"] = "Filled @"
+        elif exit_limit is not None and exit_limit > 0:
+            out["exit_display"] = exit_limit
+            out["exit_price_label"] = "Limit (working)" if exit_label == "working limit" else "Limit"
+    return out
+
+
 def annotate_board(board: dict[str, Any] | None, orders: list[dict[str, Any]], tier: str) -> dict[str, Any] | None:
     if not isinstance(board, dict):
         return board
@@ -264,12 +336,14 @@ def round_trips(
 ) -> list[dict[str, Any]]:
     """One row per filled sell. Entry is the sell's stored price or the buy fill.
 
-    The default book is Diamond, Sniper, Afternoon Puts, and Gold Setup — the
-    same rows the Edge tab and the exit alerts price. ``include_other_desks``
-    keeps every other non-SPX Webull fill with the same entry rule. SPX is
-    never a row.
+    The default book is Diamond, Sniper, Afternoon Puts, Lunch-Break Credit,
+    and Gold Setup — the same rows the Edge tab and the exit alerts price.
+    ``include_other_desks`` keeps every other non-SPX Webull fill with the
+    same entry rule. SPX is never a row. A lunch credit is a sell to open
+    and a buy to close, so its dollars are credit minus debit.
     """
     book = [order for order in (orders or []) if isinstance(order, dict)]
+    lunch = _lunch_trips(book)
     buys: dict[str, dict[str, Any]] = {}
     for order in book:
         if str(order.get("action") or "").upper() != "BUY":
@@ -277,6 +351,8 @@ def round_trips(
         if str(order.get("status") or "").lower() not in _FILLED:
             continue
         if str(order.get("symbol") or "").upper() == "SPX":
+            continue
+        if _lunch_order(order):
             continue
         price = _num(order.get("fill_price"))
         contract = str(order.get("contract") or "")
@@ -290,6 +366,8 @@ def round_trips(
         if str(order.get("status") or "").lower() not in _FILLED:
             continue
         if str(order.get("symbol") or "").upper() == "SPX":
+            continue
+        if _lunch_order(order):
             continue
         exit_px = _num(order.get("fill_price"))
         contract = str(order.get("contract") or "")
@@ -331,6 +409,75 @@ def round_trips(
                     (buy or {}).get("updated_at")
                     or (buy or {}).get("created_at")
                     or _meta(order).get("entry_at")
+                    or ""
+                ),
+            }
+        )
+    trips.extend(lunch)
+    return trips
+
+
+def _lunch_trips(book: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One row per filled lunch close. P&L is the credit minus the debit."""
+    opens: dict[str, dict[str, Any]] = {}
+    for order in book:
+        if not _lunch_order(order):
+            continue
+        if str(order.get("action") or "").upper() != "SELL":
+            continue
+        if str(order.get("status") or "").lower() not in _FILLED:
+            continue
+        if str(_meta(order).get("role") or "open") != "open":
+            continue
+        key = str(_meta(order).get("spread_id") or order.get("contract") or "")
+        if key and key not in opens:
+            opens[key] = order
+    trips: list[dict[str, Any]] = []
+    for order in book:
+        if not _lunch_order(order):
+            continue
+        if str(order.get("action") or "").upper() != "BUY":
+            continue
+        if str(order.get("status") or "").lower() not in _FILLED:
+            continue
+        if str(_meta(order).get("role") or "") != "close":
+            continue
+        if str(order.get("symbol") or "").upper() == "SPX":
+            continue
+        debit = _num(order.get("fill_price"))
+        if debit is None or debit <= 0:
+            continue
+        key = str(_meta(order).get("spread_id") or order.get("contract") or "")
+        opened = opens.get(key)
+        credit = _num(_meta(order).get("entry_price"))
+        if (credit is None or credit <= 0) and opened is not None:
+            credit = _num(opened.get("fill_price"))
+        if credit is None or credit <= 0:
+            continue
+        qty = _qty(order)
+        pnl = (credit - debit) * 100.0 * qty
+        trips.append(
+            {
+                "tier": "lunch",
+                "desk": "Lunch-Break Credit",
+                "symbol": str(order.get("symbol") or "").upper(),
+                "contract": str(order.get("contract") or key),
+                "strike": _meta(order).get("short_strike") or order.get("strike"),
+                "right": "P",
+                "expiry": order.get("expiry"),
+                "signal_strike": _meta(order).get("long_strike"),
+                "status": status_label(order),
+                "entry": credit,
+                "exit": debit,
+                "contracts": qty,
+                "pnl": round(pnl, 2),
+                "reason": str(order.get("reason") or ""),
+                "order_id": str(order.get("id") or ""),
+                "raw_desk": "lunch_credit",
+                "exited_at": str(order.get("updated_at") or order.get("created_at") or ""),
+                "entered_at": str(
+                    (opened or {}).get("updated_at")
+                    or (opened or {}).get("created_at")
                     or ""
                 ),
             }

@@ -46,6 +46,7 @@ TRACKED_SOURCES = (
     "Beauty",
     "Levels",
     "ML6",
+    "Lunch-Break Credit",
 )
 
 
@@ -64,6 +65,8 @@ def source_for_webull(desk: str) -> str:
         return "Diamond"
     if key == "sniper":
         return "Sniper"
+    if key in {"lunch_credit", "lunchcredit", "lunch"}:
+        return "Lunch-Break Credit"
     if key == "golden_flow":
         return "Golden Flow"
     if key == "challenge":
