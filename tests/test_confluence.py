@@ -86,3 +86,12 @@ def test_public_block_never_raises(monkeypatch):
     monkeypatch.setattr(C, "build_board", boom)
     out = C.public_block()
     assert out["ok"] is False and out["events"] == []
+
+
+def test_stale_backfill_is_recorded_not_sent(tmp_path):
+    sent = []
+    rows = [a("Sniper", "GOOGL", GC, "8:55"), a("Diamond", "GOOGL", GC, "9:01")]
+    now = datetime(2026, 11, 4, 16, 30, tzinfo=timezone.utc)
+    C.run_confluence_cycle(alerts=rows, now=now, orders=[], store_path=tmp_path / "c.json",
+                           history_path=tmp_path / "h.jsonl", send=lambda t: sent.append(t) or {"ok": True}, em_used=None)
+    assert sent == [] and C.read_state(tmp_path / "c.json")["events"]

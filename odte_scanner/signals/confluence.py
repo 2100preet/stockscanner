@@ -28,6 +28,8 @@ DEFAULT_STORE = ROOT / "outputs" / "confluence_day.json"
 HISTORY_STORE = ROOT / "outputs" / "confluence_history.jsonl"
 WINDOW = timedelta(minutes=15)
 MIN_SCORE = 2
+# An event older than this when first seen is recorded but not sent.
+STALE = timedelta(minutes=20)
 NOTE = (
     "Two or more desks on the same symbol and direction within 15 minutes. "
     "Display only: this table does not place, size, or exit any order."
@@ -351,6 +353,11 @@ def run_confluence_cycle(
         if key in sent:
             continue
         text = format_line(event)
+        last = _when(event.get("last_at"))
+        if last is not None and moment - last > STALE:
+            # Backfill after a restart or deploy: record it, do not page.
+            sent.append(key)
+            continue
         try:
             result = sender(text) or {}
         except Exception as exc:  # noqa: BLE001
