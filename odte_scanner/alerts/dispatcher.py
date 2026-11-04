@@ -445,6 +445,12 @@ def _fmt_alert(
         lines.append(f"Asked {when}")
     if detail:
         lines.append(detail)
+    if desk == "AfternoonPuts":
+        from odte_scanner.signals.expected_move import format_em_used
+
+        em_used = format_em_used(row.get("em_used_pct"))
+        if em_used:
+            lines.append(em_used)
     lines.append("Signal Desk · stockscanner")
     return "\n".join(lines)
 

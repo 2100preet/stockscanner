@@ -157,6 +157,12 @@ PAGE = r"""
       box-shadow: 0 10px 28px rgba(14, 165, 233, .14), 0 10px 28px rgba(0,0,0,.28);
     }
     .pulse-banner.lunch .pb-title em { color: #0369a1; }
+    .pulse-banner.expected {
+      border-color: rgba(147, 197, 253, .75);
+      background: linear-gradient(105deg, rgba(219, 234, 254, .72), rgba(15, 23, 42, .78) 48%, rgba(147, 197, 253, .16));
+      box-shadow: 0 10px 28px rgba(37, 99, 235, .12), 0 10px 28px rgba(0,0,0,.28);
+    }
+    .pulse-banner.expected .pb-title em { color: #1d4ed8; }
     .pulse-banner.sure-active {
       border-color: rgba(240,193,75,.55);
       background:
@@ -226,6 +232,22 @@ PAGE = r"""
     .pulse-card.sniper .pc-meta span,
     .pulse-card.sniper .pc-why { color: #065f46; }
     .pulse-card.sniper .pc-meta strong { color: #022c22; }
+    .pulse-card.expected {
+      border-color: rgba(147, 197, 253, .8);
+      background: linear-gradient(165deg, rgba(219, 234, 254, .94), rgba(191, 219, 254, .5) 42%, rgba(15, 23, 42, .9) 78%);
+      box-shadow: inset 4px 0 0 #60a5fa, 0 8px 22px rgba(37, 99, 235, .14);
+      color: #1e3a8a;
+    }
+    .pulse-card.expected .pc-sym { color: #1e3a8a; }
+    .pulse-card.expected .pc-tag.expected {
+      color: #1d4ed8;
+      background: rgba(255, 255, 255, .72);
+      border-radius: 999px;
+      padding: .12rem .45rem;
+    }
+    .pulse-card.expected .pc-meta span,
+    .pulse-card.expected .pc-why { color: #1e40af; }
+    .pulse-card.expected .pc-meta strong { color: #172554; }
     .pulse-card.sure-high {
       border-color: rgba(232,168,58,.4);
       background: linear-gradient(160deg, rgba(232,168,58,.14), rgba(8,16,14,.75) 55%);
@@ -332,6 +354,7 @@ PAGE = r"""
     <div id="sniperBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="afternoonBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="lunchBanner" class="pulse-banner" aria-live="polite"></div>
+    <div id="expectedMoveBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="loadNote" class="loading" style="display:none;margin-bottom:.6rem"></div>
     <div id="alertToasts" aria-live="assertive"></div>
 
@@ -4483,6 +4506,66 @@ PAGE = r"""
         <div class="pb-grid">${rows.map(card).join("")}</div>`;
     }
 
+    function renderExpectedMove() {
+      const el = document.getElementById("expectedMoveBanner");
+      if (!el) return;
+      const board = DATA.expected_move || {};
+      el.classList.add("active", "expected");
+      const symbols = board.symbols || [];
+      const vix = board.vix;
+      const pct = board.pct;
+      const head = (vix == null || pct == null)
+        ? "Prints around 8:15–8:25 CT, before the 8:30 CT open"
+        : ("VIX " + Number(vix).toFixed(1) + " → ±" + Number(pct).toFixed(1) + "%");
+      const money = (symbol, points) => {
+        if (points == null || Number.isNaN(Number(points))) return "—";
+        const n = Number(points);
+        if (symbol === "SPX") return "±" + Math.round(n).toLocaleString("en-US") + " pts";
+        return "±$" + n.toFixed(1);
+      };
+      const band = (row) => {
+        if (row.low == null || row.high == null) return "";
+        const digits = row.symbol === "SPX" ? 0 : 2;
+        const fmt = (n) => Number(n).toLocaleString("en-US", {minimumFractionDigits: digits, maximumFractionDigits: digits});
+        return " (" + fmt(row.low) + "–" + fmt(row.high) + ")";
+      };
+      const used = (row) => {
+        if (row.move_used_pct == null) return "—";
+        return Math.round(Number(row.move_used_pct)) + "% used";
+      };
+      const cards = symbols.length ? symbols.map((row) => {
+        const hot = row.move_used_pct != null && Number(row.move_used_pct) >= 100;
+        const range = row.range_used_pct == null ? "high–low —" : ("high–low " + Math.round(Number(row.range_used_pct)) + "% of EM");
+        return `<div class="pulse-card expected">
+          <div class="pc-top">
+            <div class="pc-sym">${row.symbol}</div>
+            <div class="pc-tag expected">${hot ? "FULL MOVE" : "1σ"}</div>
+          </div>
+          <div class="pc-meta">
+            <div><span>Expected</span><br><strong>${money(row.symbol, row.display_points != null ? row.display_points : row.points)}${band(row)}</strong></div>
+            <div><span>Used</span><br><strong>${used(row)}</strong><div class="why">${range}</div></div>
+          </div>
+        </div>`;
+      }).join("") : `<div class="pulse-card expected"><p class="pc-why">${board.note || "Expected move prints around 8:15 CT."}</p></div>`;
+      const extras = [];
+      if (board.vix1d != null && board.vix1d_pct != null) extras.push("VIX1D " + Number(board.vix1d).toFixed(1) + " → ±" + Number(board.vix1d_pct).toFixed(1) + "%");
+      const straddles = board.straddle || {};
+      ["SPY", "QQQ"].forEach((symbol) => {
+        const row = straddles[symbol];
+        if (row && row.pct != null) extras.push(symbol + " straddle ±" + Number(row.pct).toFixed(1) + "%");
+      });
+      const status = !board.ok ? "WAITING" : (board.frozen ? "LOCKED" : "PREMARKET");
+      el.innerHTML = `
+        <div class="pb-head">
+          <div>
+            <h2 class="pb-title">🧭 Expected <em>Move</em></h2>
+            <div class="pb-sub">${head}${extras.length ? " · " + extras.join(" · ") : ""}</div>
+          </div>
+          <div class="status">${status}</div>
+        </div>
+        <div class="pb-grid">${cards}</div>`;
+    }
+
     function paint() {
       try { renderScorecard(); } catch (err) { console.error(err); }
       try { renderEdge(); } catch (err) { console.error(err); }
@@ -4490,6 +4573,7 @@ PAGE = r"""
       try { renderSniperBanner(); } catch (err) { console.error(err); }
       try { renderAfternoonBanner(); } catch (err) { console.error(err); }
       try { renderLunchBanner(); } catch (err) { console.error(err); }
+      try { renderExpectedMove(); } catch (err) { console.error(err); }
       try { renderSpxStrategy(); } catch (err) { console.error(err); }
       renderMustTradeBanner();
       renderNowBoard();
@@ -5055,6 +5139,24 @@ def _edge_report(scorecard: dict | None) -> dict:
             "limitations": [str(exc)[:200]],
             "error": str(exc)[:200],
         }
+
+
+def _expected_move_block() -> dict:
+    """Morning expected-move board from disk. The fast loop overlays a fresher one."""
+    try:
+        from odte_scanner.signals.expected_move import load_public_board
+
+        board = load_public_board()
+        if isinstance(board, dict):
+            return board
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False,
+            "symbols": [],
+            "error": str(exc)[:200],
+            "note": "Expected move unavailable.",
+        }
+    return {"ok": False, "symbols": [], "note": "Expected move prints around 8:15 CT."}
 
 
 def _overlay_live(body: dict | None) -> dict | None:
@@ -7994,6 +8096,7 @@ def create_app(config_path: str | None = None) -> Flask:
                         "scorecard": scorecard_public,
                         "edge": _edge_report(scorecard_public),
                         "spx_strategy": spx_strategy,
+                        "expected_move": _expected_move_block(),
                         }
                     )
 

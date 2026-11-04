@@ -1,0 +1,585 @@
+{
+  "live_rules_changed": false,
+  "divisor": 15.87,
+  "label": "Yahoo Finance 5-minute bars, 2026-08-11 through 2026-11-03. VIX is the first regular 5-minute open (about 8:30 CT), and the daily open when that bar is missing. Not a paid feed.",
+  "sessions": 60,
+  "vix_days": 130,
+  "train_sessions": 42,
+  "oos_sessions": 18,
+  "train_first": "2026-08-11",
+  "train_last": "2026-10-08",
+  "oos_first": "2026-10-09",
+  "oos_last": "2026-11-03",
+  "note": "Research only. Webull stays paper. SPX is not an order. No filter from this study is enabled.",
+  "lunch_credit": {
+    "recommendation": "Lunch-Break Credit: out of sample, short strike 0.25\u03c3 below spot is ahead of the baseline (11 trades, win rate 90.9%, P&L $219 vs baseline $-49). That is a research note. Do not turn it on. The live desk is unchanged.",
+    "variants": [
+      {
+        "name": "baseline",
+        "all": {
+          "n": 39,
+          "wins": 28,
+          "losses": 11,
+          "win_rate": 0.7179,
+          "pnl": 586.23,
+          "avg": 15.03
+        },
+        "train": {
+          "n": 28,
+          "wins": 22,
+          "losses": 6,
+          "win_rate": 0.7857,
+          "pnl": 634.89,
+          "avg": 22.67
+        },
+        "oos": {
+          "n": 11,
+          "wins": 6,
+          "losses": 5,
+          "win_rate": 0.5455,
+          "pnl": -48.66,
+          "avg": -4.42
+        },
+        "reasons": {
+          "flat": 24,
+          "target": 15
+        }
+      },
+      {
+        "name": "skip if EM used > 50%",
+        "all": {
+          "n": 21,
+          "wins": 16,
+          "losses": 5,
+          "win_rate": 0.7619,
+          "pnl": 382.56,
+          "avg": 18.22
+        },
+        "train": {
+          "n": 14,
+          "wins": 12,
+          "losses": 2,
+          "win_rate": 0.8571,
+          "pnl": 393.8,
+          "avg": 28.13
+        },
+        "oos": {
+          "n": 7,
+          "wins": 4,
+          "losses": 3,
+          "win_rate": 0.5714,
+          "pnl": -11.24,
+          "avg": -1.61
+        },
+        "reasons": {
+          "flat": 11,
+          "target": 10
+        }
+      },
+      {
+        "name": "skip if EM used > 75%",
+        "all": {
+          "n": 28,
+          "wins": 21,
+          "losses": 7,
+          "win_rate": 0.75,
+          "pnl": 480.07,
+          "avg": 17.15
+        },
+        "train": {
+          "n": 17,
+          "wins": 15,
+          "losses": 2,
+          "win_rate": 0.8824,
+          "pnl": 528.73,
+          "avg": 31.1
+        },
+        "oos": {
+          "n": 11,
+          "wins": 6,
+          "losses": 5,
+          "win_rate": 0.5455,
+          "pnl": -48.66,
+          "avg": -4.42
+        },
+        "reasons": {
+          "flat": 15,
+          "target": 13
+        }
+      },
+      {
+        "name": "skip if EM used > 100%",
+        "all": {
+          "n": 30,
+          "wins": 21,
+          "losses": 9,
+          "win_rate": 0.7,
+          "pnl": 411.69,
+          "avg": 13.72
+        },
+        "train": {
+          "n": 19,
+          "wins": 15,
+          "losses": 4,
+          "win_rate": 0.7895,
+          "pnl": 460.35,
+          "avg": 24.23
+        },
+        "oos": {
+          "n": 11,
+          "wins": 6,
+          "losses": 5,
+          "win_rate": 0.5455,
+          "pnl": -48.66,
+          "avg": -4.42
+        },
+        "reasons": {
+          "flat": 17,
+          "target": 13
+        }
+      },
+      {
+        "name": "only if EM used > 50%",
+        "all": {
+          "n": 18,
+          "wins": 12,
+          "losses": 6,
+          "win_rate": 0.6667,
+          "pnl": 203.67,
+          "avg": 11.31
+        },
+        "train": {
+          "n": 14,
+          "wins": 10,
+          "losses": 4,
+          "win_rate": 0.7143,
+          "pnl": 241.09,
+          "avg": 17.22
+        },
+        "oos": {
+          "n": 4,
+          "wins": 2,
+          "losses": 2,
+          "win_rate": 0.5,
+          "pnl": -37.42,
+          "avg": -9.36
+        },
+        "reasons": {
+          "flat": 13,
+          "target": 5
+        }
+      },
+      {
+        "name": "only if EM used > 75%",
+        "all": {
+          "n": 11,
+          "wins": 7,
+          "losses": 4,
+          "win_rate": 0.6364,
+          "pnl": 106.16,
+          "avg": 9.65
+        },
+        "train": {
+          "n": 11,
+          "wins": 7,
+          "losses": 4,
+          "win_rate": 0.6364,
+          "pnl": 106.16,
+          "avg": 9.65
+        },
+        "oos": {
+          "n": 0,
+          "wins": 0,
+          "losses": 0,
+          "win_rate": null,
+          "pnl": 0,
+          "avg": null
+        },
+        "reasons": {
+          "flat": 9,
+          "target": 2
+        }
+      },
+      {
+        "name": "only if EM used > 100%",
+        "all": {
+          "n": 9,
+          "wins": 7,
+          "losses": 2,
+          "win_rate": 0.7778,
+          "pnl": 174.54,
+          "avg": 19.39
+        },
+        "train": {
+          "n": 9,
+          "wins": 7,
+          "losses": 2,
+          "win_rate": 0.7778,
+          "pnl": 174.54,
+          "avg": 19.39
+        },
+        "oos": {
+          "n": 0,
+          "wins": 0,
+          "losses": 0,
+          "win_rate": null,
+          "pnl": 0,
+          "avg": null
+        },
+        "reasons": {
+          "flat": 7,
+          "target": 2
+        }
+      },
+      {
+        "name": "short strike 0.25\u03c3 below spot",
+        "all": {
+          "n": 39,
+          "wins": 38,
+          "losses": 1,
+          "win_rate": 0.9744,
+          "pnl": 882.32,
+          "avg": 22.62
+        },
+        "train": {
+          "n": 28,
+          "wins": 28,
+          "losses": 0,
+          "win_rate": 1.0,
+          "pnl": 663.48,
+          "avg": 23.7
+        },
+        "oos": {
+          "n": 11,
+          "wins": 10,
+          "losses": 1,
+          "win_rate": 0.9091,
+          "pnl": 218.84,
+          "avg": 19.89
+        },
+        "reasons": {
+          "flat": 7,
+          "target": 32
+        }
+      },
+      {
+        "name": "short strike 0.50\u03c3 below spot",
+        "all": {
+          "n": 38,
+          "wins": 38,
+          "losses": 0,
+          "win_rate": 1.0,
+          "pnl": 611.18,
+          "avg": 16.08
+        },
+        "train": {
+          "n": 27,
+          "wins": 27,
+          "losses": 0,
+          "win_rate": 1.0,
+          "pnl": 441.54,
+          "avg": 16.35
+        },
+        "oos": {
+          "n": 11,
+          "wins": 11,
+          "losses": 0,
+          "win_rate": 1.0,
+          "pnl": 169.64,
+          "avg": 15.42
+        },
+        "reasons": {
+          "target": 38
+        }
+      }
+    ]
+  },
+  "afternoon_puts": {
+    "recommendation": "Afternoon Puts: out of sample, put strike 0.25\u03c3 below spot is ahead of the baseline (16 trades, win rate 50.0%, P&L $3,537 vs baseline $3,194). That is a research note. Do not turn it on. The live desk is unchanged.",
+    "variants": [
+      {
+        "name": "baseline",
+        "all": {
+          "n": 46,
+          "wins": 8,
+          "losses": 38,
+          "win_rate": 0.1739,
+          "pnl": -5876.38,
+          "avg": -127.75
+        },
+        "train": {
+          "n": 30,
+          "wins": 1,
+          "losses": 29,
+          "win_rate": 0.0333,
+          "pnl": -9070.6,
+          "avg": -302.35
+        },
+        "oos": {
+          "n": 16,
+          "wins": 7,
+          "losses": 9,
+          "win_rate": 0.4375,
+          "pnl": 3194.22,
+          "avg": 199.64
+        },
+        "reasons": {
+          "stop": 36,
+          "trail": 8,
+          "flat": 2
+        }
+      },
+      {
+        "name": "skip if EM used > 50%",
+        "all": {
+          "n": 18,
+          "wins": 4,
+          "losses": 14,
+          "win_rate": 0.2222,
+          "pnl": -1458.68,
+          "avg": -81.04
+        },
+        "train": {
+          "n": 15,
+          "wins": 1,
+          "losses": 14,
+          "win_rate": 0.0667,
+          "pnl": -4035.46,
+          "avg": -269.03
+        },
+        "oos": {
+          "n": 3,
+          "wins": 3,
+          "losses": 0,
+          "win_rate": 1.0,
+          "pnl": 2576.78,
+          "avg": 858.93
+        },
+        "reasons": {
+          "stop": 14,
+          "trail": 4
+        }
+      },
+      {
+        "name": "skip if EM used > 75%",
+        "all": {
+          "n": 27,
+          "wins": 4,
+          "losses": 23,
+          "win_rate": 0.1481,
+          "pnl": -5933.64,
+          "avg": -219.76
+        },
+        "train": {
+          "n": 23,
+          "wins": 1,
+          "losses": 22,
+          "win_rate": 0.0435,
+          "pnl": -7932.27,
+          "avg": -344.88
+        },
+        "oos": {
+          "n": 4,
+          "wins": 3,
+          "losses": 1,
+          "win_rate": 0.75,
+          "pnl": 1998.63,
+          "avg": 499.66
+        },
+        "reasons": {
+          "stop": 23,
+          "trail": 4
+        }
+      },
+      {
+        "name": "skip if EM used > 100%",
+        "all": {
+          "n": 33,
+          "wins": 4,
+          "losses": 29,
+          "win_rate": 0.1212,
+          "pnl": -6893.25,
+          "avg": -208.89
+        },
+        "train": {
+          "n": 27,
+          "wins": 1,
+          "losses": 26,
+          "win_rate": 0.037,
+          "pnl": -8798.77,
+          "avg": -325.88
+        },
+        "oos": {
+          "n": 6,
+          "wins": 3,
+          "losses": 3,
+          "win_rate": 0.5,
+          "pnl": 1905.52,
+          "avg": 317.59
+        },
+        "reasons": {
+          "stop": 27,
+          "trail": 4,
+          "flat": 2
+        }
+      },
+      {
+        "name": "only if EM used > 50%",
+        "all": {
+          "n": 28,
+          "wins": 4,
+          "losses": 24,
+          "win_rate": 0.1429,
+          "pnl": -4417.7,
+          "avg": -157.78
+        },
+        "train": {
+          "n": 15,
+          "wins": 0,
+          "losses": 15,
+          "win_rate": 0.0,
+          "pnl": -5035.14,
+          "avg": -335.68
+        },
+        "oos": {
+          "n": 13,
+          "wins": 4,
+          "losses": 9,
+          "win_rate": 0.3077,
+          "pnl": 617.44,
+          "avg": 47.5
+        },
+        "reasons": {
+          "stop": 22,
+          "flat": 2,
+          "trail": 4
+        }
+      },
+      {
+        "name": "only if EM used > 75%",
+        "all": {
+          "n": 19,
+          "wins": 4,
+          "losses": 15,
+          "win_rate": 0.2105,
+          "pnl": 57.26,
+          "avg": 3.01
+        },
+        "train": {
+          "n": 7,
+          "wins": 0,
+          "losses": 7,
+          "win_rate": 0.0,
+          "pnl": -1138.33,
+          "avg": -162.62
+        },
+        "oos": {
+          "n": 12,
+          "wins": 4,
+          "losses": 8,
+          "win_rate": 0.3333,
+          "pnl": 1195.59,
+          "avg": 99.63
+        },
+        "reasons": {
+          "stop": 13,
+          "flat": 2,
+          "trail": 4
+        }
+      },
+      {
+        "name": "only if EM used > 100%",
+        "all": {
+          "n": 13,
+          "wins": 4,
+          "losses": 9,
+          "win_rate": 0.3077,
+          "pnl": 1016.87,
+          "avg": 78.22
+        },
+        "train": {
+          "n": 3,
+          "wins": 0,
+          "losses": 3,
+          "win_rate": 0.0,
+          "pnl": -271.83,
+          "avg": -90.61
+        },
+        "oos": {
+          "n": 10,
+          "wins": 4,
+          "losses": 6,
+          "win_rate": 0.4,
+          "pnl": 1288.7,
+          "avg": 128.87
+        },
+        "reasons": {
+          "stop": 9,
+          "trail": 4
+        }
+      },
+      {
+        "name": "put strike 0.25\u03c3 below spot",
+        "all": {
+          "n": 46,
+          "wins": 9,
+          "losses": 37,
+          "win_rate": 0.1957,
+          "pnl": -2855.66,
+          "avg": -62.08
+        },
+        "train": {
+          "n": 30,
+          "wins": 1,
+          "losses": 29,
+          "win_rate": 0.0333,
+          "pnl": -6392.96,
+          "avg": -213.1
+        },
+        "oos": {
+          "n": 16,
+          "wins": 8,
+          "losses": 8,
+          "win_rate": 0.5,
+          "pnl": 3537.3,
+          "avg": 221.08
+        },
+        "reasons": {
+          "stop": 37,
+          "trail": 9
+        }
+      },
+      {
+        "name": "put strike 0.50\u03c3 below spot",
+        "all": {
+          "n": 46,
+          "wins": 7,
+          "losses": 39,
+          "win_rate": 0.1522,
+          "pnl": -4211.39,
+          "avg": -91.55
+        },
+        "train": {
+          "n": 30,
+          "wins": 1,
+          "losses": 29,
+          "win_rate": 0.0333,
+          "pnl": -4023.62,
+          "avg": -134.12
+        },
+        "oos": {
+          "n": 16,
+          "wins": 6,
+          "losses": 10,
+          "win_rate": 0.375,
+          "pnl": -187.77,
+          "avg": -11.74
+        },
+        "reasons": {
+          "stop": 39,
+          "trail": 7
+        }
+      }
+    ]
+  }
+}

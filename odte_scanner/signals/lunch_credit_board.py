@@ -272,6 +272,9 @@ def build_lunch_board(
         if stamp:
             card["detected_at"] = stamp
             card["detected_at_ct"] = format_ct_hms(stamp)
+        from odte_scanner.signals.expected_move import attach_em_used
+
+        attach_em_used(card)
         cards.append(card)
     allowed = [str(row["symbol"]).upper() for row in cards]
     commit_day_store(
