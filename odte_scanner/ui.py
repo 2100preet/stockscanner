@@ -355,6 +355,7 @@ PAGE = r"""
     <div id="afternoonBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="lunchBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="expectedMoveBanner" class="pulse-banner" aria-live="polite"></div>
+    <div id="confluenceBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="loadNote" class="loading" style="display:none;margin-bottom:.6rem"></div>
     <div id="alertToasts" aria-live="assertive"></div>
 
@@ -4566,6 +4567,36 @@ PAGE = r"""
         <div class="pb-grid">${cards}</div>`;
     }
 
+    function renderConfluence() {
+      const el = document.getElementById("confluenceBanner");
+      if (!el) return;
+      const board = DATA.confluence || {};
+      el.classList.add("active", "expected");
+      const events = (board.events || []).slice().sort((a, b) => (b.score - a.score) || String(a.first_at).localeCompare(String(b.first_at)));
+      const esc = (v) => String(v == null ? "" : v).replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+      const money = (n) => n == null ? "—" : ((Number(n) >= 0 ? "+$" : "−$") + Math.abs(Number(n)).toFixed(2));
+      const rows = events.map((ev) => {
+        const p = ev.paper || {};
+        const legs = (ev.setups || []).map((l) => esc(l.setup) + " " + esc(l.at_ct)).join(" + ");
+        return `<tr><td><strong>${esc(ev.badge)}</strong></td><td>${esc(ev.symbol)}</td><td>${esc(String(ev.direction || "").toUpperCase())}</td>
+          <td>${legs}</td><td>${esc(ev.first_ct)}–${esc(ev.last_ct)}</td><td>${esc(p.contract || ev.contract || "—")}</td>
+          <td>${esc(p.quote_label || "—")}</td><td>${esc(p.price_label || "—")} · ${esc(p.status || "—")}</td>
+          <td>${money(p.realized_pnl_usd)}</td><td>${ev.em_used_pct == null ? "—" : Math.round(ev.em_used_pct) + "%"}</td></tr>`;
+      }).join("");
+      const body = events.length
+        ? `<div style="overflow-x:auto"><table class="pb-table" style="width:100%;font-size:12px"><thead><tr><th>Score</th><th>Symbol</th><th>Dir</th><th>Setups (CT)</th><th>Window</th><th>Contract</th><th>Bid/Ask</th><th>Paper</th><th>P&amp;L</th><th>EM used</th></tr></thead><tbody>${rows}</tbody></table></div>`
+        : `<div class="pulse-card expected"><p class="pc-why">${esc(board.note || "No two desks have agreed on a symbol yet today.")}</p></div>`;
+      el.innerHTML = `
+        <div class="pb-head">
+          <div>
+            <h2 class="pb-title">⚡ <em>Confluence</em></h2>
+            <div class="pb-sub">2+ desks, same symbol and direction, within 15 min · display only</div>
+          </div>
+          <div class="status">${board.ok === false ? "UNAVAILABLE" : (events.length + " EVENTS")}</div>
+        </div>
+        ${body}`;
+    }
+
     function paint() {
       try { renderScorecard(); } catch (err) { console.error(err); }
       try { renderEdge(); } catch (err) { console.error(err); }
@@ -4574,6 +4605,7 @@ PAGE = r"""
       try { renderAfternoonBanner(); } catch (err) { console.error(err); }
       try { renderLunchBanner(); } catch (err) { console.error(err); }
       try { renderExpectedMove(); } catch (err) { console.error(err); }
+      try { renderConfluence(); } catch (err) { console.error(err); }
       try { renderSpxStrategy(); } catch (err) { console.error(err); }
       renderMustTradeBanner();
       renderNowBoard();
@@ -5139,6 +5171,16 @@ def _edge_report(scorecard: dict | None) -> dict:
             "limitations": [str(exc)[:200]],
             "error": str(exc)[:200],
         }
+
+
+def _confluence_block() -> dict:
+    """⚡ Confluence table. Display only. A failure is an ok:false block."""
+    try:
+        from odte_scanner.signals.confluence import public_block
+
+        return public_block()
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "events": [], "n": 0, "error": str(exc)[:200], "note": "Confluence unavailable."}
 
 
 def _expected_move_block() -> dict:
@@ -8097,6 +8139,7 @@ def create_app(config_path: str | None = None) -> Flask:
                         "edge": _edge_report(scorecard_public),
                         "spx_strategy": spx_strategy,
                         "expected_move": _expected_move_block(),
+                        "confluence": _confluence_block(),
                         }
                     )
 

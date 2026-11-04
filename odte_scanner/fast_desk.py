@@ -613,6 +613,13 @@ def _worker_loop(config_path: str | None) -> None:
                 run_expected_move_cycle()
             except Exception as exc:  # noqa: BLE001
                 logger.exception("expected move cycle failed: %s", exc)
+            try:
+                from odte_scanner.signals.confluence import run_confluence_cycle
+
+                if in_hot_window() or in_afternoon_window():
+                    run_confluence_cycle()
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("confluence cycle failed: %s", exc)
             hot = in_hot_window() or _env_flag("FAST_DESK_ALWAYS", False)
             afternoon = in_afternoon_window() or _env_flag("FAST_DESK_ALWAYS", False)
             if not hot and not afternoon:
