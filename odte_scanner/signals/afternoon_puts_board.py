@@ -247,6 +247,9 @@ def build_afternoon_board(
         if stamp:
             card["detected_at"] = stamp
             card["detected_at_ct"] = format_ct_hms(stamp)
+        from odte_scanner.signals.expected_move import attach_em_used
+
+        attach_em_used(card)
         cards.append(card)
     for row in waiting:
         symbol = str(row.get("symbol") or "").upper()

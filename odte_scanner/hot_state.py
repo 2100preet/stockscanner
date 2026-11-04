@@ -25,6 +25,7 @@ _state: dict[str, Any] = {
     "diamond": None,
     "afternoon_puts": None,
     "lunch_credit": None,
+    "expected_move": None,
 }
 
 
@@ -34,6 +35,7 @@ def publish_hot(
     diamond: dict[str, Any] | None = None,
     afternoon: dict[str, Any] | None = None,
     lunch: dict[str, Any] | None = None,
+    expected_move: dict[str, Any] | None = None,
 ) -> None:
     """Remember the latest fast-loop boards.
 
@@ -50,7 +52,16 @@ def publish_hot(
             _state["afternoon_puts"] = afternoon
         if isinstance(lunch, dict) and _publish_afternoon(lunch):
             _state["lunch_credit"] = lunch
+        if isinstance(expected_move, dict) and _publish_expected(expected_move, _state.get("expected_move")):
+            _state["expected_move"] = expected_move
         _state["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+
+def _publish_expected(board: dict[str, Any], previous: Any) -> bool:
+    """Keep a printed board. A later empty failure does not wipe it."""
+    if board.get("ok") is not False:
+        return True
+    return not isinstance(previous, dict) or previous.get("ok") is False
 
 
 def _publish_afternoon(board: dict[str, Any]) -> bool:
@@ -67,6 +78,7 @@ def clear_hot() -> None:
         _state["diamond"] = None
         _state["afternoon_puts"] = None
         _state["lunch_credit"] = None
+        _state["expected_move"] = None
 
 
 def hot_snapshot() -> dict[str, Any]:
@@ -77,6 +89,7 @@ def hot_snapshot() -> dict[str, Any]:
             "diamond": _state.get("diamond"),
             "afternoon_puts": _state.get("afternoon_puts"),
             "lunch_credit": _state.get("lunch_credit"),
+            "expected_move": _state.get("expected_move"),
         }
 
 
@@ -112,6 +125,8 @@ def apply_hot_overlay(
         body["afternoon_puts"] = hot["afternoon_puts"]
     if isinstance(hot.get("lunch_credit"), dict):
         body["lunch_credit"] = hot["lunch_credit"]
+    if isinstance(hot.get("expected_move"), dict):
+        body["expected_move"] = hot["expected_move"]
     book = list(orders) if orders is not None else read_ledger_orders(ledger_path)
     body["sniper"] = annotate_board(body.get("sniper") if isinstance(body.get("sniper"), dict) else None, book, "sniper")
     body["diamond"] = annotate_board(body.get("diamond") if isinstance(body.get("diamond"), dict) else None, book, "diamond")

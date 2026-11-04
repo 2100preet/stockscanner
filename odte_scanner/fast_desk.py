@@ -607,6 +607,12 @@ def _worker_loop(config_path: str | None) -> None:
     logger.info("Fast desk started pause=%ss", pause)
     while True:
         try:
+            try:
+                from odte_scanner.signals.expected_move import run_expected_move_cycle
+
+                run_expected_move_cycle()
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("expected move cycle failed: %s", exc)
             hot = in_hot_window() or _env_flag("FAST_DESK_ALWAYS", False)
             afternoon = in_afternoon_window() or _env_flag("FAST_DESK_ALWAYS", False)
             if not hot and not afternoon:

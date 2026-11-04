@@ -11,7 +11,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
-from typing import Any
+from typing import Any, Callable
 
 import odte_scanner.edge.diamond_study  # noqa: F401  — finish the edge import cycle
 from odte_scanner.signals.diamond import Bar, group_sessions
@@ -322,6 +322,7 @@ def simulate(
     entry_index: int,
     option: list[Bar] | None = None,
     rules: AfternoonRules | None = None,
+    strike: float | None = None,
 ) -> dict[str, Any]:
     """Mark the 0DTE put from the signal bar.
 
@@ -333,7 +334,10 @@ def simulate(
     rules = rules or PRIMARY_RULES
     entry_bar = session[entry_index]
     spot = entry_bar.close
-    strike = one_strike_otm_put(spot, symbol)
+    if strike is None or strike <= 0:
+        strike = one_strike_otm_put(spot, symbol)
+    else:
+        strike = float(strike)
     book = _align_option(session, option)
     signal_opt = book.get(_clock_key(entry_bar))
     iv = MODEL_IV.get(symbol, 0.20)
@@ -513,12 +517,14 @@ def live_entries(
     rules: AfternoonRules | None = None,
     *,
     now: datetime | None = None,
+    strike_at: Callable[[str, float, datetime], float] | None = None,
 ) -> dict[str, Any]:
     """Breadth book for the live desk.
 
     ``replay`` stays the ungated study of each gate. This is what the desk
     enters: both ETFs at the confirming bar, or a waiting row for the first
-    one. SPX is unchanged.
+    one. SPX is unchanged. ``strike_at`` is a research hook. The live desk
+    leaves it empty, so the contract stays one strike out of the money.
     """
     rules = rules or PRIMARY_RULES
     sessions = {symbol: group_sessions(bars or []) for symbol, bars in bars_by_symbol.items()}
@@ -553,9 +559,16 @@ def live_entries(
             clock = session[entry_i].ct().time()
             if clock < rules.entry_start or clock >= rules.entry_end:
                 continue
-            strike = one_strike_otm_put(session[entry_i].close, symbol)
-            option = _option_series(option_bars, symbol, strike)
-            row = simulate(symbol, session, entry_i, option, rules)
+            spot_now = float(session[entry_i].close)
+            chosen = strike_at(symbol, spot_now, session[entry_i].ct()) if strike_at is not None else None
+            if chosen is None or chosen <= 0:
+                strike = one_strike_otm_put(spot_now, symbol)
+                option = _option_series(option_bars, symbol, strike)
+                row = simulate(symbol, session, entry_i, option, rules)
+            else:
+                strike = float(chosen)
+                option = _option_series(option_bars, symbol, strike)
+                row = simulate(symbol, session, entry_i, option, rules, strike=strike)
             gate_bar = session[gate_i]
             row["gate_at"] = gate_bar.ct().isoformat()
             row["gate_at_ct"] = gate_bar.ct().strftime("%H:%M")
