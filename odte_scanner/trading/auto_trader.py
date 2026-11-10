@@ -416,6 +416,9 @@ class AutoTrader:
         self.max_golden_buys_per_sync = max(0, int(max_golden_buys_per_sync))
         self.filtered: list[dict[str, Any]] = []
         self.last_reconcile: dict[str, Any] = {}
+        from odte_scanner.trading.risk_controls import load_risk_controls
+
+        self.risk_controls = load_risk_controls()
         self._closed_contracts: set[str] = set()
         # The edge table is information. Sandbox paper buys stay on so a
         # round trip can be recorded. A non-paper broker, if one is ever
@@ -1221,6 +1224,44 @@ class AutoTrader:
             peak_mark=peak_mark,
         )
 
+    def planned_stop_pct(
+        self,
+        desk: str,
+        expiry: str | None,
+        row: dict[str, Any] | None = None,
+        order: WebullOrderIntent | None = None,
+    ) -> float:
+        """The % stop this lot will be held to, as a positive number (40 = −40%)."""
+        from odte_scanner.signals.exit_rules import DEFAULT_AFTERNOON_PUTS_EXIT, DEFAULT_SNIPER_EXIT
+
+        d = str(desk or "").lower()
+        kind = ""
+        if order is not None:
+            kind = str((order.meta or {}).get("golden_kind") or "")
+        elif isinstance(row, dict):
+            try:
+                kind = str(golden_signal_kind(row) or "")
+            except Exception:  # noqa: BLE001
+                kind = ""
+        if d == "sniper" or kind == "sniper":
+            return abs(float(DEFAULT_SNIPER_EXIT.same_day_stop_pct))
+        if d == "afternoon_puts" or kind == "afternoon_puts":
+            return abs(float(DEFAULT_AFTERNOON_PUTS_EXIT.same_day_stop_pct))
+        spec = self._gold_spec()
+        if d == "diamond" or kind == "diamond":
+            return abs(float(spec.same_day_stop_pct))
+        if self._uses_gold_exit(d, order):
+            same = expiry_is_today(expiry, self._now)
+            return abs(float(spec.same_day_stop_pct if same else spec.stop_loss_pct))
+        try:
+            thresholds = self._exit_thresholds(d, order)
+        except Exception:  # noqa: BLE001
+            thresholds = None
+        if thresholds is not None:
+            return abs(float(thresholds[1]))
+        sl = _f((row or {}).get("stop_loss_pct")) if isinstance(row, dict) else None
+        return abs(float(sl)) if sl else 50.0
+
     def _gold_stop_price(
         self,
         order: WebullOrderIntent | None,
@@ -1404,6 +1445,18 @@ class AutoTrader:
                     same_day=same_day,
                     rungs_done=rungs_done,
                     peak_mark=peak_mark,
+                )
+            from odte_scanner.trading.risk_controls import dollar_stop_hit
+
+            dollar_loss = dollar_stop_hit(self.risk_controls, entry=float(entry), mark=float(mark), held=int(held))
+            if dollar_loss is not None and (decision is None or decision.quantity < held):
+                from odte_scanner.signals.exit_rules import PremiumExit
+
+                decision = PremiumExit(
+                    quantity=int(held),
+                    detail=(
+                        f"stop loss ${dollar_loss:,.0f} ≥ ${self.risk_controls.dollar_stop_usd:,.0f} per-trade cap"
+                    ),
                 )
             if decision is None:
                 return
@@ -1651,6 +1704,15 @@ class AutoTrader:
         desk_l = str(desk or "").lower()
         if desk_l == "afternoon_puts":
             return 1
+        from odte_scanner.trading.risk_controls import risk_sized_qty
+
+        sized = risk_sized_qty(
+            self.risk_controls,
+            premium=_f(limit_price),
+            stop_pct=self.planned_stop_pct(desk_l, row.get("expiry"), row),
+        )
+        if sized is not None:
+            return sized
         if self.max_risk_per_trade_usd is None:
             return self.max_contracts
         if second or desk_l in {self.second_desk, "challenge"}:
@@ -1861,6 +1923,12 @@ class AutoTrader:
             count = _i(row.get("reprice_count"))
             if count:
                 intent.meta["reprice_count"] = count
+        try:
+            intent.meta["planned_stop_pct"] = self.planned_stop_pct(desk, intent.expiry, row, intent)
+            if self.risk_controls.dollar_stop_enabled:
+                intent.meta["dollar_stop_usd"] = self.risk_controls.dollar_stop_usd
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("planned stop not stamped: %s", exc)
         ready, missing = _option_order_ready(intent)
         if not ready:
             intent.status = "skipped"

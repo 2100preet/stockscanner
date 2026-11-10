@@ -623,6 +623,14 @@ live_trading:
   dry_run: true           # log + deep-link only until an explicit submit switch
   sandbox: true           # paper host api.sandbox.webull.com (ignored when paper is on — paper forces sandbox)
   paper: true             # Webull OpenAPI paper/sandbox account. WEBULL_LIVE cannot override this.
+  # Paper risk controls. The two sizing/stop experiments stay OFF until a
+  # backtest shows they help (see odte_scanner/trading/risk_controls.py).
+  risk_controls:
+    dollar_stop_enabled: false      # per-trade $ stop on top of the % stops — NEEDS BACKTEST
+    dollar_stop_usd: 175
+    risk_sizing_enabled: false      # contracts = risk / (premium x stop%) — NEEDS BACKTEST
+    risk_per_trade_usd: 175
+    risk_sizing_max_contracts: 3
   # Auto-trade gold Sure Winner cards on WEBULL_ACCOUNT_ID, and the second
   # desk below on WEBULL_ACCOUNT_ID_2 (sandbox cash account DEA32RD3).
   # The env value must be Webull's internal account_id from get_account_list,
