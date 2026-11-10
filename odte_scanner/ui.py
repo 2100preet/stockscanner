@@ -3558,7 +3558,7 @@ PAGE = r"""
         <td class="mono">${orderPremiumLabel(o)}</td>
         <td class="mono">${o.hist_win_pct==null?"—":fmt(o.hist_win_pct,0)+"%"}${(o.hist_samples!=null?` n=${o.hist_samples}`:"")}</td>
         <td><span class="badge ${o.status==="dry_run"||o.status==="submitted"?"buy":(o.status==="skipped"?"wait":"skip")}">${o.status||"—"}</span>
-          <div class="why">${o.error||o.reason||(o.meta&&o.meta.note)||""}</div></td>
+          <div class="why">${(o.meta&&o.meta.reject_reason)?("Webull: "+o.meta.reject_reason+(o.meta.next_step?" · next: "+o.meta.next_step:"")):(o.error||o.reason||(o.meta&&o.meta.note)||"")}</div></td>
         <td class="mono" style="font-size:.72rem">${o.broker_order_id||"—"}</td>
         <td>${o.deep_link?`<a href="${o.deep_link}" target="_blank" rel="noopener">Open</a>`:"—"}</td>
       </tr>`).join("")}
@@ -4248,7 +4248,9 @@ PAGE = r"""
         order: orderPriceText(row.display_price_label, row.display_price),
         status: row.order_status_label || "",
         exit: exitPx,
-        exitText: orderPriceText(row.exit_price_label, exitPx),
+        exitText: row.exit_status_label === "rejected"
+          ? (orderPriceText(row.exit_price_label, exitPx) + " · rejected" + (row.exit_error ? " — " + row.exit_error : ""))
+          : orderPriceText(row.exit_price_label, exitPx),
         expiry: row.traded_expiry || row.expiry || "—",
         contract: row.traded_contract || row.contract || "—"
       };

@@ -445,6 +445,79 @@ def collect_exit_alerts(
     return out
 
 
+def format_reject_alert(
+    *,
+    tier: str,
+    symbol: str,
+    strike: Any,
+    right: str,
+    expiry: Any,
+    limit: float | None,
+    reason: str | None,
+    next_step: str | None,
+    at: Any,
+) -> str:
+    """Exit-failure line. The limit is labeled Limit; Sure Winner is not in this copy."""
+    _emoji, name = _TIER_LABEL.get(tier, ("⭐", "GOLD SETUP"))
+    contract = _strike_text(strike, right)
+    price = f"Limit ${float(limit):.2f}" if limit is not None and limit > 0 else "Limit —"
+    line = (
+        f"⚠️ {name} EXIT REJECTED — {str(symbol or '').upper()} {contract} {_compact_expiry(expiry)}"
+        f" · {price} @ {clock_ct(at)}"
+        f" · Webull: {reason or 'rejected'}"
+    )
+    if next_step:
+        line += f" · next: {next_step}"
+    return line + " · paper"
+
+
+def collect_reject_alerts(orders: list[Any] | None, *, now: datetime, seen: set[str]) -> list[dict[str, Any]]:
+    """One exit-failure line per contract, reject kind, and day."""
+    moment = now if now.tzinfo else now.replace(tzinfo=CT)
+    today = moment.astimezone(CT).date().isoformat()
+    out: list[dict[str, Any]] = []
+    for order in orders or []:
+        if str(getattr(order, "action", "") or "").upper() != "SELL":
+            continue
+        if str(getattr(order, "status", "") or "") != "rejected":
+            continue
+        meta = getattr(order, "meta", None) or {}
+        if not meta.get("reject_code") and not meta.get("reject_reason"):
+            continue  # rows from before reasons were stored
+        created = _as_ct(getattr(order, "created_at", None), now=moment)
+        if created is None or created.date().isoformat() != today:
+            continue
+        tier = _tier_of(order, list(orders or []))
+        if tier is None:
+            continue
+        kind = str(meta.get("reject_kind") or "other")
+        key = f"rej:{getattr(order, 'contract', '')}:{kind}:{today}"
+        if key in seen or any(item["order_id"] == key for item in out):
+            continue
+        out.append(
+            {
+                "order_id": key,
+                "tier": tier,
+                "symbol": getattr(order, "symbol", ""),
+                "contract": getattr(order, "contract", None),
+                "pending": False,
+                "pnl": 0.0,
+                "message": format_reject_alert(
+                    tier=tier,
+                    symbol=getattr(order, "symbol", ""),
+                    strike=getattr(order, "strike", None),
+                    right=getattr(order, "right", "") or "C",
+                    expiry=getattr(order, "expiry", ""),
+                    limit=_num(getattr(order, "limit_price", None)),
+                    reason=meta.get("reject_reason") or meta.get("reject_code"),
+                    next_step=meta.get("next_step"),
+                    at=getattr(order, "created_at", None),
+                ),
+            }
+        )
+    return out
+
+
 def _load_seen(path: Path) -> set[str]:
     if not path.exists():
         return set()
@@ -491,6 +564,10 @@ def dispatch_exit_alerts(
                 item.setdefault("tier", tier)
                 spx.append(item)
     pending = collect_exit_alerts(orders, now=moment, seen=seen, spx_exits=spx)
+    try:
+        pending.extend(collect_reject_alerts(orders, now=moment, seen=seen))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("exit reject alerts skipped: %s", exc)
     if not pending:
         return []
     sender = send

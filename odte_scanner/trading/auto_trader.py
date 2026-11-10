@@ -55,7 +55,7 @@ from odte_scanner.signals.hold_rules import (
 from odte_scanner.trading.chase import CHASE_SLIPPAGE, chase_action, repair_signal_ask, reprice_limit
 from odte_scanner.trading.ticks import initial_buy_limit, normalize_option_limit
 from odte_scanner.trading.golden import golden_signal_kind
-from odte_scanner.trading.webull import WebullBroker, WebullOrderIntent, parse_occ_contract
+from odte_scanner.trading.webull import WebullBroker, WebullOrderIntent, parse_occ_contract, reject_kind
 
 logger = logging.getLogger(__name__)
 
@@ -700,6 +700,8 @@ class AutoTrader:
                 return 0.0
             if order.status in {"filled", "partial"}:
                 return 0.0
+        if (order.meta or {}).get("position_gone"):
+            return 0.0
         if self._is_position_buy(order):
             filled = _f((order.meta or {}).get("filled_qty"))
             if filled is not None and filled > 0:
@@ -2014,6 +2016,15 @@ class AutoTrader:
                 account_id = str(position.get("account_id") or "")
             if not account_id:
                 account_id = str(getattr(self.broker, "account_id_2", "") or "")
+        escalation = 0
+        if self.golden_only and contract:
+            escalation = self._escalation_level(contract, opened)
+            if escalation >= 2:
+                limit_price, limit_source = FLATTEN_LIMIT, "escalated_floor"
+            elif escalation == 1:
+                bid = self._lot_mark(position)
+                if bid is not None and bid > 0 and (limit_price is None or bid < float(limit_price)):
+                    limit_price, limit_source = bid, "escalated_bid"
         entry_price = _f(opened.fill_price) if opened is not None else None
         if entry_price is None and position is not None:
             entry_price = _f(position.get("cost"))
@@ -2053,7 +2064,8 @@ class AutoTrader:
                 **({"entry_at": entry_at} if entry_at else {}),
                 **({"exit_tier": exit_tier} if exit_tier else {}),
                 **({"exit_clock": self._now.isoformat()} if self._now is not None else {}),
-                **({"hard_stop": True} if row.get("hard_stop") else {}),
+                **({"hard_stop": True} if row.get("hard_stop") and not escalation else {}),
+                **({"escalation": escalation} if escalation else {}),
                 **({"sell_qty": int(row["sell_qty"])} if row.get("sell_qty") is not None else {}),
                 **({"scale_rungs": list(row.get("scale_rungs") or [])} if row.get("scale_rungs") else {}),
                 **({"account_id": account_id} if account_id else {}),
@@ -2072,6 +2084,11 @@ class AutoTrader:
             self.broker.save()
             return intent
         sold = self.broker.submit(intent)
+        if sold.status == "rejected":
+            try:
+                self._after_sell_reject(sold, opened)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("sell reject follow-up failed for %s: %s", sold.id, exc)
         # A partial *entry* still has a resting buy. Scaling a full entry down
         # also leaves the ledger buy marked partial (position qty < original).
         # That runner has to stay open, so only cancel when this sell is the
@@ -2091,6 +2108,64 @@ class AutoTrader:
         if opened is not None and sold.status in {"dry_run", "submitted", "staged", "filled", "partial"}:
             self._commit_scale_exit(opened, row)
         return sold
+
+    ESCALATION_KINDS = {"held", "other"}
+
+    def _escalation_level(self, contract: str, opened: WebullOrderIntent | None) -> int:
+        """Rejected sells on this contract while the long was still held.
+
+        0 = normal limit, 1 = re-price to the bid, 2+ = Limit $0.01 (marketable;
+        fills at the bid). Counted since the buy that opened the lot.
+        """
+        since = str((opened.created_at if opened is not None else "") or "")
+        count = 0
+        for order in self.broker.orders:
+            if order.action != "SELL" or order.status != "rejected" or str(order.contract or "") != contract:
+                continue
+            if since and str(order.created_at or "") < since:
+                continue
+            kind = str((order.meta or {}).get("reject_kind") or "")
+            if not kind:
+                from odte_scanner.trading.webull import parse_webull_error
+
+                kind = reject_kind(parse_webull_error(order.error)[0])
+            if kind in self.ESCALATION_KINDS:
+                count += 1
+        return count
+
+    def _after_sell_reject(self, sell: WebullOrderIntent, opened: WebullOrderIntent | None) -> None:
+        """Re-check the position after a rejected sell and record the next step."""
+        code = (sell.meta or {}).get("reject_code")
+        kind = str((sell.meta or {}).get("reject_kind") or reject_kind(code))
+        if kind == "tick":
+            kind = "other"
+        positions = self._managed_positions()
+        if positions is not None:
+            self._reconcile_positions(positions)
+        probe = {
+            "symbol": sell.symbol,
+            "right": sell.right,
+            "contract": sell.contract,
+            "expiry": sell.expiry,
+            "strike": sell.strike,
+        }
+        held_pos = self._open_position(probe, str(sell.right or "C")) if positions is not None else None
+        if positions is not None and held_pos is None:
+            sell.meta["reject_kind"] = "no_position"
+            sell.meta["next_step"] = "Webull shows no position — not retried"
+            if opened is not None:
+                opened.meta["position_gone"] = True
+                opened.meta["position_gone_at"] = (self._now or datetime.now(timezone.utc)).isoformat()
+        else:
+            sell.meta["reject_kind"] = "held"
+            for other in self._resting_sells(probe, str(sell.right or "C")):
+                if other is sell:
+                    continue
+                other.meta["cancel_reason"] = "cleared after a rejected exit — resend at a lower limit"
+                self.broker.cancel(other)
+            level = self._escalation_level(str(sell.contract or ""), opened)
+            sell.meta["next_step"] = "retry at the bid" if level <= 1 else "retry at Limit $0.01"
+        self.broker.save()
 
     def _cancel_unfilled_at_cutoff(self) -> None:
         """Cancel managed unfilled buys at 15:45 ET, including deferred rows with no broker id.
@@ -2135,7 +2210,7 @@ class AutoTrader:
             order
             for order in orders
             if str(getattr(order, "action", "") or "").upper() == "SELL"
-            and str(getattr(order, "status", "") or "") in {"filled", "partial", "submitted"}
+            and str(getattr(order, "status", "") or "") in {"filled", "partial", "submitted", "rejected"}
         ]
         if not interesting:
             return None
@@ -2756,6 +2831,10 @@ class AutoTrader:
                 if budget <= 0:
                     break
                 if intent.action == "BUY" and past_odte_flatten(now):
+                    self.broker.cancel(intent)
+                    continue
+                if intent.action == "SELL" and contract_expired(intent.expiry, now):
+                    intent.meta["cancel_reason"] = "expired contract — not resubmitted"
                     self.broker.cancel(intent)
                     continue
                 if (intent.meta or {}).get("retryable") is False:

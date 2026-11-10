@@ -679,6 +679,43 @@ def _broker_order_id(res: Any, fallback: str) -> str:
     return str(getattr(res, "order_id", None) or fallback)
 
 
+_ERR_CODE_RE = re.compile(r"Code:\s*([A-Z0-9_]+)")
+_ERR_MSG_RE = re.compile(r"Msg:\s*(.+?)(?:,\s*RequestID:|$)")
+
+# Webull says the account has nothing to close. A lower price cannot help.
+NO_POSITION_CODES = frozenset(
+    {
+        "OPENAPI_ORDER_NOT_SUPPORT_REVERSE_OPTION",
+        "OPENAPI_POSITION_ORDER_INTENT_MISMATCH",
+        "OPENAPI_TICKER_ID_NOT_SUPPORT_NAKED_EQUTY_OPTION_WITH_NUM",
+    }
+)
+# Sent outside 9:30-4:00 ET. Queue for the next open instead of rejecting.
+OUTSIDE_HOURS_CODES = frozenset({"OPENAPI_OPTION_ONLY_SUPPORT_MARKET_IN_CORE_TIME"})
+
+
+def parse_webull_error(text: Any) -> tuple[str | None, str | None]:
+    """(code, plain message) from a Webull SDK error string. No request ids."""
+    raw = str(text or "")
+    code_m = _ERR_CODE_RE.search(raw)
+    msg_m = _ERR_MSG_RE.search(raw)
+    code = code_m.group(1) if code_m else None
+    msg = msg_m.group(1).strip() if msg_m else None
+    if msg is None and raw and code is None:
+        msg = raw[:200]
+    return code, msg
+
+
+def reject_kind(code: str | None) -> str:
+    if code in NO_POSITION_CODES:
+        return "no_position"
+    if code in OUTSIDE_HOURS_CODES:
+        return "outside_hours"
+    if code and "PRICE_STEP" in code:
+        return "tick"
+    return "other"
+
+
 class WebullRateLimit(RuntimeError):
     """Sandbox rejected the call with HTTP 429 / TOO_MANY_REQUESTS."""
 
@@ -1562,7 +1599,23 @@ class WebullBroker:
         except Exception as exc:  # noqa: BLE001
             if self._retry_tick_reject(intent, exc):
                 return self.submit(intent)
-            logger.exception("Webull submit failed: %s", exc)
+            code, msg = parse_webull_error(exc)
+            kind = reject_kind(code)
+            intent.meta["reject_code"] = code
+            intent.meta["reject_reason"] = (msg or str(exc))[:240]
+            intent.meta["reject_kind"] = kind
+            if kind == "outside_hours" and str(intent.action or "").upper() == "SELL":
+                # Webull only takes option orders 9:30-4:00 ET. Same client
+                # order id goes out at the next open, unless the contract expires.
+                logger.warning("Webull outside hours; queueing %s: %s", intent.id, msg)
+                intent.status = "deferred"
+                intent.error = f"queued until 09:30 ET — {msg or code}"[:500]
+                intent.meta["fill_state"] = "deferred"
+                intent.meta["queued_for_open"] = True
+                intent.meta["retryable"] = True
+                self.save()
+                return intent
+            logger.warning("Webull submit rejected %s %s: %s", intent.id, code, msg)
             intent.status = "rejected"
             intent.error = str(exc)[:500]
             intent.meta["fill_state"] = "rejected"

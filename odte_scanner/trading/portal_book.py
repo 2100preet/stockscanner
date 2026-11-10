@@ -50,10 +50,12 @@ def _meta(order: dict[str, Any]) -> dict[str, Any]:
 
 
 def status_label(order: dict[str, Any] | None) -> str:
-    """``filled``, ``working limit``, or ``cancelled``."""
+    """``filled``, ``working limit``, ``rejected``, or ``cancelled``."""
     status = str((order or {}).get("status") or "").lower()
     if status in _FILLED:
         return "filled"
+    if status == "rejected":
+        return "rejected"
     if status in _CANCELLED:
         return "cancelled"
     if status in _WORKING:
@@ -125,7 +127,28 @@ def public_order(order: dict[str, Any]) -> dict[str, Any]:
     out["entry_price"] = _meta(order).get("entry_price")
     out["status_label"] = status_label(order)
     out["tier"] = tier_of(order)
+    meta = _meta(order)
+    if str(order.get("status") or "").lower() in {"rejected", "cancelled", "deferred"} or meta.get("reject_code"):
+        out["error"] = reject_text(order)
+        out["reject_code"] = meta.get("reject_code")
+        out["next_step"] = meta.get("next_step")
     return out
+
+
+def reject_text(order: dict[str, Any] | None) -> str | None:
+    """Plain Webull reason for a rejected/cancelled order. No request ids or account ids."""
+    if not isinstance(order, dict):
+        return None
+    meta = _meta(order)
+    reason = meta.get("reject_reason") or meta.get("cancel_reason")
+    if not reason:
+        raw = str(order.get("error") or "")
+        if raw:
+            from odte_scanner.trading.webull import parse_webull_error
+
+            code, msg = parse_webull_error(raw)
+            reason = msg or code
+    return str(reason)[:240] if reason else None
 
 
 def _best(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -225,6 +248,8 @@ def annotate_card(card: dict[str, Any], orders: list[dict[str, Any]], tier: str)
     if exit_order is not None:
         exit_label = status_label(exit_order)
         out["exit_status_label"] = exit_label
+        if exit_label in {"rejected", "cancelled"}:
+            out["exit_error"] = reject_text(exit_order)
         exit_fill = _num(exit_order.get("fill_price"))
         exit_limit = _num(exit_order.get("limit_price"))
         if exit_label == "filled" and exit_fill is not None and exit_fill > 0:
