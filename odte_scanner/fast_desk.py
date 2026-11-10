@@ -671,7 +671,7 @@ def publish_index_boards_if_missing(now: datetime | None = None) -> dict[str, An
 
 
 def _side_cycles() -> None:
-    """Expected move and confluence. Not latency critical, so they run after the entries."""
+    """Expected move, confluence and the rip v2 shadow tick. Not latency critical, so they run after the entries."""
     try:
         from odte_scanner.signals.expected_move import run_expected_move_cycle
 
@@ -685,6 +685,14 @@ def _side_cycles() -> None:
             run_confluence_cycle()
     except Exception as exc:  # noqa: BLE001
         logger.exception("confluence cycle failed: %s", exc)
+    try:
+        from odte_scanner.signals.rip_v2_shadow import flat_window_due, run_shadow_cycle
+
+        if flat_window_due():
+            # Shadow only: marks, 2:45 PM CT flatten, and the daily summary line.
+            run_shadow_cycle(rip_radar=None)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("rip v2 shadow tick failed: %s", exc)
 
 
 def _worker_pass(config_path: str | None) -> bool:
