@@ -418,7 +418,7 @@ def _to_sure_winner(
         f"({certainty} hist {float(win or 0):.0f}% n={int(n or 0)})"
     )
     detail_bits = [
-        f"Sure-winner #{tier}",
+        f"Gold Setup #{tier}",
         sizing["size_hint"],
         f"hist {float(win or 0):.0f}% n={int(n or 0)}",
         f"conf ~{conf:.0f}%",
@@ -693,7 +693,7 @@ def build_sure_winner_board(
         note += " GEX/Red Flag checked — index 0–1 DTE calls skipped on LONG_GAMMA / RED_FLAG."
     if not winners:
         note = (
-            f"No sure-winner this snapshot — need perfect/elite hist + live contract/ask "
+            f"No Gold Setup this snapshot — need perfect/elite hist + live contract/ask "
             f"(cap {max(1, min(max_per_day, 2))}/day). {note}"
         )
 
