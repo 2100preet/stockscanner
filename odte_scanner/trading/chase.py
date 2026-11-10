@@ -3,15 +3,34 @@
 The first limit sits at the mid, rounded up toward the live ask and never
 above it. Each fast-loop tick walks a still-working buy up to the live ask,
 and stops at a slippage cap above the original ask. A buy that is still
-working after the short window, or after the entry window, is cancelled.
+working at the end of the desk's entry window (10:30 CT Sniper/Diamond,
+14:15 CT Afternoon Puts) is cancelled. It is no longer cancelled after 75 s:
+a buy that has not filled keeps working, walking up to the live ask but
+never past +10% over the signal ask, until the window closes.
+``ENTRY_CHASE_MAX_AGE_SEC`` restores an age cutoff if that is ever wanted.
 """
 
 from __future__ import annotations
 
+import os
+
 from odte_scanner.trading.ticks import normalize_option_limit
 
 CHASE_SLIPPAGE = 0.10
+# Old fixed cutoff. Kept as a name; the default is now "until the window ends".
 CHASE_MAX_AGE_SEC = 75
+
+
+def chase_max_age_sec() -> float | None:
+    """Age cutoff for a working entry. None (default) = keep it for the entry window."""
+    raw = str(os.environ.get("ENTRY_CHASE_MAX_AGE_SEC") or "").strip()
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
 
 
 def _positive(value: float | None) -> float | None:
@@ -92,7 +111,8 @@ def chase_action(
     bid: float | None = None,
 ) -> str:
     """``cancel``, ``cap``, ``reprice``, or ``hold``."""
-    if past_window or (age_sec is not None and age_sec >= CHASE_MAX_AGE_SEC):
+    max_age = chase_max_age_sec()
+    if past_window or (max_age is not None and age_sec is not None and age_sec >= max_age):
         return "cancel"
     if ask is None or limit is None or ask <= 0 or limit <= 0:
         return "hold"
