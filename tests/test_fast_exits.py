@@ -83,3 +83,58 @@ def test_pause_is_clamped(monkeypatch):
     assert fast_exits.exit_pause_sec() == 10
     monkeypatch.delenv("FAST_EXIT_PAUSE_SEC")
     assert fast_exits.exit_pause_sec() == 7
+
+
+# --- edge cases: duplicates, restart mid-order, partial fills, spent budget ---
+
+
+def _sells(broker):
+    return [o for o in broker.orders if o.action == "SELL" and o.status not in {"cancelled", "rejected"}]
+
+
+def test_repeated_ticks_do_not_duplicate_a_flatten(tmp_path: Path, monkeypatch):
+    broker, trader, sent = _book(tmp_path, monkeypatch, [("SPY", 746, 2.76)])
+    for sec in (5, 12, 19, 26):
+        trader.sync_exits(now=session_et(11, 30) + timedelta(seconds=sec))
+    assert len([s for s in sent if s[0] == "SELL"]) == 1
+    assert len(_sells(broker)) == 1
+
+
+def test_restart_mid_order_does_not_send_a_second_sell(tmp_path: Path, monkeypatch):
+    broker, trader, sent = _book(tmp_path, monkeypatch, [("SPY", 746, 2.76)])
+    trader.sync_exits(now=session_et(11, 30) + timedelta(seconds=5))
+    assert len([s for s in sent if s[0] == "SELL"]) == 1
+    # New process: fresh broker + trader on the same ledger, the sell still working.
+    again = WebullBroker(enabled=True, dry_run=False, app_key="k", app_secret="s", account_id="a",
+                         ledger_path=tmp_path / "wb.json", submit_interval_sec=0)
+    again._hold_outside_session = lambda intent: None  # type: ignore[method-assign]
+    again._fetch_order_detail = lambda intent: None  # type: ignore[method-assign]
+    monkeypatch.setattr(again, "list_option_positions", broker.list_option_positions)
+    resent = []
+    again._place_via_openapi = lambda intent: resent.append(intent.id) or "Y" + intent.id  # type: ignore[method-assign]
+    AutoTrader(again, golden_only=True, max_orders_per_sync=3).sync_exits(now=session_et(11, 30) + timedelta(seconds=40))
+    assert resent == []
+    assert len(_sells(again)) == 1
+
+
+def test_partial_fill_exits_only_the_filled_contracts(tmp_path: Path, monkeypatch):
+    broker, trader, sent = _book(tmp_path, monkeypatch, [("SPY", 746, 2.50)], mark_of={"SPY": 1.40})
+    buy = next(o for o in broker.orders if o.action == "BUY")
+    buy.quantity = 3
+    buy.status = "partial"
+    buy.meta["filled_qty"] = 1
+    broker.save()
+    trader.sync_exits(now=session_et(10, 15))
+    sells = _sells(broker)
+    assert sells, "stop should fire on the filled contract"
+    assert sum(int(s.quantity) for s in sells) == 1  # held 1, never sell the unfilled 2
+
+
+def test_flatten_still_goes_out_when_the_detail_budget_is_spent(tmp_path: Path, monkeypatch):
+    from odte_scanner.trading import webull
+
+    broker, trader, sent = _book(tmp_path, monkeypatch, [("SPY", 746, 2.76)])
+    for _ in range(webull.WEBULL_BUDGET.per_min):
+        webull.WEBULL_BUDGET.reserve("detail", max_wait=0, sleeper=lambda s: None)
+    trader.sync_exits(now=session_et(11, 30) + timedelta(seconds=5))
+    assert len([s for s in sent if s[0] == "SELL"]) == 1
