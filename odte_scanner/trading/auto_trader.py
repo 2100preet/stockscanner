@@ -30,6 +30,7 @@ from __future__ import annotations
 import logging
 import re
 import threading
+import time
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -61,6 +62,31 @@ logger = logging.getLogger(__name__)
 
 # The focus scan and the Sniper/Diamond hot path both write this ledger.
 _SYNC_LOCK = threading.Lock()
+
+_HOT_KINDS = frozenset({"sniper", "diamond", "afternoon_puts"})
+_SIGNAL_RE = re.compile(r"signal (\d{1,2}):(\d{2}) CT")
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_iso(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        out = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return out if out.tzinfo else out.replace(tzinfo=timezone.utc)
+
+
+def _hot_kind(order: WebullOrderIntent) -> str | None:
+    kind = str((order.meta or {}).get("golden_kind") or "")
+    if kind in _HOT_KINDS:
+        return kind
+    desk = str(order.desk or "")
+    return desk if desk in _HOT_KINDS else None
 
 
 def _f(v: Any) -> float | None:
@@ -416,6 +442,9 @@ class AutoTrader:
         self.max_golden_buys_per_sync = max(0, int(max_golden_buys_per_sync))
         self.filtered: list[dict[str, Any]] = []
         self.last_reconcile: dict[str, Any] = {}
+        from odte_scanner.trading.risk_controls import load_risk_controls
+
+        self.risk_controls = load_risk_controls()
         self._closed_contracts: set[str] = set()
         # The edge table is information. Sandbox paper buys stay on so a
         # round trip can be recorded. A non-paper broker, if one is ever
@@ -470,6 +499,8 @@ class AutoTrader:
         """
         if order.action != "BUY":
             return False
+        if str((order.meta or {}).get("position_intent") or "").upper() == "BUY_TO_CLOSE":
+            return False  # closes a short (lunch credit leg); not a long to sell
         # A "staged" row was saved before the HTTP call. It is not a position
         # until Webull confirms it — flattening one is how the unsent IWM 279C
         # drew "close intent mismatches position" rejects all afternoon.
@@ -514,6 +545,60 @@ class AutoTrader:
                 if occ and o.contract and occ != o.contract:
                     continue
                 return True
+        return False
+
+    def _signal_day(self, row: dict[str, Any]) -> str:
+        """Chicago day of the signal: the board's day, else the trader's clock."""
+        day = str(row.get("day_cst") or "").strip()
+        if day:
+            return day
+        from odte_scanner.time_cst import CT
+
+        moment = self._now or datetime.now(timezone.utc)
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        return moment.astimezone(CT).date().isoformat()
+
+    def _signal_already_routed(self, desk: str, symbol: str, right: str, row: dict[str, Any]) -> bool:
+        """True when this desk already has an entry for this signal (symbol, side, bar, day).
+
+        Any buy counts except a retryable reject: a cancelled chase or a
+        window-end cancel must not reopen the same signal on another strike.
+        Rows from before the signal stamps are matched on 'signal HH:MM CT'
+        in the order reason.
+        """
+        at_ct = str(row.get("at_ct") or "").strip()
+        if not at_ct:
+            return False
+        day = self._signal_day(row)
+        sym = symbol.upper()
+        for order in self.broker.orders:
+            if order.action != "BUY" or str(order.symbol or "").upper() != sym:
+                continue
+            if str(order.right or "").upper()[:1] != right:
+                continue
+            meta = order.meta or {}
+            if _hot_kind(order) != desk:
+                continue
+            if order.status == "rejected" and meta.get("retryable") is True:
+                continue
+            if order.status == "skipped":
+                continue
+            seen_at = str(meta.get("signal_at_ct") or "")
+            if not seen_at:
+                found = _SIGNAL_RE.search(str(order.reason or ""))
+                seen_at = f"{int(found[1]):02d}:{found[2]}" if found else ""
+            if seen_at != at_ct:
+                continue
+            seen_day = str(meta.get("signal_day") or "")
+            if not seen_day:
+                from odte_scanner.time_cst import CT
+
+                created = _parse_iso(order.created_at)
+                seen_day = created.astimezone(CT).date().isoformat() if created else ""
+            if seen_day != day:
+                continue
+            return True
         return False
 
     def _tracks_exit(self, order: WebullOrderIntent) -> bool:
@@ -807,6 +892,17 @@ class AutoTrader:
             changed = True
         if changed:
             self.broker.save()
+
+    def _lunch_leg_contracts(self) -> set[str]:
+        legs: set[str] = set()
+        for order in self.broker.orders:
+            meta = order.meta or {}
+            if str(order.desk or "") != "lunch_credit" and not meta.get("lunch_credit") and not meta.get("spread_id"):
+                continue
+            for value in (order.contract, meta.get("long_contract"), meta.get("short_contract")):
+                if value:
+                    legs.add(str(value))
+        return legs
 
     def _position_rows(self) -> list[dict[str, Any]]:
         book = self._positions_by_contract
@@ -1221,6 +1317,44 @@ class AutoTrader:
             peak_mark=peak_mark,
         )
 
+    def planned_stop_pct(
+        self,
+        desk: str,
+        expiry: str | None,
+        row: dict[str, Any] | None = None,
+        order: WebullOrderIntent | None = None,
+    ) -> float:
+        """The % stop this lot will be held to, as a positive number (40 = −40%)."""
+        from odte_scanner.signals.exit_rules import DEFAULT_AFTERNOON_PUTS_EXIT, DEFAULT_SNIPER_EXIT
+
+        d = str(desk or "").lower()
+        kind = ""
+        if order is not None:
+            kind = str((order.meta or {}).get("golden_kind") or "")
+        elif isinstance(row, dict):
+            try:
+                kind = str(golden_signal_kind(row) or "")
+            except Exception:  # noqa: BLE001
+                kind = ""
+        if d == "sniper" or kind == "sniper":
+            return abs(float(DEFAULT_SNIPER_EXIT.same_day_stop_pct))
+        if d == "afternoon_puts" or kind == "afternoon_puts":
+            return abs(float(DEFAULT_AFTERNOON_PUTS_EXIT.same_day_stop_pct))
+        spec = self._gold_spec()
+        if d == "diamond" or kind == "diamond":
+            return abs(float(spec.same_day_stop_pct))
+        if self._uses_gold_exit(d, order):
+            same = expiry_is_today(expiry, self._now)
+            return abs(float(spec.same_day_stop_pct if same else spec.stop_loss_pct))
+        try:
+            thresholds = self._exit_thresholds(d, order)
+        except Exception:  # noqa: BLE001
+            thresholds = None
+        if thresholds is not None:
+            return abs(float(thresholds[1]))
+        sl = _f((row or {}).get("stop_loss_pct")) if isinstance(row, dict) else None
+        return abs(float(sl)) if sl else 50.0
+
     def _gold_stop_price(
         self,
         order: WebullOrderIntent | None,
@@ -1405,6 +1539,18 @@ class AutoTrader:
                     rungs_done=rungs_done,
                     peak_mark=peak_mark,
                 )
+            from odte_scanner.trading.risk_controls import dollar_stop_hit
+
+            dollar_loss = dollar_stop_hit(self.risk_controls, entry=float(entry), mark=float(mark), held=int(held))
+            if dollar_loss is not None and (decision is None or decision.quantity < held):
+                from odte_scanner.signals.exit_rules import PremiumExit
+
+                decision = PremiumExit(
+                    quantity=int(held),
+                    detail=(
+                        f"stop loss ${dollar_loss:,.0f} ≥ ${self.risk_controls.dollar_stop_usd:,.0f} per-trade cap"
+                    ),
+                )
             if decision is None:
                 return
             if order is not None and decision.peak_mark is not None:
@@ -1451,7 +1597,10 @@ class AutoTrader:
             if not self._is_position_buy(order) or not self._tracks_exit(order):
                 continue
             consider(order, self._position_for_order(order), order.desk or "sure_winner")
+        lunch_legs = self._lunch_leg_contracts()
         for pos in self._position_rows():
+            if str(pos.get("contract") or "") in lunch_legs:
+                continue  # a credit-spread wing: the lunch router owns it, never sell one leg
             order = self._matching_position_buy(pos)
             if order is not None and not (order.desk == "webull_import" and not self._tracks_exit(order)):
                 continue
@@ -1623,6 +1772,41 @@ class AutoTrader:
             f"{row.get('expiry')}|{row.get('strike')}"
         )
 
+    def _entry_limit(self, desk: str, row: dict[str, Any] | None = None) -> dict[str, Any] | None:
+        """Daily loss limit or kill switch for a new paper entry on this desk."""
+        from odte_scanner.trading import risk_controls as rc_mod
+
+        try:
+            kind = None
+            if isinstance(row, dict):
+                try:
+                    kind = golden_signal_kind(row)
+                except Exception:  # noqa: BLE001
+                    kind = None
+            stamp = (self._now or datetime.now(timezone.utc)).replace(second=0, microsecond=0)
+            key = (len(self.broker.orders), stamp.isoformat())
+            if getattr(self, "_tally_key", None) != key:
+                self._tally = rc_mod.daily_tally(self.broker.orders, self._now)
+                self._tally_key = key
+            block = rc_mod.entry_block(
+                desk, orders=None, now=self._now, controls=self.risk_controls, kind=kind, tally=self._tally
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("daily limit check failed (entry allowed): %s", exc)
+            return None
+        if block is None:
+            return None
+        self.last_limit_block = block
+        try:
+            message = rc_mod.limit_alerts_due(block, day=self._tally.get("day") or "")
+            if message:
+                from odte_scanner.alerts.telegram import send_telegram_text
+
+                send_telegram_text(message)
+        except Exception as exc:  # noqa: BLE001
+            logger.info("daily limit alert not sent: %s", exc)
+        return block
+
     def _note_filtered(self, row: dict[str, Any], reason: str) -> None:
         if len(self.filtered) >= 80:
             return
@@ -1651,6 +1835,15 @@ class AutoTrader:
         desk_l = str(desk or "").lower()
         if desk_l == "afternoon_puts":
             return 1
+        from odte_scanner.trading.risk_controls import risk_sized_qty
+
+        sized = risk_sized_qty(
+            self.risk_controls,
+            premium=_f(limit_price),
+            stop_pct=self.planned_stop_pct(desk_l, row.get("expiry"), row),
+        )
+        if sized is not None:
+            return sized
         if self.max_risk_per_trade_usd is None:
             return self.max_contracts
         if second or desk_l in {self.second_desk, "challenge"}:
@@ -1678,11 +1871,8 @@ class AutoTrader:
         right: str = "C",
         price_key: str = "ask",
     ) -> WebullOrderIntent | None:
+        route_started = _now_iso()
         row = _with_occ(row)
-        if str(row.get("symbol") or "").upper() != "SPX":
-            from odte_scanner.options.contract_quote import refresh_traded_quote
-
-            refresh_traded_quote(row)
         right = str(row.get("right") or right or "C").upper()
         if right in {"PUT", "P"}:
             right = "P"
@@ -1690,6 +1880,26 @@ class AutoTrader:
             right = "C"
         sym = str(row.get("symbol") or "").upper()
         if not sym:
+            return None
+        if desk in _HOT_KINDS and not row.get("replaces"):
+            # Before the quote fetch: an already-routed signal costs no HTTP call.
+            # One signal is one entry. When spot moves, the board picks the next
+            # strike, and a contract-only check would buy that strike too.
+            if self._signal_already_routed(desk, sym, right, row):
+                return None
+            contract_early = str(row.get("contract") or "")
+            if contract_early and self._already_open(sym, desk, right, contract_early):
+                return None
+        if sym != "SPX":
+            from odte_scanner.options.contract_quote import refresh_traded_quote
+
+            refresh_traded_quote(row)
+        quote_ready = _now_iso()
+        limit = self._entry_limit(desk, row)
+        if limit is not None:
+            # Entries only. The signal alert still goes out, labeled skipped.
+            row["paper_entry_skipped"] = limit["reason"]
+            self._note_filtered(row, f"paper entry skipped — {limit['reason']}")
             return None
         if not self._edge_allows_buy(desk):
             self._note_filtered(row, "edge gate: live route empty")
@@ -1861,6 +2071,27 @@ class AutoTrader:
             count = _i(row.get("reprice_count"))
             if count:
                 intent.meta["reprice_count"] = count
+        for src, dst in (
+            ("detected_at", "detected_at"),
+            ("at_ct", "signal_at_ct"),
+            ("day_cst", "signal_day"),
+            ("cycle_started_at", "cycle_started_at"),
+            ("boards_ready_at", "boards_ready_at"),
+        ):
+            value = row.get(src)
+            if value and not intent.meta.get(dst):
+                intent.meta[dst] = str(value)
+        if kind in _HOT_KINDS and not intent.meta.get("signal_day"):
+            intent.meta["signal_day"] = self._signal_day(row)
+        # This order's own route timing (a chase replacement gets fresh ones).
+        intent.meta["route_started_at"] = route_started
+        intent.meta["quote_ready_at"] = quote_ready
+        try:
+            intent.meta["planned_stop_pct"] = self.planned_stop_pct(desk, intent.expiry, row, intent)
+            if self.risk_controls.dollar_stop_enabled:
+                intent.meta["dollar_stop_usd"] = self.risk_controls.dollar_stop_usd
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("planned stop not stamped: %s", exc)
         ready, missing = _option_order_ready(intent)
         if not ready:
             intent.status = "skipped"
@@ -2295,6 +2526,73 @@ class AutoTrader:
         self._queue_exit_alerts(orders, moment, diamond, sniper)
         return result
 
+    def sync_exits(self, *, now: datetime | None = None, lock_timeout: float = 3.0) -> dict[str, Any]:
+        """Exits only: stops, targets, trails, clock flattens, and sell retries.
+
+        Runs on its own 5–10 s loop so a slow focus scan cannot hold a stop or
+        a 10:30 flatten. It never opens a position. If the main sync holds the
+        lock, this tick is skipped (that sync runs the same exits).
+        """
+        if not _SYNC_LOCK.acquire(timeout=max(0.0, float(lock_timeout))):
+            return {"skipped": "sync busy"}
+        try:
+            result = self._sync_exits_locked(now)
+            orders = list(self.broker.orders)
+            moment = self._now
+        finally:
+            _SYNC_LOCK.release()
+        if result.get("sent"):
+            self._queue_exit_alerts(orders, moment, None, None)
+        return result
+
+    def _sync_exits_locked(self, now: datetime | None) -> dict[str, Any]:
+        started = time.monotonic()
+        sent: list[dict[str, Any]] = []
+        self._now = now
+        self.broker._session_now = now
+        self._closed_contracts = set()
+        self.filtered = []
+        self._reconcile_broker(now)
+        if not self.golden_only:
+            return {"sent": sent, "ms": round((time.monotonic() - started) * 1000)}
+        self.broker.refresh_working_buys()
+        self._reconcile_positions(self._managed_positions())
+        session = option_session_open(now)
+        if session:
+            self._maintain_working_sells()
+        if past_odte_flatten(now) and session:
+            self._cancel_unfilled_at_cutoff()
+        self._stamp_exit_plans(None)
+
+        def take(intent: WebullOrderIntent | None) -> None:
+            if intent is None:
+                return
+            if intent.contract and intent.action == "SELL":
+                self._closed_contracts.add(str(intent.contract))
+            sent.append(
+                {"id": intent.id, "contract": intent.contract, "status": intent.status, "reason": intent.reason}
+            )
+
+        budget = max(1, self.max_orders_per_sync)
+        for row in self._premium_exit_rows():
+            if budget <= 0:
+                break
+            budget -= 1
+            take(self._safe_exit(row))
+        # Clock flattens never wait on the budget.
+        for row in self._flatten_when_signal_leaves(now):
+            take(self._safe_exit(row))
+        if session:
+            for intent in [o for o in self.broker.orders if o.status == "deferred" and o.action == "SELL"]:
+                if contract_expired(intent.expiry, now):
+                    intent.meta["cancel_reason"] = "expired contract — not resubmitted"
+                    self.broker.cancel(intent)
+                    continue
+                if (intent.meta or {}).get("retryable") is False:
+                    continue
+                take(self.broker.submit(intent))
+        return {"sent": sent, "ms": round((time.monotonic() - started) * 1000)}
+
     def sync_hot(
         self,
         *,
@@ -2644,6 +2942,8 @@ class AutoTrader:
                     "signal_ask": signal_ask,
                     "signal_ask_live": bool((order.meta or {}).get("signal_ask_live")),
                     "chase_started_at": (order.meta or {}).get("chase_started_at") or order.created_at,
+                    "detected_at": (order.meta or {}).get("detected_at"),
+                    "at_ct": (order.meta or {}).get("signal_at_ct"),
                     "reprice_count": int((order.meta or {}).get("reprice_count") or 0) + 1,
                     "replaces": order.id,
                     "sniper": kind == "sniper",
