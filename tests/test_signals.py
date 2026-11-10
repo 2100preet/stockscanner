@@ -89,7 +89,7 @@ def test_config_loads():
     assert cfg["live_trading"]["dry_run"] is True
     assert cfg["live_trading"]["paper"] is True
     assert cfg["live_trading"]["golden_only"] is True
-    assert cfg["live_trading"]["submit_interval_sec"] == 1.5
+    assert cfg["live_trading"]["submit_interval_sec"] == 0.5  # spacing only; the shared endpoint budget enforces the rate limit
     assert cfg["live_trading"]["max_golden_buys_per_sync"] == 2
     assert cfg["live_trading"]["close_legacy_positions"] is False
     assert cfg["live_trading"]["second_desk"] == "challenge"

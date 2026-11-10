@@ -356,6 +356,7 @@ PAGE = r"""
     <div id="lunchBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="expectedMoveBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="confluenceBanner" class="pulse-banner" aria-live="polite"></div>
+    <div id="ripV2ShadowBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="loadNote" class="loading" style="display:none;margin-bottom:.6rem"></div>
     <div id="alertToasts" aria-live="assertive"></div>
 
@@ -961,6 +962,8 @@ PAGE = r"""
         <div id="webullHowTo" class="lede" style="font-size:.74rem;margin:.35rem 0 .55rem"></div>
         <h3 style="margin:.6rem 0 .35rem;font-size:.9rem">BUY / SELL order history</h3>
         <div id="webullOrders" class="empty">No Webull orders staged yet.</div>
+        <h3 style="margin:.6rem 0 .35rem;font-size:.9rem">Exit health &amp; order latency (paper, last 7 days)</h3>
+        <div id="exitHealth" class="empty">No exit health yet.</div>
         <p class="lede" id="webullDisclaimer" style="font-size:.72rem;margin-top:.5rem"></p>
       </div>
       <div class="panel">
@@ -3512,6 +3515,42 @@ PAGE = r"""
       return "Limit (working) " + limit;
     }
 
+    function renderExitHealth(health, latency) {
+      const el = document.getElementById("exitHealth");
+      if (!el) return;
+      const esc = (v) => String(v == null ? "" : v).replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+      if (!health || health.ok === false || !health.checks) {
+        el.className = "empty";
+        el.textContent = (health && health.error) ? ("Exit health unavailable: " + health.error) : "No exit health yet.";
+        return;
+      }
+      const sec = (v) => v == null ? "—" : (Number(v) >= 90 ? fmt(Number(v) / 60, 1) + "m" : fmt(Number(v), 1) + "s");
+      const checks = Object.entries(health.checks).map(([k, c]) =>
+        `<span class="pill ${c.ok ? "up" : "down"}">${c.ok ? "✓" : "✗"} ${esc(k.replace(/_/g, " "))}: ${esc(c.value == null ? "—" : c.value)}</span>`
+      ).join(" ");
+      const flat = health.flatten_time || {};
+      const pf = health.profit_factor || {};
+      const dd = health.drawdown || {};
+      const stops = health.loss_vs_planned_stop || {};
+      const lines = [
+        `<div class="toolbar" style="flex-wrap:wrap;gap:.3rem">${checks}</div>`,
+        `<div class="why">Stuck sells ${esc((health.stuck_sells || {}).n || 0)} · flatten after deadline median ${sec(flat.median_s)} / p90 ${sec(flat.p90_s)} (${esc(flat.within_60s || 0)}/${esc(flat.n || 0)} within 60s) · losses past planned stop ${esc(stops.beyond_stop || 0)}/${esc(stops.losing_lots || 0)} · profit factor ${esc(pf.window == null ? "—" : pf.window)} (incl. ${esc(pf.expired_lots_in_window || 0)} expired) · max drawdown ${Number(dd.max_drawdown_usd || 0) < 0 ? "-" : ""}$${fmt(Math.abs(Number(dd.max_drawdown_usd || 0)), 0)} · sessions ${esc((health.sessions || {}).n || 0)}</div>`,
+      ];
+      const desks = (latency && latency.desks) || {};
+      const stages = (latency && latency.stages) || [];
+      const names = Object.keys(desks);
+      if (names.length) {
+        const head = stages.map((st) => `<th>${esc(st.replace("_s", ""))}</th>`).join("");
+        const rows = names.map((d) => `<tr><td>${esc(d)}</td>${stages.map((st) => {
+          const v = desks[d][st];
+          return `<td class="mono">${v ? sec(v.median) + " / " + sec(v.p90) + ` <span class="why">n=${esc(v.n)}</span>` : "—"}</td>`;
+        }).join("")}</tr>`).join("");
+        lines.push(`<table><thead><tr><th>desk (median / p90)</th>${head}</tr></thead><tbody>${rows}</tbody></table>`);
+      }
+      el.className = "";
+      el.innerHTML = lines.join("");
+    }
+
     function renderWebull(wb) {
       const metrics = document.getElementById("webullMetrics");
       const ordersEl = document.getElementById("webullOrders");
@@ -4599,6 +4638,45 @@ PAGE = r"""
         ${body}`;
     }
 
+    function renderRipV2Shadow() {
+      const el = document.getElementById("ripV2ShadowBanner");
+      if (!el) return;
+      const board = DATA.rip_v2_shadow || {};
+      el.classList.add("active", "expected");
+      const esc = (v) => String(v == null ? "" : v).replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+      const money = (n) => n == null ? "—" : ((Number(n) >= 0 ? "+$" : "−$") + Math.abs(Number(n)).toFixed(0));
+      const pct = (n) => n == null ? "—" : ((Number(n) >= 0 ? "+" : "") + Number(n).toFixed(1) + "%");
+      const st = board.stats || {};
+      const side = (name, s) => {
+        s = s || {};
+        const pf = s.profit_factor == null ? "—" : Number(s.profit_factor).toFixed(2);
+        const win = s.win_rate_pct == null ? "—" : Math.round(s.win_rate_pct) + "%";
+        return `<tr><td><strong>${esc(name)}</strong></td><td>${s.n || 0}</td><td>${win}</td><td>${pct(s.avg_pct)}</td><td>${money(s.pnl_usd)}</td><td>${pf}</td></tr>`;
+      };
+      const statsTable = `<div style="overflow-x:auto"><table class="pb-table" style="width:100%;font-size:12px"><thead><tr><th>Since ${esc(board.start_day || "—")}</th><th>Trades</th><th>Win</th><th>Avg</th><th>$ / 1 contract</th><th>Profit factor</th></tr></thead><tbody>${side("Current RIP (paper fills)", st.current)}${side("RIP-v2 (shadow)", st.v2)}</tbody></table></div>`;
+      const rows = (board.today || []).map((r) => {
+        const v2 = r.status === "no_trade"
+          ? `no v2 trade · ${esc(r.reason || "")}`
+          : `${esc(r.contract || "—")} · ${esc(r.entry_label || "—")}${r.moneyness_pct == null ? "" : " · " + Math.abs(Number(r.moneyness_pct)).toFixed(1) + (Number(r.moneyness_pct) < 0 ? "% ITM" : "% OTM")}`;
+        const out = r.status === "closed"
+          ? `${esc(r.exit_reason || "closed")} · ${esc(r.exit_label || "—")} · ${pct(r.pnl_pct)}`
+          : (r.status === "open" ? `open · ${esc(r.last_mark_label || "no mark yet")} · ${pct(r.gain_pct)}` : "—");
+        return `<tr><td>${esc(r.signaled_ct || "—")}</td><td>${esc(r.symbol)}</td><td>${esc(r.live_contract || "—")} · ${esc(r.live_ask_label || "—")}</td><td>${v2}</td><td>${out}</td></tr>`;
+      }).join("");
+      const today = rows
+        ? `<div style="overflow-x:auto;margin-top:.4rem"><table class="pb-table" style="width:100%;font-size:12px"><thead><tr><th>Signal (CT)</th><th>Symbol</th><th>Live RIP contract</th><th>v2 pick</th><th>v2 result</th></tr></thead><tbody>${rows}</tbody></table></div>`
+        : `<div class="pulse-card expected"><p class="pc-why">No RIP signals logged today.</p></div>`;
+      el.innerHTML = `
+        <div class="pb-head">
+          <div>
+            <h2 class="pb-title">🧪 RIP-v2 <em>Shadow</em></h2>
+            <div class="pb-sub">shadow · not traded · ATM to ≤1% OTM · +50% / −35% · trail half of peak · flat 2:45 PM CT</div>
+          </div>
+          <div class="status">${board.ok === false ? "UNAVAILABLE" : "SHADOW · NOT TRADED"}</div>
+        </div>
+        ${board.ok === false ? `<div class="pulse-card expected"><p class="pc-why">${esc(board.note || "RIP-v2 shadow unavailable.")}</p></div>` : statsTable + today}`;
+    }
+
     function paint() {
       try { renderScorecard(); } catch (err) { console.error(err); }
       try { renderEdge(); } catch (err) { console.error(err); }
@@ -4608,6 +4686,7 @@ PAGE = r"""
       try { renderLunchBanner(); } catch (err) { console.error(err); }
       try { renderExpectedMove(); } catch (err) { console.error(err); }
       try { renderConfluence(); } catch (err) { console.error(err); }
+      try { renderRipV2Shadow(); } catch (err) { console.error(err); }
       try { renderSpxStrategy(); } catch (err) { console.error(err); }
       renderMustTradeBanner();
       renderNowBoard();
@@ -4664,6 +4743,7 @@ PAGE = r"""
       renderDailyPnl(DATA.daily_pnl || {});
       renderRecLogAll(DATA.rec_log || {});
       renderWebull(DATA.webull || {});
+      try { renderExitHealth(DATA.exit_health, DATA.order_latency); } catch (err) { console.warn("exit health render", err); }
       document.getElementById("session").textContent = (DATA.session||"—") + " · " + (DATA.universe_mode||"focus");
       const uniPill = document.getElementById("universePill");
       if (uniPill) {
@@ -5185,6 +5265,16 @@ def _confluence_block() -> dict:
         return {"ok": False, "events": [], "n": 0, "error": str(exc)[:200], "note": "Confluence unavailable."}
 
 
+def _rip_v2_shadow_block() -> dict:
+    """RIP-v2 shadow stats. Shadow only. A failure is an ok:false block."""
+    try:
+        from odte_scanner.signals.rip_v2_shadow import public_block
+
+        return public_block()
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "today": [], "shadow_only": True, "error": str(exc)[:200], "note": "RIP-v2 shadow unavailable."}
+
+
 def _expected_move_block() -> dict:
     """Morning expected-move board from disk. The fast loop overlays a fresher one."""
     try:
@@ -5228,6 +5318,12 @@ def _annotate_snapshot(body: dict, note: str | None) -> dict:
 def create_app(config_path: str | None = None) -> Flask:
     cfg_path = str(config_path or ROOT / "config.yaml")
     cfg = load_config(cfg_path)
+    try:
+        from odte_scanner.trading.log_redact import install_webull_log_redaction
+
+        install_webull_log_redaction()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("log redaction not installed: %s", exc)
     app = Flask(__name__)
     scan_lock = threading.Lock()
     actions_cfg = cfg.get("actions") or {}
@@ -6493,6 +6589,19 @@ def create_app(config_path: str | None = None) -> Flask:
                         "counts": {},
                         "note": "RIP radar temporarily unavailable.",
                     }
+
+                # RIP-v2 shadow: logs a hypothetical v2 trade per RIP signal. Never
+                # changes the live RIP alerts or paper orders and places no order.
+                try:
+                    if not offline and bool(actions_cfg.get("rip_v2_shadow_enabled", True)):
+                        from odte_scanner.signals.rip_v2_shadow import run_shadow_cycle_async
+
+                        run_shadow_cycle_async(
+                            rip_radar=rip_radar if isinstance(rip_radar, dict) else None,
+                            loss_cooldown_contracts=loss_cooldown_cts,
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("rip v2 shadow skipped: %s", exc)
 
                 # Beauty / monthly lane — AMD META MU SNDK class (~1mo DTE)
                 beauty_monthly: dict = {
@@ -8142,6 +8251,7 @@ def create_app(config_path: str | None = None) -> Flask:
                         "spx_strategy": spx_strategy,
                         "expected_move": _expected_move_block(),
                         "confluence": _confluence_block(),
+                        "rip_v2_shadow": _rip_v2_shadow_block(),
                         }
                     )
 
@@ -8465,7 +8575,7 @@ def create_app(config_path: str | None = None) -> Flask:
             app_key=lt.get("app_key"),
             app_secret=lt.get("app_secret"),
             ledger_path=ledger,
-            submit_interval_sec=float(lt.get("submit_interval_sec", 1.5)),
+            submit_interval_sec=float(lt.get("submit_interval_sec", 0.5)),
         )
         desk_cfg = dict(lt.get("desks") or {})
         if not desk_cfg:
@@ -8713,6 +8823,8 @@ def create_app(config_path: str | None = None) -> Flask:
         """Match the ledger to Webull paper: stuck staged rows and order history."""
         from odte_scanner.trading.auto_trader import _SYNC_LOCK, _maybe_close_expired, _maybe_import_history
 
+        if not _paper_admin_ok():
+            return _admin_denied()
         try:
             days = max(1, min(7, int(request.args.get("days") or 7)))
         except ValueError:
@@ -8724,6 +8836,82 @@ def create_app(config_path: str | None = None) -> Flask:
             history = _maybe_import_history(broker, None, force=True, days=days)
             expiry = _maybe_close_expired(broker, None, force=True)
         return jsonify({"ok": True, "staged": staged, "history": history, "expiry": expiry})
+
+    def _paper_admin_ok() -> bool:
+        """Admin POSTs need X-Admin-Token == PAPER_ADMIN_TOKEN.
+
+        With no PAPER_ADMIN_TOKEN set the endpoints are disabled (closed), not open.
+        """
+        import hmac
+        import os as _os
+
+        want = str(_os.environ.get("PAPER_ADMIN_TOKEN") or "").strip()
+        if not want:
+            return False
+        got = str(request.headers.get("X-Admin-Token") or "").strip()
+        return bool(got) and hmac.compare_digest(got.encode(), want.encode())
+
+    def _admin_denied():
+        import os as _os
+
+        if not str(_os.environ.get("PAPER_ADMIN_TOKEN") or "").strip():
+            return jsonify({"ok": False, "error": "disabled: PAPER_ADMIN_TOKEN is not set"}), 403
+        return jsonify({"ok": False, "error": "admin token required (X-Admin-Token)"}), 403
+
+    @app.get("/api/paper/limits")
+    def paper_limits():
+        """Today's paper P&L per desk, the daily limits, and the kill switch."""
+        from odte_scanner.hot_state import read_ledger_orders
+        from odte_scanner.trading import risk_controls as rc_mod
+
+        controls = rc_mod.load_risk_controls()
+        orders = read_ledger_orders()
+        tally = rc_mod.daily_tally(orders)
+        blocks = {}
+        for tier in ("sniper", "diamond", "gold", "afternoon"):
+            blocks[tier] = rc_mod.entry_block(tier, orders=orders, controls=controls, tally=tally)
+        return jsonify(
+            {
+                "ok": True,
+                "tally": tally,
+                "blocked": blocks,
+                "kill_switch": rc_mod.kill_switch_state(),
+                "limits": {
+                    "enabled": controls.daily_limits_enabled,
+                    "desk_daily_loss_usd": controls.desk_daily_loss_usd,
+                    "desk_daily_losers": controls.desk_daily_losers,
+                    "account_daily_loss_usd": controls.account_daily_loss_usd,
+                },
+                "note": "Limits block new paper entries only. Exits and signal alerts keep running.",
+            }
+        )
+
+    @app.post("/api/paper/kill-switch")
+    def paper_kill_switch():
+        """Pause (on=1) or resume (on=0) new paper entries. Exits keep running."""
+        from odte_scanner.trading import risk_controls as rc_mod
+
+        if not _paper_admin_ok():
+            return _admin_denied()
+        raw = str(request.args.get("on") or (request.get_json(silent=True) or {}).get("on") or "").strip().lower()
+        if raw not in {"0", "1", "true", "false", "on", "off"}:
+            return jsonify({"ok": False, "error": "on=1 or on=0"}), 400
+        on = raw in {"1", "true", "on"}
+        reason = str(request.args.get("reason") or (request.get_json(silent=True) or {}).get("reason") or "manual")
+        state = rc_mod.set_kill_switch(on, reason)
+        try:
+            from odte_scanner.alerts.telegram import send_telegram_text
+
+            if on:
+                send_telegram_text(
+                    f"⛔ PAPER ENTRIES PAUSED — kill switch on ({reason[:80]}). "
+                    "Exits and signal alerts keep running. · paper"
+                )
+            else:
+                send_telegram_text("✅ Paper entries resumed — kill switch off. · paper")
+        except Exception:  # noqa: BLE001
+            pass
+        return jsonify({"ok": True, "kill_switch": state})
 
     @app.post("/api/webull/sync")
     def webull_sync():

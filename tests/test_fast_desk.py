@@ -146,8 +146,10 @@ def test_alert_is_sent_once(tmp_path):
     assert not second.get("would_send")
 
 
-def test_chase_math_reprices_under_the_cap_and_stops_past_it():
+def test_chase_math_reprices_under_the_cap_and_stops_past_it(monkeypatch):
     from odte_scanner.trading.chase import CHASE_MAX_AGE_SEC
+
+    monkeypatch.delenv("ENTRY_CHASE_MAX_AGE_SEC", raising=False)
 
     # Already at the ask: hold. Below the ask and inside the cap: reprice.
     assert chase_action(limit=1.22, ask=1.22, signal_ask=1.22, age_sec=30, past_window=False) == "hold"
@@ -156,8 +158,16 @@ def test_chase_math_reprices_under_the_cap_and_stops_past_it():
     capped = reprice_limit(1.40, 1.22, 1.22)
     assert capped is not None and capped < 1.40
     assert chase_action(limit=capped, ask=1.40, signal_ask=1.22, age_sec=30, past_window=False) == "cap"
-    assert chase_action(limit=1.05, ask=1.06, signal_ask=1.05, age_sec=CHASE_MAX_AGE_SEC, past_window=False) == "cancel"
+    # The entry keeps working for the whole entry window, not 75 s.
+    assert chase_action(limit=1.06, ask=1.06, signal_ask=1.05, age_sec=CHASE_MAX_AGE_SEC, past_window=False) == "hold"
+    assert chase_action(limit=1.05, ask=1.06, signal_ask=1.05, age_sec=3600, past_window=False) == "reprice"
+    assert chase_action(limit=capped, ask=1.40, signal_ask=1.22, age_sec=3600, past_window=False) == "cap"
     assert chase_action(limit=1.05, ask=1.06, signal_ask=1.05, age_sec=30, past_window=True) == "cancel"
+    # An age cutoff can still be configured.
+    monkeypatch.setenv("ENTRY_CHASE_MAX_AGE_SEC", "75")
+    assert chase_action(limit=1.05, ask=1.06, signal_ask=1.05, age_sec=CHASE_MAX_AGE_SEC, past_window=False) == "cancel"
+    monkeypatch.setenv("ENTRY_CHASE_MAX_AGE_SEC", "junk")
+    assert chase_action(limit=1.06, ask=1.06, signal_ask=1.05, age_sec=3600, past_window=False) == "hold"
 
 
 def _broker(tmp_path):
@@ -232,16 +242,22 @@ def test_working_buy_reprices_to_the_live_ask_and_keeps_the_signal_ask(tmp_path,
     assert trader._gold_stop_price(chased, "sniper", chased.limit_price, "2026-10-30") == round(chased.limit_price * 0.6, 2)
 
 
-def test_chase_cancels_at_the_cap_clock_and_does_not_reopen(tmp_path, caplog):
+def test_chase_keeps_working_then_cancels_at_window_end_and_does_not_reopen(tmp_path, caplog):
     broker, trader = _broker(tmp_path)
-    _working_buy(broker, started="2026-10-30T14:00:00+00:00")
-    now = _ct(9, 9)
+    working = _working_buy(broker, started="2026-10-30T14:00:00+00:00")
+    working.limit_price = 1.06
+    broker.save()
+    # 9:09 CT is long after 75 s, but inside the 10:30 CT entry window: still working.
+    trader.sync_hot(sniper=_quote(1.06), now=_ct(9, 9))
+    assert working.status not in {"cancelled"}
+    assert [o for o in broker.orders if o.action == "BUY" and o.status == "cancelled"] == []
+    now = _ct(10, 31)
     with caplog.at_level(logging.INFO, logger="odte_scanner.trading.auto_trader"):
         trader.sync_hot(sniper=_quote(1.06), now=now)
-    cancelled = broker.orders[0]
+    cancelled = next(o for o in broker.orders if o.id == working.id)
     assert cancelled.status == "cancelled"
     assert cancelled.meta.get("chase_abandoned") is True
-    assert "not filled — cancelled" in caplog.text
+    assert "past 10:30 CT entry window" in caplog.text
     card = {**_card(), "ask": 1.06, "send_order": True}
     again = trader.sync_hot(sniper={"signals": [card]}, now=now)
     assert [row for row in again["submitted"] if row["action"] == "BUY"] == []
