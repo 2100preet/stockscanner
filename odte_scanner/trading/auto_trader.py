@@ -63,6 +63,31 @@ logger = logging.getLogger(__name__)
 # The focus scan and the Sniper/Diamond hot path both write this ledger.
 _SYNC_LOCK = threading.Lock()
 
+_HOT_KINDS = frozenset({"sniper", "diamond", "afternoon_puts"})
+_SIGNAL_RE = re.compile(r"signal (\d{1,2}):(\d{2}) CT")
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_iso(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        out = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return out if out.tzinfo else out.replace(tzinfo=timezone.utc)
+
+
+def _hot_kind(order: WebullOrderIntent) -> str | None:
+    kind = str((order.meta or {}).get("golden_kind") or "")
+    if kind in _HOT_KINDS:
+        return kind
+    desk = str(order.desk or "")
+    return desk if desk in _HOT_KINDS else None
+
 
 def _f(v: Any) -> float | None:
     try:
@@ -518,6 +543,60 @@ class AutoTrader:
                 if occ and o.contract and occ != o.contract:
                     continue
                 return True
+        return False
+
+    def _signal_day(self, row: dict[str, Any]) -> str:
+        """Chicago day of the signal: the board's day, else the trader's clock."""
+        day = str(row.get("day_cst") or "").strip()
+        if day:
+            return day
+        from odte_scanner.time_cst import CT
+
+        moment = self._now or datetime.now(timezone.utc)
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        return moment.astimezone(CT).date().isoformat()
+
+    def _signal_already_routed(self, desk: str, symbol: str, right: str, row: dict[str, Any]) -> bool:
+        """True when this desk already has an entry for this signal (symbol, side, bar, day).
+
+        Any buy counts except a retryable reject: a cancelled chase or a
+        window-end cancel must not reopen the same signal on another strike.
+        Rows from before the signal stamps are matched on 'signal HH:MM CT'
+        in the order reason.
+        """
+        at_ct = str(row.get("at_ct") or "").strip()
+        if not at_ct:
+            return False
+        day = self._signal_day(row)
+        sym = symbol.upper()
+        for order in self.broker.orders:
+            if order.action != "BUY" or str(order.symbol or "").upper() != sym:
+                continue
+            if str(order.right or "").upper()[:1] != right:
+                continue
+            meta = order.meta or {}
+            if _hot_kind(order) != desk:
+                continue
+            if order.status == "rejected" and meta.get("retryable") is True:
+                continue
+            if order.status == "skipped":
+                continue
+            seen_at = str(meta.get("signal_at_ct") or "")
+            if not seen_at:
+                found = _SIGNAL_RE.search(str(order.reason or ""))
+                seen_at = f"{int(found[1]):02d}:{found[2]}" if found else ""
+            if seen_at != at_ct:
+                continue
+            seen_day = str(meta.get("signal_day") or "")
+            if not seen_day:
+                from odte_scanner.time_cst import CT
+
+                created = _parse_iso(order.created_at)
+                seen_day = created.astimezone(CT).date().isoformat() if created else ""
+            if seen_day != day:
+                continue
+            return True
         return False
 
     def _tracks_exit(self, order: WebullOrderIntent) -> bool:
@@ -1776,11 +1855,8 @@ class AutoTrader:
         right: str = "C",
         price_key: str = "ask",
     ) -> WebullOrderIntent | None:
+        route_started = _now_iso()
         row = _with_occ(row)
-        if str(row.get("symbol") or "").upper() != "SPX":
-            from odte_scanner.options.contract_quote import refresh_traded_quote
-
-            refresh_traded_quote(row)
         right = str(row.get("right") or right or "C").upper()
         if right in {"PUT", "P"}:
             right = "P"
@@ -1789,6 +1865,20 @@ class AutoTrader:
         sym = str(row.get("symbol") or "").upper()
         if not sym:
             return None
+        if desk in _HOT_KINDS and not row.get("replaces"):
+            # Before the quote fetch: an already-routed signal costs no HTTP call.
+            # One signal is one entry. When spot moves, the board picks the next
+            # strike, and a contract-only check would buy that strike too.
+            if self._signal_already_routed(desk, sym, right, row):
+                return None
+            contract_early = str(row.get("contract") or "")
+            if contract_early and self._already_open(sym, desk, right, contract_early):
+                return None
+        if sym != "SPX":
+            from odte_scanner.options.contract_quote import refresh_traded_quote
+
+            refresh_traded_quote(row)
+        quote_ready = _now_iso()
         limit = self._entry_limit(desk, row)
         if limit is not None:
             # Entries only. The signal alert still goes out, labeled skipped.
@@ -1965,10 +2055,21 @@ class AutoTrader:
             count = _i(row.get("reprice_count"))
             if count:
                 intent.meta["reprice_count"] = count
-        for src, dst in (("detected_at", "detected_at"), ("at_ct", "signal_at_ct")):
+        for src, dst in (
+            ("detected_at", "detected_at"),
+            ("at_ct", "signal_at_ct"),
+            ("day_cst", "signal_day"),
+            ("cycle_started_at", "cycle_started_at"),
+            ("boards_ready_at", "boards_ready_at"),
+        ):
             value = row.get(src)
             if value and not intent.meta.get(dst):
                 intent.meta[dst] = str(value)
+        if kind in _HOT_KINDS and not intent.meta.get("signal_day"):
+            intent.meta["signal_day"] = self._signal_day(row)
+        # This order's own route timing (a chase replacement gets fresh ones).
+        intent.meta["route_started_at"] = route_started
+        intent.meta["quote_ready_at"] = quote_ready
         try:
             intent.meta["planned_stop_pct"] = self.planned_stop_pct(desk, intent.expiry, row, intent)
             if self.risk_controls.dollar_stop_enabled:
