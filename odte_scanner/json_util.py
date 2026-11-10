@@ -68,6 +68,9 @@ def dumps_strict(obj: Any, **kwargs: Any) -> str:
     return json.dumps(clean, **kwargs)
 
 
+_BAK_MAX_BYTES = 1_500_000
+
+
 def atomic_write_text(path: str | Path, text: str) -> None:
     """Write ``path`` via a same-directory temp file and ``os.replace``.
 
@@ -77,15 +80,21 @@ def atomic_write_text(path: str | Path, text: str) -> None:
     """
     dest = Path(path)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    if dest.exists():
+    try:
+        prev_size = dest.stat().st_size if dest.exists() else None
+    except OSError:
+        prev_size = None
+    # Skip the extra copy when the previous file is a large scan/snapshot, and
+    # check the size before reading: parsing a 100+ MB file just to decide to
+    # skip the copy cost hundreds of MB of RAM on every save.
+    # A full volume must still be able to replace the live ledger.
+    if prev_size is not None and prev_size <= _BAK_MAX_BYTES:
         try:
             previous = dest.read_text(encoding="utf-8")
             json.loads(previous)
         except Exception:  # noqa: BLE001
             previous = None
-        # Skip the extra copy when the previous file is a large scan/snapshot.
-        # A full volume must still be able to replace the live ledger.
-        if previous is not None and previous != text and len(previous) <= 1_500_000:
+        if previous is not None and previous != text and len(previous) <= _BAK_MAX_BYTES:
             try:
                 _replace_text(dest.with_name(dest.name + ".bak"), previous)
             except OSError as exc:

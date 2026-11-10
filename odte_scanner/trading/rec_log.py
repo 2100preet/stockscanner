@@ -13,10 +13,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import uuid
 from dataclasses import asdict, dataclass, field, fields
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +44,38 @@ def _parse_live_entry_from_reason(reason: str | None) -> float | None:
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PATH = ROOT / "outputs" / "recommendation_log.json"
+
+# Retention. The log is loaded and rewritten on every snapshot rebuild, so it
+# has to stay small: at 113k rows (171 MB) one load + save peaked near 1 GB.
+# Lapsed rows carry no P&L; closed rows are kept up to the row cap.
+LAPSED_KEEP_DAYS_DEFAULT = 14
+LAPSED_PRUNE_ABOVE_DEFAULT = 5000  # a small log keeps all its lapses
+MAX_ROWS_DEFAULT = 10000
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(str(os.environ.get(name) or "").strip() or default)
+    except ValueError:
+        return default
+
+
+def _parse_ts(text: Any) -> datetime | None:
+    if not text:
+        return None
+    try:
+        out = datetime.fromisoformat(str(text).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if out.tzinfo is None:
+        out = out.replace(tzinfo=timezone.utc)
+    return out
+
+
+def _px_key(value: Any) -> float | None:
+    f = _f(value)
+    return None if f is None else round(f, 4)
+
 
 # OCC root…YYMMDD[CP]strike — used to lapse opens past contract expiry
 _OCC_EXPIRY_RE = re.compile(r"(\d{6})[CP]\d{8}$", re.IGNORECASE)
@@ -295,7 +328,14 @@ class RecommendationLog:
             scrubbed = self._scrub_entry_drift_from_reason() or scrubbed
             scrubbed = self._scrub_fake_quality_opens() or scrubbed
             scrubbed = self._scrub_expired_open_contracts() or scrubbed
-            if scrubbed:
+            removed = self.compact()
+            if removed:
+                logger.info(
+                    "recommendation log compacted: removed %d rows, %d left",
+                    removed,
+                    len(self.book.recommendations),
+                )
+            if scrubbed or removed:
                 self.save()
         except Exception as exc:  # noqa: BLE001
             logger.warning("recommendation log load failed: %s", exc)
@@ -443,11 +483,65 @@ class RecommendationLog:
             changed = True
         return changed
 
+    def compact(self, now: datetime | None = None) -> int:
+        """Drop duplicate journal rows, old lapsed rows, and the oldest rows past the cap.
+
+        Lapsed rows older than REC_LOG_LAPSED_KEEP_DAYS go only once the log holds
+        more than REC_LOG_LAPSED_PRUNE_ABOVE rows. Open rows are always kept.
+        Returns how many rows were removed.
+        """
+        recs = self.book.recommendations
+        before = len(recs)
+        moment = now or datetime.now(timezone.utc)
+        keep_days = _env_int("REC_LOG_LAPSED_KEEP_DAYS", LAPSED_KEEP_DAYS_DEFAULT)
+        max_rows = _env_int("REC_LOG_MAX_ROWS", MAX_ROWS_DEFAULT)
+        prune_above = _env_int("REC_LOG_LAPSED_PRUNE_ABOVE", LAPSED_PRUNE_ABOVE_DEFAULT)
+        cutoff = moment - timedelta(days=keep_days) if keep_days > 0 else None
+        seen: set[tuple] = set()
+        deduped: list[Recommendation] = []
+        for r in recs:
+            if r.status != "open" and r.source == "journal":
+                key = (
+                    r.section,
+                    r.symbol,
+                    r.right,
+                    _px_key(r.entry_price),
+                    r.recommended_at,
+                    r.closed_at,
+                )
+                if key in seen:
+                    continue  # same journal trade mirrored again
+                seen.add(key)
+            deduped.append(r)
+        out = deduped
+        if cutoff is not None and len(deduped) > prune_above:
+            out = []
+            for r in deduped:
+                if r.status == "lapsed":
+                    when = _parse_ts(r.closed_at or r.last_recommended_at or r.recommended_at)
+                    if when is not None and when < cutoff:
+                        continue
+                out.append(r)
+        if max_rows > 0:
+            done = [r for r in out if r.status != "open"]
+            if len(done) > max_rows:
+                floor = datetime.min.replace(tzinfo=timezone.utc)
+                ranked = sorted(
+                    done,
+                    key=lambda r: _parse_ts(r.closed_at or r.last_recommended_at or r.recommended_at) or floor,
+                    reverse=True,
+                )
+                keep_ids = {id(r) for r in ranked[:max_rows]}
+                out = [r for r in out if r.status == "open" or id(r) in keep_ids]
+        self.book.recommendations = out
+        return before - len(out)
+
     def save(self) -> None:
         from odte_scanner.json_util import atomic_write_text, dumps_strict
 
         self.book.updated_at = _now()
-        atomic_write_text(self.path, dumps_strict(self.book.to_dict(), indent=2, default=str))
+        # Compact JSON: indent=2 added ~20% to a file rewritten every rebuild.
+        atomic_write_text(self.path, dumps_strict(self.book.to_dict(), default=str))
 
     def _key(self, section: str, symbol: str, right: str = "C") -> str:
         return f"{section.upper()}|{str(symbol).upper()}|{str(right or 'C').upper()}"
@@ -644,6 +738,7 @@ class RecommendationLog:
         allow_stub: bool = False,
         at: str | None = None,
         entry_price: float | None = None,
+        contract: str | None = None,
     ) -> Recommendation | None:
         sym = str(symbol or "").upper()
         if not sym:
@@ -664,6 +759,7 @@ class RecommendationLog:
                 recommended_at=now,
                 last_recommended_at=now,
                 entry_price=entry_price,
+                contract=contract,
                 status="closed",
                 on_board=True,
                 close_action=str(action or "EXIT").upper(),
@@ -1137,6 +1233,21 @@ class RecommendationLog:
 
         n = 0
         seen_closed: set[str] = set()
+        # Journal trades already mirrored, by exit time and by exit reason. A
+        # SELL-only stub used to be stored without its contract, and a clock
+        # exit is later scrubbed to "lapsed", so the old closed+contract check
+        # missed both and every rebuild appended the same trade again
+        # (72k journal rows for ~170 trades).
+        mirrored_at: set[tuple] = set()
+        mirrored_reasons: dict[tuple, list[str]] = {}
+        for r in self.book.recommendations:
+            if r.source != "journal" or r.status == "open":
+                continue
+            base = (r.symbol, r.right, _px_key(r.entry_price))
+            if r.closed_at:
+                mirrored_at.add((*base, r.closed_at))
+            if r.exit_reason:
+                mirrored_reasons.setdefault(base, []).append(r.exit_reason)
         for t in trades:
             if isinstance(t, dict):
                 td = t
@@ -1200,14 +1311,23 @@ class RecommendationLog:
                     continue
             if exit_px is None or exit_px <= 0:
                 continue
-            # Avoid duplicate closed rows for same contract+exit time
+            exited_at = str(td.get("exited_at") or "") or None
+            base = (sym, right, _px_key(entry))
+            if exited_at and (*base, exited_at) in mirrored_at:
+                continue
+            cut = reason[:320]
+            # No exit time to match on: fall back to the exit reason, which carries
+            # the "asked to sell <time>" stamp (a scrub may append to it).
+            if not exited_at and cut and any(text.startswith(cut) for text in mirrored_reasons.get(base, ())):
+                continue
+            # No exit time: avoid duplicate closed rows for the same contract and prices.
             already = False
-            for r in self.book.recommendations:
+            for r in ([] if exited_at else self.book.recommendations):
                 if (
                     r.status == "closed"
                     and r.symbol == sym
                     and r.right == right
-                    and r.contract == contract
+                    and r.contract in (contract, None)
                     and r.exit_price is not None
                     and abs(float(r.exit_price) - float(exit_px)) < 1e-9
                     and r.entry_price is not None
@@ -1227,9 +1347,14 @@ class RecommendationLog:
                 spot=_f(td.get("exit_spot")),
                 reason=reason,
                 entry_price=entry,
-                at=str(td.get("exited_at") or "") or None,
+                at=exited_at,
                 allow_stub=True,
+                contract=contract,
             )
+            if exited_at:
+                mirrored_at.add((*base, exited_at))
+            if cut:
+                mirrored_reasons.setdefault(base, []).append(cut)
             n += 1
         return n
 

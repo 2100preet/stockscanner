@@ -6059,6 +6059,9 @@ def create_app(config_path: str | None = None) -> Flask:
                     loss_rows.extend(
                         loss_rows_from_journal_trades([t.to_dict() for t in journal.book.trades])
                     )
+                # One RecommendationLog per rebuild: the loss-cooldown read and the
+                # history sync below share it instead of loading the file twice.
+                rlog_shared = None
                 try:
                     from odte_scanner.trading.rec_log import RecommendationLog
 
@@ -6067,6 +6070,7 @@ def create_app(config_path: str | None = None) -> Flask:
                         rec_path_early = ROOT / rec_path_early
                     if rec_path_early.exists():
                         rlog_early = RecommendationLog(rec_path_early)
+                        rlog_shared = rlog_early
                         loss_rows.extend(loss_rows_from_rec_log(rlog_early.board(limit=200)))
                         by_sec = {}
                         for sec in ("lottery", "weekly", "odte", "swing", "challenge", "odte_1k"):
@@ -7696,7 +7700,11 @@ def create_app(config_path: str | None = None) -> Flask:
                     rec_path = Path(actions_cfg.get("rec_log_path", "outputs/recommendation_log.json"))
                     if not rec_path.is_absolute():
                         rec_path = ROOT / rec_path
-                    rlog = RecommendationLog(rec_path)
+                    if rlog_shared is not None and Path(rlog_shared.path) == Path(rec_path):
+                        rlog = rlog_shared
+                    else:
+                        rlog = RecommendationLog(rec_path)
+                    rlog_shared = None
                     rlog.sync_all(
                         lottery=lottery,
                         challenge=challenge,
