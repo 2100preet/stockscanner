@@ -43,12 +43,56 @@ def _env_flag(name: str, default: bool = False) -> bool:
 
 
 def fast_pause_sec() -> float:
-    """Seconds between hot cycles. Default 20, clamped to 15–30."""
+    """Target seconds from one hot cycle start to the next. Default 20, clamped to 15–30.
+
+    This used to be a sleep after the cycle, so a 15 s cycle ran every 35 s.
+    It is now the cycle period; ``next_cycle_sleep`` subtracts the work time.
+    """
     try:
         raw = float(os.environ.get("FAST_DESK_PAUSE_SEC") or 20)
     except (TypeError, ValueError):
         raw = 20.0
     return min(30.0, max(15.0, raw))
+
+
+BAR_SEC = 300
+# Seconds after a 5-minute boundary to start a cycle, so the just-closed bar
+# is in the feed. Afternoon Puts and Lunch only act on closed bars.
+BAR_CLOSE_OFFSET_SEC = 3.0
+MIN_SLEEP_SEC = 2.0
+
+
+def next_cycle_sleep(
+    now: datetime,
+    elapsed: float,
+    period: float,
+    *,
+    bar_sec: int = BAR_SEC,
+    offset: float = BAR_CLOSE_OFFSET_SEC,
+    min_sleep: float = MIN_SLEEP_SEC,
+) -> float:
+    """Sleep until the period is up, or until just after the next bar close if that is sooner."""
+    regular = max(min_sleep, float(period) - max(0.0, float(elapsed)))
+    moment = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+    phase = (moment.timestamp() - offset) % bar_sec
+    until_close = bar_sec - phase
+    if 0 < until_close < regular:
+        return max(0.25, until_close)
+    return regular
+
+
+def _wall_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _stamp_cycle(board: dict[str, Any] | None, started: str, ready: str) -> None:
+    """Cycle clocks on each card, copied onto the paper order for order_latency."""
+    if not isinstance(board, dict):
+        return
+    for row in board.get("signals") or []:
+        if isinstance(row, dict):
+            row["cycle_started_at"] = started
+            row["boards_ready_at"] = ready
 
 
 def in_hot_window(now: datetime | None = None) -> bool:
@@ -173,6 +217,8 @@ def run_fast_desk_cycle(
             "scan": "not_used",
         }
 
+    cycle_started = _wall_iso()
+    t0 = time.perf_counter()
     if boards is not None:
         diamond, sniper = boards
     else:
@@ -182,6 +228,10 @@ def run_fast_desk_cycle(
         except Exception as exc:  # noqa: BLE001
             logger.exception("fast desk boards failed: %s", exc)
             return {"ok": False, "error": str(exc)[:200], "scan": "not_used"}
+    boards_ready = _wall_iso()
+    t_boards = time.perf_counter()
+    _stamp_cycle(diamond, cycle_started, boards_ready)
+    _stamp_cycle(sniper, cycle_started, boards_ready)
 
     snapshot = {
         "diamond": diamond if isinstance(diamond, dict) else {},
@@ -197,6 +247,7 @@ def run_fast_desk_cycle(
     except Exception as exc:  # noqa: BLE001
         route_meta = {"ok": False, "error": str(exc)[:200]}
         logger.exception("fast desk route failed: %s", exc)
+    t_route = time.perf_counter()
 
     try:
         from odte_scanner.alerts.dispatcher import promote_routed_hot_alerts
@@ -237,16 +288,25 @@ def run_fast_desk_cycle(
     except Exception as exc:  # noqa: BLE001
         logger.info("fast desk publish failed: %s", exc)
 
+    timing = {
+        "boards_sec": round(t_boards - t0, 2),
+        "route_sec": round(t_route - t_boards, 2),
+        "total_sec": round(time.perf_counter() - t0, 2),
+    }
     logger.info(
-        "fast desk cycle sniper=%s diamond=%s sent=%s",
+        "fast desk cycle sniper=%s diamond=%s sent=%s boards=%.1fs route=%.1fs total=%.1fs",
         len((snapshot["sniper"] or {}).get("signals") or []),
         len((snapshot["diamond"] or {}).get("signals") or []),
         (alert_meta or {}).get("sent"),
+        timing["boards_sec"],
+        timing["route_sec"],
+        timing["total_sec"],
     )
     return {
         "ok": True,
         "skipped": False,
         "scan": "not_used",
+        "timing": timing,
         "alerts": alert_meta,
         "route": route_meta,
         "sample_alert": sample,
@@ -338,6 +398,7 @@ def run_afternoon_puts_cycle(
             "reason": "outside 10:00-14:50 CT",
             "scan": "not_used",
         }
+    cycle_started = _wall_iso()
     if board is None:
         try:
             loader = load_board
@@ -353,6 +414,7 @@ def run_afternoon_puts_cycle(
             _publish_afternoon_failure(error)
             return {"ok": False, "error": error, "scan": "not_used"}
     board = board if isinstance(board, dict) else {}
+    _stamp_cycle(board, cycle_started, _wall_iso())
     snapshot = {"afternoon_puts": board}
     route_meta: dict[str, Any] = {"ok": False}
     try:
@@ -608,38 +670,62 @@ def publish_index_boards_if_missing(now: datetime | None = None) -> dict[str, An
     return published
 
 
+def _side_cycles() -> None:
+    """Expected move, confluence and the rip v2 shadow tick. Not latency critical, so they run after the entries."""
+    try:
+        from odte_scanner.signals.expected_move import run_expected_move_cycle
+
+        run_expected_move_cycle()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("expected move cycle failed: %s", exc)
+    try:
+        from odte_scanner.signals.confluence import run_confluence_cycle
+
+        if in_hot_window() or in_afternoon_window():
+            run_confluence_cycle()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("confluence cycle failed: %s", exc)
+    try:
+        from odte_scanner.signals.rip_v2_shadow import flat_window_due, run_shadow_cycle
+
+        if flat_window_due():
+            # Shadow only: marks, 2:45 PM CT flatten, and the daily summary line.
+            run_shadow_cycle(rip_radar=None)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("rip v2 shadow tick failed: %s", exc)
+
+
+def _worker_pass(config_path: str | None) -> bool:
+    """One pass of the hot loop. Returns False outside every window (caller idles)."""
+    hot = in_hot_window() or _env_flag("FAST_DESK_ALWAYS", False)
+    afternoon = in_afternoon_window() or _env_flag("FAST_DESK_ALWAYS", False)
+    if not hot and not afternoon:
+        _side_cycles()  # the 8:20 CT expected-move print runs before the hot window
+        publish_index_boards_if_missing()
+        return False
+    # Entries first: the side cycles used to run (and fetch) before every pass.
+    if hot:
+        run_fast_desk_cycle(config_path)
+    if afternoon:
+        run_afternoon_puts_cycle(config_path)
+        run_lunch_credit_cycle(config_path)
+    _side_cycles()
+    return True
+
+
 def _worker_loop(config_path: str | None) -> None:
-    pause = fast_pause_sec()
-    logger.info("Fast desk started pause=%ss", pause)
+    logger.info("Fast desk started period=%ss", fast_pause_sec())
     while True:
+        started = time.monotonic()
+        active = True
         try:
-            try:
-                from odte_scanner.signals.expected_move import run_expected_move_cycle
-
-                run_expected_move_cycle()
-            except Exception as exc:  # noqa: BLE001
-                logger.exception("expected move cycle failed: %s", exc)
-            try:
-                from odte_scanner.signals.confluence import run_confluence_cycle
-
-                if in_hot_window() or in_afternoon_window():
-                    run_confluence_cycle()
-            except Exception as exc:  # noqa: BLE001
-                logger.exception("confluence cycle failed: %s", exc)
-            hot = in_hot_window() or _env_flag("FAST_DESK_ALWAYS", False)
-            afternoon = in_afternoon_window() or _env_flag("FAST_DESK_ALWAYS", False)
-            if not hot and not afternoon:
-                publish_index_boards_if_missing()
-                time.sleep(30)
-                continue
-            if hot:
-                run_fast_desk_cycle(config_path)
-            if afternoon:
-                run_afternoon_puts_cycle(config_path)
-                run_lunch_credit_cycle(config_path)
+            active = _worker_pass(config_path)
         except Exception as exc:  # noqa: BLE001
             logger.exception("fast desk worker crash: %s", exc)
-        time.sleep(fast_pause_sec())
+        if not active:
+            time.sleep(30)
+            continue
+        time.sleep(next_cycle_sleep(datetime.now(timezone.utc), time.monotonic() - started, fast_pause_sec()))
 
 
 def start_fast_desk_worker(config_path: str | None = None) -> bool:

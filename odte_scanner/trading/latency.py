@@ -23,11 +23,32 @@ CT = ZoneInfo("America/Chicago")
 
 STAGES = (
     "signal_bar→sent_s",
+    "bar_close→sent_s",
+    "signal_bar→detected_s",
+    "detected→cycle_s",
+    "cycle→boards_s",
+    "boards→route_s",
+    "route→quote_s",
+    "quote→staged_s",
     "detected→staged_s",
     "staged→sent_s",
     "sent→acked_s",
     "sent→filled_s",
 )
+BAR_SEC = 300  # Sniper, Diamond and Afternoon Puts use 5-minute bars stamped at the bar start
+
+# Per-stage meaning (signal side, buys only):
+#   signal_bar→detected  bar start -> first cycle whose board showed the signal.
+#                        Sniper/Diamond read the forming bar, so this is mostly
+#                        how long the bar took to meet the rule, not lag.
+#   bar_close→sent       sent minus (bar start + 5 min). Negative = sent before
+#                        the bar closed (forming-bar desks).
+#   detected→cycle       first sighting -> start of the cycle that routed it
+#                        (0 when routed on first sight; >0 = gated or budgeted).
+#   cycle→boards         bars + boards + option chains for that cycle.
+#   boards→route         routing other rows / chases before this one.
+#   route→quote          live quote fetch for this contract.
+#   quote→staged         gates, sizing, ledger write.
 
 
 def _dt(value: Any) -> datetime | None:
@@ -94,10 +115,26 @@ def order_latency(row: dict[str, Any]) -> dict[str, float]:
         out["sent→filled_s"] = (filled - sent).total_seconds()
     if detected and staged and staged >= detected:
         out["detected→staged_s"] = (staged - detected).total_seconds()
-    if str(row.get("action") or "").upper() == "BUY":
+    # A chase replacement is a reprice of an entry already sent: signal-side
+    # stages belong to the first order only.
+    if str(row.get("action") or "").upper() == "BUY" and not meta.get("replaces"):
         bar = _bar_time(row, staged)
         if bar and sent and sent >= bar:
             out["signal_bar→sent_s"] = (sent - bar).total_seconds()
+            out["bar_close→sent_s"] = (sent - bar).total_seconds() - BAR_SEC
+        if bar and detected and detected >= bar:
+            out["signal_bar→detected_s"] = (detected - bar).total_seconds()
+        chain = [
+            ("detected→cycle_s", detected, _dt(meta.get("cycle_started_at"))),
+            ("cycle→boards_s", _dt(meta.get("cycle_started_at")), _dt(meta.get("boards_ready_at"))),
+            ("boards→route_s", _dt(meta.get("boards_ready_at")), _dt(meta.get("route_started_at"))),
+            ("route→quote_s", _dt(meta.get("route_started_at")), _dt(meta.get("quote_ready_at"))),
+            ("quote→staged_s", _dt(meta.get("quote_ready_at")), staged),
+        ]
+        for name, start, end in chain:
+            # Clock-skew guard only; the stamps are one process's wall clock.
+            if start and end and (end - start) >= timedelta(seconds=-1):
+                out[name] = max(0.0, (end - start).total_seconds())
     return out
 
 
