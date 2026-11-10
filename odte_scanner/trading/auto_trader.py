@@ -1965,6 +1965,10 @@ class AutoTrader:
             count = _i(row.get("reprice_count"))
             if count:
                 intent.meta["reprice_count"] = count
+        for src, dst in (("detected_at", "detected_at"), ("at_ct", "signal_at_ct")):
+            value = row.get(src)
+            if value and not intent.meta.get(dst):
+                intent.meta[dst] = str(value)
         try:
             intent.meta["planned_stop_pct"] = self.planned_stop_pct(desk, intent.expiry, row, intent)
             if self.risk_controls.dollar_stop_enabled:
@@ -2821,6 +2825,8 @@ class AutoTrader:
                     "signal_ask": signal_ask,
                     "signal_ask_live": bool((order.meta or {}).get("signal_ask_live")),
                     "chase_started_at": (order.meta or {}).get("chase_started_at") or order.created_at,
+                    "detected_at": (order.meta or {}).get("detected_at"),
+                    "at_ct": (order.meta or {}).get("signal_at_ct"),
                     "reprice_count": int((order.meta or {}).get("reprice_count") or 0) + 1,
                     "replaces": order.id,
                     "sniper": kind == "sniper",

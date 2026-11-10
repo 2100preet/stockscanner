@@ -120,7 +120,7 @@ def build_paper_trader(config_path: str | None = None):
         app_key=lt.get("app_key"),
         app_secret=lt.get("app_secret"),
         ledger_path=ledger,
-        submit_interval_sec=float(lt.get("submit_interval_sec", 1.5)),
+        submit_interval_sec=float(lt.get("submit_interval_sec", 0.5)),
     )
     desk_cfg = dict(lt.get("desks") or {})
     trader = AutoTrader(
@@ -280,7 +280,7 @@ def _default_afternoon_route(board: dict[str, Any], now: datetime, config_path: 
         app_key=lt.get("app_key"),
         app_secret=lt.get("app_secret"),
         ledger_path=ledger,
-        submit_interval_sec=float(lt.get("submit_interval_sec", 1.5)),
+        submit_interval_sec=float(lt.get("submit_interval_sec", 0.5)),
     )
     trader = AutoTrader(
         broker,
@@ -467,7 +467,7 @@ def _default_lunch_route(board: dict[str, Any], now: datetime, config_path: str 
         app_key=lt.get("app_key"),
         app_secret=lt.get("app_secret"),
         ledger_path=ledger,
-        submit_interval_sec=float(lt.get("submit_interval_sec", 1.5)),
+        submit_interval_sec=float(lt.get("submit_interval_sec", 0.5)),
     )
     if not enabled:
         for card in board.get("signals") or []:

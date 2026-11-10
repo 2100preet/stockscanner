@@ -961,6 +961,8 @@ PAGE = r"""
         <div id="webullHowTo" class="lede" style="font-size:.74rem;margin:.35rem 0 .55rem"></div>
         <h3 style="margin:.6rem 0 .35rem;font-size:.9rem">BUY / SELL order history</h3>
         <div id="webullOrders" class="empty">No Webull orders staged yet.</div>
+        <h3 style="margin:.6rem 0 .35rem;font-size:.9rem">Exit health &amp; order latency (paper, last 7 days)</h3>
+        <div id="exitHealth" class="empty">No exit health yet.</div>
         <p class="lede" id="webullDisclaimer" style="font-size:.72rem;margin-top:.5rem"></p>
       </div>
       <div class="panel">
@@ -3512,6 +3514,42 @@ PAGE = r"""
       return "Limit (working) " + limit;
     }
 
+    function renderExitHealth(health, latency) {
+      const el = document.getElementById("exitHealth");
+      if (!el) return;
+      const esc = (v) => String(v == null ? "" : v).replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+      if (!health || health.ok === false || !health.checks) {
+        el.className = "empty";
+        el.textContent = (health && health.error) ? ("Exit health unavailable: " + health.error) : "No exit health yet.";
+        return;
+      }
+      const sec = (v) => v == null ? "—" : (Number(v) >= 90 ? fmt(Number(v) / 60, 1) + "m" : fmt(Number(v), 1) + "s");
+      const checks = Object.entries(health.checks).map(([k, c]) =>
+        `<span class="pill ${c.ok ? "up" : "down"}">${c.ok ? "✓" : "✗"} ${esc(k.replace(/_/g, " "))}: ${esc(c.value == null ? "—" : c.value)}</span>`
+      ).join(" ");
+      const flat = health.flatten_time || {};
+      const pf = health.profit_factor || {};
+      const dd = health.drawdown || {};
+      const stops = health.loss_vs_planned_stop || {};
+      const lines = [
+        `<div class="toolbar" style="flex-wrap:wrap;gap:.3rem">${checks}</div>`,
+        `<div class="why">Stuck sells ${esc((health.stuck_sells || {}).n || 0)} · flatten after deadline median ${sec(flat.median_s)} / p90 ${sec(flat.p90_s)} (${esc(flat.within_60s || 0)}/${esc(flat.n || 0)} within 60s) · losses past planned stop ${esc(stops.beyond_stop || 0)}/${esc(stops.losing_lots || 0)} · profit factor ${esc(pf.window == null ? "—" : pf.window)} (incl. ${esc(pf.expired_lots_in_window || 0)} expired) · max drawdown ${Number(dd.max_drawdown_usd || 0) < 0 ? "-" : ""}$${fmt(Math.abs(Number(dd.max_drawdown_usd || 0)), 0)} · sessions ${esc((health.sessions || {}).n || 0)}</div>`,
+      ];
+      const desks = (latency && latency.desks) || {};
+      const stages = (latency && latency.stages) || [];
+      const names = Object.keys(desks);
+      if (names.length) {
+        const head = stages.map((st) => `<th>${esc(st.replace("_s", ""))}</th>`).join("");
+        const rows = names.map((d) => `<tr><td>${esc(d)}</td>${stages.map((st) => {
+          const v = desks[d][st];
+          return `<td class="mono">${v ? sec(v.median) + " / " + sec(v.p90) + ` <span class="why">n=${esc(v.n)}</span>` : "—"}</td>`;
+        }).join("")}</tr>`).join("");
+        lines.push(`<table><thead><tr><th>desk (median / p90)</th>${head}</tr></thead><tbody>${rows}</tbody></table>`);
+      }
+      el.className = "";
+      el.innerHTML = lines.join("");
+    }
+
     function renderWebull(wb) {
       const metrics = document.getElementById("webullMetrics");
       const ordersEl = document.getElementById("webullOrders");
@@ -4664,6 +4702,7 @@ PAGE = r"""
       renderDailyPnl(DATA.daily_pnl || {});
       renderRecLogAll(DATA.rec_log || {});
       renderWebull(DATA.webull || {});
+      try { renderExitHealth(DATA.exit_health, DATA.order_latency); } catch (err) { console.warn("exit health render", err); }
       document.getElementById("session").textContent = (DATA.session||"—") + " · " + (DATA.universe_mode||"focus");
       const uniPill = document.getElementById("universePill");
       if (uniPill) {
@@ -8465,7 +8504,7 @@ def create_app(config_path: str | None = None) -> Flask:
             app_key=lt.get("app_key"),
             app_secret=lt.get("app_secret"),
             ledger_path=ledger,
-            submit_interval_sec=float(lt.get("submit_interval_sec", 1.5)),
+            submit_interval_sec=float(lt.get("submit_interval_sec", 0.5)),
         )
         desk_cfg = dict(lt.get("desks") or {})
         if not desk_cfg:

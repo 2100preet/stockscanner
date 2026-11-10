@@ -672,8 +672,12 @@ live_trading:
   challenge_max_contracts: 2
   max_orders_per_sync: 3
   # Sandbox order calls share one client and wait at least this long between them.
-  # Webull paper returns HTTP 429 when golden buys land ~100ms apart.
-  submit_interval_sec: 1.5
+  # Webull paper returned HTTP 429 when golden buys landed ~100ms apart, so this
+  # stays well above that. The shared per-endpoint budget
+  # (WEBULL_SANDBOX_CALLS_PER_MIN, default 28 of the sandbox 30/60s) keeps the
+  # loops under the per-minute limit; a real 429 still retries the same order id
+  # after >= 1.5 s. Was 1.5 s, which added ~1.2 s to every send.
+  submit_interval_sec: 0.5
   # Golden BUY cap for one sync. Sells and cancels do not count, so one tape
   # burst cannot open five positions before the next pass.
   max_golden_buys_per_sync: 2
