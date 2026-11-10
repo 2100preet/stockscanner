@@ -211,6 +211,9 @@ def test_reprice_walks_up_to_the_ask_then_cancels(tmp_path, monkeypatch):
     replacement.meta["fill_state"] = "working"
     later = now + timedelta(seconds=CHASE_MAX_AGE_SEC)
     trader.sync_hot(sniper={"signals": []}, now=later)
+    # Past 75 s but inside the entry window: the buy keeps working at the ask.
+    assert replacement.status == "submitted" and notes == []
+    trader.sync_hot(sniper={"signals": []}, now=_ct(10, 31))
     assert replacement.status == "cancelled"
     assert "not filled — cancelled" in str(replacement.meta.get("cancel_reason"))
     assert notes and notes[0] == format_unfilled_cancel(replacement.to_dict(), "sniper")

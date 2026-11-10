@@ -16,10 +16,11 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass, field, fields
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote
@@ -678,6 +679,43 @@ def _broker_order_id(res: Any, fallback: str) -> str:
     return str(getattr(res, "order_id", None) or fallback)
 
 
+_ERR_CODE_RE = re.compile(r"Code:\s*([A-Z0-9_]+)")
+_ERR_MSG_RE = re.compile(r"Msg:\s*(.+?)(?:,\s*RequestID:|$)")
+
+# Webull says the account has nothing to close. A lower price cannot help.
+NO_POSITION_CODES = frozenset(
+    {
+        "OPENAPI_ORDER_NOT_SUPPORT_REVERSE_OPTION",
+        "OPENAPI_POSITION_ORDER_INTENT_MISMATCH",
+        "OPENAPI_TICKER_ID_NOT_SUPPORT_NAKED_EQUTY_OPTION_WITH_NUM",
+    }
+)
+# Sent outside 9:30-4:00 ET. Queue for the next open instead of rejecting.
+OUTSIDE_HOURS_CODES = frozenset({"OPENAPI_OPTION_ONLY_SUPPORT_MARKET_IN_CORE_TIME"})
+
+
+def parse_webull_error(text: Any) -> tuple[str | None, str | None]:
+    """(code, plain message) from a Webull SDK error string. No request ids."""
+    raw = str(text or "")
+    code_m = _ERR_CODE_RE.search(raw)
+    msg_m = _ERR_MSG_RE.search(raw)
+    code = code_m.group(1) if code_m else None
+    msg = msg_m.group(1).strip() if msg_m else None
+    if msg is None and raw and code is None:
+        msg = raw[:200]
+    return code, msg
+
+
+def reject_kind(code: str | None) -> str:
+    if code in NO_POSITION_CODES:
+        return "no_position"
+    if code in OUTSIDE_HOURS_CODES:
+        return "outside_hours"
+    if code and "PRICE_STEP" in code:
+        return "tick"
+    return "other"
+
+
 class WebullRateLimit(RuntimeError):
     """Sandbox rejected the call with HTTP 429 / TOO_MANY_REQUESTS."""
 
@@ -905,6 +943,370 @@ def orders_for_ledger(orders: list[WebullOrderIntent], limit: int = _LEDGER_LIMI
     return [order for order in orders if id(order) in chosen_ids]
 
 
+def _order_not_found(exc: BaseException) -> bool:
+    text = str(exc).upper()
+    return "ORDER NOT PRESENT" in text or "NOT_FOUND" in text or "ORDER_NOT_EXIST" in text or "NOT EXIST" in text
+
+
+def _detail_order_id(payload: Any) -> str | None:
+    found: list[str] = []
+
+    def walk(node: Any, depth: int = 0) -> None:
+        if depth > 5 or found:
+            return
+        if isinstance(node, dict):
+            value = node.get("order_id") or node.get("orderId")
+            if value:
+                found.append(str(value))
+                return
+            for item in node.values():
+                walk(item, depth + 1)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item, depth + 1)
+
+    walk(payload)
+    return found[0] if found else None
+
+
+def flatten_history_group(group: Any) -> list[dict[str, Any]]:
+    """One row per single-leg order in a Webull order-history group."""
+    if not isinstance(group, dict):
+        return []
+    inner = group.get("orders") if isinstance(group.get("orders"), list) else [group]
+    out: list[dict[str, Any]] = []
+    for order in inner:
+        if not isinstance(order, dict):
+            continue
+        legs = order.get("legs") if isinstance(order.get("legs"), list) else []
+        leg = legs[0] if legs and isinstance(legs[0], dict) else {}
+        out.append(
+            {
+                "client_order_id": order.get("client_order_id") or group.get("client_order_id"),
+                "order_id": order.get("order_id"),
+                "side": str(order.get("side") or leg.get("side") or "").upper(),
+                "status": order.get("status") or order.get("order_status"),
+                "symbol": str(leg.get("symbol") or order.get("symbol") or "").upper(),
+                "option_type": leg.get("option_type"),
+                "strike": leg.get("strike_price"),
+                "expiry": leg.get("option_expire_date"),
+                "quantity": order.get("total_quantity") or leg.get("quantity"),
+                "filled_quantity": order.get("filled_quantity"),
+                "limit_price": order.get("limit_price"),
+                "filled_price": order.get("filled_price"),
+                "place_time_at": order.get("place_time_at"),
+                "filled_time_at": order.get("filled_time_at"),
+                "position_intent": order.get("position_intent"),
+                "legs": len(legs),
+            }
+        )
+    return out
+
+
+def _history_status(raw: Any) -> str:
+    token = _norm_order_status(raw) or ""
+    if token in _FILLED_STATUS:
+        return "filled"
+    if token in _PARTIAL_STATUS:
+        return "partial"
+    if token in {"REJECTED", "FAILED"}:
+        return "rejected"
+    if token in _CANCELLED_STATUS:
+        return "cancelled"
+    if token in _WORKING_STATUS:
+        return "submitted"
+    return "submitted"
+
+
+def _intent_from_history(row: dict[str, Any], status: str, broker: "WebullBroker") -> "WebullOrderIntent":
+    side = str(row.get("side") or "").upper()
+    right = "P" if str(row.get("option_type") or "").upper().startswith("P") else "C"
+    strike = _coerce_qty(row.get("strike"))
+    expiry = str(row.get("expiry") or "")[:10] or None
+    symbol = str(row.get("symbol") or "").upper()
+    contract = format_occ_contract(symbol, expiry, right, strike) if (symbol and expiry and strike is not None) else None
+    placed = str(row.get("place_time_at") or "") or _now()
+    qty = int(_coerce_qty(row.get("quantity")) or 1)
+    intent = WebullOrderIntent(
+        id=str(row.get("client_order_id")),
+        desk="golden_exit" if side == "SELL" else "webull_import",
+        action="SELL" if side == "SELL" else "BUY",
+        symbol=symbol,
+        right=right,
+        contract=contract,
+        expiry=expiry,
+        strike=strike,
+        quantity=max(1, qty),
+        limit_price=_coerce_qty(row.get("limit_price")),
+        fill_price=_coerce_qty(row.get("filled_price")),
+        reason="restored from Webull order history (ledger had lost this order)",
+        status=status,
+        broker_order_id=str(row.get("order_id") or "") or None,
+        created_at=placed,
+        # The fill time, not the import time, so daily P&L lands on the right day.
+        updated_at=str(row.get("filled_time_at") or "") or placed,
+        meta={
+            "source": "webull_history_import",
+            "fill_state": status if status in {"filled", "partial", "cancelled", "rejected"} else "working",
+            "filled_qty": _coerce_qty(row.get("filled_quantity")),
+            "broker_status": _norm_order_status(row.get("status")),
+            "position_intent": row.get("position_intent"),
+            "paper": broker.paper,
+            "sandbox": broker.sandbox,
+            **({"wb_place_time_at": row.get("place_time_at")} if row.get("place_time_at") else {}),
+            **({"wb_filled_time_at": row.get("filled_time_at")} if row.get("filled_time_at") else {}),
+        },
+    )
+    return intent
+
+
+def _apply_history(order: "WebullOrderIntent", row: dict[str, Any], status: str) -> bool:
+    changed = False
+    moved = False  # status, price, or quantity changed (not just a timestamp note)
+    meta = order.meta if isinstance(order.meta, dict) else {}
+    order.meta = meta
+    for key, value in (("wb_place_time_at", row.get("place_time_at")), ("wb_filled_time_at", row.get("filled_time_at"))):
+        if value and meta.get(key) != value:
+            meta[key] = value
+            changed = True
+    if not order.broker_order_id and row.get("order_id"):
+        order.broker_order_id = str(row.get("order_id"))
+        changed = True
+    current = str(order.status or "")
+    final = {"filled", "cancelled", "rejected", "expired"}
+    if status == "submitted" and current in final | {"partial"}:
+        return changed
+    if current == "expired":
+        return changed
+    if status != current and (current not in final or status == "filled"):
+        order.status = status
+        meta["fill_state"] = status if status != "submitted" else "working"
+        meta["broker_status"] = _norm_order_status(row.get("status"))
+        meta["status_from_webull_history"] = True
+        if current == "staged":
+            meta["reconciled_from"] = "staged"
+        changed = moved = True
+    price = _coerce_qty(row.get("filled_price"))
+    if price is not None and price > 0 and status in {"filled", "partial"} and order.fill_price != price:
+        order.fill_price = price
+        changed = moved = True
+    filled = _coerce_qty(row.get("filled_quantity"))
+    if filled is not None and status in {"filled", "partial"} and meta.get("filled_qty") != filled:
+        meta["filled_qty"] = filled
+        changed = moved = True
+    if moved:
+        # Stamp Webull's fill time so the trip lands on the day it happened.
+        order.updated_at = str(row.get("filled_time_at") or "") or _now()
+    return changed
+
+
+# Every WebullBroker instance keeps the ledger in memory. The focus scan, the
+# fast desk, the portal, and the watch loop each build their own, so a save
+# from a broker loaded a minute ago used to overwrite rows another broker had
+# just written. That is how filled Webull sells vanished from the ledger and
+# how a sent order stayed "staged". Saves now merge with the file under a
+# lock, and only rows this broker changed win.
+_LEDGER_LOCK = threading.RLock()
+
+
+class _file_lock:
+    """Advisory flock on ``<ledger>.lock`` so a scan subprocess cannot interleave."""
+
+    def __init__(self, path: Path):
+        self.path = Path(str(path) + ".lock")
+        self._fh = None
+
+    def __enter__(self) -> "_file_lock":
+        try:
+            import fcntl
+
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._fh = open(self.path, "a+")
+            fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX)
+        except Exception:  # noqa: BLE001
+            self._fh = None
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        if self._fh is not None:
+            try:
+                import fcntl
+
+                fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
+            except Exception:  # noqa: BLE001
+                pass
+            self._fh.close()
+            self._fh = None
+
+_STATUS_RANK = {
+    "staged": 0,
+    "deferred": 1,
+    "dry_run": 1,
+    "submitted": 2,
+    "partial": 3,
+    "skipped": 4,
+    "cancelled": 5,
+    "rejected": 5,
+    "filled": 6,
+    "expired": 7,
+}
+
+
+def _row_sig(order: "WebullOrderIntent") -> str:
+    try:
+        return json.dumps(order.to_dict(), sort_keys=True, default=str)
+    except Exception:  # noqa: BLE001
+        return repr(order)
+
+
+def _pick_row(mine: "WebullOrderIntent", disk: "WebullOrderIntent") -> "WebullOrderIntent":
+    """Both copies changed. Keep the further-along status, then the newer write.
+
+    A row that reached Webull (broker id) never goes back to an unsent copy.
+    The loser's meta keys fill gaps in the winner so peak marks survive.
+    """
+    def rank(order: "WebullOrderIntent") -> tuple[int, int, str]:
+        sent = 1 if order.broker_order_id else 0
+        return (sent, _STATUS_RANK.get(str(order.status or ""), 0), str(order.updated_at or ""))
+
+    win, lose = (mine, disk) if rank(mine) >= rank(disk) else (disk, mine)
+    merged_meta = dict(lose.meta or {})
+    merged_meta.update(win.meta or {})
+    win.meta = merged_meta
+    if not win.broker_order_id and lose.broker_order_id:
+        win.broker_order_id = lose.broker_order_id
+    if (win.fill_price is None or win.fill_price <= 0) and lose.fill_price:
+        win.fill_price = lose.fill_price
+    return win
+
+
+def _copy_into(target: "WebullOrderIntent", source: "WebullOrderIntent") -> None:
+    for f in fields(WebullOrderIntent):
+        value = getattr(source, f.name)
+        if f.name == "meta":
+            value = dict(value or {})
+        setattr(target, f.name, value)
+
+
+def merge_ledger_rows(
+    memory: list["WebullOrderIntent"],
+    disk: list["WebullOrderIntent"],
+    baseline: dict[str, str],
+) -> list["WebullOrderIntent"]:
+    """Merge the file into this broker's rows in place.
+
+    ``baseline`` is each row as this broker last read or wrote it. A row this
+    broker did not touch takes the file copy. A row only this broker touched
+    keeps its copy. A row both sides touched goes through ``_pick_row``. Rows
+    only on disk are added. In-memory objects keep their identity, so a caller
+    holding an intent still edits the ledger row.
+    """
+    by_disk = {order.id: order for order in disk}
+    seen: set[str] = set()
+    out: list[WebullOrderIntent] = []
+    for order in memory:
+        seen.add(order.id)
+        other = by_disk.get(order.id)
+        if other is None:
+            out.append(order)
+            continue
+        base = baseline.get(order.id)
+        mine_sig = _row_sig(order)
+        if base is not None and base == mine_sig:
+            _copy_into(order, other)
+        elif base is not None and base == _row_sig(other):
+            pass
+        elif mine_sig != _row_sig(other):
+            chosen = _pick_row(order, other)
+            if chosen is not order:
+                _copy_into(order, chosen)
+        out.append(order)
+    for other in disk:
+        if other.id not in seen:
+            out.append(other)
+    out.sort(key=lambda o: str(o.created_at or ""), reverse=True)
+    return out
+
+
+def _parse_iso_utc(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        out = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return out if out.tzinfo else out.replace(tzinfo=timezone.utc)
+
+
+class EndpointBudget:
+    """Process-wide sliding-window budget per Webull endpoint.
+
+    The paper sandbox allows about 30 calls per 60 s per endpoint per app key
+    (developer.webull.com/apis/docs/rate-limits). Every broker in this process
+    (scan, fast desk, fast exits, portal) shares one budget, so the loops
+    cannot add up past the limit and earn 429s. An order call (place/cancel)
+    waits up to a few seconds for a slot; a read (detail/positions/history)
+    does not wait and is skipped until the next pass.
+    """
+
+    def __init__(self, per_min: int = 28, window_sec: float = 60.0):
+        self.per_min = max(1, int(per_min))
+        self.window_sec = float(window_sec)
+        self._calls: dict[str, list[float]] = {}
+        self._lock = threading.Lock()
+
+    def reset(self) -> None:
+        with self._lock:
+            self._calls.clear()
+
+    def used(self, endpoint: str, now: float | None = None) -> int:
+        clock = time.monotonic() if now is None else now
+        with self._lock:
+            rows = [t for t in self._calls.get(endpoint, []) if clock - t < self.window_sec]
+            self._calls[endpoint] = rows
+            return len(rows)
+
+    def reserve(self, endpoint: str, *, max_wait: float, sleeper: Callable[[float], Any]) -> None:
+        """Take a slot, waiting up to ``max_wait`` seconds. Raises WebullRateLimit otherwise.
+
+        Raising happens before any HTTP call, so nothing reached Webull and the
+        caller may retry the same client order id later.
+        """
+        if str(os.environ.get("WEBULL_LOCAL_RATE_LIMIT", "1")).strip().lower() in {"0", "false", "off", "no"}:
+            return
+        waited = 0.0
+        while True:
+            with self._lock:
+                clock = time.monotonic()
+                rows = [t for t in self._calls.get(endpoint, []) if clock - t < self.window_sec]
+                if len(rows) < self.per_min:
+                    rows.append(clock)
+                    self._calls[endpoint] = rows
+                    return
+                self._calls[endpoint] = rows
+                wait = self.window_sec - (clock - rows[0]) + 0.05
+            if waited + wait > max_wait:
+                raise WebullRateLimit(
+                    f"local Webull budget: {endpoint} used {self.per_min}/{int(self.window_sec)}s — retry in {wait:.0f}s"
+                )
+            sleeper(max(0.0, wait))
+            waited += max(0.05, wait)
+
+
+def _budget_per_min() -> int:
+    try:
+        return max(1, int(float(os.environ.get("WEBULL_SANDBOX_CALLS_PER_MIN") or 28)))
+    except ValueError:
+        return 28
+
+
+WEBULL_BUDGET = EndpointBudget(_budget_per_min())
+ORDER_ENDPOINTS = {"place", "cancel"}
+ORDER_MAX_WAIT_SEC = 5.0
+# Last detail check per client order id (monotonic), shared by every broker.
+_DETAIL_LAST: dict[str, float] = {}
+
+
 class WebullBroker:
     """Place option orders via Webull OpenAPI, or dry-run / deep-link only."""
 
@@ -945,6 +1347,8 @@ class WebullBroker:
         self.path = Path(ledger_path) if ledger_path else DEFAULT_LEDGER
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.orders: list[WebullOrderIntent] = []
+        self._baseline: dict[str, str] = {}
+        self._disk_sig: tuple[int, int] | None = None
         self._load()
         # One TradeClient for the life of this broker. A new client per submit
         # was opening a fresh HTTP stack on every golden buy.
@@ -957,44 +1361,87 @@ class WebullBroker:
         self._clock = clock or time.monotonic
         self._last_api_at: float | None = None
 
-    def _load(self) -> None:
+    def _file_sig(self) -> tuple[int, int] | None:
+        try:
+            st = self.path.stat()
+        except OSError:
+            return None
+        return (int(st.st_mtime_ns), int(st.st_size))
+
+    def _read_disk(self) -> list[WebullOrderIntent] | None:
         from odte_scanner.json_util import load_json_state
 
         raw = load_json_state(self.path)
         if not isinstance(raw, dict):
-            return
+            return None
+        allowed = {f.name for f in fields(WebullOrderIntent)}
+        rows: list[WebullOrderIntent] = []
         try:
-            allowed = {f.name for f in fields(WebullOrderIntent)}
-            self.orders = []
             for o in raw.get("orders") or []:
                 if not isinstance(o, dict):
                     continue
-                self.orders.append(WebullOrderIntent(**{k: v for k, v in o.items() if k in allowed}))
+                row = WebullOrderIntent(**{k: v for k, v in o.items() if k in allowed})
+                if not isinstance(row.meta, dict):
+                    row.meta = {}
+                rows.append(row)
         except Exception as exc:  # noqa: BLE001
             logger.warning("webull ledger load failed: %s", exc)
-            self.orders = []
+            return None
+        return rows
+
+    def _reset_baseline(self) -> None:
+        self._baseline = {order.id: _row_sig(order) for order in self.orders}
+
+    def _load(self) -> None:
+        with _LEDGER_LOCK:
+            sig = self._file_sig()
+            rows = self._read_disk()
+            self.orders = rows or []
+            self._disk_sig = sig
+            self._reset_baseline()
+
+    def reload(self) -> None:
+        """Pull rows other brokers wrote since this one loaded. Local edits stay."""
+        with _LEDGER_LOCK:
+            sig = self._file_sig()
+            if sig is not None and sig == self._disk_sig:
+                return
+            disk = self._read_disk()
+            if disk is None:
+                return
+            self.orders = merge_ledger_rows(self.orders, disk, self._baseline)
+            self._disk_sig = sig
+            self._reset_baseline()
 
     def save(self) -> None:
         from odte_scanner.json_util import atomic_write_text
 
-        # The file used to keep the newest 500 and drop the buy before its
-        # sell, so the Edge tab could not match the exit. Unmatched buys stay.
-        self.orders = orders_for_ledger(self.orders)
-        atomic_write_text(
-            self.path,
-            json.dumps(
-                {
-                    "updated_at": _now(),
-                    "enabled": self.enabled,
-                    "dry_run": self.dry_run,
-                    "sandbox": self.sandbox,
-                    "paper": self.paper,
-                    "host": webull_trade_host(sandbox=self.sandbox),
-                    "orders": [o.to_dict() for o in self.orders],
-                },
-                indent=2,
-            ),
-        )
+        with _LEDGER_LOCK, _file_lock(self.path):
+            sig = self._file_sig()
+            if sig is not None and sig != self._disk_sig:
+                disk = self._read_disk()
+                if disk is not None:
+                    self.orders = merge_ledger_rows(self.orders, disk, self._baseline)
+            # The file used to keep the newest 500 and drop the buy before its
+            # sell, so the Edge tab could not match the exit. Unmatched buys stay.
+            self.orders = orders_for_ledger(self.orders)
+            atomic_write_text(
+                self.path,
+                json.dumps(
+                    {
+                        "updated_at": _now(),
+                        "enabled": self.enabled,
+                        "dry_run": self.dry_run,
+                        "sandbox": self.sandbox,
+                        "paper": self.paper,
+                        "host": webull_trade_host(sandbox=self.sandbox),
+                        "orders": [o.to_dict() for o in self.orders],
+                    },
+                    indent=2,
+                ),
+            )
+            self._disk_sig = self._file_sig()
+            self._reset_baseline()
 
     def status(self) -> dict[str, Any]:
         sdk = False
@@ -1218,6 +1665,7 @@ class WebullBroker:
 
         try:
             broker_id = self._place_via_openapi(intent)
+            intent.meta["acked_at"] = _now()
             intent.status = "submitted"
             intent.broker_order_id = broker_id
             intent.error = None
@@ -1234,7 +1682,23 @@ class WebullBroker:
         except Exception as exc:  # noqa: BLE001
             if self._retry_tick_reject(intent, exc):
                 return self.submit(intent)
-            logger.exception("Webull submit failed: %s", exc)
+            code, msg = parse_webull_error(exc)
+            kind = reject_kind(code)
+            intent.meta["reject_code"] = code
+            intent.meta["reject_reason"] = (msg or str(exc))[:240]
+            intent.meta["reject_kind"] = kind
+            if kind == "outside_hours" and str(intent.action or "").upper() == "SELL":
+                # Webull only takes option orders 9:30-4:00 ET. Same client
+                # order id goes out at the next open, unless the contract expires.
+                logger.warning("Webull outside hours; queueing %s: %s", intent.id, msg)
+                intent.status = "deferred"
+                intent.error = f"queued until 09:30 ET — {msg or code}"[:500]
+                intent.meta["fill_state"] = "deferred"
+                intent.meta["queued_for_open"] = True
+                intent.meta["retryable"] = True
+                self.save()
+                return intent
+            logger.warning("Webull submit rejected %s %s: %s", intent.id, code, msg)
             intent.status = "rejected"
             intent.error = str(exc)[:500]
             intent.meta["fill_state"] = "rejected"
@@ -1292,6 +1756,274 @@ class WebullBroker:
             out.append(self.submit(intent))
         return out
 
+    # ---- stuck-order recovery -------------------------------------------------
+
+    @staticmethod
+    def _age_sec(stamp: str | None, now: datetime | None = None) -> float | None:
+        if not stamp:
+            return None
+        try:
+            when = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        moment = now or datetime.now(timezone.utc)
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        return (moment - when).total_seconds()
+
+    def _live(self) -> bool:
+        return bool(self.enabled and not self.dry_run and self.app_key and self.app_secret and self.account_id)
+
+    def stale_staged(self, now: datetime | None = None, min_age_sec: float = 20.0) -> list[WebullOrderIntent]:
+        """Rows saved as staged, never confirmed sent, older than ``min_age_sec``."""
+        # Ages use the wall clock. Rows are stamped in real time even when a
+        # caller passes a desk clock for session rules.
+        del now
+        out: list[WebullOrderIntent] = []
+        for intent in self.orders:
+            if intent.status != "staged" or intent.broker_order_id:
+                continue
+            age = self._age_sec(intent.created_at)
+            if age is None or age >= float(min_age_sec):
+                out.append(intent)
+        return out
+
+    def reconcile_staged(
+        self,
+        now: datetime | None = None,
+        *,
+        min_age_sec: float = 20.0,
+        resend_buy_max_age_sec: float = 90.0,
+    ) -> list[dict[str, Any]]:
+        """Recover rows stuck in "staged".
+
+        Webull is asked first (order detail by client order id), so nothing is
+        sent twice. A row Webull knows takes Webull's status and fill. A buy
+        Webull never saw is resent once while it is still young; an older buy,
+        and every unsent sell, is cleared so a fresh exit can be priced off the
+        live position on the next pass. A failed lookup leaves the row for the
+        next cycle.
+        """
+        actions: list[dict[str, Any]] = []
+        stale = self.stale_staged(now, min_age_sec)
+        if not stale:
+            return actions
+        live = self._live()
+        for intent in stale:
+            age = self._age_sec(intent.created_at) or 0.0
+            if not live:
+                self._clear_unsent(intent, "stuck staged row cleared (bridge not live)")
+                actions.append({"id": intent.id, "action": "cleared", "age_sec": round(age, 1)})
+                continue
+            try:
+                payload = self._fetch_order_detail(intent)
+            except Exception as exc:  # noqa: BLE001
+                if not _order_not_found(exc):
+                    logger.warning("staged reconcile lookup failed for %s: %s", intent.id, exc)
+                    continue
+                payload = None
+            classified = classify_broker_order(payload) if payload is not None else None
+            if classified is not None and (classified.get("order_status") or classified.get("fill_state") != "unknown"):
+                intent.broker_order_id = _detail_order_id(payload) or intent.broker_order_id or intent.id
+                intent.status = "submitted"
+                intent.error = None
+                intent.meta["reconciled_from"] = "staged"
+                self._apply_fill(intent, classified)
+                intent.updated_at = _now()
+                actions.append({"id": intent.id, "action": "adopted", "status": intent.status, "age_sec": round(age, 1)})
+                continue
+            if intent.action == "BUY" and age <= float(resend_buy_max_age_sec):
+                intent.meta["resent_by_reconciler"] = True
+                self.submit(intent)
+                actions.append({"id": intent.id, "action": "resent", "status": intent.status, "age_sec": round(age, 1)})
+                continue
+            self._clear_unsent(intent, "never reached Webull — cleared by reconciler")
+            actions.append({"id": intent.id, "action": "cleared", "age_sec": round(age, 1)})
+        self.save()
+        return actions
+
+    _INHERIT_META = (
+        "golden_kind", "gold_exit", "diamond_flat_ct", "sniper_flat_ct", "afternoon_flat_ct",
+        "exit_plan", "take_profit_pct", "stop_loss_pct", "account_id", "signal_ask", "original_qty",
+    )
+
+    def _inherit_desk(self, buy: WebullOrderIntent) -> None:
+        """A restored buy is usually a chase replacement. Take the desk and exit
+        plan of the ledger buy for the same contract so exits manage it.
+
+        Only a sibling on the same Chicago day and the same account counts
+        (weekly contracts repeat across days and desks). Prefer the latest one
+        placed at or before the restored order (a chase original); else the
+        earliest one after it. A BUY_TO_CLOSE (closing a short, e.g. a lunch
+        credit leg) never inherits a long desk.
+        """
+        if str((buy.meta or {}).get("position_intent") or "").upper() == "BUY_TO_CLOSE":
+            return
+        placed = _parse_iso_utc(buy.created_at)
+        if placed is None:
+            return
+        from odte_scanner.time_cst import CT
+
+        day = placed.astimezone(CT).date()
+        before: tuple[datetime, WebullOrderIntent] | None = None
+        after: tuple[datetime, WebullOrderIntent] | None = None
+        primary = str(self.account_id or "")
+        for order in self.orders:
+            if order is buy or order.action != "BUY" or order.contract != buy.contract:
+                continue
+            if order.desk in {"webull_import", ""}:
+                continue
+            acct = str((order.meta or {}).get("account_id") or "")
+            if acct and primary and acct != primary:
+                continue  # second account: history import reads the primary only
+            at = _parse_iso_utc(order.created_at)
+            if at is None or at.astimezone(CT).date() != day:
+                continue
+            if at <= placed + timedelta(seconds=5):
+                if before is None or at > before[0]:
+                    before = (at, order)
+            elif after is None or at < after[0]:
+                after = (at, order)
+        chosen = before or after
+        if chosen is None:
+            return
+        best = chosen[1]
+        buy.desk = best.desk
+        for key in self._INHERIT_META:
+            if key in (best.meta or {}) and key not in buy.meta:
+                buy.meta[key] = best.meta[key]
+        buy.meta["desk_from"] = best.id
+
+    def _link_sell_to_buy(self, sell: WebullOrderIntent) -> None:
+        """Point a restored sell at the filled buy it closed (same contract, earlier)."""
+        best = None
+        for order in self.orders:
+            if order.action != "BUY" or order.contract != sell.contract:
+                continue
+            if order.status not in {"filled", "partial"}:
+                continue
+            if str(order.created_at or "") > str(sell.created_at or ""):
+                continue
+            if best is None or str(order.created_at or "") > str(best.created_at or ""):
+                best = order
+        if best is None:
+            return
+        sell.meta["closes_order_id"] = best.id
+        if best.fill_price:
+            sell.meta["entry_price"] = best.fill_price
+        sell.meta["entry_at"] = best.created_at
+        kind = str((best.meta or {}).get("golden_kind") or best.desk or "")
+        tier = {"diamond": "diamond", "sniper": "sniper", "afternoon_puts": "afternoon"}.get(kind)
+        if tier is None and kind in {"sure_winner_gold", "sure_winner"}:
+            tier = "gold"
+        if tier:
+            sell.meta["exit_tier"] = tier
+        if best.desk == "challenge":
+            sell.desk = "challenge"
+
+    def _clear_unsent(self, intent: WebullOrderIntent, reason: str) -> None:
+        intent.status = "cancelled"
+        intent.error = reason
+        intent.meta["fill_state"] = "cancelled"
+        intent.meta["never_sent"] = True
+        intent.meta["retryable"] = False
+        intent.meta["cancel_reason"] = reason
+        intent.updated_at = _now()
+
+    def order_history(self, start_date: str, end_date: str, *, max_pages: int = 20) -> list[dict[str, Any]] | None:
+        """Flattened Webull order history rows (single legs). None on failure."""
+        if not self._live():
+            return None
+        try:
+            api = self._trade_api()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("order history unavailable: %s", exc)
+            return None
+        meth = getattr(api, "get_order_history", None)
+        if not callable(meth):
+            return None
+        rows: list[dict[str, Any]] = []
+        last: str | None = None
+        for _ in range(max_pages):
+            kwargs: dict[str, Any] = {"page_size": 100, "start_date": start_date, "end_date": end_date}
+            if last:
+                kwargs["last_client_order_id"] = last
+            try:
+                res = self._call_with_backoff(lambda: meth(self.account_id, **kwargs), "history")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("order history failed: %s", exc)
+                return None if not rows else rows
+            body = _response_body(res)
+            groups = body if isinstance(body, list) else (body.get("orders") or body.get("data") or [])
+            if not isinstance(groups, list) or not groups:
+                break
+            for group in groups:
+                rows.extend(flatten_history_group(group))
+            nxt = str((groups[-1] or {}).get("client_order_id") or "")
+            if not nxt or nxt == last or len(groups) < 100:
+                break
+            last = nxt
+        return rows
+
+    def import_history(self, rows: list[dict[str, Any]] | None) -> dict[str, Any]:
+        """Make the ledger agree with Webull's own order history.
+
+        Webull paper fills are the source of truth. A ``wb-`` order Webull has
+        that the ledger lost is added back. A ledger row whose status disagrees
+        with Webull (for example "staged" while Webull filled it) takes
+        Webull's status, fill price, and fill time.
+        """
+        summary = {"added": 0, "updated": 0, "checked": 0}
+        if not rows:
+            return summary
+        by_id = {o.id: o for o in self.orders}
+        changed = False
+        touched: list[WebullOrderIntent] = []
+        for row in rows:
+            cid = str(row.get("client_order_id") or "")
+            if not cid.startswith("wb-"):
+                continue
+            summary["checked"] += 1
+            status = _history_status(row.get("status"))
+            existing = by_id.get(cid)
+            if existing is None:
+                intent = _intent_from_history(row, status, self)
+                if intent.action == "SELL":
+                    self._link_sell_to_buy(intent)
+                else:
+                    self._inherit_desk(intent)
+                self.orders.append(intent)
+                by_id[cid] = intent
+                summary["added"] += 1
+                changed = True
+                touched.append(intent)
+                continue
+            if _apply_history(existing, row, status):
+                summary["updated"] += 1
+                changed = True
+                touched.append(existing)
+        for intent in touched:
+            if intent.action == "SELL" and intent.status in {"filled", "partial"}:
+                try:
+                    from odte_scanner.trading.expiry import void_for_real_sell
+
+                    if void_for_real_sell(self.orders, intent):
+                        summary["voided_expiry"] = summary.get("voided_expiry", 0) + 1
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("expiry void check failed: %s", exc)
+                try:
+                    from odte_scanner.edge.round_trips import record_sell_fill
+
+                    record_sell_fill(intent, self.orders)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("paper round trip was not recorded: %s", exc)
+        if changed:
+            self.orders.sort(key=lambda o: str(o.created_at or ""), reverse=True)
+            self.save()
+        return summary
+
     def _assert_sandbox(self) -> None:
         if not self.sandbox or not self.paper:
             raise RuntimeError(
@@ -1313,11 +2045,16 @@ class WebullBroker:
                 now = self._clock()
         self._last_api_at = now
 
-    def _call_with_backoff(self, fn: Callable[[], Any]) -> Any:
-        """Run fn. On 429, sleep and retry the same request. Never mint a new order id."""
+    def _call_with_backoff(self, fn: Callable[[], Any], endpoint: str = "other") -> Any:
+        """Run fn. On 429, sleep and retry the same request. Never mint a new order id.
+
+        Each attempt first takes a slot in the shared per-endpoint budget.
+        """
         last: BaseException | None = None
         attempts = self.rate_limit_attempts
+        max_wait = ORDER_MAX_WAIT_SEC if endpoint in ORDER_ENDPOINTS else 0.0
         for attempt in range(attempts):
+            WEBULL_BUDGET.reserve(endpoint, max_wait=max_wait, sleeper=self._sleeper)
             self._throttle()
             try:
                 return fn()
@@ -1327,7 +2064,8 @@ class WebullBroker:
                 last = exc
                 if attempt + 1 >= attempts:
                     break
-                delay = float(self.submit_interval_sec or 1.5) * (2 ** attempt)
+                # A real 429 backs off at least 1.5 s, even with fast spacing.
+                delay = max(1.5, float(self.submit_interval_sec or 0)) * (2 ** attempt)
                 self._sleeper(delay)
         raise WebullRateLimit(str(last)[:500] if last else "TOO_MANY_REQUESTS")
 
@@ -1349,10 +2087,21 @@ class WebullBroker:
                 "webull-openapi-python-sdk not installed. "
                 "pip install webull-openapi-python-sdk"
             ) from exc
+        from odte_scanner.trading.log_redact import install_webull_log_redaction, remember_secret
+
+        remember_secret(self.app_key, self.app_secret)
+        install_webull_log_redaction()
         host = SANDBOX_TRADE_HOST
         client = ApiClient(self.app_key, self.app_secret, self.region)
         client.add_endpoint(self.region, host)
+        # Without these the SDK adds a DEBUG stdout handler and a
+        # webull_trade_sdk.log file handler on every TradeClient (one per
+        # broker), and those print request headers. SDK records go to our
+        # logging instead, through the redaction filter.
+        client._stream_logger_set = True
+        client._file_logger_set = True
         trade = TradeClient(client)
+        install_webull_log_redaction()  # loggers the SDK created while initialising
         order_api = getattr(trade, "order_v2", None) or getattr(trade, "order", None)
         if order_api is None:
             raise RuntimeError("TradeClient has no order API in this SDK version")
@@ -1363,7 +2112,15 @@ class WebullBroker:
     def _place_via_openapi(self, intent: WebullOrderIntent) -> str:
         """Place a single-leg option order on the paper sandbox host only."""
         self._assert_sandbox()
-        return self._call_with_backoff(lambda: self._post_option(intent))
+
+        def _send() -> str:
+            # Stamped after the local budget and spacing, right before the HTTP call.
+            sent_at = _now()
+            intent.meta["sent_at"] = sent_at
+            intent.meta.setdefault("first_sent_at", sent_at)
+            return self._post_option(intent)
+
+        return self._call_with_backoff(_send, "place")
 
     def _order_account(self, intent: WebullOrderIntent | None = None) -> str:
         """Sandbox account for this order. Per-order meta overrides the primary id."""
@@ -1491,7 +2248,7 @@ class WebullBroker:
                 raise RuntimeError(f"Webull positions HTTP {status}: {text}")
             return _response_body(res)
 
-        return self._call_with_backoff(_once)
+        return self._call_with_backoff(_once, "positions")
 
     def refresh_working_buys(self) -> list[WebullOrderIntent]:
         """Update submitted/partial buys from order detail. Dry-run rows stay simulated."""
@@ -1502,12 +2259,24 @@ class WebullBroker:
         return self._refresh_working("SELL")
 
     def _refresh_working(self, action: str) -> list[WebullOrderIntent]:
+        """One detail call per working order, oldest-checked first.
+
+        Detail calls share a ~30/min sandbox budget across every loop. When the
+        budget is spent the rest wait for the next pass instead of 429-ing, and
+        the rotation means the same orders are not the ones always skipped.
+        """
         if self.dry_run or not self.enabled:
             return []
         out: list[WebullOrderIntent] = []
-        for intent in list(self.orders):
-            if intent.action != action or intent.status not in {"submitted", "partial"}:
+        rows = [o for o in self.orders if o.action == action and o.status in {"submitted", "partial"}]
+        rows.sort(key=lambda o: _DETAIL_LAST.get(o.id, 0.0))
+        for intent in rows:
+            if WEBULL_BUDGET.used("detail") >= WEBULL_BUDGET.per_min and self._live():
+                out.append(intent)  # stays working; checked first next pass
                 continue
+            if len(_DETAIL_LAST) > 5000:
+                _DETAIL_LAST.clear()
+            _DETAIL_LAST[intent.id] = time.monotonic()
             out.append(self.refresh_fill(intent))
         return out
 
@@ -1542,6 +2311,10 @@ class WebullBroker:
         price = _coerce_qty(classified.get("fill_price"))
         if price is not None and price > 0:
             intent.fill_price = price
+        if state in {"filled", "partial"} and not intent.meta.get("filled_at"):
+            # When this process first saw the fill. Webull's own fill time
+            # (wb_filled_time_at, from order history) is preferred when present.
+            intent.meta["filled_at"] = _now()
         if state == "filled":
             intent.status = "filled"
         elif state == "partial":
@@ -1575,7 +2348,7 @@ class WebullBroker:
                 raise RuntimeError(f"Webull order detail HTTP {status}: {text}")
             return _response_body(res)
 
-        return self._call_with_backoff(_once)
+        return self._call_with_backoff(_once, "detail")
 
     def cancel(self, intent: WebullOrderIntent) -> WebullOrderIntent:
         """Cancel a resting limit. Dry-run rows are cancelled locally. Sandbox only."""
@@ -1635,7 +2408,7 @@ class WebullBroker:
             if status is not None and status not in {200, 201}:
                 raise RuntimeError(f"Webull cancel_option HTTP {status}: {text}")
 
-        self._call_with_backoff(_once)
+        self._call_with_backoff(_once, "cancel")
 
     def recent(self, limit: int = 30) -> list[dict[str, Any]]:
         return [o.to_dict() for o in self.orders[:limit]]

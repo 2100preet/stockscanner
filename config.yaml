@@ -623,6 +623,24 @@ live_trading:
   dry_run: true           # log + deep-link only until an explicit submit switch
   sandbox: true           # paper host api.sandbox.webull.com (ignored when paper is on — paper forces sandbox)
   paper: true             # Webull OpenAPI paper/sandbox account. WEBULL_LIVE cannot override this.
+  # Paper risk controls. The two sizing/stop experiments stay OFF until a
+  # backtest shows they help (see odte_scanner/trading/risk_controls.py).
+  risk_controls:
+    dollar_stop_enabled: false      # per-trade $ stop on top of the % stops — NEEDS BACKTEST
+    dollar_stop_usd: 175
+    risk_sizing_enabled: false      # contracts = risk / (premium x stop%) — NEEDS BACKTEST
+    risk_per_trade_usd: 175
+    risk_sizing_max_contracts: 3
+    # Daily loss limits (Chicago day). When hit, NEW paper entries stop for
+    # the day. Exits, flattens and Telegram signal alerts keep running; the
+    # alert says the paper entry was skipped. Kill switch: POST
+    # /api/paper/kill-switch?on=1 needs header X-Admin-Token = PAPER_ADMIN_TOKEN (Fly secret).
+    # With PAPER_ADMIN_TOKEN unset the kill switch and /api/webull/reconcile are disabled (403);
+    # the env PAPER_ENTRY_KILL=1 still pauses entries.
+    daily_limits_enabled: true
+    desk_daily_loss_usd: 400       # per desk
+    desk_daily_losers: 2           # per desk
+    account_daily_loss_usd: 800    # all desks
   # Auto-trade gold Sure Winner cards on WEBULL_ACCOUNT_ID, and the second
   # desk below on WEBULL_ACCOUNT_ID_2 (sandbox cash account DEA32RD3).
   # The env value must be Webull's internal account_id from get_account_list,
@@ -655,8 +673,12 @@ live_trading:
   challenge_max_contracts: 2
   max_orders_per_sync: 3
   # Sandbox order calls share one client and wait at least this long between them.
-  # Webull paper returns HTTP 429 when golden buys land ~100ms apart.
-  submit_interval_sec: 1.5
+  # Webull paper returned HTTP 429 when golden buys landed ~100ms apart, so this
+  # stays well above that. The shared per-endpoint budget
+  # (WEBULL_SANDBOX_CALLS_PER_MIN, default 28 of the sandbox 30/60s) keeps the
+  # loops under the per-minute limit; a real 429 still retries the same order id
+  # after >= 1.5 s. Was 1.5 s, which added ~1.2 s to every send.
+  submit_interval_sec: 0.5
   # Golden BUY cap for one sync. Sells and cancels do not count, so one tape
   # burst cannot open five positions before the next pass.
   max_golden_buys_per_sync: 2

@@ -83,6 +83,11 @@ def record_sell_fill(intent: Any, orders: list[Any] | None = None, *, path: Path
     if str(getattr(intent, "status", "") or "") not in {"filled", "partial"}:
         return None
     exit_px = _num(getattr(intent, "fill_price", None))
+    if exit_px is None and (getattr(intent, "meta", None) or {}).get("expiry_close"):
+        try:
+            exit_px = max(0.0, float(getattr(intent, "fill_price", None) or 0.0))
+        except (TypeError, ValueError):
+            exit_px = None
     if exit_px is None:
         return None
     entry = _entry_price(intent, list(orders or []))
@@ -102,7 +107,7 @@ def record_sell_fill(intent: Any, orders: list[Any] | None = None, *, path: Path
     row = {
         "id": key,
         "sell_id": str(intent.id),
-        "source": source_for_webull(str(getattr(intent, "desk", "") or "")),
+        "source": source_for_webull(str(meta.get("source_desk") or getattr(intent, "desk", "") or "")),
         "contract": str(getattr(intent, "contract", "") or ""),
         "pnl": round((exit_px - entry) * 100.0, 4),
         "at": str(getattr(intent, "updated_at", "") or ""),
