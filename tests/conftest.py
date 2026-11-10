@@ -24,3 +24,9 @@ def _weekday_morning_when_now_is_omitted(monkeypatch):
         return real(now)
 
     monkeypatch.setattr(hold_rules, "_et_now", frozen)
+
+
+@pytest.fixture(autouse=True)
+def _no_webull_history_network(monkeypatch):
+    """Fake sandbox keys must not reach api.sandbox.webull.com from a test."""
+    monkeypatch.setenv("WEBULL_HISTORY_RECONCILE", "0")

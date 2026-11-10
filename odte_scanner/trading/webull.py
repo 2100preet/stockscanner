@@ -1642,11 +1642,14 @@ class WebullBroker:
 
     def stale_staged(self, now: datetime | None = None, min_age_sec: float = 20.0) -> list[WebullOrderIntent]:
         """Rows saved as staged, never confirmed sent, older than ``min_age_sec``."""
+        # Ages use the wall clock. Rows are stamped in real time even when a
+        # caller passes a desk clock for session rules.
+        del now
         out: list[WebullOrderIntent] = []
         for intent in self.orders:
             if intent.status != "staged" or intent.broker_order_id:
                 continue
-            age = self._age_sec(intent.created_at, now)
+            age = self._age_sec(intent.created_at)
             if age is None or age >= float(min_age_sec):
                 out.append(intent)
         return out
@@ -1673,7 +1676,7 @@ class WebullBroker:
             return actions
         live = self._live()
         for intent in stale:
-            age = self._age_sec(intent.created_at, now) or 0.0
+            age = self._age_sec(intent.created_at) or 0.0
             if not live:
                 self._clear_unsent(intent, "stuck staged row cleared (bridge not live)")
                 actions.append({"id": intent.id, "action": "cleared", "age_sec": round(age, 1)})

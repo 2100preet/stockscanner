@@ -293,6 +293,10 @@ def _maybe_import_history(broker: WebullBroker, now: datetime | None, *, force: 
 
     if not broker._live():
         return None
+    import os as _os
+
+    if str(_os.environ.get("WEBULL_HISTORY_RECONCILE", "1")).strip().lower() in {"0", "false", "off", "no"}:
+        return None
     key = str(broker.path)
     with _HISTORY_LOCK:
         last = _HISTORY_LAST.get(key)
@@ -588,7 +592,8 @@ class AutoTrader:
             return False
         if order.broker_order_id:
             return True
-        age = WebullBroker._age_sec(order.created_at, self._now)
+        # Wall clock, not the desk clock: the row was written in real time.
+        age = WebullBroker._age_sec(order.created_at)
         return age is None or age < self.STALE_STAGED_SEC
 
     def _sell_already_working(self, row: dict[str, Any], right: str) -> bool:

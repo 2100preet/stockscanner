@@ -1,9 +1,10 @@
 """Ledger integrity, stuck staged rows, and Webull-history reconcile."""
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import odte_scanner.edge  # noqa: F401
 from odte_scanner.trading.auto_trader import AutoTrader
 from odte_scanner.trading.webull import WebullBroker, flatten_history_group
 from tests.session_clock import iso_day, session_et
@@ -67,7 +68,7 @@ def test_stale_staged_copy_never_overwrites_a_sent_row(tmp_path: Path):
 
 def test_reconcile_staged_adopts_resends_and_clears(tmp_path: Path):
     broker = _live_broker(tmp_path / "wb.json")
-    now = session_et(10, 0)
+    now = datetime.now(timezone.utc)
     old = (now - timedelta(minutes=5)).isoformat()
     young = (now - timedelta(seconds=40)).isoformat()
     known = broker.stage(desk="golden_exit", action="SELL", symbol="AAPL", contract="AAPL261104C00350000",
@@ -108,7 +109,7 @@ def test_reconcile_staged_adopts_resends_and_clears(tmp_path: Path):
 
 def test_lookup_failure_leaves_the_row_for_next_cycle(tmp_path: Path):
     broker = _live_broker(tmp_path / "wb.json")
-    now = session_et(10, 0)
+    now = datetime.now(timezone.utc)
     row = broker.stage(desk="golden_exit", action="SELL", symbol="AAPL", contract="AAPL261104C00350000",
                        expiry="2026-11-04", strike=350, limit_price=2.28)
     row.created_at = (now - timedelta(minutes=2)).isoformat()
@@ -138,7 +139,7 @@ def test_staged_buy_is_not_flattened_but_filled_lots_are(tmp_path: Path, monkeyp
         filled.append(b)
     stuck = broker.stage(desk="sniper", action="BUY", symbol="IWM", contract=_occ("IWM", expiry, "C", 279),
                          expiry=expiry, strike=279, limit_price=0.92, meta={"golden_kind": "sniper"})
-    stuck.created_at = (now - timedelta(minutes=99)).isoformat()
+    stuck.created_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
     broker.save()
     book = [
         {"contract": b.contract, "symbol": b.symbol, "right": "C", "expiry": expiry, "strike": b.strike,
@@ -165,7 +166,7 @@ def test_stale_staged_sell_does_not_block_the_next_exit(tmp_path: Path, monkeypa
     buy.fill_price = 2.76
     stuck = broker.stage(desk="golden_exit", action="SELL", symbol="SPY", contract=contract, expiry=expiry,
                          strike=746, limit_price=2.0)
-    stuck.created_at = (now - timedelta(minutes=30)).isoformat()
+    stuck.created_at = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
     broker.save()
     trader._now = now
     assert trader._sell_already_working({"symbol": "SPY", "contract": contract}, "C") is False
