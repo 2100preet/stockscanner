@@ -116,6 +116,14 @@ def start_live_desk_worker(config_path: str | None = None) -> bool:
     from odte_scanner.fast_desk import start_fast_desk_worker
 
     fast_started = start_fast_desk_worker(config_path)
+    # 📰 News Desk: its own daemon thread, alert only (never orders). A failure
+    # here must never stop the scan desks from starting.
+    try:
+        from odte_scanner.news.desk import start_news_desk_worker
+
+        start_news_desk_worker(config_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("news desk did not start: %s", exc)
     if not _env_flag("LIVE_DESK_LOOP", True):
         logger.info("LIVE_DESK_LOOP disabled — no background scan worker")
         return fast_started

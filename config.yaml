@@ -539,6 +539,9 @@ actions:
   odte_1k_auto_exit: true
   # Power Hour — 15m VWAP LONG/SHORT (NU/NVDA/CAPR/ETON/HTFL + focus sleeve)
   power_hour_enabled: true
+  # 📰 News Desk: SEC 8-K / PR Newswire / FDA / Nasdaq earnings → Telegram alerts only.
+  # Never places orders. NEWS_DESK_TELEGRAM=0 keeps it on the portal tile but silent.
+  news_desk_enabled: true
   power_hour_symbols: focus
   power_hour_max_bar_fetch: 16
   power_hour_max_quote_fetch: 48

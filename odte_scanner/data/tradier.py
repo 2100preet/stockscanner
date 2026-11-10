@@ -117,6 +117,7 @@ def _quote_row(row: dict[str, Any]) -> dict[str, Any]:
         "change": _as_float(row.get("change")),
         "change_percentage": _as_float(row.get("change_percentage")),
         "volume": int(_as_float(row.get("volume"))),
+        "average_volume": int(_as_float(row.get("average_volume"))),
         "open_interest": int(_as_float(row.get("open_interest"))),
         "underlying": row.get("underlying"),
         "description": row.get("description"),
