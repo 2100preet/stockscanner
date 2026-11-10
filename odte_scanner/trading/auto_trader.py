@@ -499,6 +499,8 @@ class AutoTrader:
         """
         if order.action != "BUY":
             return False
+        if str((order.meta or {}).get("position_intent") or "").upper() == "BUY_TO_CLOSE":
+            return False  # closes a short (lunch credit leg); not a long to sell
         # A "staged" row was saved before the HTTP call. It is not a position
         # until Webull confirms it — flattening one is how the unsent IWM 279C
         # drew "close intent mismatches position" rejects all afternoon.
@@ -890,6 +892,17 @@ class AutoTrader:
             changed = True
         if changed:
             self.broker.save()
+
+    def _lunch_leg_contracts(self) -> set[str]:
+        legs: set[str] = set()
+        for order in self.broker.orders:
+            meta = order.meta or {}
+            if str(order.desk or "") != "lunch_credit" and not meta.get("lunch_credit") and not meta.get("spread_id"):
+                continue
+            for value in (order.contract, meta.get("long_contract"), meta.get("short_contract")):
+                if value:
+                    legs.add(str(value))
+        return legs
 
     def _position_rows(self) -> list[dict[str, Any]]:
         book = self._positions_by_contract
@@ -1584,7 +1597,10 @@ class AutoTrader:
             if not self._is_position_buy(order) or not self._tracks_exit(order):
                 continue
             consider(order, self._position_for_order(order), order.desk or "sure_winner")
+        lunch_legs = self._lunch_leg_contracts()
         for pos in self._position_rows():
+            if str(pos.get("contract") or "") in lunch_legs:
+                continue  # a credit-spread wing: the lunch router owns it, never sell one leg
             order = self._matching_position_buy(pos)
             if order is not None and not (order.desk == "webull_import" and not self._tracks_exit(order)):
                 continue

@@ -20,7 +20,7 @@ import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass, field, fields
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote
@@ -1228,6 +1228,16 @@ def merge_ledger_rows(
     return out
 
 
+def _parse_iso_utc(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        out = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return out if out.tzinfo else out.replace(tzinfo=timezone.utc)
+
+
 class EndpointBudget:
     """Process-wide sliding-window budget per Webull endpoint.
 
@@ -1841,17 +1851,45 @@ class WebullBroker:
 
     def _inherit_desk(self, buy: WebullOrderIntent) -> None:
         """A restored buy is usually a chase replacement. Take the desk and exit
-        plan of the ledger buy for the same contract so exits manage it."""
-        best = None
+        plan of the ledger buy for the same contract so exits manage it.
+
+        Only a sibling on the same Chicago day and the same account counts
+        (weekly contracts repeat across days and desks). Prefer the latest one
+        placed at or before the restored order (a chase original); else the
+        earliest one after it. A BUY_TO_CLOSE (closing a short, e.g. a lunch
+        credit leg) never inherits a long desk.
+        """
+        if str((buy.meta or {}).get("position_intent") or "").upper() == "BUY_TO_CLOSE":
+            return
+        placed = _parse_iso_utc(buy.created_at)
+        if placed is None:
+            return
+        from odte_scanner.time_cst import CT
+
+        day = placed.astimezone(CT).date()
+        before: tuple[datetime, WebullOrderIntent] | None = None
+        after: tuple[datetime, WebullOrderIntent] | None = None
+        primary = str(self.account_id or "")
         for order in self.orders:
             if order is buy or order.action != "BUY" or order.contract != buy.contract:
                 continue
             if order.desk in {"webull_import", ""}:
                 continue
-            if best is None or str(order.created_at or "") > str(best.created_at or ""):
-                best = order
-        if best is None:
+            acct = str((order.meta or {}).get("account_id") or "")
+            if acct and primary and acct != primary:
+                continue  # second account: history import reads the primary only
+            at = _parse_iso_utc(order.created_at)
+            if at is None or at.astimezone(CT).date() != day:
+                continue
+            if at <= placed + timedelta(seconds=5):
+                if before is None or at > before[0]:
+                    before = (at, order)
+            elif after is None or at < after[0]:
+                after = (at, order)
+        chosen = before or after
+        if chosen is None:
             return
+        best = chosen[1]
         buy.desk = best.desk
         for key in self._INHERIT_META:
             if key in (best.meta or {}) and key not in buy.meta:
