@@ -356,6 +356,7 @@ PAGE = r"""
     <div id="lunchBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="expectedMoveBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="confluenceBanner" class="pulse-banner" aria-live="polite"></div>
+    <div id="ripV2ShadowBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="loadNote" class="loading" style="display:none;margin-bottom:.6rem"></div>
     <div id="alertToasts" aria-live="assertive"></div>
 
@@ -4597,6 +4598,45 @@ PAGE = r"""
         ${body}`;
     }
 
+    function renderRipV2Shadow() {
+      const el = document.getElementById("ripV2ShadowBanner");
+      if (!el) return;
+      const board = DATA.rip_v2_shadow || {};
+      el.classList.add("active", "expected");
+      const esc = (v) => String(v == null ? "" : v).replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+      const money = (n) => n == null ? "—" : ((Number(n) >= 0 ? "+$" : "−$") + Math.abs(Number(n)).toFixed(0));
+      const pct = (n) => n == null ? "—" : ((Number(n) >= 0 ? "+" : "") + Number(n).toFixed(1) + "%");
+      const st = board.stats || {};
+      const side = (name, s) => {
+        s = s || {};
+        const pf = s.profit_factor == null ? "—" : Number(s.profit_factor).toFixed(2);
+        const win = s.win_rate_pct == null ? "—" : Math.round(s.win_rate_pct) + "%";
+        return `<tr><td><strong>${esc(name)}</strong></td><td>${s.n || 0}</td><td>${win}</td><td>${pct(s.avg_pct)}</td><td>${money(s.pnl_usd)}</td><td>${pf}</td></tr>`;
+      };
+      const statsTable = `<div style="overflow-x:auto"><table class="pb-table" style="width:100%;font-size:12px"><thead><tr><th>Since ${esc(board.start_day || "—")}</th><th>Trades</th><th>Win</th><th>Avg</th><th>$ / 1 contract</th><th>Profit factor</th></tr></thead><tbody>${side("Current RIP (paper fills)", st.current)}${side("RIP-v2 (shadow)", st.v2)}</tbody></table></div>`;
+      const rows = (board.today || []).map((r) => {
+        const v2 = r.status === "no_trade"
+          ? `no v2 trade · ${esc(r.reason || "")}`
+          : `${esc(r.contract || "—")} · ${esc(r.entry_label || "—")}${r.moneyness_pct == null ? "" : " · " + Math.abs(Number(r.moneyness_pct)).toFixed(1) + (Number(r.moneyness_pct) < 0 ? "% ITM" : "% OTM")}`;
+        const out = r.status === "closed"
+          ? `${esc(r.exit_reason || "closed")} · ${esc(r.exit_label || "—")} · ${pct(r.pnl_pct)}`
+          : (r.status === "open" ? `open · ${esc(r.last_mark_label || "no mark yet")} · ${pct(r.gain_pct)}` : "—");
+        return `<tr><td>${esc(r.signaled_ct || "—")}</td><td>${esc(r.symbol)}</td><td>${esc(r.live_contract || "—")} · ${esc(r.live_ask_label || "—")}</td><td>${v2}</td><td>${out}</td></tr>`;
+      }).join("");
+      const today = rows
+        ? `<div style="overflow-x:auto;margin-top:.4rem"><table class="pb-table" style="width:100%;font-size:12px"><thead><tr><th>Signal (CT)</th><th>Symbol</th><th>Live RIP contract</th><th>v2 pick</th><th>v2 result</th></tr></thead><tbody>${rows}</tbody></table></div>`
+        : `<div class="pulse-card expected"><p class="pc-why">No RIP signals logged today.</p></div>`;
+      el.innerHTML = `
+        <div class="pb-head">
+          <div>
+            <h2 class="pb-title">🧪 RIP-v2 <em>Shadow</em></h2>
+            <div class="pb-sub">shadow · not traded · ATM to ≤1% OTM · +50% / −35% · trail half of peak · flat 2:45 PM CT</div>
+          </div>
+          <div class="status">${board.ok === false ? "UNAVAILABLE" : "SHADOW · NOT TRADED"}</div>
+        </div>
+        ${board.ok === false ? `<div class="pulse-card expected"><p class="pc-why">${esc(board.note || "RIP-v2 shadow unavailable.")}</p></div>` : statsTable + today}`;
+    }
+
     function paint() {
       try { renderScorecard(); } catch (err) { console.error(err); }
       try { renderEdge(); } catch (err) { console.error(err); }
@@ -4606,6 +4646,7 @@ PAGE = r"""
       try { renderLunchBanner(); } catch (err) { console.error(err); }
       try { renderExpectedMove(); } catch (err) { console.error(err); }
       try { renderConfluence(); } catch (err) { console.error(err); }
+      try { renderRipV2Shadow(); } catch (err) { console.error(err); }
       try { renderSpxStrategy(); } catch (err) { console.error(err); }
       renderMustTradeBanner();
       renderNowBoard();
@@ -5181,6 +5222,16 @@ def _confluence_block() -> dict:
         return public_block()
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "events": [], "n": 0, "error": str(exc)[:200], "note": "Confluence unavailable."}
+
+
+def _rip_v2_shadow_block() -> dict:
+    """RIP-v2 shadow stats. Shadow only. A failure is an ok:false block."""
+    try:
+        from odte_scanner.signals.rip_v2_shadow import public_block
+
+        return public_block()
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "today": [], "shadow_only": True, "error": str(exc)[:200], "note": "RIP-v2 shadow unavailable."}
 
 
 def _expected_move_block() -> dict:
@@ -6491,6 +6542,19 @@ def create_app(config_path: str | None = None) -> Flask:
                         "counts": {},
                         "note": "RIP radar temporarily unavailable.",
                     }
+
+                # RIP-v2 shadow: logs a hypothetical v2 trade per RIP signal. Never
+                # changes the live RIP alerts or paper orders and places no order.
+                try:
+                    if not offline and bool(actions_cfg.get("rip_v2_shadow_enabled", True)):
+                        from odte_scanner.signals.rip_v2_shadow import run_shadow_cycle_async
+
+                        run_shadow_cycle_async(
+                            rip_radar=rip_radar if isinstance(rip_radar, dict) else None,
+                            loss_cooldown_contracts=loss_cooldown_cts,
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("rip v2 shadow skipped: %s", exc)
 
                 # Beauty / monthly lane — AMD META MU SNDK class (~1mo DTE)
                 beauty_monthly: dict = {
@@ -8140,6 +8204,7 @@ def create_app(config_path: str | None = None) -> Flask:
                         "spx_strategy": spx_strategy,
                         "expected_move": _expected_move_block(),
                         "confluence": _confluence_block(),
+                        "rip_v2_shadow": _rip_v2_shadow_block(),
                         }
                     )
 
