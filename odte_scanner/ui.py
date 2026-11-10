@@ -8706,6 +8706,22 @@ def create_app(config_path: str | None = None) -> Flask:
             payload["option_positions"] = _public_option_positions()
         return jsonify(payload)
 
+    @app.post("/api/webull/reconcile")
+    def webull_reconcile():
+        """Match the ledger to Webull paper: stuck staged rows and order history."""
+        from odte_scanner.trading.auto_trader import _SYNC_LOCK, _maybe_import_history
+
+        try:
+            days = max(1, min(7, int(request.args.get("days") or 7)))
+        except ValueError:
+            days = 7
+        broker, _trader = _webull_bundle()
+        with _SYNC_LOCK:
+            broker.reload()
+            staged = broker.reconcile_staged()
+            history = _maybe_import_history(broker, None, force=True, days=days)
+        return jsonify({"ok": True, "staged": staged, "history": history})
+
     @app.post("/api/webull/sync")
     def webull_sync():
         """Route current lottery / actions / challenge tickets to Webull (dry-run by default)."""

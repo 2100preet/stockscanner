@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass, field, fields
@@ -905,6 +906,288 @@ def orders_for_ledger(orders: list[WebullOrderIntent], limit: int = _LEDGER_LIMI
     return [order for order in orders if id(order) in chosen_ids]
 
 
+def _order_not_found(exc: BaseException) -> bool:
+    text = str(exc).upper()
+    return "ORDER NOT PRESENT" in text or "NOT_FOUND" in text or "ORDER_NOT_EXIST" in text or "NOT EXIST" in text
+
+
+def _detail_order_id(payload: Any) -> str | None:
+    found: list[str] = []
+
+    def walk(node: Any, depth: int = 0) -> None:
+        if depth > 5 or found:
+            return
+        if isinstance(node, dict):
+            value = node.get("order_id") or node.get("orderId")
+            if value:
+                found.append(str(value))
+                return
+            for item in node.values():
+                walk(item, depth + 1)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item, depth + 1)
+
+    walk(payload)
+    return found[0] if found else None
+
+
+def flatten_history_group(group: Any) -> list[dict[str, Any]]:
+    """One row per single-leg order in a Webull order-history group."""
+    if not isinstance(group, dict):
+        return []
+    inner = group.get("orders") if isinstance(group.get("orders"), list) else [group]
+    out: list[dict[str, Any]] = []
+    for order in inner:
+        if not isinstance(order, dict):
+            continue
+        legs = order.get("legs") if isinstance(order.get("legs"), list) else []
+        leg = legs[0] if legs and isinstance(legs[0], dict) else {}
+        out.append(
+            {
+                "client_order_id": order.get("client_order_id") or group.get("client_order_id"),
+                "order_id": order.get("order_id"),
+                "side": str(order.get("side") or leg.get("side") or "").upper(),
+                "status": order.get("status") or order.get("order_status"),
+                "symbol": str(leg.get("symbol") or order.get("symbol") or "").upper(),
+                "option_type": leg.get("option_type"),
+                "strike": leg.get("strike_price"),
+                "expiry": leg.get("option_expire_date"),
+                "quantity": order.get("total_quantity") or leg.get("quantity"),
+                "filled_quantity": order.get("filled_quantity"),
+                "limit_price": order.get("limit_price"),
+                "filled_price": order.get("filled_price"),
+                "place_time_at": order.get("place_time_at"),
+                "filled_time_at": order.get("filled_time_at"),
+                "position_intent": order.get("position_intent"),
+                "legs": len(legs),
+            }
+        )
+    return out
+
+
+def _history_status(raw: Any) -> str:
+    token = _norm_order_status(raw) or ""
+    if token in _FILLED_STATUS:
+        return "filled"
+    if token in _PARTIAL_STATUS:
+        return "partial"
+    if token in {"REJECTED", "FAILED"}:
+        return "rejected"
+    if token in _CANCELLED_STATUS:
+        return "cancelled"
+    if token in _WORKING_STATUS:
+        return "submitted"
+    return "submitted"
+
+
+def _intent_from_history(row: dict[str, Any], status: str, broker: "WebullBroker") -> "WebullOrderIntent":
+    side = str(row.get("side") or "").upper()
+    right = "P" if str(row.get("option_type") or "").upper().startswith("P") else "C"
+    strike = _coerce_qty(row.get("strike"))
+    expiry = str(row.get("expiry") or "")[:10] or None
+    symbol = str(row.get("symbol") or "").upper()
+    contract = format_occ_contract(symbol, expiry, right, strike) if (symbol and expiry and strike is not None) else None
+    placed = str(row.get("place_time_at") or "") or _now()
+    qty = int(_coerce_qty(row.get("quantity")) or 1)
+    intent = WebullOrderIntent(
+        id=str(row.get("client_order_id")),
+        desk="golden_exit" if side == "SELL" else "webull_import",
+        action="SELL" if side == "SELL" else "BUY",
+        symbol=symbol,
+        right=right,
+        contract=contract,
+        expiry=expiry,
+        strike=strike,
+        quantity=max(1, qty),
+        limit_price=_coerce_qty(row.get("limit_price")),
+        fill_price=_coerce_qty(row.get("filled_price")),
+        reason="restored from Webull order history (ledger had lost this order)",
+        status=status,
+        broker_order_id=str(row.get("order_id") or "") or None,
+        created_at=placed,
+        updated_at=_now(),
+        meta={
+            "source": "webull_history_import",
+            "fill_state": status if status in {"filled", "partial", "cancelled", "rejected"} else "working",
+            "filled_qty": _coerce_qty(row.get("filled_quantity")),
+            "broker_status": _norm_order_status(row.get("status")),
+            "position_intent": row.get("position_intent"),
+            "paper": broker.paper,
+            "sandbox": broker.sandbox,
+            **({"wb_place_time_at": row.get("place_time_at")} if row.get("place_time_at") else {}),
+            **({"wb_filled_time_at": row.get("filled_time_at")} if row.get("filled_time_at") else {}),
+        },
+    )
+    return intent
+
+
+def _apply_history(order: "WebullOrderIntent", row: dict[str, Any], status: str) -> bool:
+    changed = False
+    meta = order.meta if isinstance(order.meta, dict) else {}
+    order.meta = meta
+    for key, value in (("wb_place_time_at", row.get("place_time_at")), ("wb_filled_time_at", row.get("filled_time_at"))):
+        if value and meta.get(key) != value:
+            meta[key] = value
+            changed = True
+    if not order.broker_order_id and row.get("order_id"):
+        order.broker_order_id = str(row.get("order_id"))
+        changed = True
+    current = str(order.status or "")
+    final = {"filled", "cancelled", "rejected", "expired"}
+    if status == "submitted" and current in final | {"partial"}:
+        return changed
+    if current == "expired":
+        return changed
+    if status != current and (current not in final or status == "filled"):
+        order.status = status
+        meta["fill_state"] = status if status != "submitted" else "working"
+        meta["broker_status"] = _norm_order_status(row.get("status"))
+        meta["status_from_webull_history"] = True
+        if current == "staged":
+            meta["reconciled_from"] = "staged"
+        changed = True
+    price = _coerce_qty(row.get("filled_price"))
+    if price is not None and price > 0 and status in {"filled", "partial"} and order.fill_price != price:
+        order.fill_price = price
+        changed = True
+    filled = _coerce_qty(row.get("filled_quantity"))
+    if filled is not None and status in {"filled", "partial"} and meta.get("filled_qty") != filled:
+        meta["filled_qty"] = filled
+        changed = True
+    if changed:
+        order.updated_at = _now()
+    return changed
+
+
+# Every WebullBroker instance keeps the ledger in memory. The focus scan, the
+# fast desk, the portal, and the watch loop each build their own, so a save
+# from a broker loaded a minute ago used to overwrite rows another broker had
+# just written. That is how filled Webull sells vanished from the ledger and
+# how a sent order stayed "staged". Saves now merge with the file under a
+# lock, and only rows this broker changed win.
+_LEDGER_LOCK = threading.RLock()
+
+
+class _file_lock:
+    """Advisory flock on ``<ledger>.lock`` so a scan subprocess cannot interleave."""
+
+    def __init__(self, path: Path):
+        self.path = Path(str(path) + ".lock")
+        self._fh = None
+
+    def __enter__(self) -> "_file_lock":
+        try:
+            import fcntl
+
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._fh = open(self.path, "a+")
+            fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX)
+        except Exception:  # noqa: BLE001
+            self._fh = None
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        if self._fh is not None:
+            try:
+                import fcntl
+
+                fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
+            except Exception:  # noqa: BLE001
+                pass
+            self._fh.close()
+            self._fh = None
+
+_STATUS_RANK = {
+    "staged": 0,
+    "deferred": 1,
+    "dry_run": 1,
+    "submitted": 2,
+    "partial": 3,
+    "skipped": 4,
+    "cancelled": 5,
+    "rejected": 5,
+    "filled": 6,
+    "expired": 7,
+}
+
+
+def _row_sig(order: "WebullOrderIntent") -> str:
+    try:
+        return json.dumps(order.to_dict(), sort_keys=True, default=str)
+    except Exception:  # noqa: BLE001
+        return repr(order)
+
+
+def _pick_row(mine: "WebullOrderIntent", disk: "WebullOrderIntent") -> "WebullOrderIntent":
+    """Both copies changed. Keep the further-along status, then the newer write.
+
+    A row that reached Webull (broker id) never goes back to an unsent copy.
+    The loser's meta keys fill gaps in the winner so peak marks survive.
+    """
+    def rank(order: "WebullOrderIntent") -> tuple[int, int, str]:
+        sent = 1 if order.broker_order_id else 0
+        return (sent, _STATUS_RANK.get(str(order.status or ""), 0), str(order.updated_at or ""))
+
+    win, lose = (mine, disk) if rank(mine) >= rank(disk) else (disk, mine)
+    merged_meta = dict(lose.meta or {})
+    merged_meta.update(win.meta or {})
+    win.meta = merged_meta
+    if not win.broker_order_id and lose.broker_order_id:
+        win.broker_order_id = lose.broker_order_id
+    if (win.fill_price is None or win.fill_price <= 0) and lose.fill_price:
+        win.fill_price = lose.fill_price
+    return win
+
+
+def _copy_into(target: "WebullOrderIntent", source: "WebullOrderIntent") -> None:
+    for f in fields(WebullOrderIntent):
+        value = getattr(source, f.name)
+        if f.name == "meta":
+            value = dict(value or {})
+        setattr(target, f.name, value)
+
+
+def merge_ledger_rows(
+    memory: list["WebullOrderIntent"],
+    disk: list["WebullOrderIntent"],
+    baseline: dict[str, str],
+) -> list["WebullOrderIntent"]:
+    """Merge the file into this broker's rows in place.
+
+    ``baseline`` is each row as this broker last read or wrote it. A row this
+    broker did not touch takes the file copy. A row only this broker touched
+    keeps its copy. A row both sides touched goes through ``_pick_row``. Rows
+    only on disk are added. In-memory objects keep their identity, so a caller
+    holding an intent still edits the ledger row.
+    """
+    by_disk = {order.id: order for order in disk}
+    seen: set[str] = set()
+    out: list[WebullOrderIntent] = []
+    for order in memory:
+        seen.add(order.id)
+        other = by_disk.get(order.id)
+        if other is None:
+            out.append(order)
+            continue
+        base = baseline.get(order.id)
+        mine_sig = _row_sig(order)
+        if base is not None and base == mine_sig:
+            _copy_into(order, other)
+        elif base is not None and base == _row_sig(other):
+            pass
+        elif mine_sig != _row_sig(other):
+            chosen = _pick_row(order, other)
+            if chosen is not order:
+                _copy_into(order, chosen)
+        out.append(order)
+    for other in disk:
+        if other.id not in seen:
+            out.append(other)
+    out.sort(key=lambda o: str(o.created_at or ""), reverse=True)
+    return out
+
+
 class WebullBroker:
     """Place option orders via Webull OpenAPI, or dry-run / deep-link only."""
 
@@ -945,6 +1228,8 @@ class WebullBroker:
         self.path = Path(ledger_path) if ledger_path else DEFAULT_LEDGER
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.orders: list[WebullOrderIntent] = []
+        self._baseline: dict[str, str] = {}
+        self._disk_sig: tuple[int, int] | None = None
         self._load()
         # One TradeClient for the life of this broker. A new client per submit
         # was opening a fresh HTTP stack on every golden buy.
@@ -957,44 +1242,87 @@ class WebullBroker:
         self._clock = clock or time.monotonic
         self._last_api_at: float | None = None
 
-    def _load(self) -> None:
+    def _file_sig(self) -> tuple[int, int] | None:
+        try:
+            st = self.path.stat()
+        except OSError:
+            return None
+        return (int(st.st_mtime_ns), int(st.st_size))
+
+    def _read_disk(self) -> list[WebullOrderIntent] | None:
         from odte_scanner.json_util import load_json_state
 
         raw = load_json_state(self.path)
         if not isinstance(raw, dict):
-            return
+            return None
+        allowed = {f.name for f in fields(WebullOrderIntent)}
+        rows: list[WebullOrderIntent] = []
         try:
-            allowed = {f.name for f in fields(WebullOrderIntent)}
-            self.orders = []
             for o in raw.get("orders") or []:
                 if not isinstance(o, dict):
                     continue
-                self.orders.append(WebullOrderIntent(**{k: v for k, v in o.items() if k in allowed}))
+                row = WebullOrderIntent(**{k: v for k, v in o.items() if k in allowed})
+                if not isinstance(row.meta, dict):
+                    row.meta = {}
+                rows.append(row)
         except Exception as exc:  # noqa: BLE001
             logger.warning("webull ledger load failed: %s", exc)
-            self.orders = []
+            return None
+        return rows
+
+    def _reset_baseline(self) -> None:
+        self._baseline = {order.id: _row_sig(order) for order in self.orders}
+
+    def _load(self) -> None:
+        with _LEDGER_LOCK:
+            sig = self._file_sig()
+            rows = self._read_disk()
+            self.orders = rows or []
+            self._disk_sig = sig
+            self._reset_baseline()
+
+    def reload(self) -> None:
+        """Pull rows other brokers wrote since this one loaded. Local edits stay."""
+        with _LEDGER_LOCK:
+            sig = self._file_sig()
+            if sig is not None and sig == self._disk_sig:
+                return
+            disk = self._read_disk()
+            if disk is None:
+                return
+            self.orders = merge_ledger_rows(self.orders, disk, self._baseline)
+            self._disk_sig = sig
+            self._reset_baseline()
 
     def save(self) -> None:
         from odte_scanner.json_util import atomic_write_text
 
-        # The file used to keep the newest 500 and drop the buy before its
-        # sell, so the Edge tab could not match the exit. Unmatched buys stay.
-        self.orders = orders_for_ledger(self.orders)
-        atomic_write_text(
-            self.path,
-            json.dumps(
-                {
-                    "updated_at": _now(),
-                    "enabled": self.enabled,
-                    "dry_run": self.dry_run,
-                    "sandbox": self.sandbox,
-                    "paper": self.paper,
-                    "host": webull_trade_host(sandbox=self.sandbox),
-                    "orders": [o.to_dict() for o in self.orders],
-                },
-                indent=2,
-            ),
-        )
+        with _LEDGER_LOCK, _file_lock(self.path):
+            sig = self._file_sig()
+            if sig is not None and sig != self._disk_sig:
+                disk = self._read_disk()
+                if disk is not None:
+                    self.orders = merge_ledger_rows(self.orders, disk, self._baseline)
+            # The file used to keep the newest 500 and drop the buy before its
+            # sell, so the Edge tab could not match the exit. Unmatched buys stay.
+            self.orders = orders_for_ledger(self.orders)
+            atomic_write_text(
+                self.path,
+                json.dumps(
+                    {
+                        "updated_at": _now(),
+                        "enabled": self.enabled,
+                        "dry_run": self.dry_run,
+                        "sandbox": self.sandbox,
+                        "paper": self.paper,
+                        "host": webull_trade_host(sandbox=self.sandbox),
+                        "orders": [o.to_dict() for o in self.orders],
+                    },
+                    indent=2,
+                ),
+            )
+            self._disk_sig = self._file_sig()
+            self._reset_baseline()
 
     def status(self) -> dict[str, Any]:
         sdk = False
@@ -1291,6 +1619,210 @@ class WebullBroker:
                 break
             out.append(self.submit(intent))
         return out
+
+    # ---- stuck-order recovery -------------------------------------------------
+
+    @staticmethod
+    def _age_sec(stamp: str | None, now: datetime | None = None) -> float | None:
+        if not stamp:
+            return None
+        try:
+            when = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        moment = now or datetime.now(timezone.utc)
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        return (moment - when).total_seconds()
+
+    def _live(self) -> bool:
+        return bool(self.enabled and not self.dry_run and self.app_key and self.app_secret and self.account_id)
+
+    def stale_staged(self, now: datetime | None = None, min_age_sec: float = 20.0) -> list[WebullOrderIntent]:
+        """Rows saved as staged, never confirmed sent, older than ``min_age_sec``."""
+        out: list[WebullOrderIntent] = []
+        for intent in self.orders:
+            if intent.status != "staged" or intent.broker_order_id:
+                continue
+            age = self._age_sec(intent.created_at, now)
+            if age is None or age >= float(min_age_sec):
+                out.append(intent)
+        return out
+
+    def reconcile_staged(
+        self,
+        now: datetime | None = None,
+        *,
+        min_age_sec: float = 20.0,
+        resend_buy_max_age_sec: float = 90.0,
+    ) -> list[dict[str, Any]]:
+        """Recover rows stuck in "staged".
+
+        Webull is asked first (order detail by client order id), so nothing is
+        sent twice. A row Webull knows takes Webull's status and fill. A buy
+        Webull never saw is resent once while it is still young; an older buy,
+        and every unsent sell, is cleared so a fresh exit can be priced off the
+        live position on the next pass. A failed lookup leaves the row for the
+        next cycle.
+        """
+        actions: list[dict[str, Any]] = []
+        stale = self.stale_staged(now, min_age_sec)
+        if not stale:
+            return actions
+        live = self._live()
+        for intent in stale:
+            age = self._age_sec(intent.created_at, now) or 0.0
+            if not live:
+                self._clear_unsent(intent, "stuck staged row cleared (bridge not live)")
+                actions.append({"id": intent.id, "action": "cleared", "age_sec": round(age, 1)})
+                continue
+            try:
+                payload = self._fetch_order_detail(intent)
+            except Exception as exc:  # noqa: BLE001
+                if not _order_not_found(exc):
+                    logger.warning("staged reconcile lookup failed for %s: %s", intent.id, exc)
+                    continue
+                payload = None
+            classified = classify_broker_order(payload) if payload is not None else None
+            if classified is not None and (classified.get("order_status") or classified.get("fill_state") != "unknown"):
+                intent.broker_order_id = _detail_order_id(payload) or intent.broker_order_id or intent.id
+                intent.status = "submitted"
+                intent.error = None
+                intent.meta["reconciled_from"] = "staged"
+                self._apply_fill(intent, classified)
+                intent.updated_at = _now()
+                actions.append({"id": intent.id, "action": "adopted", "status": intent.status, "age_sec": round(age, 1)})
+                continue
+            if intent.action == "BUY" and age <= float(resend_buy_max_age_sec):
+                intent.meta["resent_by_reconciler"] = True
+                self.submit(intent)
+                actions.append({"id": intent.id, "action": "resent", "status": intent.status, "age_sec": round(age, 1)})
+                continue
+            self._clear_unsent(intent, "never reached Webull — cleared by reconciler")
+            actions.append({"id": intent.id, "action": "cleared", "age_sec": round(age, 1)})
+        self.save()
+        return actions
+
+    def _link_sell_to_buy(self, sell: WebullOrderIntent) -> None:
+        """Point a restored sell at the filled buy it closed (same contract, earlier)."""
+        best = None
+        for order in self.orders:
+            if order.action != "BUY" or order.contract != sell.contract:
+                continue
+            if order.status not in {"filled", "partial"}:
+                continue
+            if str(order.created_at or "") > str(sell.created_at or ""):
+                continue
+            if best is None or str(order.created_at or "") > str(best.created_at or ""):
+                best = order
+        if best is None:
+            return
+        sell.meta["closes_order_id"] = best.id
+        if best.fill_price:
+            sell.meta["entry_price"] = best.fill_price
+        sell.meta["entry_at"] = best.created_at
+        kind = str((best.meta or {}).get("golden_kind") or best.desk or "")
+        tier = {"diamond": "diamond", "sniper": "sniper", "afternoon_puts": "afternoon"}.get(kind)
+        if tier is None and kind in {"sure_winner_gold", "sure_winner"}:
+            tier = "gold"
+        if tier:
+            sell.meta["exit_tier"] = tier
+        if best.desk == "challenge":
+            sell.desk = "challenge"
+
+    def _clear_unsent(self, intent: WebullOrderIntent, reason: str) -> None:
+        intent.status = "cancelled"
+        intent.error = reason
+        intent.meta["fill_state"] = "cancelled"
+        intent.meta["never_sent"] = True
+        intent.meta["retryable"] = False
+        intent.meta["cancel_reason"] = reason
+        intent.updated_at = _now()
+
+    def order_history(self, start_date: str, end_date: str, *, max_pages: int = 20) -> list[dict[str, Any]] | None:
+        """Flattened Webull order history rows (single legs). None on failure."""
+        if not self._live():
+            return None
+        try:
+            api = self._trade_api()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("order history unavailable: %s", exc)
+            return None
+        meth = getattr(api, "get_order_history", None)
+        if not callable(meth):
+            return None
+        rows: list[dict[str, Any]] = []
+        last: str | None = None
+        for _ in range(max_pages):
+            kwargs: dict[str, Any] = {"page_size": 100, "start_date": start_date, "end_date": end_date}
+            if last:
+                kwargs["last_client_order_id"] = last
+            try:
+                res = self._call_with_backoff(lambda: meth(self.account_id, **kwargs))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("order history failed: %s", exc)
+                return None if not rows else rows
+            body = _response_body(res)
+            groups = body if isinstance(body, list) else (body.get("orders") or body.get("data") or [])
+            if not isinstance(groups, list) or not groups:
+                break
+            for group in groups:
+                rows.extend(flatten_history_group(group))
+            nxt = str((groups[-1] or {}).get("client_order_id") or "")
+            if not nxt or nxt == last or len(groups) < 100:
+                break
+            last = nxt
+        return rows
+
+    def import_history(self, rows: list[dict[str, Any]] | None) -> dict[str, Any]:
+        """Make the ledger agree with Webull's own order history.
+
+        Webull paper fills are the source of truth. A ``wb-`` order Webull has
+        that the ledger lost is added back. A ledger row whose status disagrees
+        with Webull (for example "staged" while Webull filled it) takes
+        Webull's status, fill price, and fill time.
+        """
+        summary = {"added": 0, "updated": 0, "checked": 0}
+        if not rows:
+            return summary
+        by_id = {o.id: o for o in self.orders}
+        changed = False
+        touched: list[WebullOrderIntent] = []
+        for row in rows:
+            cid = str(row.get("client_order_id") or "")
+            if not cid.startswith("wb-"):
+                continue
+            summary["checked"] += 1
+            status = _history_status(row.get("status"))
+            existing = by_id.get(cid)
+            if existing is None:
+                intent = _intent_from_history(row, status, self)
+                if intent.action == "SELL":
+                    self._link_sell_to_buy(intent)
+                self.orders.append(intent)
+                by_id[cid] = intent
+                summary["added"] += 1
+                changed = True
+                touched.append(intent)
+                continue
+            if _apply_history(existing, row, status):
+                summary["updated"] += 1
+                changed = True
+                touched.append(existing)
+        for intent in touched:
+            if intent.action == "SELL" and intent.status in {"filled", "partial"}:
+                try:
+                    from odte_scanner.edge.round_trips import record_sell_fill
+
+                    record_sell_fill(intent, self.orders)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("paper round trip was not recorded: %s", exc)
+        if changed:
+            self.orders.sort(key=lambda o: str(o.created_at or ""), reverse=True)
+            self.save()
+        return summary
 
     def _assert_sandbox(self) -> None:
         if not self.sandbox or not self.paper:

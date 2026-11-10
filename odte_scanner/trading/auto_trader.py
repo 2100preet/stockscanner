@@ -280,6 +280,46 @@ def _with_occ(row: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
+_HISTORY_LOCK = threading.Lock()
+_HISTORY_LAST: dict[str, float] = {}
+HISTORY_EVERY_SEC = 60.0
+
+
+def _maybe_import_history(broker: WebullBroker, now: datetime | None, *, force: bool = False, days: int = 1) -> dict[str, Any] | None:
+    """Pull Webull order history for the current ET session, once a minute."""
+    import time as _time
+    from datetime import timedelta
+    from zoneinfo import ZoneInfo
+
+    if not broker._live():
+        return None
+    key = str(broker.path)
+    with _HISTORY_LOCK:
+        last = _HISTORY_LAST.get(key)
+        if last is None:
+            # First pass after a deploy backfills the last week (Webull's
+            # history window), so rows lost before this fix come back.
+            days = max(days, 7)
+        mono = _time.monotonic()
+        if not force and last is not None and mono - last < HISTORY_EVERY_SEC:
+            return None
+        _HISTORY_LAST[key] = mono
+    moment = now or datetime.now(timezone.utc)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    et = moment.astimezone(ZoneInfo("America/New_York")).date()
+    start = (et - timedelta(days=max(0, days - 1))).isoformat()
+    end = (et + timedelta(days=1)).isoformat()
+    rows = broker.order_history(start, end)
+    if rows is None:
+        return {"ok": False}
+    summary = broker.import_history(rows)
+    summary["ok"] = True
+    if summary.get("added") or summary.get("updated"):
+        logger.warning("webull history reconcile %s", summary)
+    return summary
+
+
 class AutoTrader:
     def __init__(
         self,
@@ -345,6 +385,7 @@ class AutoTrader:
         # Separate from the HTTP budget so sells/cancels still run when buys are capped.
         self.max_golden_buys_per_sync = max(0, int(max_golden_buys_per_sync))
         self.filtered: list[dict[str, Any]] = []
+        self.last_reconcile: dict[str, Any] = {}
         self._closed_contracts: set[str] = set()
         # The edge table is information. Sandbox paper buys stay on so a
         # round trip can be recorded. A non-paper broker, if one is ever
@@ -359,6 +400,26 @@ class AutoTrader:
             self.edge_route = option_route()
         else:
             self.edge_route = set()
+
+    def _reconcile_broker(self, now: datetime | None) -> dict[str, Any]:
+        """Start of every pass: reload the shared ledger, recover stuck staged
+        rows, and (at most once a minute) pull Webull's order history so lost
+        or stale rows match the paper account."""
+        out: dict[str, Any] = {}
+        try:
+            self.broker.reload()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("ledger reload failed: %s", exc)
+        try:
+            out["staged"] = self.broker.reconcile_staged(now)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("staged reconcile failed: %s", exc)
+        try:
+            out["history"] = _maybe_import_history(self.broker, now)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("webull history import failed: %s", exc)
+        self.last_reconcile = out
+        return out
 
     def _edge_allows_buy(self, desk: str) -> bool:
         if getattr(self.broker, "paper", True) or not self.edge_gate:
@@ -375,7 +436,10 @@ class AutoTrader:
         """
         if order.action != "BUY":
             return False
-        if order.status in {"filled", "partial", "dry_run", "staged"}:
+        # A "staged" row was saved before the HTTP call. It is not a position
+        # until Webull confirms it — flattening one is how the unsent IWM 279C
+        # drew "close intent mismatches position" rejects all afternoon.
+        if order.status in {"filled", "partial", "dry_run"}:
             return True
         if order.status == "submitted":
             return str((order.meta or {}).get("fill_state") or "") in {"filled", "partial"}
@@ -513,6 +577,20 @@ class AutoTrader:
     def _matches_open_golden(self, row: dict[str, Any], right: str) -> bool:
         return self._find_open_golden(row, right) is not None
 
+    STALE_STAGED_SEC = 20.0
+
+    def _sell_blocks(self, order: WebullOrderIntent) -> bool:
+        """A sell that is really open. A staged row older than 20s with no
+        broker id never reached Webull and must not block the next exit."""
+        if order.status in ("dry_run", "submitted"):
+            return True
+        if order.status != "staged":
+            return False
+        if order.broker_order_id:
+            return True
+        age = WebullBroker._age_sec(order.created_at, self._now)
+        return age is None or age < self.STALE_STAGED_SEC
+
     def _sell_already_working(self, row: dict[str, Any], right: str) -> bool:
         """Skip a second SELL while one for the same option is still open."""
         sym = str(row.get("symbol") or "").upper()
@@ -521,7 +599,7 @@ class AutoTrader:
         strike = _f(row.get("strike"))
         expiry = str(row.get("expiry") or "")[:10]
         for o in self.broker.orders:
-            if o.action != "SELL" or o.status not in ("staged", "dry_run", "submitted"):
+            if o.action != "SELL" or not self._sell_blocks(o):
                 continue
             if contract and o.contract and contract == o.contract:
                 return True
@@ -547,7 +625,7 @@ class AutoTrader:
         expiry = str(row.get("expiry") or "")[:10]
         found: list[WebullOrderIntent] = []
         for order in self.broker.orders:
-            if order.action != "SELL" or order.status not in ("staged", "dry_run", "submitted", "partial"):
+            if order.action != "SELL" or not (self._sell_blocks(order) or order.status == "partial"):
                 continue
             if contract and order.contract and contract == order.contract:
                 found.append(order)
@@ -1793,6 +1871,14 @@ class AutoTrader:
         self.broker.save()
         return intent
 
+    def _safe_exit(self, row: dict[str, Any]) -> WebullOrderIntent | None:
+        """One bad row must not stop the exits behind it."""
+        try:
+            return self._route_exit_row(row)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("exit route failed for %s %s: %s", row.get("symbol"), row.get("contract"), exc)
+            return None
+
     def _route_exit_row(self, row: dict[str, Any]) -> WebullOrderIntent | None:
         right = str(row.get("right") or "C").upper()
         if right not in {"C", "P"}:
@@ -2147,6 +2233,7 @@ class AutoTrader:
         self._now = now
         self.broker._session_now = now
         self._closed_contracts = set()
+        self._reconcile_broker(now)
         try:
             self.broker.refresh_working_buys()
         except Exception as exc:  # noqa: BLE001
@@ -2546,6 +2633,7 @@ class AutoTrader:
         self._now = now
         self.broker._session_now = now
         self._closed_contracts = set()
+        self._reconcile_broker(now)
         self.broker.refresh_working_buys()
         self._reconcile_positions(self._managed_positions())
         if self.golden_only and option_session_open(now):
@@ -2559,7 +2647,7 @@ class AutoTrader:
             for row in self._premium_exit_rows():
                 if budget <= 0:
                     break
-                _take(self._route_exit_row(row))
+                _take(self._safe_exit(row))
 
         # --- Lottery (0DTE convex calls) ---
         if lottery and budget > 0:
@@ -2651,7 +2739,7 @@ class AutoTrader:
             # Clock flattens are not part of the buy budget. A full tape used
             # to consume every slot and leave Diamond and Sniper open past 10:30.
             for row in self._flatten_when_signal_leaves(now):
-                _take(self._route_exit_row(row), count_budget=False)
+                _take(self._safe_exit(row), count_budget=False)
 
         # Retry 429s after exits so a flatten can cancel a deferred id first.
         # The same client_order_id is submitted again. Nothing is sent outside
