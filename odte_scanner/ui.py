@@ -5267,6 +5267,12 @@ def _annotate_snapshot(body: dict, note: str | None) -> dict:
 def create_app(config_path: str | None = None) -> Flask:
     cfg_path = str(config_path or ROOT / "config.yaml")
     cfg = load_config(cfg_path)
+    try:
+        from odte_scanner.trading.log_redact import install_webull_log_redaction
+
+        install_webull_log_redaction()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("log redaction not installed: %s", exc)
     app = Flask(__name__)
     scan_lock = threading.Lock()
     actions_cfg = cfg.get("actions") or {}
@@ -8752,6 +8758,8 @@ def create_app(config_path: str | None = None) -> Flask:
         """Match the ledger to Webull paper: stuck staged rows and order history."""
         from odte_scanner.trading.auto_trader import _SYNC_LOCK, _maybe_close_expired, _maybe_import_history
 
+        if not _paper_admin_ok():
+            return _admin_denied()
         try:
             days = max(1, min(7, int(request.args.get("days") or 7)))
         except ValueError:
@@ -8765,15 +8773,25 @@ def create_app(config_path: str | None = None) -> Flask:
         return jsonify({"ok": True, "staged": staged, "history": history, "expiry": expiry})
 
     def _paper_admin_ok() -> bool:
-        """When PAPER_ADMIN_TOKEN is set, toggles need it in X-Admin-Token."""
+        """Admin POSTs need X-Admin-Token == PAPER_ADMIN_TOKEN.
+
+        With no PAPER_ADMIN_TOKEN set the endpoints are disabled (closed), not open.
+        """
         import hmac
         import os as _os
 
-        want = str(_os.environ.get("PAPER_ADMIN_TOKEN") or "")
+        want = str(_os.environ.get("PAPER_ADMIN_TOKEN") or "").strip()
         if not want:
-            return True
-        got = str(request.headers.get("X-Admin-Token") or "")
-        return bool(got) and hmac.compare_digest(got, want)
+            return False
+        got = str(request.headers.get("X-Admin-Token") or "").strip()
+        return bool(got) and hmac.compare_digest(got.encode(), want.encode())
+
+    def _admin_denied():
+        import os as _os
+
+        if not str(_os.environ.get("PAPER_ADMIN_TOKEN") or "").strip():
+            return jsonify({"ok": False, "error": "disabled: PAPER_ADMIN_TOKEN is not set"}), 403
+        return jsonify({"ok": False, "error": "admin token required (X-Admin-Token)"}), 403
 
     @app.get("/api/paper/limits")
     def paper_limits():
@@ -8809,7 +8827,7 @@ def create_app(config_path: str | None = None) -> Flask:
         from odte_scanner.trading import risk_controls as rc_mod
 
         if not _paper_admin_ok():
-            return jsonify({"ok": False, "error": "admin token required"}), 403
+            return _admin_denied()
         raw = str(request.args.get("on") or (request.get_json(silent=True) or {}).get("on") or "").strip().lower()
         if raw not in {"0", "1", "true", "false", "on", "off"}:
             return jsonify({"ok": False, "error": "on=1 or on=0"}), 400

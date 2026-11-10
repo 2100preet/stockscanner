@@ -2049,10 +2049,21 @@ class WebullBroker:
                 "webull-openapi-python-sdk not installed. "
                 "pip install webull-openapi-python-sdk"
             ) from exc
+        from odte_scanner.trading.log_redact import install_webull_log_redaction, remember_secret
+
+        remember_secret(self.app_key, self.app_secret)
+        install_webull_log_redaction()
         host = SANDBOX_TRADE_HOST
         client = ApiClient(self.app_key, self.app_secret, self.region)
         client.add_endpoint(self.region, host)
+        # Without these the SDK adds a DEBUG stdout handler and a
+        # webull_trade_sdk.log file handler on every TradeClient (one per
+        # broker), and those print request headers. SDK records go to our
+        # logging instead, through the redaction filter.
+        client._stream_logger_set = True
+        client._file_logger_set = True
         trade = TradeClient(client)
+        install_webull_log_redaction()  # loggers the SDK created while initialising
         order_api = getattr(trade, "order_v2", None) or getattr(trade, "order", None)
         if order_api is None:
             raise RuntimeError("TradeClient has no order API in this SDK version")
