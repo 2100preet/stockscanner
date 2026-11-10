@@ -631,6 +631,15 @@ live_trading:
     risk_sizing_enabled: false      # contracts = risk / (premium x stop%) — NEEDS BACKTEST
     risk_per_trade_usd: 175
     risk_sizing_max_contracts: 3
+    # Daily loss limits (Chicago day). When hit, NEW paper entries stop for
+    # the day. Exits, flattens and Telegram signal alerts keep running; the
+    # alert says the paper entry was skipped. Kill switch: POST
+    # /api/paper/kill-switch?on=1 (X-Admin-Token if PAPER_ADMIN_TOKEN is set)
+    # or env PAPER_ENTRY_KILL=1.
+    daily_limits_enabled: true
+    desk_daily_loss_usd: 400       # per desk
+    desk_daily_losers: 2           # per desk
+    account_daily_loss_usd: 800    # all desks
   # Auto-trade gold Sure Winner cards on WEBULL_ACCOUNT_ID, and the second
   # desk below on WEBULL_ACCOUNT_ID_2 (sandbox cash account DEA32RD3).
   # The env value must be Webull's internal account_id from get_account_list,

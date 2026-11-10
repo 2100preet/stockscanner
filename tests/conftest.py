@@ -31,3 +31,13 @@ def _no_webull_history_network(monkeypatch):
     """Fake sandbox keys must not reach api.sandbox.webull.com from a test."""
     monkeypatch.setenv("WEBULL_HISTORY_RECONCILE", "0")
     monkeypatch.setenv("WEBULL_EXPIRY_CLOSEOUT", "0")
+
+
+@pytest.fixture(autouse=True)
+def _paper_limit_files_in_tmp(monkeypatch, tmp_path):
+    """Kill switch and limit-alert dedupe never touch the repo outputs/ folder."""
+    from odte_scanner.trading import risk_controls
+
+    monkeypatch.setattr(risk_controls, "KILL_PATH", tmp_path / "paper_kill_switch.json")
+    monkeypatch.setattr(risk_controls, "LIMIT_ALERTS_PATH", tmp_path / "daily_limit_alerts.json")
+    monkeypatch.delenv("PAPER_ENTRY_KILL", raising=False)

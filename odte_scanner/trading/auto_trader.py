@@ -1676,6 +1676,41 @@ class AutoTrader:
             f"{row.get('expiry')}|{row.get('strike')}"
         )
 
+    def _entry_limit(self, desk: str, row: dict[str, Any] | None = None) -> dict[str, Any] | None:
+        """Daily loss limit or kill switch for a new paper entry on this desk."""
+        from odte_scanner.trading import risk_controls as rc_mod
+
+        try:
+            kind = None
+            if isinstance(row, dict):
+                try:
+                    kind = golden_signal_kind(row)
+                except Exception:  # noqa: BLE001
+                    kind = None
+            stamp = (self._now or datetime.now(timezone.utc)).replace(second=0, microsecond=0)
+            key = (len(self.broker.orders), stamp.isoformat())
+            if getattr(self, "_tally_key", None) != key:
+                self._tally = rc_mod.daily_tally(self.broker.orders, self._now)
+                self._tally_key = key
+            block = rc_mod.entry_block(
+                desk, orders=None, now=self._now, controls=self.risk_controls, kind=kind, tally=self._tally
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("daily limit check failed (entry allowed): %s", exc)
+            return None
+        if block is None:
+            return None
+        self.last_limit_block = block
+        try:
+            message = rc_mod.limit_alerts_due(block, day=self._tally.get("day") or "")
+            if message:
+                from odte_scanner.alerts.telegram import send_telegram_text
+
+                send_telegram_text(message)
+        except Exception as exc:  # noqa: BLE001
+            logger.info("daily limit alert not sent: %s", exc)
+        return block
+
     def _note_filtered(self, row: dict[str, Any], reason: str) -> None:
         if len(self.filtered) >= 80:
             return
@@ -1752,6 +1787,12 @@ class AutoTrader:
             right = "C"
         sym = str(row.get("symbol") or "").upper()
         if not sym:
+            return None
+        limit = self._entry_limit(desk, row)
+        if limit is not None:
+            # Entries only. The signal alert still goes out, labeled skipped.
+            row["paper_entry_skipped"] = limit["reason"]
+            self._note_filtered(row, f"paper entry skipped — {limit['reason']}")
             return None
         if not self._edge_allows_buy(desk):
             self._note_filtered(row, "edge gate: live route empty")

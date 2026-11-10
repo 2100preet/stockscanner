@@ -8725,6 +8725,72 @@ def create_app(config_path: str | None = None) -> Flask:
             expiry = _maybe_close_expired(broker, None, force=True)
         return jsonify({"ok": True, "staged": staged, "history": history, "expiry": expiry})
 
+    def _paper_admin_ok() -> bool:
+        """When PAPER_ADMIN_TOKEN is set, toggles need it in X-Admin-Token."""
+        import hmac
+        import os as _os
+
+        want = str(_os.environ.get("PAPER_ADMIN_TOKEN") or "")
+        if not want:
+            return True
+        got = str(request.headers.get("X-Admin-Token") or "")
+        return bool(got) and hmac.compare_digest(got, want)
+
+    @app.get("/api/paper/limits")
+    def paper_limits():
+        """Today's paper P&L per desk, the daily limits, and the kill switch."""
+        from odte_scanner.hot_state import read_ledger_orders
+        from odte_scanner.trading import risk_controls as rc_mod
+
+        controls = rc_mod.load_risk_controls()
+        orders = read_ledger_orders()
+        tally = rc_mod.daily_tally(orders)
+        blocks = {}
+        for tier in ("sniper", "diamond", "gold", "afternoon"):
+            blocks[tier] = rc_mod.entry_block(tier, orders=orders, controls=controls, tally=tally)
+        return jsonify(
+            {
+                "ok": True,
+                "tally": tally,
+                "blocked": blocks,
+                "kill_switch": rc_mod.kill_switch_state(),
+                "limits": {
+                    "enabled": controls.daily_limits_enabled,
+                    "desk_daily_loss_usd": controls.desk_daily_loss_usd,
+                    "desk_daily_losers": controls.desk_daily_losers,
+                    "account_daily_loss_usd": controls.account_daily_loss_usd,
+                },
+                "note": "Limits block new paper entries only. Exits and signal alerts keep running.",
+            }
+        )
+
+    @app.post("/api/paper/kill-switch")
+    def paper_kill_switch():
+        """Pause (on=1) or resume (on=0) new paper entries. Exits keep running."""
+        from odte_scanner.trading import risk_controls as rc_mod
+
+        if not _paper_admin_ok():
+            return jsonify({"ok": False, "error": "admin token required"}), 403
+        raw = str(request.args.get("on") or (request.get_json(silent=True) or {}).get("on") or "").strip().lower()
+        if raw not in {"0", "1", "true", "false", "on", "off"}:
+            return jsonify({"ok": False, "error": "on=1 or on=0"}), 400
+        on = raw in {"1", "true", "on"}
+        reason = str(request.args.get("reason") or (request.get_json(silent=True) or {}).get("reason") or "manual")
+        state = rc_mod.set_kill_switch(on, reason)
+        try:
+            from odte_scanner.alerts.telegram import send_telegram_text
+
+            if on:
+                send_telegram_text(
+                    f"⛔ PAPER ENTRIES PAUSED — kill switch on ({reason[:80]}). "
+                    "Exits and signal alerts keep running. · paper"
+                )
+            else:
+                send_telegram_text("✅ Paper entries resumed — kill switch off. · paper")
+        except Exception:  # noqa: BLE001
+            pass
+        return jsonify({"ok": True, "kill_switch": state})
+
     @app.post("/api/webull/sync")
     def webull_sync():
         """Route current lottery / actions / challenge tickets to Webull (dry-run by default)."""

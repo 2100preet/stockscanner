@@ -395,6 +395,26 @@ def notify_unfilled_cancel(order: dict[str, Any], kind: str) -> str:
     return text
 
 
+_ALERT_DESK_TIER = {"Sniper": "sniper", "Diamond": "diamond", "Gold Setup": "gold", "AfternoonPuts": "afternoon"}
+
+
+def _paper_skipped_line(row: dict[str, Any], desk: str) -> str | None:
+    """The signal still goes out. Say so when the paper entry was not taken."""
+    try:
+        from odte_scanner.trading import risk_controls as rc_mod
+
+        if row.get("paper_entry_skipped"):
+            return rc_mod.skipped_line({"short": str(row["paper_entry_skipped"])})
+        if str(row.get("symbol") or "").upper() == "SPX":
+            return None
+        from odte_scanner.hot_state import read_ledger_orders
+
+        block = rc_mod.entry_block(_ALERT_DESK_TIER.get(desk, desk), orders=read_ledger_orders())
+        return rc_mod.skipped_line(block)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _fmt_alert(
     row: dict[str, Any],
     side: str,
@@ -424,6 +444,10 @@ def _fmt_alert(
         order_line = _order_price_line(row)
         if order_line:
             lines.append(order_line)
+        if side == "BUY":
+            skipped = _paper_skipped_line(row, desk)
+            if skipped:
+                lines.append(skipped)
     else:
         ask = row.get("ask")
         spot = row.get("spot") or row.get("last")
