@@ -150,6 +150,16 @@ def apply_hot_overlay(
     }
     body["hot_at"] = hot.get("updated_at")
     try:
+        from datetime import datetime, timedelta, timezone
+
+        from odte_scanner.trading.exit_health import build_exit_health
+        from odte_scanner.trading.latency import latency_report
+
+        body["exit_health"] = build_exit_health(book)
+        body["order_latency"] = latency_report(book, since=datetime.now(timezone.utc) - timedelta(days=7))
+    except Exception as exc:  # noqa: BLE001
+        body["exit_health"] = {"ok": False, "error": str(exc)[:200]}
+    try:
         from odte_scanner.scorecard.daily_pnl import build_scorecard_daily_pnl
 
         modeled: list[dict[str, Any]] = []

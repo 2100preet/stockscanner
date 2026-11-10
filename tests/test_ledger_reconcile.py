@@ -246,6 +246,7 @@ def test_restored_buy_takes_the_desk_of_its_chase_sibling(tmp_path: Path):
                          expiry="2026-11-09", strike=746, limit_price=2.70,
                          meta={"golden_kind": "sniper", "gold_exit": True, "sniper_flat_ct": "10:30"})
     first.status = "cancelled"
+    first.created_at = "2026-11-09T14:50:10+00:00"  # the chase original, same CT day
     broker.save()
     group = {
         "client_order_id": "wb-replace001",
