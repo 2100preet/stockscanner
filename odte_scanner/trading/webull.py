@@ -1711,6 +1711,30 @@ class WebullBroker:
         self.save()
         return actions
 
+    _INHERIT_META = (
+        "golden_kind", "gold_exit", "diamond_flat_ct", "sniper_flat_ct", "afternoon_flat_ct",
+        "exit_plan", "take_profit_pct", "stop_loss_pct", "account_id", "signal_ask", "original_qty",
+    )
+
+    def _inherit_desk(self, buy: WebullOrderIntent) -> None:
+        """A restored buy is usually a chase replacement. Take the desk and exit
+        plan of the ledger buy for the same contract so exits manage it."""
+        best = None
+        for order in self.orders:
+            if order is buy or order.action != "BUY" or order.contract != buy.contract:
+                continue
+            if order.desk in {"webull_import", ""}:
+                continue
+            if best is None or str(order.created_at or "") > str(best.created_at or ""):
+                best = order
+        if best is None:
+            return
+        buy.desk = best.desk
+        for key in self._INHERIT_META:
+            if key in (best.meta or {}) and key not in buy.meta:
+                buy.meta[key] = best.meta[key]
+        buy.meta["desk_from"] = best.id
+
     def _link_sell_to_buy(self, sell: WebullOrderIntent) -> None:
         """Point a restored sell at the filled buy it closed (same contract, earlier)."""
         best = None
@@ -1807,6 +1831,8 @@ class WebullBroker:
                 intent = _intent_from_history(row, status, self)
                 if intent.action == "SELL":
                     self._link_sell_to_buy(intent)
+                else:
+                    self._inherit_desk(intent)
                 self.orders.append(intent)
                 by_id[cid] = intent
                 summary["added"] += 1
