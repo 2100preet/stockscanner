@@ -896,7 +896,7 @@ def build_rip_board(
             "If 0–1 DTE ask missing/thin/far OTM/deep ITM, re-pick nearer ATM/OTM or weekly (≤14 DTE).",
             "Same OCC after a loss stays blocked ~45d.",
             "Symbol cooldown waived on this lane when tape is ripping.",
-            "Hist stamped for sure-winner desk — size still smaller than gated Options BUY NOW.",
+            "Hist stamped for the Gold Setup desk — size still smaller than gated Options BUY NOW.",
             "Research / discretionary — not auto-journal gated BUY NOW.",
         ],
         "generated_at": (now or datetime.now(ET)).isoformat(),

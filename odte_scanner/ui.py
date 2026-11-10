@@ -386,7 +386,7 @@ PAGE = r"""
 
     <section class="tabpane active" id="tab-nowboard">
       <h2>BUY NOW / SELL NOW — all desks</h2>
-      <p class="lede">Live option BUY NOW / SELL NOW across <strong>Sure Winner</strong> (1–2/day · MAX/HIGH/SOLID · gold/amber · GO HUGE sizing), 0DTE, weeklies, swing, <strong>Lottery</strong>, <strong>Lottery v2</strong> (log only), <strong>RIP/META</strong>, <strong>Patterns</strong> (double bottom/top · golden triangle), <strong>Levels</strong>, ML6, Challenge, and 0DTE $1K IN/OUT. Lottery, Lottery v2, RIP/META, and Patterns each keep their own heading below even when empty. Hist win ≥80% (n≥5) gates Options BUY NOW. Same losing OCC stays blocked; mega names can still BUY when tape is ripping (see RIP tab). SETUP rows are quality tape without a contract yet — not a buy.</p>
+      <p class="lede">Live option BUY NOW / SELL NOW across <strong>Gold Setup</strong> (1–2/day · MAX/HIGH/SOLID · gold/amber · GO HUGE sizing), 0DTE, weeklies, swing, <strong>Lottery</strong>, <strong>Lottery v2</strong> (log only), <strong>RIP/META</strong>, <strong>Patterns</strong> (double bottom/top · golden triangle), <strong>Levels</strong>, ML6, Challenge, and 0DTE $1K IN/OUT. Lottery, Lottery v2, RIP/META, and Patterns each keep their own heading below even when empty. Hist win ≥80% (n≥5) gates Options BUY NOW. Same losing OCC stays blocked; mega names can still BUY when tape is ripping (see RIP tab). SETUP rows are quality tape without a contract yet — not a buy.</p>
       <div class="metric-row" id="nowBoardMetrics"></div>
       <p class="lede" id="nowBoardNote" style="margin-top:0;font-size:.76rem"></p>
       <div id="nowBoardPinned"></div>
@@ -949,7 +949,7 @@ PAGE = r"""
       <div class="panel">
         <h2>Webull auto-trade bridge</h2>
         <p class="lede" style="margin-top:0;font-size:.76rem">
-          Routes Sure Winner cards rendered <strong>gold</strong> (MAX and HIGH). Golden unusual-flow stays on the board.
+          Routes Gold Setup cards rendered <strong>gold</strong> (MAX and HIGH). Golden unusual-flow stays on the board.
           Everything else stays on the board and is not sent. Dry-run by default.
           Paper mode uses Webull's sandbox host <code>api.sandbox.webull.com</code>.
           Set sandbox <code>WEBULL_APP_KEY</code> / <code>WEBULL_APP_SECRET</code> / <code>WEBULL_ACCOUNT_ID</code>
@@ -1282,6 +1282,12 @@ PAGE = r"""
     }
 
     const PINNED_DESKS = ["Lottery", "Lottery v2", "RIP/META", "Patterns"];
+    // Customer-facing desk name. "Sure Winner" stays an internal identifier
+    // (row.desk, NOW_DESK_ORDER keys); the page always shows "Gold Setup".
+    function deskLabel(d) {
+      const text = String(d == null ? "" : d);
+      return /^\s*sure[\s_-]*winners?\s*$/i.test(text) ? "Gold Setup" : text;
+    }
     const NOW_DESK_ORDER = ["Sure Winner", "0DTE", "1 Week", "Swing 1–3M", "Levels", "Lottery", "Lottery v2", "ML6", "Challenge", "0DTE $1K", "Options", "Beauty 1mo", "RIP/META", "Patterns"];
 
     function horizonDesk(row, fallback) {
@@ -1430,10 +1436,10 @@ PAGE = r"""
         : "";
       return `<article class="action-card ${cls}">
         <div class="ac-top">
-          <div class="ac-sym">${r.symbol} <span class="tag">${r._desk}</span>${isSure ? ` <span class="badge ${sureCls}">${sureTier || "SURE"}</span>` : ""}${r.hold_style ? ` <span class="tag">${r.hold_style}</span>` : ""} <span class="tag">${right}</span></div>
+          <div class="ac-sym">${r.symbol} <span class="tag">${deskLabel(r._desk)}</span>${isSure ? ` <span class="badge ${sureCls}">${sureTier || "SURE"}</span>` : ""}${r.hold_style ? ` <span class="tag">${r.hold_style}</span>` : ""} <span class="tag">${right}</span></div>
           <div class="ac-dir ${isSure ? sureCls : (buy && gated ? "" : (buy ? "long" : (wait || setup ? "wait" : "short")))}">${label}</div>
         </div>
-        <div class="ac-conf">${r._desk} · ${when && when !== "—" ? when : "time —"}${confLine}${showEntry ? ` · entered ${entryWhen}` : ""}</div>
+        <div class="ac-conf">${deskLabel(r._desk)} · ${when && when !== "—" ? when : "time —"}${confLine}${showEntry ? ` · entered ${entryWhen}` : ""}</div>
         <div class="ac-meta">
           <div>Strike / expiry<strong>${strike} · ${r.expiry || "—"}${r.dte != null ? ` (${r.dte}DTE)` : ""}</strong></div>
           <div>${orderLine ? "Bid / Ask" : (buy ? "Ask" : "Bid")}<strong>${orderLine ? quoteText(r) : (px == null ? "—" : "$" + fmt(px, 2))}</strong>${orderLine ? `<div class="why">${orderLine}</div>` : ""}</div>
@@ -1475,7 +1481,7 @@ PAGE = r"""
       });
       const order = NOW_DESK_ORDER.filter(d => g[d]).concat(Object.keys(g).filter(d => !NOW_DESK_ORDER.includes(d)));
       el.innerHTML = order.map(desk => `
-        <div class="now-desk">${desk} <span class="status">${g[desk].length}</span></div>
+        <div class="now-desk">${deskLabel(desk)} <span class="status">${g[desk].length}</span></div>
         <div class="cards">${g[desk].map(nowBoardCard).join("")}</div>
       `).join("");
     }
@@ -1500,7 +1506,7 @@ PAGE = r"""
           m("WAIT", waits.length),
           m("SETUP", setups.length),
           ...PINNED_DESKS.map(d => m(d, byDesk[d] || 0)),
-          ...NOW_DESK_ORDER.filter(d => byDesk[d] && !PINNED_DESKS.includes(d)).map(d => m(d, byDesk[d])),
+          ...NOW_DESK_ORDER.filter(d => byDesk[d] && !PINNED_DESKS.includes(d)).map(d => m(deskLabel(d), byDesk[d])),
         ].join("");
       }
       const note = document.getElementById("nowBoardNote");
@@ -1535,7 +1541,7 @@ PAGE = r"""
           const win = r.win_pct ?? r.hist_win_pct ?? w.pct;
           return `<tr>
             <td><span class="badge ${badge}">${side}</span></td>
-            <td><span class="tag">${r._desk}</span></td>
+            <td><span class="tag">${deskLabel(r._desk)}</span></td>
             <td><strong>${r.symbol}</strong></td>
             <td class="mono">${rowAskedAt(r)}</td>
             <td class="mono">${r.strike == null ? "—" : fmt(r.strike, 2) + right} ${r.expiry || ""}</td>
@@ -2865,7 +2871,7 @@ PAGE = r"""
                 ${p0.call_safe_zone_conflict?`<span class="badge sell">CALL CONFLICT</span>`:""}
                 ${p0.orb_status?`<span class="tag">${p0.orb_status}</span>`:""}
               </div>
-              <div class="ac-dir ${kind}">${sl.side} · ${sl.desk}</div>
+              <div class="ac-dir ${kind}">${sl.side} · ${deskLabel(sl.desk)}</div>
             </div>
             <div class="ac-conf">Strength ${fmt(p0.strength,0)} · ORB Low ${p0.orb_low==null?"—":"$"+fmt(p0.orb_low,2)} · High ${p0.orb_high==null?"—":"$"+fmt(p0.orb_high,2)}
               ${p0.signaled_at_cst?` · asked ${p0.signaled_at_cst}`:""}</div>
@@ -2923,7 +2929,7 @@ PAGE = r"""
           const cls=sl.side==="OUT"?"sell":(sl.side==="IN"?"buy":(sl.side==="HOLD"?"hold":"wait"));
           return `<tr>
             <td><span class="badge ${cls}">${sl.side}</span></td>
-            <td><span class="badge ${cls}">${sl.desk}</span>${r.call_safe_zone_conflict?` <span class="badge sell">CALL CONFLICT</span>`:""}</td>
+            <td><span class="badge ${cls}">${deskLabel(sl.desk)}</span>${r.call_safe_zone_conflict?` <span class="badge sell">CALL CONFLICT</span>`:""}</td>
             <td><strong>${r.symbol}</strong>${r.green_friday?` <span class="tag">GF</span>`:""}</td>
             <td class="mono">${r.signaled_at_cst||fmtCST(r.signaled_at)||"—"}</td>
             <td class="mono">${r.orb_low==null?"—":"$"+fmt(r.orb_low,2)} / ${r.orb_high==null?"—":"$"+fmt(r.orb_high,2)}</td>
@@ -3591,7 +3597,7 @@ PAGE = r"""
       </tr></thead><tbody>
       ${rows.slice(0,40).map(o=>`<tr>
         <td class="mono">${fmtCST(o.updated_at||o.created_at)}</td>
-        <td class="tag">${o.desk||"—"}</td>
+        <td class="tag">${deskLabel(o.desk)||"—"}</td>
         <td class="mono"><strong>${o.action||"—"}</strong></td>
         <td><strong>${o.symbol}</strong> ${o.right||"C"}</td>
         <td class="mono">${o.contract||((o.strike!=null?o.strike:"")+" "+(o.expiry||""))}</td>
@@ -3983,7 +3989,7 @@ PAGE = r"""
         return `<div class="pulse-card ${cardCls}">
           <div class="pc-top">
             <div class="pc-sym">${row.symbol}</div>
-            <div class="pc-tag ${tagCls}">${tag} · ${row.desk}</div>
+            <div class="pc-tag ${tagCls}">${tag} · ${deskLabel(row.desk)}</div>
           </div>
           <div class="pc-meta">
             <div><span>Strike</span><br><strong>${strikeTxt}</strong>${view.signalNote ? `<div class="why">${view.signalNote}</div>` : ""}${view.status ? `<div class="why">${view.status}</div>` : ""}</div>
@@ -4013,7 +4019,7 @@ PAGE = r"""
       el.innerHTML = `
         <div class="pb-head">
           <div>
-            <h2 class="pb-title">${topSure.length ? `Sure winner <em>${topSure[0].size_label || "GO HUGE"}</em> · 1–2/day` : "Must trade <em>sure-shot</em> + exits"}</h2>
+            <h2 class="pb-title">${topSure.length ? `Gold Setup <em>${topSure[0].size_label || "GO HUGE"}</em> · 1–2/day` : "Must trade <em>sure-shot</em> + exits"}</h2>
             <div class="pb-sub">${topSure.length
               ? (sureBoard.note || "Gold/amber = capped high-conviction tickets. MAX = GO HUGE (×3), HIGH = SIZE UP (×2). Hist edge ≠ guaranteed profit.")
               : "Hist-gated tickets with strike, strike-rate, and expiry up top. EXIT cards are live positions/tickets the desk says leave now. Hist edge ≠ guaranteed future profit."}</div>
@@ -5015,7 +5021,7 @@ PAGE = r"""
           kind: "sure",
           title: `${tier} · ${size} ${r.symbol} ${right}`,
           body: [
-            "Sure Winner",
+            "Gold Setup",
             r.source_desk || null,
             r.expiry || null,
             r.strike != null ? `${Number(r.strike)}${right === "PUT" ? "p" : "c"}` : null,
@@ -5479,6 +5485,8 @@ def create_app(config_path: str | None = None) -> Flask:
                 if isinstance(cached, dict):
                     return jsonify(_overlay_live(cached))
                 return jsonify(_overlay_live(_partial_snapshot("snapshot busy")))
+        # True once a background rebuild owns _snap_gate; that thread releases it.
+        handed_off = False
         try:
             cached = _snap_memo.get("body")
             cached_t = float(_snap_memo.get("t") or 0.0)
@@ -8070,7 +8078,7 @@ def create_app(config_path: str | None = None) -> Flask:
                     "winners": [],
                     "buy_now": [],
                     "counts": {},
-                    "note": "Sure-winner desk off or unavailable.",
+                    "note": "Gold Setup desk off or unavailable.",
                 }
                 if bool(actions_cfg.get("sure_winners_enabled", True)):
                     try:
@@ -8122,7 +8130,7 @@ def create_app(config_path: str | None = None) -> Flask:
                             "winners": [],
                             "buy_now": [],
                             "counts": {},
-                            "note": "Sure-winner desk temporarily unavailable.",
+                            "note": "Gold Setup desk temporarily unavailable.",
                         }
 
                 diamond_board: dict = {"signals": [], "qualified": [], "note": "Diamond board unavailable."}
@@ -8319,6 +8327,51 @@ def create_app(config_path: str | None = None) -> Flask:
                         }
                     )
 
+            def _store_snapshot(payload):
+                _snap_memo["body"] = payload
+                _snap_memo["t"] = time.time()
+                try:
+                    outp = ROOT / "outputs" / "last_api_snapshot.json"
+                    outp.parent.mkdir(parents=True, exist_ok=True)
+                    atomic_write_text(outp, dumps_strict(payload, indent=2, default=str))
+                except Exception:
+                    pass
+
+            # Stale-while-revalidate: a stale-but-usable board (younger than
+            # SNAPSHOT_STALE_SEC) is served now and rebuilt on a background
+            # thread, so no request waits the 60s+ build. ?fresh=1, offline /
+            # Pages builds, a pre-sure-winner shape and SNAPSHOT_SWR=0 keep the
+            # old synchronous path.
+            swr_on = str(os.environ.get("SNAPSHOT_SWR", "1")).strip().lower() not in {"0", "false", "no", "off"}
+            if (
+                swr_on
+                and not force
+                and isinstance(cached, dict)
+                and age < soft_ttl
+                and not stale_shape
+                and not _snapshot_offline()
+            ):
+                def _background_rebuild():
+                    try:
+                        try:
+                            fresh_payload = sanitize_for_json(_build_snapshot_payload())
+                        except Exception:  # noqa: BLE001
+                            logger.exception("background snapshot build failed; keeping last board")
+                            return
+                        if isinstance(fresh_payload, dict):
+                            _store_snapshot(fresh_payload)
+                    finally:
+                        _snap_gate.release()
+
+                worker = threading.Thread(target=_background_rebuild, name="snapshot-swr", daemon=True)
+                try:
+                    worker.start()
+                    handed_off = True
+                except Exception:  # noqa: BLE001
+                    logger.exception("could not start background snapshot build; building inline")
+                if handed_off:
+                    return jsonify(_overlay_live(cached))
+
             try:
                 payload = sanitize_for_json(_build_snapshot_payload())
             except Exception as exc:  # noqa: BLE001
@@ -8330,21 +8383,15 @@ def create_app(config_path: str | None = None) -> Flask:
                 return jsonify(_overlay_live(_partial_snapshot(note)))
             if not isinstance(payload, dict):
                 payload = _partial_snapshot("snapshot payload was not an object")
-            _snap_memo["body"] = payload
-            _snap_memo["t"] = time.time()
-            try:
-                outp = ROOT / "outputs" / "last_api_snapshot.json"
-                outp.parent.mkdir(parents=True, exist_ok=True)
-                atomic_write_text(outp, dumps_strict(payload, indent=2, default=str))
-            except Exception:
-                pass
+            _store_snapshot(payload)
             try:
                 return jsonify(_overlay_live(payload))
             except Exception as exc:  # noqa: BLE001
                 logger.exception("snapshot encode failed")
                 return jsonify(_overlay_live(_partial_snapshot(_public_snapshot_error(exc))))
         finally:
-            _snap_gate.release()
+            if not handed_off:
+                _snap_gate.release()
 
     def _challenge_tracker():
         from odte_scanner.challenge.tracker import ChallengeTracker

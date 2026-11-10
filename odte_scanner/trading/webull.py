@@ -873,74 +873,41 @@ _LEDGER_LIMIT = 500
 _LEDGER_OPEN = {"staged", "submitted", "deferred", "partial"}
 
 
-def _ledger_qty(order: WebullOrderIntent) -> float:
-    meta = order.meta or {}
-    try:
-        filled = float(meta.get("filled_qty"))
-    except (TypeError, ValueError):
-        filled = 0.0
-    if filled > 0:
-        return filled
-    try:
-        return float(order.quantity or 0)
-    except (TypeError, ValueError):
-        return 0.0
-
-
 def _ledger_filled(order: WebullOrderIntent) -> bool:
     if order.status in {"filled", "partial"}:
         return True
     return str((order.meta or {}).get("fill_state") or "") in {"filled", "partial"}
 
 
-def _ledger_qty_by(orders: list[WebullOrderIntent], action: str) -> dict[str, float]:
-    totals: dict[str, float] = {}
-    for order in orders:
-        key = str(order.contract or "")
-        if order.action == action and _ledger_filled(order) and key:
-            totals[key] = totals.get(key, 0.0) + _ledger_qty(order)
-    return totals
+def _ledger_keep_always(order: WebullOrderIntent) -> bool:
+    """Rows the ledger file never drops: Webull fills (the source of truth) and open orders."""
+    if order.status in _LEDGER_OPEN or _ledger_filled(order):
+        return True
+    try:
+        return float((order.meta or {}).get("filled_qty") or 0) > 0  # e.g. cancelled after a partial fill
+    except (TypeError, ValueError):
+        return False
 
 
 def orders_for_ledger(orders: list[WebullOrderIntent], limit: int = _LEDGER_LIMIT) -> list[WebullOrderIntent]:
-    """Newest orders, plus every filled buy a kept sell still has to match.
+    """Every filled and open order, plus the newest ``limit`` of the rest.
 
-    Edge pairs a sell with the buy on the same contract. Keeping only the
-    newest 500 dropped that buy while the sell was still in the file.
-    A buy with no sell yet stays too, so the exit can still find its entry.
+    Webull paper fills are the source of truth for P&L, so a filled row is
+    never dropped. Only rejected / cancelled / dry-run noise is capped. The old
+    newest-500 rule dropped filled buy+sell pairs once the tape got busy
+    (15 Oct 20-26 buys and their expiry closes on Nov 9).
     """
     if len(orders) <= limit:
         return list(orders)
-    chosen_ids = {id(order) for order in orders[:limit]}
-    chosen_ids.update(id(order) for order in orders if order.status in _LEDGER_OPEN)
-    have = _ledger_qty_by([order for order in orders if id(order) in chosen_ids], "BUY")
-    gap = {
-        key: qty - have.get(key, 0.0)
-        for key, qty in _ledger_qty_by([order for order in orders if id(order) in chosen_ids], "SELL").items()
-        if qty - have.get(key, 0.0) > 1e-6
-    }
-    for order in reversed(orders):
-        key = str(order.contract or "")
-        if order.action != "BUY" or not _ledger_filled(order) or gap.get(key, 0.0) <= 1e-6:
-            continue
-        if id(order) in chosen_ids:
-            gap[key] = gap.get(key, 0.0) - _ledger_qty(order)
-            continue
-        gap[key] -= min(_ledger_qty(order), gap[key])
-        chosen_ids.add(id(order))
-    # Still-open buys are not in the newest window once the tape is busy.
-    left = _ledger_qty_by(orders, "SELL")
-    for order in reversed(orders):
-        if order.action != "BUY" or not _ledger_filled(order):
-            continue
-        key = str(order.contract or "")
-        qty = _ledger_qty(order)
-        cover = min(qty, left.get(key, 0.0)) if key else 0.0
-        if key:
-            left[key] = left.get(key, 0.0) - cover
-        if qty - cover > 1e-6:
-            chosen_ids.add(id(order))
-    return [order for order in orders if id(order) in chosen_ids]
+    noise_left = max(0, int(limit))
+    out: list[WebullOrderIntent] = []
+    for order in orders:  # newest first, as stored
+        if _ledger_keep_always(order):
+            out.append(order)
+        elif noise_left > 0:
+            noise_left -= 1
+            out.append(order)
+    return out
 
 
 def _order_not_found(exc: BaseException) -> bool:

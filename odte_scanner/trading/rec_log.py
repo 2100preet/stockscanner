@@ -72,6 +72,16 @@ def _parse_ts(text: Any) -> datetime | None:
     return out
 
 
+def _ct_day(text: Any):
+    """Calendar day in America/Chicago for an ISO timestamp, or None."""
+    when = _parse_ts(text)
+    if when is None:
+        return None
+    from zoneinfo import ZoneInfo
+
+    return when.astimezone(ZoneInfo("America/Chicago")).date()
+
+
 def _px_key(value: Any) -> float | None:
     f = _f(value)
     return None if f is None else round(f, 4)
@@ -487,7 +497,8 @@ class RecommendationLog:
         """Drop duplicate journal rows, old lapsed rows, and the oldest rows past the cap.
 
         Lapsed rows older than REC_LOG_LAPSED_KEEP_DAYS go only once the log holds
-        more than REC_LOG_LAPSED_PRUNE_ABOVE rows. Open rows are always kept.
+        more than REC_LOG_LAPSED_PRUNE_ABOVE rows. Open rows and journal rows
+        (real paper trades, deduped) are never pruned or capped.
         Returns how many rows were removed.
         """
         recs = self.book.recommendations
@@ -517,13 +528,18 @@ class RecommendationLog:
         if cutoff is not None and len(deduped) > prune_above:
             out = []
             for r in deduped:
-                if r.status == "lapsed":
+                # Journal rows stay (see the cap below): pruning one only made the
+                # next journal sync mirror it back.
+                if r.status == "lapsed" and r.source != "journal":
                     when = _parse_ts(r.closed_at or r.last_recommended_at or r.recommended_at)
                     if when is not None and when < cutoff:
                         continue
                 out.append(r)
         if max_rows > 0:
-            done = [r for r in out if r.status != "open"]
+            # Journal rows are real paper trades (~1 per trade after dedupe). Never
+            # cap them: an evicted one was mirrored back from the journal on the
+            # next sync, then evicted again, every rebuild.
+            done = [r for r in out if r.status != "open" and r.source != "journal"]
             if len(done) > max_rows:
                 floor = datetime.min.replace(tzinfo=timezone.utc)
                 ranked = sorted(
@@ -532,7 +548,7 @@ class RecommendationLog:
                     reverse=True,
                 )
                 keep_ids = {id(r) for r in ranked[:max_rows]}
-                out = [r for r in out if r.status == "open" or id(r) in keep_ids]
+                out = [r for r in out if r.status == "open" or r.source == "journal" or id(r) in keep_ids]
         self.book.recommendations = out
         return before - len(out)
 
@@ -554,6 +570,40 @@ class RecommendationLog:
             if self._key(r.section, r.symbol, r.right) == key:
                 return r
         return None
+
+    def _board_card_done(
+        self,
+        *,
+        section: str,
+        symbol: str,
+        right: str,
+        contract: str | None,
+        at: str | None,
+    ) -> bool:
+        """True when this board card should not open a new rec.
+
+        A rec for the same section, symbol, side and contract was already
+        closed or lapsed on the same CT day (including the expired-contract
+        scrub, which lapses a dead contract still shown on the board).
+        """
+        day = _ct_day(at) or _ct_day(_now())
+        if day is None:
+            return False
+        sec = str(section or "").lower()
+        rt = str(right or "C").upper()
+        want = str(contract or "").upper() or None
+        for r in self.book.recommendations:
+            if r.status not in {"closed", "lapsed"} or r.symbol != symbol or r.right != rt:
+                continue
+            if str(r.section or "").lower() != sec:
+                continue
+            if (str(r.contract or "").upper() or None) != want:
+                continue
+            # closed_at can carry the stale board time of an old SELL NOW, so a
+            # rec opened today and closed counts as done today as well.
+            if day in {_ct_day(r.closed_at), _ct_day(r.recommended_at)}:
+                return True
+        return False
 
     def _open_any_section(self, symbol: str, right: str = "C") -> Recommendation | None:
         """Find any open rec for symbol/right (journal exits may not know section)."""
@@ -659,6 +709,14 @@ class RecommendationLog:
             if last_action != act:
                 self._append_event(existing, action=act, price=price, detail=reason or headline)
             return existing
+
+        if source != "journal" and self._board_card_done(
+            section=section, symbol=sym, right=right, contract=contract, at=now
+        ):
+            # The board still shows a card whose rec already closed or lapsed
+            # today (a stale SELL NOW, or a contract that expired). Reopening it
+            # made a new open+close pair on every rebuild (~50 rows each).
+            return None
 
         open_act = act
         if act in _OPEN_ACTIONS:
