@@ -20,7 +20,7 @@ import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass, field, fields
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote
@@ -1228,6 +1228,85 @@ def merge_ledger_rows(
     return out
 
 
+def _parse_iso_utc(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        out = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return out if out.tzinfo else out.replace(tzinfo=timezone.utc)
+
+
+class EndpointBudget:
+    """Process-wide sliding-window budget per Webull endpoint.
+
+    The paper sandbox allows about 30 calls per 60 s per endpoint per app key
+    (developer.webull.com/apis/docs/rate-limits). Every broker in this process
+    (scan, fast desk, fast exits, portal) shares one budget, so the loops
+    cannot add up past the limit and earn 429s. An order call (place/cancel)
+    waits up to a few seconds for a slot; a read (detail/positions/history)
+    does not wait and is skipped until the next pass.
+    """
+
+    def __init__(self, per_min: int = 28, window_sec: float = 60.0):
+        self.per_min = max(1, int(per_min))
+        self.window_sec = float(window_sec)
+        self._calls: dict[str, list[float]] = {}
+        self._lock = threading.Lock()
+
+    def reset(self) -> None:
+        with self._lock:
+            self._calls.clear()
+
+    def used(self, endpoint: str, now: float | None = None) -> int:
+        clock = time.monotonic() if now is None else now
+        with self._lock:
+            rows = [t for t in self._calls.get(endpoint, []) if clock - t < self.window_sec]
+            self._calls[endpoint] = rows
+            return len(rows)
+
+    def reserve(self, endpoint: str, *, max_wait: float, sleeper: Callable[[float], Any]) -> None:
+        """Take a slot, waiting up to ``max_wait`` seconds. Raises WebullRateLimit otherwise.
+
+        Raising happens before any HTTP call, so nothing reached Webull and the
+        caller may retry the same client order id later.
+        """
+        if str(os.environ.get("WEBULL_LOCAL_RATE_LIMIT", "1")).strip().lower() in {"0", "false", "off", "no"}:
+            return
+        waited = 0.0
+        while True:
+            with self._lock:
+                clock = time.monotonic()
+                rows = [t for t in self._calls.get(endpoint, []) if clock - t < self.window_sec]
+                if len(rows) < self.per_min:
+                    rows.append(clock)
+                    self._calls[endpoint] = rows
+                    return
+                self._calls[endpoint] = rows
+                wait = self.window_sec - (clock - rows[0]) + 0.05
+            if waited + wait > max_wait:
+                raise WebullRateLimit(
+                    f"local Webull budget: {endpoint} used {self.per_min}/{int(self.window_sec)}s — retry in {wait:.0f}s"
+                )
+            sleeper(max(0.0, wait))
+            waited += max(0.05, wait)
+
+
+def _budget_per_min() -> int:
+    try:
+        return max(1, int(float(os.environ.get("WEBULL_SANDBOX_CALLS_PER_MIN") or 28)))
+    except ValueError:
+        return 28
+
+
+WEBULL_BUDGET = EndpointBudget(_budget_per_min())
+ORDER_ENDPOINTS = {"place", "cancel"}
+ORDER_MAX_WAIT_SEC = 5.0
+# Last detail check per client order id (monotonic), shared by every broker.
+_DETAIL_LAST: dict[str, float] = {}
+
+
 class WebullBroker:
     """Place option orders via Webull OpenAPI, or dry-run / deep-link only."""
 
@@ -1586,6 +1665,7 @@ class WebullBroker:
 
         try:
             broker_id = self._place_via_openapi(intent)
+            intent.meta["acked_at"] = _now()
             intent.status = "submitted"
             intent.broker_order_id = broker_id
             intent.error = None
@@ -1771,17 +1851,45 @@ class WebullBroker:
 
     def _inherit_desk(self, buy: WebullOrderIntent) -> None:
         """A restored buy is usually a chase replacement. Take the desk and exit
-        plan of the ledger buy for the same contract so exits manage it."""
-        best = None
+        plan of the ledger buy for the same contract so exits manage it.
+
+        Only a sibling on the same Chicago day and the same account counts
+        (weekly contracts repeat across days and desks). Prefer the latest one
+        placed at or before the restored order (a chase original); else the
+        earliest one after it. A BUY_TO_CLOSE (closing a short, e.g. a lunch
+        credit leg) never inherits a long desk.
+        """
+        if str((buy.meta or {}).get("position_intent") or "").upper() == "BUY_TO_CLOSE":
+            return
+        placed = _parse_iso_utc(buy.created_at)
+        if placed is None:
+            return
+        from odte_scanner.time_cst import CT
+
+        day = placed.astimezone(CT).date()
+        before: tuple[datetime, WebullOrderIntent] | None = None
+        after: tuple[datetime, WebullOrderIntent] | None = None
+        primary = str(self.account_id or "")
         for order in self.orders:
             if order is buy or order.action != "BUY" or order.contract != buy.contract:
                 continue
             if order.desk in {"webull_import", ""}:
                 continue
-            if best is None or str(order.created_at or "") > str(best.created_at or ""):
-                best = order
-        if best is None:
+            acct = str((order.meta or {}).get("account_id") or "")
+            if acct and primary and acct != primary:
+                continue  # second account: history import reads the primary only
+            at = _parse_iso_utc(order.created_at)
+            if at is None or at.astimezone(CT).date() != day:
+                continue
+            if at <= placed + timedelta(seconds=5):
+                if before is None or at > before[0]:
+                    before = (at, order)
+            elif after is None or at < after[0]:
+                after = (at, order)
+        chosen = before or after
+        if chosen is None:
             return
+        best = chosen[1]
         buy.desk = best.desk
         for key in self._INHERIT_META:
             if key in (best.meta or {}) and key not in buy.meta:
@@ -1843,7 +1951,7 @@ class WebullBroker:
             if last:
                 kwargs["last_client_order_id"] = last
             try:
-                res = self._call_with_backoff(lambda: meth(self.account_id, **kwargs))
+                res = self._call_with_backoff(lambda: meth(self.account_id, **kwargs), "history")
             except Exception as exc:  # noqa: BLE001
                 logger.warning("order history failed: %s", exc)
                 return None if not rows else rows
@@ -1937,11 +2045,16 @@ class WebullBroker:
                 now = self._clock()
         self._last_api_at = now
 
-    def _call_with_backoff(self, fn: Callable[[], Any]) -> Any:
-        """Run fn. On 429, sleep and retry the same request. Never mint a new order id."""
+    def _call_with_backoff(self, fn: Callable[[], Any], endpoint: str = "other") -> Any:
+        """Run fn. On 429, sleep and retry the same request. Never mint a new order id.
+
+        Each attempt first takes a slot in the shared per-endpoint budget.
+        """
         last: BaseException | None = None
         attempts = self.rate_limit_attempts
+        max_wait = ORDER_MAX_WAIT_SEC if endpoint in ORDER_ENDPOINTS else 0.0
         for attempt in range(attempts):
+            WEBULL_BUDGET.reserve(endpoint, max_wait=max_wait, sleeper=self._sleeper)
             self._throttle()
             try:
                 return fn()
@@ -1951,7 +2064,8 @@ class WebullBroker:
                 last = exc
                 if attempt + 1 >= attempts:
                     break
-                delay = float(self.submit_interval_sec or 1.5) * (2 ** attempt)
+                # A real 429 backs off at least 1.5 s, even with fast spacing.
+                delay = max(1.5, float(self.submit_interval_sec or 0)) * (2 ** attempt)
                 self._sleeper(delay)
         raise WebullRateLimit(str(last)[:500] if last else "TOO_MANY_REQUESTS")
 
@@ -1973,10 +2087,21 @@ class WebullBroker:
                 "webull-openapi-python-sdk not installed. "
                 "pip install webull-openapi-python-sdk"
             ) from exc
+        from odte_scanner.trading.log_redact import install_webull_log_redaction, remember_secret
+
+        remember_secret(self.app_key, self.app_secret)
+        install_webull_log_redaction()
         host = SANDBOX_TRADE_HOST
         client = ApiClient(self.app_key, self.app_secret, self.region)
         client.add_endpoint(self.region, host)
+        # Without these the SDK adds a DEBUG stdout handler and a
+        # webull_trade_sdk.log file handler on every TradeClient (one per
+        # broker), and those print request headers. SDK records go to our
+        # logging instead, through the redaction filter.
+        client._stream_logger_set = True
+        client._file_logger_set = True
         trade = TradeClient(client)
+        install_webull_log_redaction()  # loggers the SDK created while initialising
         order_api = getattr(trade, "order_v2", None) or getattr(trade, "order", None)
         if order_api is None:
             raise RuntimeError("TradeClient has no order API in this SDK version")
@@ -1987,7 +2112,15 @@ class WebullBroker:
     def _place_via_openapi(self, intent: WebullOrderIntent) -> str:
         """Place a single-leg option order on the paper sandbox host only."""
         self._assert_sandbox()
-        return self._call_with_backoff(lambda: self._post_option(intent))
+
+        def _send() -> str:
+            # Stamped after the local budget and spacing, right before the HTTP call.
+            sent_at = _now()
+            intent.meta["sent_at"] = sent_at
+            intent.meta.setdefault("first_sent_at", sent_at)
+            return self._post_option(intent)
+
+        return self._call_with_backoff(_send, "place")
 
     def _order_account(self, intent: WebullOrderIntent | None = None) -> str:
         """Sandbox account for this order. Per-order meta overrides the primary id."""
@@ -2115,7 +2248,7 @@ class WebullBroker:
                 raise RuntimeError(f"Webull positions HTTP {status}: {text}")
             return _response_body(res)
 
-        return self._call_with_backoff(_once)
+        return self._call_with_backoff(_once, "positions")
 
     def refresh_working_buys(self) -> list[WebullOrderIntent]:
         """Update submitted/partial buys from order detail. Dry-run rows stay simulated."""
@@ -2126,12 +2259,24 @@ class WebullBroker:
         return self._refresh_working("SELL")
 
     def _refresh_working(self, action: str) -> list[WebullOrderIntent]:
+        """One detail call per working order, oldest-checked first.
+
+        Detail calls share a ~30/min sandbox budget across every loop. When the
+        budget is spent the rest wait for the next pass instead of 429-ing, and
+        the rotation means the same orders are not the ones always skipped.
+        """
         if self.dry_run or not self.enabled:
             return []
         out: list[WebullOrderIntent] = []
-        for intent in list(self.orders):
-            if intent.action != action or intent.status not in {"submitted", "partial"}:
+        rows = [o for o in self.orders if o.action == action and o.status in {"submitted", "partial"}]
+        rows.sort(key=lambda o: _DETAIL_LAST.get(o.id, 0.0))
+        for intent in rows:
+            if WEBULL_BUDGET.used("detail") >= WEBULL_BUDGET.per_min and self._live():
+                out.append(intent)  # stays working; checked first next pass
                 continue
+            if len(_DETAIL_LAST) > 5000:
+                _DETAIL_LAST.clear()
+            _DETAIL_LAST[intent.id] = time.monotonic()
             out.append(self.refresh_fill(intent))
         return out
 
@@ -2166,6 +2311,10 @@ class WebullBroker:
         price = _coerce_qty(classified.get("fill_price"))
         if price is not None and price > 0:
             intent.fill_price = price
+        if state in {"filled", "partial"} and not intent.meta.get("filled_at"):
+            # When this process first saw the fill. Webull's own fill time
+            # (wb_filled_time_at, from order history) is preferred when present.
+            intent.meta["filled_at"] = _now()
         if state == "filled":
             intent.status = "filled"
         elif state == "partial":
@@ -2199,7 +2348,7 @@ class WebullBroker:
                 raise RuntimeError(f"Webull order detail HTTP {status}: {text}")
             return _response_body(res)
 
-        return self._call_with_backoff(_once)
+        return self._call_with_backoff(_once, "detail")
 
     def cancel(self, intent: WebullOrderIntent) -> WebullOrderIntent:
         """Cancel a resting limit. Dry-run rows are cancelled locally. Sandbox only."""
@@ -2259,7 +2408,7 @@ class WebullBroker:
             if status is not None and status not in {200, 201}:
                 raise RuntimeError(f"Webull cancel_option HTTP {status}: {text}")
 
-        self._call_with_backoff(_once)
+        self._call_with_backoff(_once, "cancel")
 
     def recent(self, limit: int = 30) -> list[dict[str, Any]]:
         return [o.to_dict() for o in self.orders[:limit]]

@@ -209,7 +209,7 @@ def run_watch(
                             app_key=lt.get("app_key"),
                             app_secret=lt.get("app_secret"),
                             ledger_path=ledger,
-                            submit_interval_sec=float(lt.get("submit_interval_sec", 1.5)),
+                            submit_interval_sec=float(lt.get("submit_interval_sec", 0.5)),
                         )
                         trader = AutoTrader(
                             broker,
