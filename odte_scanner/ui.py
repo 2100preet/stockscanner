@@ -357,6 +357,7 @@ PAGE = r"""
     <div id="expectedMoveBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="confluenceBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="ripV2ShadowBanner" class="pulse-banner" aria-live="polite"></div>
+    <div id="newsDeskBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="loadNote" class="loading" style="display:none;margin-bottom:.6rem"></div>
     <div id="alertToasts" aria-live="assertive"></div>
 
@@ -4677,6 +4678,49 @@ PAGE = r"""
         ${board.ok === false ? `<div class="pulse-card expected"><p class="pc-why">${esc(board.note || "RIP-v2 shadow unavailable.")}</p></div>` : statsTable + today}`;
     }
 
+    function renderNewsDesk() {
+      const el = document.getElementById("newsDeskBanner");
+      if (!el) return;
+      const board = DATA.news_desk || {};
+      el.classList.add("active", "expected");
+      const esc = (v) => String(v == null ? "" : v).replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+      const safeUrl = (u) => /^https?:\/\//i.test(String(u || "")) ? esc(u) : "";
+      const money = (n) => n == null ? "—" : ((Number(n) >= 0 ? "+$" : "−$") + Math.abs(Number(n)).toFixed(0));
+      const pct = (n) => n == null ? "—" : ((Number(n) >= 0 ? "+" : "") + Number(n).toFixed(1) + "%");
+      const events = (board.events || []).slice(0, 15);
+      const rows = events.map((e) => {
+        const link = safeUrl(e.url);
+        const head = link ? `<a href="${link}" target="_blank" rel="noopener noreferrer">${esc(e.headline)}</a>` : esc(e.headline);
+        const status = e.sent ? "sent" : esc(e.why_not_sent || "logged");
+        return `<tr><td>${esc(e.published_ct || "—")}</td><td><strong>${esc(e.ticker || "—")}</strong></td><td>${esc(e.label)}</td><td>${head}</td><td>${esc(e.move_label || "—")}</td><td>${esc(e.note || "—")}</td><td>${status}</td></tr>`;
+      }).join("");
+      const table = rows
+        ? `<div style="overflow-x:auto"><table class="pb-table" style="width:100%;font-size:12px"><thead><tr><th>Time</th><th>Ticker</th><th>Event</th><th>Headline</th><th>Move</th><th>Playbook</th><th>Alert</th></tr></thead><tbody>${rows}</tbody></table></div>`
+        : `<div class="pulse-card expected"><p class="pc-why">No market-moving news yet today.</p></div>`;
+      const sh = board.shadow || {};
+      const st = sh.stats || {};
+      const win = st.win_rate_pct == null ? "—" : Math.round(st.win_rate_pct) + "%";
+      const pf = st.profit_factor == null ? "—" : Number(st.profit_factor).toFixed(2);
+      const shadowToday = (sh.today || []).map((r) => {
+        const res = r.status === "closed" ? `${esc(r.exit_reason || "closed")} · ${esc(r.exit_label || "—")} · ${pct(r.pnl_pct)}`
+          : r.status === "open" ? `open · ${esc(r.contract || "—")} · ${esc(r.entry_label || "—")} · ${esc(r.last_mark_label || "no mark yet")}`
+          : r.status === "watching" ? `watching for ${esc(r.reaction_day || "—")} 8:45 CT`
+          : `no trade · ${esc(r.reason || "")}`;
+        return `<div class="pc-why"><strong>${esc(r.ticker)}</strong> · ${res}</div>`;
+      }).join("");
+      const shadowBox = `<div class="pulse-card expected" style="margin-top:.4rem"><p class="pc-why"><strong>Shadow (not traded):</strong> earnings miss/cut/gap-down −2…−12% → put at 9:45 ET if still under the open · stop on reclaim of the open · flat 10:30 CT · Δ 0.40–0.50 · ≥5 DTE</p><p class="pc-why">${st.trades || 0} trades · win ${win} · avg ${pct(st.avg_pct)} · ${money(st.pnl_usd_per_contract)} / 1 contract · PF ${pf}</p>${shadowToday}</div>`;
+      const srcs = Object.entries(board.sources || {}).map(([k, v]) => `${esc(k)} ${v && v.ok ? "✓" : "✗"}`).join(" · ");
+      el.innerHTML = `
+        <div class="pb-head">
+          <div>
+            <h2 class="pb-title">📰 News Desk <em>· alert only</em></h2>
+            <div class="pb-sub">SEC 8-K · PR Newswire · FDA · Nasdaq earnings · never places orders${srcs ? " · " + srcs : ""}</div>
+          </div>
+          <div class="status">${board.ok === false ? "UNAVAILABLE" : ((board.n_events || 0) + " TODAY · " + (board.sent_today || 0) + " SENT")}</div>
+        </div>
+        ${board.ok === false ? `<div class="pulse-card expected"><p class="pc-why">${esc(board.note || "News Desk unavailable.")}</p></div>` : table + shadowBox}`;
+    }
+
     function paint() {
       try { renderScorecard(); } catch (err) { console.error(err); }
       try { renderEdge(); } catch (err) { console.error(err); }
@@ -4687,6 +4731,7 @@ PAGE = r"""
       try { renderExpectedMove(); } catch (err) { console.error(err); }
       try { renderConfluence(); } catch (err) { console.error(err); }
       try { renderRipV2Shadow(); } catch (err) { console.error(err); }
+      try { renderNewsDesk(); } catch (err) { console.error(err); }
       try { renderSpxStrategy(); } catch (err) { console.error(err); }
       renderMustTradeBanner();
       renderNowBoard();
@@ -5273,6 +5318,16 @@ def _rip_v2_shadow_block() -> dict:
         return public_block()
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "today": [], "shadow_only": True, "error": str(exc)[:200], "note": "RIP-v2 shadow unavailable."}
+
+
+def _news_desk_block() -> dict:
+    """📰 News Desk tile from disk. Alert only. A failure is an ok:false block."""
+    try:
+        from odte_scanner.news.desk import public_block
+
+        return public_block()
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "events": [], "alert_only": True, "error": str(exc)[:200], "note": "News Desk unavailable."}
 
 
 def _expected_move_block() -> dict:
@@ -8252,6 +8307,7 @@ def create_app(config_path: str | None = None) -> Flask:
                         "expected_move": _expected_move_block(),
                         "confluence": _confluence_block(),
                         "rip_v2_shadow": _rip_v2_shadow_block(),
+                        "news_desk": _news_desk_block(),
                         }
                     )
 
