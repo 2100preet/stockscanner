@@ -1453,8 +1453,10 @@ class AutoTrader:
             consider(order, self._position_for_order(order), order.desk or "sure_winner")
         for pos in self._position_rows():
             order = self._matching_position_buy(pos)
-            if order is not None:
+            if order is not None and not (order.desk == "webull_import" and not self._tracks_exit(order)):
                 continue
+            # A buy restored from Webull history with no desk is managed like
+            # any other live long the ledger cannot place.
             consider(None, pos, self._desk_for_position(pos))
         return rows
 

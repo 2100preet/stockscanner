@@ -238,3 +238,27 @@ def test_history_import_restores_lost_sells_and_fixes_staged(tmp_path: Path, mon
     rows = rows + flatten_history_group(note)
     # Idempotent.
     assert broker.import_history(rows) == {"added": 0, "updated": 0, "checked": 3}
+
+
+def test_restored_buy_takes_the_desk_of_its_chase_sibling(tmp_path: Path):
+    broker = _live_broker(tmp_path / "wb.json")
+    first = broker.stage(desk="sniper", action="BUY", symbol="SPY", contract="SPY261109C00746000",
+                         expiry="2026-11-09", strike=746, limit_price=2.70,
+                         meta={"golden_kind": "sniper", "gold_exit": True, "sniper_flat_ct": "10:30"})
+    first.status = "cancelled"
+    broker.save()
+    group = {
+        "client_order_id": "wb-replace001",
+        "orders": [{
+            "client_order_id": "wb-replace001", "order_id": "X9", "side": "BUY", "status": "FILLED",
+            "legs": [{"symbol": "SPY", "option_type": "CALL", "option_expire_date": "2026-11-09",
+                      "strike_price": "746.00"}],
+            "total_quantity": "1", "filled_quantity": "1", "filled_price": "2.76",
+            "place_time_at": "2026-11-09T14:50:20.000Z", "filled_time_at": "2026-11-09T14:50:25.000Z",
+        }],
+    }
+    broker.import_history(flatten_history_group(group))
+    restored = next(o for o in broker.orders if o.id == "wb-replace001")
+    assert restored.desk == "sniper" and restored.meta["golden_kind"] == "sniper"
+    assert restored.meta["sniper_flat_ct"] == "10:30" and restored.meta["desk_from"] == first.id
+    assert AutoTrader(broker, golden_only=True)._tracks_exit(restored)
