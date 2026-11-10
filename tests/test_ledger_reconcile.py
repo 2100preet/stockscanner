@@ -172,7 +172,10 @@ def test_stale_staged_sell_does_not_block_the_next_exit(tmp_path: Path, monkeypa
     assert trader._sell_already_working({"symbol": "SPY", "contract": contract}, "C") is False
 
 
-def test_history_import_restores_lost_sells_and_fixes_staged(tmp_path: Path):
+def test_history_import_restores_lost_sells_and_fixes_staged(tmp_path: Path, monkeypatch):
+    from odte_scanner.edge import round_trips as rt
+
+    monkeypatch.setattr(rt, "PATH", tmp_path / "trips.jsonl")
     broker = _live_broker(tmp_path / "wb.json")
     buy = broker.stage(desk="sniper", action="BUY", symbol="SPY", contract="SPY261109C00746000",
                        expiry="2026-11-09", strike=746, limit_price=2.76, meta={"golden_kind": "sniper"})
@@ -213,5 +216,25 @@ def test_history_import_restores_lost_sells_and_fixes_staged(tmp_path: Path):
     assert restored.meta["exit_tier"] == "sniper"
     assert staged_sell.status == "filled" and staged_sell.fill_price == 2.33
     assert staged_sell.broker_order_id == "X2"
+    # Trips land on the day Webull filled them, not the import day.
+    assert restored.updated_at == "2026-11-09T20:26:56.744Z"
+    assert staged_sell.updated_at == "2026-11-04T16:30:33.395Z"
+    # A timestamp-only note does not move a settled row to today.
+    buy_stamp = buy.updated_at
+    note = {
+        "client_order_id": buy.id,
+        "orders": [{
+            "client_order_id": buy.id, "order_id": "X0", "side": "BUY", "status": "FILLED",
+            "legs": [{"symbol": "SPY", "option_type": "CALL", "option_expire_date": "2026-11-09",
+                      "strike_price": "746.00"}],
+            "total_quantity": "1", "filled_quantity": "1", "filled_price": "2.76",
+            "place_time_at": "2026-11-09T14:50:19.100Z", "filled_time_at": "2026-11-09T14:50:25.000Z",
+        }],
+    }
+    buy.meta["filled_qty"] = 1.0
+    broker.import_history(flatten_history_group(note))
+    assert buy.meta["wb_filled_time_at"] == "2026-11-09T14:50:25.000Z"
+    assert buy.updated_at == buy_stamp
+    rows = rows + flatten_history_group(note)
     # Idempotent.
-    assert broker.import_history(rows) == {"added": 0, "updated": 0, "checked": 2}
+    assert broker.import_history(rows) == {"added": 0, "updated": 0, "checked": 3}

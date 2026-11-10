@@ -1043,7 +1043,8 @@ def _intent_from_history(row: dict[str, Any], status: str, broker: "WebullBroker
         status=status,
         broker_order_id=str(row.get("order_id") or "") or None,
         created_at=placed,
-        updated_at=_now(),
+        # The fill time, not the import time, so daily P&L lands on the right day.
+        updated_at=str(row.get("filled_time_at") or "") or placed,
         meta={
             "source": "webull_history_import",
             "fill_state": status if status in {"filled", "partial", "cancelled", "rejected"} else "working",
@@ -1061,6 +1062,7 @@ def _intent_from_history(row: dict[str, Any], status: str, broker: "WebullBroker
 
 def _apply_history(order: "WebullOrderIntent", row: dict[str, Any], status: str) -> bool:
     changed = False
+    moved = False  # status, price, or quantity changed (not just a timestamp note)
     meta = order.meta if isinstance(order.meta, dict) else {}
     order.meta = meta
     for key, value in (("wb_place_time_at", row.get("place_time_at")), ("wb_filled_time_at", row.get("filled_time_at"))):
@@ -1083,17 +1085,18 @@ def _apply_history(order: "WebullOrderIntent", row: dict[str, Any], status: str)
         meta["status_from_webull_history"] = True
         if current == "staged":
             meta["reconciled_from"] = "staged"
-        changed = True
+        changed = moved = True
     price = _coerce_qty(row.get("filled_price"))
     if price is not None and price > 0 and status in {"filled", "partial"} and order.fill_price != price:
         order.fill_price = price
-        changed = True
+        changed = moved = True
     filled = _coerce_qty(row.get("filled_quantity"))
     if filled is not None and status in {"filled", "partial"} and meta.get("filled_qty") != filled:
         meta["filled_qty"] = filled
-        changed = True
-    if changed:
-        order.updated_at = _now()
+        changed = moved = True
+    if moved:
+        # Stamp Webull's fill time so the trip lands on the day it happened.
+        order.updated_at = str(row.get("filled_time_at") or "") or _now()
     return changed
 
 
