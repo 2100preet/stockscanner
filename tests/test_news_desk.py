@@ -65,6 +65,17 @@ def kind(headline, **kw):
         ("Haymaker Acquisition Corp V Announces the Separate Trading of its Class A Ordinary Shares and Warrants",
          {"company": "Haymaker Acquisition Corp V"}, "OTHER"),
         ("Diginex Announces Extension of Long Stop Date for Proposed Acquisition of Resulticks", {"company": "Diginex Ltd"}, "OTHER"),
+        # Live false positives on Nov 10, 2026 (Polygon opinion pieces sent as "M&A acquirer")
+        ("Eli Lilly vs Novo Nordisk: What's the Better GLP-1 Stock to Buy?", {"company": "Novo Nordisk A/S"}, "OPINION"),
+        ("AMD vs. Intel: Which Is the Better Artificial Intelligence (AI) Chip Stock to Buy Right Now?", {"company": "Intel Corp"}, "OPINION"),
+        ("Pfizer Hits a New 52-Week High. Here's Why It's Not Too Late to Buy the Stock", {"company": "Pfizer Inc."}, "OPINION"),
+        ("BioNTech to Acquire US FDA Priority Review Voucher", {"company": "BioNTech SE"}, "OTHER"),
+        ("Acme Agrees to Buy Widget for $2 Billion", {"company": "Acme Corp"}, "MA_ACQUIRER"),
+        ("Acme Reports Q3 Revenue of $5.1B vs. $4.2B", {"items": ["2.02"]}, "EARN_PENDING"),
+        ("Acme upgrades full-year outlook", {}, "GUIDE_RAISE"),
+        # CHTR, Nov 10, 2026: context only
+        ("Charter Announces Tender Offers for Eight Series of Notes", {"company": "Charter Communications, Inc."}, "DEBT_TENDER"),
+        ("Charter Communications Shares Climb 5.4% Following Analyst Upgrade", {}, "ANALYST"),
         ("Halozyme Announces Pricing of Upsized Private Offering of $1.3 Billion of Convertible Senior Notes", {}, "OFFERING"),
         ("HCA Announces Proposed Public Offering of Senior Notes", {}, "DEBT"),
         ("Blackstone Completes Senior Notes Offering", {}, "OFFERING_CLOSED"),
@@ -582,3 +593,18 @@ def test_a_crash_mid_cycle_never_repeats_an_alert(paths, monkeypatch):
     assert len(sent) == 1
     cycle(paths, rt, items, TUE_7AM + timedelta(minutes=1), sent)
     assert len(sent) == 1  # nothing re-sent; seen ids were saved despite the error
+
+
+def test_context_items_listed_for_liquid_names_never_sent(paths):
+    rt = make_rt(universe=("ACME",), quotes={"CHTR": liquid(price=121.2, avg=1_179_184), "TINY": liquid(price=4.0)})
+    sent: list[str] = []
+    items = [
+        wire("x1", "Charter Communications (NASDAQ: CHTR) Announces Tender Offers for Eight Series of Notes", ["CHTR"], TUE_7AM),
+        wire("x2", "Tiny (NASDAQ: TINY) Announces Tender Offers for Its Senior Notes", ["TINY"], TUE_7AM),
+        wire("x3", "Eli Lilly vs Novo Nordisk (NYSE: NVO): What's the Better Stock to Buy?", ["NVO"], TUE_7AM),
+    ]
+    cycle(paths, rt, items, TUE_7AM, sent)
+    assert sent == []
+    events = json.loads(paths[0].read_text())["events"]
+    assert [(e["ticker"], e["type"]) for e in events] == [("CHTR", "DEBT_TENDER")]
+    assert events[0]["why_not_sent"] == "not an alert type"
