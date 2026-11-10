@@ -30,3 +30,4 @@ def _weekday_morning_when_now_is_omitted(monkeypatch):
 def _no_webull_history_network(monkeypatch):
     """Fake sandbox keys must not reach api.sandbox.webull.com from a test."""
     monkeypatch.setenv("WEBULL_HISTORY_RECONCILE", "0")
+    monkeypatch.setenv("WEBULL_EXPIRY_CLOSEOUT", "0")

@@ -285,6 +285,32 @@ _HISTORY_LAST: dict[str, float] = {}
 HISTORY_EVERY_SEC = 60.0
 
 
+EXPIRY_EVERY_SEC = 300.0
+_EXPIRY_LAST: dict[str, float] = {}
+
+
+def _maybe_close_expired(broker: Any, now: datetime | None, force: bool = False) -> dict[str, Any] | None:
+    """Close expired lots at intrinsic value, at most every 5 minutes per ledger.
+
+    The first pass in a process is the backfill: every expired lot still long
+    in the ledger gets its close-out row.
+    """
+    import time as _time
+
+    from odte_scanner.trading import expiry as expiry_mod
+
+    if not expiry_mod.enabled():
+        return None
+    key = str(getattr(broker, "path", "") or id(broker))
+    clock = _time.monotonic()
+    with _HISTORY_LOCK:
+        last = _EXPIRY_LAST.get(key)
+        if not force and last is not None and clock - last < EXPIRY_EVERY_SEC:
+            return None
+        _EXPIRY_LAST[key] = clock
+    return expiry_mod.close_expired(broker, now)
+
+
 def _maybe_import_history(broker: WebullBroker, now: datetime | None, *, force: bool = False, days: int = 1) -> dict[str, Any] | None:
     """Pull Webull order history for the current ET session, once a minute."""
     import time as _time
@@ -422,6 +448,10 @@ class AutoTrader:
             out["history"] = _maybe_import_history(self.broker, now)
         except Exception as exc:  # noqa: BLE001
             logger.warning("webull history import failed: %s", exc)
+        try:
+            out["expiry"] = _maybe_close_expired(self.broker, now)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("expiry close-out failed: %s", exc)
         self.last_reconcile = out
         return out
 

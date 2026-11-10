@@ -52,6 +52,8 @@ def _meta(order: dict[str, Any]) -> dict[str, Any]:
 def status_label(order: dict[str, Any] | None) -> str:
     """``filled``, ``working limit``, ``rejected``, or ``cancelled``."""
     status = str((order or {}).get("status") or "").lower()
+    if status in _FILLED and _meta(order or {}).get("expiry_close"):
+        return "expired ITM" if _meta(order or {}).get("itm") else "expired"
     if status in _FILLED:
         return "filled"
     if status == "rejected":
@@ -399,7 +401,8 @@ def round_trips(
         buy = buys.get(contract)
         tier = tier_of(order) or (tier_of(buy) if buy is not None else None)
         routed = tier in {"sniper", "diamond", "gold", "afternoon"}
-        if exit_px is None or exit_px <= 0:
+        expired = bool(_meta(order).get("expiry_close"))
+        if exit_px is None or exit_px < 0 or (exit_px == 0 and not expired):
             continue
         if not routed and not include_other_desks:
             continue
@@ -428,6 +431,8 @@ def round_trips(
                 "pnl": round(pnl, 2),
                 "reason": str(order.get("reason") or ""),
                 "order_id": str(order.get("id") or ""),
+                "expired": expired,
+                "itm": bool(_meta(order).get("itm")) if expired else False,
                 "raw_desk": str((buy or {}).get("desk") or order.get("desk") or ""),
                 "exited_at": str(order.get("updated_at") or order.get("created_at") or ""),
                 "entered_at": str(
@@ -542,6 +547,8 @@ def _unpriced_exits(orders: list[dict[str, Any]]) -> int:
             continue
         exit_px = _num(order.get("fill_price"))
         key = (contract, round(exit_px or 0.0, 4), _qty(order))
+        if _meta(order).get("expiry_close") and exit_px is not None and exit_px >= 0 and key in priced:
+            continue
         if exit_px is None or exit_px <= 0 or key not in priced:
             missing += 1
     return missing

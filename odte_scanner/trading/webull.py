@@ -1873,6 +1873,13 @@ class WebullBroker:
         for intent in touched:
             if intent.action == "SELL" and intent.status in {"filled", "partial"}:
                 try:
+                    from odte_scanner.trading.expiry import void_for_real_sell
+
+                    if void_for_real_sell(self.orders, intent):
+                        summary["voided_expiry"] = summary.get("voided_expiry", 0) + 1
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("expiry void check failed: %s", exc)
+                try:
                     from odte_scanner.edge.round_trips import record_sell_fill
 
                     record_sell_fill(intent, self.orders)

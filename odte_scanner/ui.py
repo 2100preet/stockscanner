@@ -8711,7 +8711,7 @@ def create_app(config_path: str | None = None) -> Flask:
     @app.post("/api/webull/reconcile")
     def webull_reconcile():
         """Match the ledger to Webull paper: stuck staged rows and order history."""
-        from odte_scanner.trading.auto_trader import _SYNC_LOCK, _maybe_import_history
+        from odte_scanner.trading.auto_trader import _SYNC_LOCK, _maybe_close_expired, _maybe_import_history
 
         try:
             days = max(1, min(7, int(request.args.get("days") or 7)))
@@ -8722,7 +8722,8 @@ def create_app(config_path: str | None = None) -> Flask:
             broker.reload()
             staged = broker.reconcile_staged()
             history = _maybe_import_history(broker, None, force=True, days=days)
-        return jsonify({"ok": True, "staged": staged, "history": history})
+            expiry = _maybe_close_expired(broker, None, force=True)
+        return jsonify({"ok": True, "staged": staged, "history": history, "expiry": expiry})
 
     @app.post("/api/webull/sync")
     def webull_sync():
