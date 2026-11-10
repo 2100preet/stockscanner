@@ -30,6 +30,7 @@ from __future__ import annotations
 import logging
 import re
 import threading
+import time
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -2403,6 +2404,73 @@ class AutoTrader:
             moment = self._now
         self._queue_exit_alerts(orders, moment, diamond, sniper)
         return result
+
+    def sync_exits(self, *, now: datetime | None = None, lock_timeout: float = 3.0) -> dict[str, Any]:
+        """Exits only: stops, targets, trails, clock flattens, and sell retries.
+
+        Runs on its own 5–10 s loop so a slow focus scan cannot hold a stop or
+        a 10:30 flatten. It never opens a position. If the main sync holds the
+        lock, this tick is skipped (that sync runs the same exits).
+        """
+        if not _SYNC_LOCK.acquire(timeout=max(0.0, float(lock_timeout))):
+            return {"skipped": "sync busy"}
+        try:
+            result = self._sync_exits_locked(now)
+            orders = list(self.broker.orders)
+            moment = self._now
+        finally:
+            _SYNC_LOCK.release()
+        if result.get("sent"):
+            self._queue_exit_alerts(orders, moment, None, None)
+        return result
+
+    def _sync_exits_locked(self, now: datetime | None) -> dict[str, Any]:
+        started = time.monotonic()
+        sent: list[dict[str, Any]] = []
+        self._now = now
+        self.broker._session_now = now
+        self._closed_contracts = set()
+        self.filtered = []
+        self._reconcile_broker(now)
+        if not self.golden_only:
+            return {"sent": sent, "ms": round((time.monotonic() - started) * 1000)}
+        self.broker.refresh_working_buys()
+        self._reconcile_positions(self._managed_positions())
+        session = option_session_open(now)
+        if session:
+            self._maintain_working_sells()
+        if past_odte_flatten(now) and session:
+            self._cancel_unfilled_at_cutoff()
+        self._stamp_exit_plans(None)
+
+        def take(intent: WebullOrderIntent | None) -> None:
+            if intent is None:
+                return
+            if intent.contract and intent.action == "SELL":
+                self._closed_contracts.add(str(intent.contract))
+            sent.append(
+                {"id": intent.id, "contract": intent.contract, "status": intent.status, "reason": intent.reason}
+            )
+
+        budget = max(1, self.max_orders_per_sync)
+        for row in self._premium_exit_rows():
+            if budget <= 0:
+                break
+            budget -= 1
+            take(self._safe_exit(row))
+        # Clock flattens never wait on the budget.
+        for row in self._flatten_when_signal_leaves(now):
+            take(self._safe_exit(row))
+        if session:
+            for intent in [o for o in self.broker.orders if o.status == "deferred" and o.action == "SELL"]:
+                if contract_expired(intent.expiry, now):
+                    intent.meta["cancel_reason"] = "expired contract — not resubmitted"
+                    self.broker.cancel(intent)
+                    continue
+                if (intent.meta or {}).get("retryable") is False:
+                    continue
+                take(self.broker.submit(intent))
+        return {"sent": sent, "ms": round((time.monotonic() - started) * 1000)}
 
     def sync_hot(
         self,

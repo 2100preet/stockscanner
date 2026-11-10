@@ -95,12 +95,8 @@ def _default_dispatch(snapshot: dict[str, Any]) -> dict[str, Any]:
     return dispatch_hot_alerts_async(snapshot)
 
 
-def _default_route(
-    diamond: dict[str, Any],
-    sniper: dict[str, Any],
-    now: datetime,
-    config_path: str | None,
-) -> dict[str, Any]:
+def build_paper_trader(config_path: str | None = None):
+    """One Webull paper broker + trader from config (same settings every loop uses)."""
     from odte_scanner.config import load_config
     from odte_scanner.edge.gate import edge_gate_enabled
     from odte_scanner.live_desk import resolve_webull_live_flags
@@ -143,6 +139,16 @@ def _default_route(
         **paper_risk_kwargs(lt, cfg.get("risk") or {}),
         edge_gate=edge_gate_enabled(cfg),
     )
+    return broker, trader
+
+
+def _default_route(
+    diamond: dict[str, Any],
+    sniper: dict[str, Any],
+    now: datetime,
+    config_path: str | None,
+) -> dict[str, Any]:
+    _broker, trader = build_paper_trader(config_path)
     return trader.sync_hot(diamond=diamond, sniper=sniper, now=now)
 
 
@@ -637,6 +643,17 @@ def _worker_loop(config_path: str | None) -> None:
 
 
 def start_fast_desk_worker(config_path: str | None = None) -> bool:
+    """Start the hot entry loop and the fast exit loop once per process."""
+    try:
+        from odte_scanner.fast_exits import start_fast_exit_worker
+
+        start_fast_exit_worker(config_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("fast exit worker did not start: %s", exc)
+    return _start_fast_desk_worker(config_path)
+
+
+def _start_fast_desk_worker(config_path: str | None = None) -> bool:
     """Start the hot loop once per process. The focus scan cannot block it."""
     global _worker_started
     if not _env_flag("FAST_DESK_LOOP", True):
