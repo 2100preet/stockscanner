@@ -28,6 +28,7 @@ def _trader(broker: WebullBroker) -> AutoTrader:
         golden_only=True,
         max_orders_per_sync=6,
         second_desk="challenge",
+        challenge_paper=True,
     )
 
 

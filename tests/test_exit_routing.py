@@ -31,7 +31,7 @@ def test_challenge_routes_to_account_2_and_gold_stays_on_account_1(tmp_path: Pat
         account_id="margin-1",
         account_id_2="cash-2",
     )
-    trader = AutoTrader(broker, golden_only=True, second_desk="challenge")
+    trader = AutoTrader(broker, golden_only=True, second_desk="challenge", challenge_paper=True)
     out = trader.sync(
         sure_winners={
             "winners": [
@@ -80,7 +80,7 @@ def test_missing_account_2_does_not_send_challenge_to_the_margin_account(tmp_pat
         ledger_path=tmp_path / "wb.json",
         account_id="margin-1",
     )
-    trader = AutoTrader(broker, golden_only=True, second_desk="challenge")
+    trader = AutoTrader(broker, golden_only=True, second_desk="challenge", challenge_paper=True)
     out = trader.sync(
         challenge={
             "entry": [
@@ -108,7 +108,7 @@ def test_account_number_is_refused_as_account_2(tmp_path: Path):
         account_id="margin-1",
         account_id_2=CASH_ACCOUNT_NUMBER,
     )
-    trader = AutoTrader(broker, golden_only=True, second_desk="challenge")
+    trader = AutoTrader(broker, golden_only=True, second_desk="challenge", challenge_paper=True)
     out = trader.sync(
         challenge={
             "entry": [

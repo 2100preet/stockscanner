@@ -460,8 +460,9 @@ actions:
   challenge_prefer_dte: 0
   challenge_target_premium_min: 1.2   # +20% bank same-day (path math)
   challenge_target_premium_max: 1.6   # +60% stretch
-  # Deadline: $100k by end of October 2026
-  challenge_deadline: "2026-10-31"
+  # Oct 31 2026 has passed. A blank deadline keeps challenge_pace_months
+  # (below). A past date must not collapse the sleeve into a 1-day sprint.
+  challenge_deadline: null
   challenge_pace_months: 1.0
   challenge_pace_milestone_usd: 100000
   challenge_prefer_weekly_pace: true
@@ -650,6 +651,13 @@ live_trading:
   # not the account number. Golden unusual-flow stays on the board.
   golden_only: true
   second_desk: challenge
+  # Challenge Webull paper orders. OFF until the owner opts in.
+  # Set this true or export CHALLENGE_PAPER=1. Also needs WEBULL_PAPER_SUBMIT=1
+  # (or enabled + dry_run false) and WEBULL_ACCOUNT_ID_2 set to the sandbox
+  # account's internal account_id, not the account number DEA32RD3.
+  # WEBULL_LIVE cannot turn this on and cannot select the production host.
+  # Entries and exits send a Telegram line when a bot token is configured.
+  challenge_paper: false
   # Pre-change golden-flow sandbox positions are left open unless this is true.
   close_legacy_positions: false
   # Stage golden BUY/SELL into webull_orders.json on each snapshot / watch (safe with dry_run)

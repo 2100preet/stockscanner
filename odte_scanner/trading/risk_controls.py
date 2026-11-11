@@ -110,6 +110,7 @@ DESK_NAMES = {
     "gold": "Gold Setup",
     "afternoon": "Afternoon Puts",
     "lunch": "Lunch-Break Credit",
+    "challenge": "Challenge",
 }
 
 

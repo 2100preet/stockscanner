@@ -6793,7 +6793,7 @@ def create_app(config_path: str | None = None) -> Flask:
                         beauty_monthly["oct_end_pace"] = oct_end_pace_note(
                             equity=1000.0,
                             target_usd=float(actions_cfg.get("challenge_target_usd", 100_000)),
-                            deadline=str(actions_cfg.get("challenge_deadline") or "2026-10-31"),
+                            deadline=actions_cfg.get("challenge_deadline") or None,
                         )
                     except Exception as exc:  # noqa: BLE001
                         logger.warning("beauty monthly unavailable: %s", exc)
@@ -7037,11 +7037,18 @@ def create_app(config_path: str | None = None) -> Flask:
                     # because fetch_contracts was hard-disabled and auto_enter was false.
                     loss_cd_days = int(actions_cfg.get("challenge_loss_cooldown_days", 5))
                     loss_cooldown_syms = tracker.recent_loss_symbols(cooldown_days=loss_cd_days)
-                    from odte_scanner.signals.beauty_monthly import days_to_deadline, oct_end_pace_note
+                    from odte_scanner.signals.beauty_monthly import oct_end_pace_note
 
-                    deadline = str(actions_cfg.get("challenge_deadline") or "2026-10-31")
-                    days_left = days_to_deadline(deadline)
-                    pace_months = max(0.25, days_left / 30.4375)
+                    from odte_scanner.trading.challenge_paper import pace_months_for_deadline
+
+                    deadline_raw = actions_cfg.get("challenge_deadline")
+                    deadline = str(deadline_raw).strip() if deadline_raw else ""
+                    if deadline.lower() in {"none", "null", "off"}:
+                        deadline = ""
+                    pace_months = pace_months_for_deadline(
+                        deadline or None,
+                        configured=float(actions_cfg.get("challenge_pace_months", 1.0)),
+                    )
                     # Reuse UW board already fetched for BUY/SELL NOW (do not double-hit API)
                     if not isinstance(uw_flow, dict):
                         uw_flow = {"ok": False, "configured": False, "skipped": True}
@@ -7415,6 +7422,13 @@ def create_app(config_path: str | None = None) -> Flask:
                         }
                     challenge["sync"] = sync
                     challenge["book"] = tracker.book.to_dict()
+                    from odte_scanner.trading.challenge_paper import apply_challenge_paper_board
+
+                    apply_challenge_paper_board(
+                        challenge,
+                        [t.to_dict() for t in tracker.open_trades()],
+                        cfg.get("live_trading") or {},
+                    )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("challenge board unavailable: %s", exc)
                     challenge = {"error": str(exc), "tickets": [], "disclaimer": "Challenge board unavailable."}
@@ -8669,6 +8683,7 @@ def create_app(config_path: str | None = None) -> Flask:
         from odte_scanner.live_desk import resolve_webull_live_flags
         from odte_scanner.signals.exit_rules import load_exit_rules
         from odte_scanner.trading.auto_trader import AutoTrader, paper_risk_kwargs
+        from odte_scanner.trading.challenge_paper import challenge_paper_enabled
         from odte_scanner.trading.webull import WebullBroker
 
         lt = cfg.get("live_trading") or {}
@@ -8712,6 +8727,7 @@ def create_app(config_path: str | None = None) -> Flask:
             exit_rules=load_exit_rules(lt.get("exits")),
             **paper_risk_kwargs(lt, cfg.get("risk") or {}),
             edge_gate=edge_gate_enabled(cfg),
+            challenge_paper=challenge_paper_enabled(lt),
         )
         return broker, trader
 

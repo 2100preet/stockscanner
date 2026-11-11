@@ -146,6 +146,7 @@ def build_paper_trader(config_path: str | None = None):
     from odte_scanner.live_desk import resolve_webull_live_flags
     from odte_scanner.signals.exit_rules import load_exit_rules
     from odte_scanner.trading.auto_trader import AutoTrader, paper_risk_kwargs
+    from odte_scanner.trading.challenge_paper import challenge_paper_enabled
     from odte_scanner.trading.webull import WebullBroker
 
     cfg = load_config(config_path)
@@ -182,6 +183,7 @@ def build_paper_trader(config_path: str | None = None):
         exit_rules=load_exit_rules(lt.get("exits")),
         **paper_risk_kwargs(lt, cfg.get("risk") or {}),
         edge_gate=edge_gate_enabled(cfg),
+        challenge_paper=challenge_paper_enabled(lt),
     )
     return broker, trader
 
@@ -322,6 +324,7 @@ def _default_afternoon_route(board: dict[str, Any], now: datetime, config_path: 
     from odte_scanner.live_desk import resolve_webull_live_flags
     from odte_scanner.signals.exit_rules import load_exit_rules
     from odte_scanner.trading.auto_trader import AutoTrader, paper_risk_kwargs
+    from odte_scanner.trading.challenge_paper import challenge_paper_enabled
     from odte_scanner.trading.webull import WebullBroker
 
     cfg = load_config(config_path)
@@ -357,6 +360,7 @@ def _default_afternoon_route(board: dict[str, Any], now: datetime, config_path: 
         exit_rules=load_exit_rules(lt.get("exits")),
         **paper_risk_kwargs(lt, cfg.get("risk") or {}),
         edge_gate=edge_gate_enabled(cfg),
+        challenge_paper=challenge_paper_enabled(lt),
     )
     return trader.sync_hot(afternoon=board, now=now)
 

@@ -28,9 +28,10 @@ _TIER_LABEL = {
     "sniper": ("🎯", "SNIPER"),
     "afternoon": ("🌅", "AFTERNOON PUTS"),
     "gold": ("⭐", "GOLD SETUP"),
+    "challenge": ("🏁", "CHALLENGE"),
 }
-_TIER_TARGET = {"diamond": 30, "sniper": 25, "afternoon": 100, "gold": 30}
-_TIER_STOP = {"diamond": 40, "sniper": 40, "afternoon": 40, "gold": 50}
+_TIER_TARGET = {"diamond": 30, "sniper": 25, "afternoon": 100, "gold": 30, "challenge": 100}
+_TIER_STOP = {"diamond": 40, "sniper": 40, "afternoon": 40, "gold": 50, "challenge": 50}
 _FILLED = {"filled", "partial"}
 _WORKING = {"submitted", "partial"}
 
@@ -142,6 +143,10 @@ def plain_exit_reason(detail: str, *, tier: str = "") -> str:
         return "2:45 PM CT flat"
     if "2:30" in text or "14:30" in low:
         return "2:30 PM CT flat"
+    # 15:45 ET is the challenge 0–1 DTE clock. Checked before "stop" so a
+    # "time-stop" line is not labeled as the premium stop.
+    if "15:45" in low:
+        return "15:45 ET flat"
     if low in {"flat", "flatten"}:
         return "10:30 CT flat"
     stop_rule = re.search(r"[≤<=]\s*[−\-]\s*(\d+(?:\.\d+)?)\s*%", text)
@@ -195,6 +200,49 @@ def format_exit_alert(
     return line
 
 
+def format_challenge_entry_alert(order: Any) -> str:
+    """One line when a Challenge paper buy is staged. No account id."""
+    symbol = str(getattr(order, "symbol", "") or "").upper()
+    right = str(getattr(order, "right", "") or "C")
+    expiry = getattr(order, "expiry", "")
+    strike = getattr(order, "strike", None)
+    try:
+        qty = max(1, int(getattr(order, "quantity", None) or 1))
+    except (TypeError, ValueError):
+        qty = 1
+    noun = "contract" if qty == 1 else "contracts"
+    status = str(getattr(order, "status", "") or "")
+    label = {
+        "filled": "Filled",
+        "partial": "Partial",
+        "submitted": "Limit working",
+        "dry_run": "Preview",
+        "deferred": "Queued for the open",
+    }.get(status, status or "Working")
+    price = _num(getattr(order, "fill_price", None)) if status in {"filled", "partial"} else None
+    if price is None or price <= 0:
+        price = _num(getattr(order, "limit_price", None))
+    price_bit = f" @ ${price:.2f}" if price is not None and price > 0 else ""
+    return (
+        f"🏁 CHALLENGE ENTRY — {symbol} {_strike_text(strike, right)} {_compact_expiry(expiry)}"
+        f" · {qty} {noun} · {label}{price_bit} · paper sandbox"
+    )
+
+
+def notify_challenge_entry(order: Any) -> str:
+    """Send the entry line. No-op when Telegram is not configured."""
+    text = format_challenge_entry_alert(order)
+    if str(getattr(order, "symbol", "") or "").upper() == "SPX":
+        return text
+    try:
+        from odte_scanner.alerts.telegram import send_telegram_text
+
+        send_telegram_text(text)
+    except Exception:  # noqa: BLE001
+        logger.info("challenge entry alert failed for %s", getattr(order, "symbol", ""))
+    return text
+
+
 def tally_text(pnls: list[float]) -> str:
     wins = sum(1 for value in pnls if value > 0)
     losses = sum(1 for value in pnls if value < 0)
@@ -233,6 +281,8 @@ def _tier_of_buy(order: Any) -> str | None:
         return "afternoon"
     if kind in {"sure_winner_gold", "sure_winner"} or desk == "sure_winner":
         return "gold"
+    if kind == "challenge" or desk == "challenge":
+        return "challenge"
     return None
 
 
@@ -270,7 +320,7 @@ def _event_from_order(order: Any, orders: list[Any], now: datetime) -> dict[str,
     if str(getattr(order, "action", "") or "").upper() != "SELL":
         return None
     desk = str(getattr(order, "desk", "") or "")
-    if desk not in {"golden_exit", "diamond", "sniper", "sure_winner"}:
+    if desk not in {"golden_exit", "diamond", "sniper", "sure_winner", "challenge"}:
         return None
     buy = _matching_buy(order, orders)
     tier = _tier_of(order, orders)
