@@ -61,7 +61,11 @@ def test_auto_trader_dry_run_submits_perfect(tmp_path: Path):
         ledger_path=tmp_path / "wb.json",
     )
     trader = AutoTrader(
-        broker, require_perfect_hist=True, min_hist_win_samples=3, golden_only=False
+        broker,
+        require_perfect_hist=True,
+        min_hist_win_samples=3,
+        golden_only=False,
+        challenge_paper=True,
     )
     out = trader.sync(
         challenge={
