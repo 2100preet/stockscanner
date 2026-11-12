@@ -4,13 +4,15 @@ from tests.session_clock import iso_day, session_et
 
 
 def test_pltr_uses_real_weekly_not_synthetic():
-    # Live chain: PLTR has Fri weeklies, not same-day 0DTE on most Wednesdays
+    # Live chain: PLTR has Fri weeklies, not same-day 0DTE on most Wednesdays.
+    # DTE 0–1 is the 0DTE bucket, so a 7-day window on Thursday only contains
+    # tomorrow's Friday. 14 days still reaches the following Friday weekly.
     cands = select_calls(
         "PLTR",
         160.87,
         78.0,
         ["test"],
-        max_dte=7,
+        max_dte=14,
         odte_max_dte=1,
         otm_pct_max=3.0,
         itm_pct_max=1.5,
