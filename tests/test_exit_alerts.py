@@ -501,6 +501,88 @@ def test_every_exit_reason_alerts_from_the_buy_fill():
         assert "Sure Winner" not in alerts[0]["message"]
 
 
+def test_weekly_and_swing_exits_use_the_swing_header():
+    now = datetime(2026, 11, 12, 20, 0, tzinfo=timezone.utc)
+    buy = WebullOrderIntent(
+        id="buy-w",
+        desk="weekly",
+        action="BUY",
+        symbol="COST",
+        right="C",
+        contract="COST261120C00900000",
+        expiry="2026-11-20",
+        strike=900,
+        quantity=1,
+        limit_price=4.5,
+        fill_price=4.5,
+        status="filled",
+        created_at="2026-11-12T15:00:00+00:00",
+        updated_at="2026-11-12T15:01:00+00:00",
+    )
+    sell = WebullOrderIntent(
+        id="sell-w",
+        desk="weekly",
+        action="SELL",
+        symbol="COST",
+        right="C",
+        contract="COST261120C00900000",
+        expiry="2026-11-20",
+        strike=900,
+        quantity=1,
+        limit_price=9.0,
+        fill_price=9.0,
+        reason="take profit +100% ≥ +100%",
+        status="filled",
+        created_at="2026-11-12T19:00:00+00:00",
+        updated_at="2026-11-12T19:00:00+00:00",
+        meta={"entry_price": 4.5, "entry_at": "2026-11-12T15:00:00+00:00", "closes_order_id": "buy-w"},
+    )
+    alerts = collect_exit_alerts([buy, sell], now=now, seen=set())
+    assert len(alerts) == 1
+    assert alerts[0]["message"].startswith("📈 SWING · 1 week EXIT — COST 900C 11/20")
+    assert "Target +100% hit" in alerts[0]["message"]
+
+    swing_sell = WebullOrderIntent(
+        id="sell-s",
+        desk="golden_exit",
+        action="SELL",
+        symbol="AVGO",
+        right="C",
+        contract="AVGO261218C00370000",
+        expiry="2026-12-18",
+        strike=370,
+        quantity=1,
+        limit_price=11.0,
+        fill_price=11.0,
+        reason="stop loss −50% ≤ −50%",
+        status="filled",
+        created_at="2026-11-12T19:10:00+00:00",
+        updated_at="2026-11-12T19:10:00+00:00",
+        meta={"exit_tier": "swing", "entry_price": 23.1, "entry_at": "2026-11-12T15:00:00+00:00"},
+    )
+    swing_alerts = collect_exit_alerts([swing_sell], now=now, seen=set())
+    assert swing_alerts[0]["message"].startswith("📈 SWING · 1–3M EXIT — AVGO")
+    assert "Stop −50% hit" in swing_alerts[0]["message"]
+
+    odte = WebullOrderIntent(
+        id="sell-0",
+        desk="odte",
+        action="SELL",
+        symbol="QQQ",
+        right="C",
+        contract="QQQ261112C00600000",
+        expiry="2026-11-12",
+        strike=600,
+        quantity=1,
+        limit_price=1.0,
+        fill_price=1.0,
+        reason="stop",
+        status="filled",
+        meta={"entry_price": 2.0},
+    )
+    assert collect_exit_alerts([odte], now=now, seen=set()) == []
+
+
 def test_hot_sync_sends_the_exit_the_slow_scan_missed(tmp_path: Path, monkeypatch):
     sent: list[str] = []
     monkeypatch.setattr("odte_scanner.alerts.exits.DEFAULT_SEEN", tmp_path / "exit_seen.json")

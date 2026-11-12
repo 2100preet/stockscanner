@@ -583,3 +583,205 @@ def test_send_cap_counts_symbols_not_contracts(tmp_path, monkeypatch):
     assert symbols.count("NBIS") == 1
     assert len(symbols) == len(set(symbols))
     assert sum(body.splitlines()[0].count("NBIS") for body in sent) == 1
+
+
+def _option(symbol, *, bucket, dte, strike, expiry, contract, ask=1.2):
+    return {
+        "symbol": symbol,
+        "action": "BUY_NOW",
+        "dte_bucket": bucket,
+        "dte": dte,
+        "right": "C",
+        "strike": strike,
+        "expiry": expiry,
+        "ask": ask,
+        "bid": round(ask - 0.05, 2),
+        "contract": contract,
+    }
+
+
+def test_swing_buy_now_is_labeled_and_0dte_stays_options():
+    weekly = _option("COST", bucket="weekly", dte=5, strike=900, expiry="2026-11-20", contract="COST261120C00900000", ask=4.5)
+    monthly = _option("AVGO", bucket="monthly", dte=36, strike=370, expiry="2026-12-18", contract="AVGO261218C00370000", ask=23.1)
+    zero = _option("QQQ", bucket="0dte", dte=0, strike=600, expiry="2026-11-12", contract="QQQ261112C00600000", ask=2.2)
+    alerts = disp.collect_trade_alerts({"actions": {"buy_now": [weekly, monthly, zero], "sell_now": []}})
+    by_symbol = {row["symbol"]: row for row in alerts}
+    assert by_symbol["COST"]["desk"] == "Swing"
+    assert by_symbol["COST"]["message"].splitlines()[0].startswith("📈 SWING 1 week COST")
+    assert by_symbol["AVGO"]["desk"] == "Swing"
+    assert "1–3M" in by_symbol["AVGO"]["message"].splitlines()[0]
+    assert by_symbol["QQQ"]["desk"] == "Options"
+    assert by_symbol["QQQ"]["message"].splitlines()[0].startswith("🟢 BUY · Options")
+
+
+def test_swing_alerts_one_contract_per_symbol_and_caps_at_three():
+    rows = [
+        _option(f"S{i}", bucket="weekly", dte=6, strike=100 + i, expiry="2026-11-20", contract=f"S{i}261120C00{100+i:03d}000")
+        for i in range(4)
+    ]
+    rows.insert(1, _option("S0", bucket="weekly", dte=6, strike=110, expiry="2026-11-27", contract="S0261127C00110000", ask=1.4))
+    alerts = [row for row in disp.collect_trade_alerts({"actions": {"buy_now": rows}}) if row["desk"] == "Swing"]
+    assert [row["symbol"] for row in alerts] == ["S0", "S1", "S2"]
+
+
+def test_paused_challenge_cards_do_not_alert_and_the_pause_is_once(tmp_path, monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:ABC")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "42")
+    monkeypatch.delenv("CALLMEBOT_APIKEY", raising=False)
+    monkeypatch.delenv("TWILIO_ACCOUNT_SID", raising=False)
+    monkeypatch.delenv("WHATSAPP_TOKEN", raising=False)
+    sent: list[str] = []
+    monkeypatch.setattr(disp, "send_telegram_text", lambda body, **kwargs: sent.append(body) or {"ok": True, "provider": "telegram"})
+    monkeypatch.setattr(
+        disp,
+        "whatsapp_configured",
+        lambda: {"ok": False, "callmebot": False, "twilio": False, "meta": False},
+    )
+    entry = {
+        "symbol": "SPY",
+        "action": "ENTRY",
+        "right": "C",
+        "strike": 770,
+        "expiry": "2026-11-13",
+        "ask": 0.20,
+        "bid": 0.18,
+        "contract": "SPY261113C00770000",
+        "sniper": True,
+    }
+    snap = {
+        "challenge": {
+            "entry": [entry, {**entry, "symbol": "QQQ", "strike": 710, "contract": "QQQ261113C00710000"}],
+            "exit": [],
+            "paper_orders": [],
+            "sync": {
+                "paused": True,
+                "enter_mode": "paused",
+                "pause_reason": "3+ consecutive losses — auto-enter paused (~0.9d until quality-only resume)",
+                "entered": [],
+                "exited": [],
+            },
+            "book": {
+                "trades": [
+                    {
+                        "id": "CH-WFC",
+                        "status": "closed",
+                        "symbol": "WFC",
+                        "pnl_usd": -30,
+                        "exited_at": "2026-11-11T14:38:00+00:00",
+                    }
+                ]
+            },
+        }
+    }
+    seen = tmp_path / "seen.json"
+    seen.write_text('{"keys":["Options|BUY|OLD"]}', encoding="utf-8")
+    first = disp.dispatch_snapshot_alerts(snap, seen_path=seen, prime=False)
+    assert first.get("sent") == 1
+    assert sent[0].splitlines()[0] == "🏁 CHALLENGE PAUSED — auto-enter is off"
+    assert "SPY" not in sent[0]
+    assert "QQQ" not in sent[0]
+    assert "journal book is separate" in sent[0]
+    assert "WEBULL" not in sent[0].upper()
+    second = disp.dispatch_snapshot_alerts(snap, seen_path=seen, prime=False)
+    assert second.get("sent") == 0
+    assert len(sent) == 1
+
+
+def test_challenge_alerts_the_journal_take_not_the_other_entry_cards():
+    spy = {
+        "id": "CH-SPY",
+        "symbol": "SPY",
+        "right": "C",
+        "strike": 770,
+        "expiry": "2026-11-13",
+        "contract": "SPY261113C00770000",
+        "contracts": 1,
+        "entry_ask": 0.34,
+        "status": "open",
+    }
+    snap = {
+        "challenge": {
+            "entry": [
+                {"symbol": "TSLA", "action": "ENTRY", "right": "C", "strike": 400, "expiry": "2026-11-13", "ask": 1.08, "contract": "TSLA261113C00400000"},
+                {"symbol": "SPY", "action": "ENTRY", "ask": 0.34, "contract": "SPY261113C00770000"},
+            ],
+            "paper_orders": [spy],
+            "sync": {"enter_mode": "ok", "paused": False, "entered": ["CH-SPY"], "exited": []},
+            "book": {"trades": [spy]},
+        }
+    }
+    alerts = disp.collect_trade_alerts(snap)
+    assert len(alerts) == 1
+    text = alerts[0]["message"]
+    assert text.startswith("🏁 CHALLENGE ENTRY — SPY 770C 11/13")
+    assert "journal book" in text
+    assert "TSLA" not in text
+    assert "paper sandbox" not in text
+
+
+def test_challenge_journal_exit_names_the_journal_book():
+    closed = {
+        "id": "CH-WFC",
+        "symbol": "WFC",
+        "right": "C",
+        "strike": 80,
+        "expiry": "2026-11-14",
+        "contract": "WFC261114C00080000",
+        "contracts": 1,
+        "entry_ask": 1.20,
+        "exit_bid": 0.90,
+        "pnl_usd": -30,
+        "profit_pct": -25,
+        "exit_reason": "stop loss −50%",
+        "status": "closed",
+        "exited_at": "2026-11-11T14:38:00+00:00",
+    }
+    alerts = disp.collect_trade_alerts(
+        {
+            "challenge": {
+                "entry": [{"symbol": "SPY", "action": "ENTRY", "ask": 0.2, "contract": "SPY261113C00770000", "strike": 770, "expiry": "2026-11-13", "right": "C"}],
+                "sync": {"paused": True, "enter_mode": "paused", "entered": [], "exited": ["CH-WFC"], "pause_reason": "paused"},
+                "just_exited": [closed],
+                "book": {"trades": [closed]},
+            }
+        }
+    )
+    texts = [row["message"] for row in alerts]
+    assert any(text.startswith("🏁 CHALLENGE PAUSED") for text in texts)
+    exit_line = next(text for text in texts if text.startswith("🏁 CHALLENGE EXIT"))
+    assert "WFC" in exit_line
+    assert "journal book" in exit_line
+    assert "SPY" not in exit_line
+    assert "−$30" in exit_line
+
+
+def test_quality_only_resume_is_one_notice_and_skips_sniper_cards():
+    alerts = disp.collect_trade_alerts(
+        {
+            "challenge": {
+                "entry": [
+                    {
+                        "symbol": "SPY",
+                        "action": "ENTRY",
+                        "sniper": True,
+                        "right": "C",
+                        "strike": 770,
+                        "expiry": "2026-11-13",
+                        "ask": 0.2,
+                        "contract": "SPY261113C00770000",
+                    }
+                ],
+                "sync": {
+                    "enter_mode": "quality_only",
+                    "paused": False,
+                    "pause_reason": "3+ consecutive losses cooled — quality-only resume",
+                    "entered": [],
+                    "exited": [],
+                },
+                "book": {"trades": [{"id": "CH-WFC", "status": "closed", "pnl_usd": -30, "exited_at": "2026-11-11T14:38:00+00:00"}]},
+            }
+        }
+    )
+    assert len(alerts) == 1
+    assert alerts[0]["message"].splitlines()[0] == "🏁 CHALLENGE RESUMED — quality only"
+    assert "SPY" not in alerts[0]["message"]

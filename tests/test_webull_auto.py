@@ -3,8 +3,45 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from odte_scanner.trading.auto_trader import AutoTrader, clears_perfect_hist_win
+from odte_scanner.trading.auto_trader import AutoTrader, board_option_desk, clears_perfect_hist_win
 from odte_scanner.trading.webull import WebullBroker, webull_option_deep_link
+
+
+def test_board_option_desk_keeps_0dte_and_names_swing():
+    assert board_option_desk("0dte") == "odte"
+    assert board_option_desk("weekly") == "weekly"
+    assert board_option_desk("swing") == "swing"
+    assert board_option_desk("monthly") == "swing"
+    assert board_option_desk("leap") == "swing"
+
+
+def test_golden_only_still_does_not_buy_a_monthly_swing(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(
+        "odte_scanner.options.contract_quote.refresh_traded_quote",
+        lambda row: row,
+    )
+    broker = WebullBroker(enabled=True, dry_run=True, ledger_path=tmp_path / "wb.json")
+    trader = AutoTrader(broker, golden_only=True)
+    out = trader.sync(
+        actions={
+            "buy_now": [
+                {
+                    "symbol": "AVGO",
+                    "action": "BUY_NOW",
+                    "dte_bucket": "monthly",
+                    "right": "C",
+                    "strike": 370,
+                    "expiry": "2026-12-18",
+                    "ask": 23.1,
+                    "bid": 22.65,
+                    "contract": "AVGO261218C00370000",
+                }
+            ],
+            "sell_now": [],
+        }
+    )
+    assert all(row.get("desk") != "swing" for row in out["submitted"])
+    assert any("not a golden signal" in row["reason"] for row in out["filtered"])
 
 
 def test_deep_link():
