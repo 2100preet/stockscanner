@@ -18,8 +18,8 @@ unusual-flow prints (including Flow-desk Golden) are included in that exclusion.
 When golden_only is false, the older desk router is unchanged:
   lottery  → 0DTE/1DTE BUY_NOW / SELL_NOW calls
   odte     → 0DTE action-board calls
-  weekly   → weekly action-board calls
-  swing    → swing quality / action-board calls
+  weekly   → 1-week action-board calls
+  swing    → swing, monthly, and leap action-board calls
   challenge→ ENTRY / EXIT calls or puts ($1k→$1M sleeve)
   and the 100% hist-win gate applies. That gate is a historical filter,
   not a guarantee. Golden-only routing does not also require 100% hist-win,
@@ -336,6 +336,16 @@ def _maybe_close_expired(broker: Any, now: datetime | None, force: bool = False)
             return None
         _EXPIRY_LAST[key] = clock
     return expiry_mod.close_expired(broker, now)
+
+
+def board_option_desk(bucket: str) -> str:
+    """Desk name for an action-board contract. 0DTE stays odte. Monthly is swing."""
+    text = str(bucket or "").lower()
+    if "week" in text:
+        return "weekly"
+    if any(token in text for token in ("swing", "month", "leap")):
+        return "swing"
+    return "odte"
 
 
 def _maybe_import_history(broker: WebullBroker, now: datetime | None, *, force: bool = False, days: int = 1) -> dict[str, Any] | None:
@@ -2388,6 +2398,10 @@ class AutoTrader:
                 exit_tier = "gold"
             elif str(opened.desk or "") == "challenge":
                 exit_tier = "challenge"
+            elif str(opened.desk or "") == "weekly":
+                exit_tier = "weekly"
+            elif str(opened.desk or "") == "swing":
+                exit_tier = "swing"
             entry_at = opened.created_at or opened.updated_at
         intent = self.broker.stage(
             desk=desk,
@@ -3171,7 +3185,7 @@ class AutoTrader:
                 if not isinstance(row, dict):
                     continue
                 bucket = str(row.get("dte_bucket") or row.get("horizon") or "odte").lower()
-                desk = "weekly" if "week" in bucket else ("swing" if "swing" in bucket else "odte")
+                desk = board_option_desk(bucket)
                 right = str(row.get("right") or "C").upper()
                 if right not in {"C", "P"}:
                     right = "C"
@@ -3182,7 +3196,7 @@ class AutoTrader:
                 if not isinstance(row, dict):
                     continue
                 bucket = str(row.get("dte_bucket") or row.get("horizon") or "odte").lower()
-                desk = "weekly" if "week" in bucket else ("swing" if "swing" in bucket else "odte")
+                desk = board_option_desk(bucket)
                 right = str(row.get("right") or "C").upper()
                 if right not in {"C", "P"}:
                     right = "C"
