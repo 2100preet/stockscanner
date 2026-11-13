@@ -1,0 +1,181 @@
+{
+  "sleeve": {
+    "trades": 2,
+    "wins": 1,
+    "losses": 1,
+    "win_rate_pct": 50.0,
+    "pnl_usd": 131.5,
+    "invested_usd": 387.0,
+    "profit_factor": 2.31,
+    "profit_factor_infinite": false,
+    "max_drawdown_usd": -100.5,
+    "start_equity": 1000.0,
+    "end_equity": 1131.5,
+    "equity_path": [
+      {
+        "at": "start",
+        "equity": 1000.0
+      },
+      {
+        "at": "2026-11-05T10:03",
+        "equity": 899.5,
+        "pnl": -100.5,
+        "symbol": "AAPL"
+      },
+      {
+        "at": "2026-11-06T09:50",
+        "equity": 1131.5,
+        "pnl": 232.0,
+        "symbol": "SPY"
+      }
+    ],
+    "skipped": {
+      "premium_band": 99,
+      "thin_volume": 20,
+      "no_0935_bar": 16,
+      "loss_cooldown_7d": 1
+    },
+    "fills": [
+      {
+        "day": "2026-11-05",
+        "contract": "AAPL261106C00355000",
+        "symbol": "AAPL",
+        "right": "C",
+        "dte": 1,
+        "sniper": false,
+        "qty": 1,
+        "entry": 2.01,
+        "exit": 1.005,
+        "entry_at": "2026-11-05T09:35",
+        "exit_at": "2026-11-05T10:03",
+        "reason": "stop \u221250%",
+        "pnl": -100.5,
+        "invested": 201.0,
+        "equity_after": 899.5,
+        "win": false
+      },
+      {
+        "day": "2026-11-06",
+        "contract": "SPY261106C00739000",
+        "symbol": "SPY",
+        "right": "C",
+        "dte": 0,
+        "sniper": true,
+        "qty": 1,
+        "entry": 1.86,
+        "exit": 4.18,
+        "entry_at": "2026-11-06T09:35",
+        "exit_at": "2026-11-06T09:50",
+        "reason": "bank sniper +20%",
+        "pnl": 232.0,
+        "invested": 186.0,
+        "equity_after": 1131.5,
+        "win": true
+      }
+    ]
+  },
+  "webull": {
+    "trades": 2,
+    "wins": 1,
+    "losses": 1,
+    "win_rate_pct": 50.0,
+    "pnl_usd": 85.5,
+    "invested_usd": 387.0,
+    "profit_factor": 1.85,
+    "profit_factor_infinite": false,
+    "max_drawdown_usd": -100.5,
+    "start_equity": 1000.0,
+    "end_equity": 1085.5,
+    "equity_path": [
+      {
+        "at": "start",
+        "equity": 1000.0
+      },
+      {
+        "at": "2026-11-05T10:03",
+        "equity": 899.5,
+        "pnl": -100.5,
+        "symbol": "AAPL"
+      },
+      {
+        "at": "2026-11-06T09:45",
+        "equity": 1085.5,
+        "pnl": 186.0,
+        "symbol": "SPY"
+      }
+    ],
+    "skipped": {},
+    "fills": [
+      {
+        "day": "2026-11-05",
+        "contract": "AAPL261106C00355000",
+        "symbol": "AAPL",
+        "right": "C",
+        "dte": 1,
+        "sniper": false,
+        "qty": 1,
+        "entry": 2.01,
+        "exit": 1.005,
+        "entry_at": "2026-11-05T09:35",
+        "exit_at": "2026-11-05T10:03",
+        "reason": "stop \u221250%",
+        "pnl": -100.5,
+        "invested": 201.0,
+        "equity_after": 899.5,
+        "win": false
+      },
+      {
+        "day": "2026-11-06",
+        "contract": "SPY261106C00739000",
+        "symbol": "SPY",
+        "right": "C",
+        "dte": 0,
+        "sniper": true,
+        "qty": 1,
+        "entry": 1.86,
+        "exit": 3.72,
+        "entry_at": "2026-11-06T09:35",
+        "exit_at": "2026-11-06T09:45",
+        "reason": "target +100%",
+        "pnl": 186.0,
+        "invested": 186.0,
+        "equity_after": 1085.5,
+        "win": true
+      }
+    ]
+  },
+  "sessions_considered": 150,
+  "days": 2,
+  "data": {
+    "sessions_loaded": 1158,
+    "underlying_days": 1520,
+    "notes": {
+      "loaded_sessions": 1158,
+      "option_session_without_bars": 1032,
+      "short_session": 29
+    },
+    "index_sessions": 6,
+    "dte_0_or_1": 150
+  },
+  "caveats": [
+    "The archive has no rows tagged Challenge. It is contracts from Webull orders, round trips, and signal-ledger events, not the full 0\u20131 DTE chain.",
+    "SPXW has no underlying bars. Many option files are HTTP 400 or daily-only; daily candles are not used, because a daily high/low cannot order a stop ahead of a target.",
+    "Entry is the 9:35 ET minute close, not the ask. There is no bid/ask, so slippage is not modeled.",
+    "Open interest is not in the file, so the OI \u2265 200 rule is not applied. Volume uses the 9:30\u20139:35 sum and must be at least 100.",
+    "Hist-win, ensemble, radar HOT, earnings, and UW flow are not in the bars. After three losses the sleeve goes quality-only and this replay stops, because a non-sniper cannot be shown to be perfect/elite hist.",
+    "Puts need a dump on the underlying minute tape (5-minute momentum \u2264 \u22120.25% or session \u2264 \u22120.8%). Missing underlying tape skips the put.",
+    "The November journal (8 trades, 37.5% wins, +$83 on $504) is not in this archive and not in the repo, so those fills are not replayed tick for tick.",
+    "Only November 5 and November 6 in this archive have 0\u20131 DTE minute bars. Earlier files are longer-dated, and the sprint desk does not enter them. Most short-dated prints were outside $0.20\u2013$2.50 at 9:35.",
+    "A sniper does not bank +20% until about 15 minutes after entry. If the option has already run through that price, the exit is the next bar's open, which can be well above +20%.",
+    "A stop is filled from the bar's low. If that low printed before the 9:35 close used as the entry, the stop is early. Neither of the two fills below stopped on the entry minute."
+  ],
+  "reported_november_journal": {
+    "trades": 8,
+    "win_rate_pct": 37.5,
+    "pnl_usd": 83,
+    "invested_usd": 504,
+    "source": "owner note for the November journal sleeve",
+    "present_in_archive": false,
+    "present_in_repo": false
+  }
+}

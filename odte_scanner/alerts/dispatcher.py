@@ -5,6 +5,11 @@ personal-chat pulse. They are collected first so the per-cycle send cap cannot
 drop them behind a long RIP tape. Each of those desks sends one message per
 symbol: the strongest contract is the headline and up to two others are extra
 lines. SOLID cards, non-golden flow, and chart triangles stay off this path.
+
+Swing (1 week and 1–3M) uses the same pulse when the action board says
+BUY NOW or SELL NOW. Challenge sends a journal entry or exit when the sleeve
+actually takes one, a paper order through the auto-trader, and one pause or
+quality-only notice. Paused ENTRY cards stay on the board and are not pulsed.
 """
 
 from __future__ import annotations
@@ -28,7 +33,15 @@ logger = logging.getLogger(__name__)
 
 _ALERT_LOCK = threading.Lock()
 _INFLIGHT: set[str] = set()
-_PINNED_PREFIXES = ("Sniper|", "Diamond|", "Gold Setup|", "Golden Flow|", "EXIT|")
+_PINNED_PREFIXES = (
+    "Sniper|",
+    "Diamond|",
+    "Gold Setup|",
+    "Golden Flow|",
+    "Swing|",
+    "Challenge|",
+    "EXIT|",
+)
 _HOT_BUY_STATUSES = {"submitted", "filled", "partial", "dry_run", "staged", "cancelled"}
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -217,7 +230,7 @@ def _compact_strike(strike: Any, right: str) -> str:
 
 def _signal_headline(row: dict[str, Any], desk: str) -> str | None:
     """Plain-text first line for Gold Setup and Golden Flow. No Markdown."""
-    if desk not in {"Gold Setup", "Golden Flow", "Diamond", "Sniper", "AfternoonPuts"}:
+    if desk not in {"Gold Setup", "Golden Flow", "Diamond", "Sniper", "AfternoonPuts", "Swing"}:
         return None
     right, strike, expiry = _resolved_contract(row)
     parts: list[str] = []
@@ -229,6 +242,11 @@ def _signal_headline(row: dict[str, Any], desk: str) -> str | None:
         parts.extend(["🎯", "SNIPER"])
     elif desk == "AfternoonPuts":
         parts.extend(["🌅", "AFTERNOON", "PUTS"])
+    elif desk == "Swing":
+        parts.extend(["📈", "SWING"])
+        lane = str(row.get("swing_lane") or "").strip()
+        if lane:
+            parts.append(lane)
     else:
         parts.extend([_contract_circle(row), "GOLDEN FLOW"])
     parts.append(str(row.get("symbol") or "?").upper())
@@ -496,6 +514,110 @@ def _golden_flow_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     return [row for row in rows if is_golden_unusual_flow(row)]
 
 
+def swing_lane(row: dict[str, Any] | None) -> str | None:
+    """1 week or 1–3M when this action-board row is a swing contract. 0DTE stays out."""
+    if not isinstance(row, dict):
+        return None
+    bucket = str(row.get("dte_bucket") or row.get("horizon") or "").strip().lower()
+    if bucket in {"0dte", "0d", "odte"} or "0dte" in bucket:
+        return None
+    if any(token in bucket for token in ("swing", "month", "leap")) or bucket in {"1m", "1-3m", "1–3m"}:
+        return "1–3M"
+    if "week" in bucket or bucket in {"1w", "1wk"}:
+        return "1 week"
+    try:
+        dte_n = int(float(row.get("dte")))
+    except (TypeError, ValueError):
+        return None
+    if dte_n <= 1:
+        return None
+    if dte_n <= 10:
+        return "1 week"
+    return "1–3M"
+
+
+def _challenge_book(challenge: dict[str, Any]) -> dict[str, Any]:
+    book = challenge.get("book") if isinstance(challenge.get("book"), dict) else None
+    if book:
+        return book
+    sync = challenge.get("sync") if isinstance(challenge.get("sync"), dict) else {}
+    nested = sync.get("book") if isinstance(sync.get("book"), dict) else None
+    return nested or {}
+
+
+def _challenge_mode(challenge: dict[str, Any]) -> str:
+    """paused, quality_only, or empty. The board flag is dropped on rebuild; sync keeps it."""
+    sync = challenge.get("sync") if isinstance(challenge.get("sync"), dict) else {}
+    mode = str(sync.get("enter_mode") or challenge.get("enter_mode") or "").strip().lower()
+    if mode in {"paused", "quality_only"}:
+        return mode
+    if sync.get("paused") or challenge.get("paused"):
+        return "paused"
+    return ""
+
+
+def _challenge_pause_anchor(challenge: dict[str, Any]) -> str:
+    """Last losing journal day, so one pause notice covers the whole episode."""
+    days: list[str] = []
+    for trade in _challenge_book(challenge).get("trades") or []:
+        if not isinstance(trade, dict) or str(trade.get("status") or "") != "closed":
+            continue
+        try:
+            if float(trade.get("pnl_usd")) > 0:
+                continue
+        except (TypeError, ValueError):
+            continue
+        day = str(trade.get("exited_at") or "")[:10]
+        if len(day) == 10:
+            days.append(day)
+    return max(days) if days else "episode"
+
+
+def _journal_key(kind: str, trade: dict[str, Any]) -> str:
+    ident = str(trade.get("id") or "").strip()
+    if not ident:
+        ident = "|".join(
+            [
+                str(trade.get("symbol") or "").upper(),
+                str(trade.get("contract") or ""),
+                str(trade.get("exited_at") or trade.get("entered_at") or "")[:19],
+            ]
+        )
+    return f"Challenge|JOURNAL|{kind}|{ident}"
+
+
+def _direct_alert(
+    out: list[dict[str, Any]],
+    seen_local: set[str],
+    *,
+    key: str,
+    side: str,
+    desk: str,
+    symbol: str,
+    action: str,
+    message: str,
+    row: dict[str, Any],
+) -> None:
+    if not key or not message or key in seen_local:
+        return
+    seen_local.add(key)
+    out.append(
+        {
+            "key": key,
+            "side": side,
+            "desk": desk,
+            "symbol": symbol or "CHALLENGE",
+            "action": action,
+            "contract": row.get("contract"),
+            "strike": row.get("strike"),
+            "expiry": row.get("expiry"),
+            "ask": row.get("ask") if row.get("ask") is not None else row.get("entry_ask"),
+            "message": message,
+            "row": row,
+        }
+    )
+
+
 def collect_trade_alerts(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     """Mirror the UI Buy/Sell Now pulse set, plus Gold Setup and Golden Flow.
 
@@ -700,10 +822,91 @@ def collect_trade_alerts(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
         push(row, "BUY", "Golden Flow", force=True)
 
     acts = snapshot.get("actions") or {}
-    for r in acts.get("buy_now") or []:
-        push(r, "BUY", "Options")
-    for r in acts.get("sell_now") or []:
-        push(r, "SELL", "Options")
+    swing_symbols: dict[str, set[str]] = {"BUY": set(), "SELL": set()}
+    for side, bucket_name in (("BUY", "buy_now"), ("SELL", "sell_now")):
+        for raw in acts.get(bucket_name) or []:
+            if not isinstance(raw, dict):
+                continue
+            lane = swing_lane(raw)
+            if not lane:
+                continue
+            sym = str(raw.get("symbol") or "").upper()
+            if not sym or sym in swing_symbols[side] or len(swing_symbols[side]) >= 3:
+                continue
+            swing_symbols[side].add(sym)
+            row = dict(raw)
+            row["swing_lane"] = lane
+            row["action"] = row.get("action") or ("BUY_NOW" if side == "BUY" else "SELL_NOW")
+            push(row, side, "Swing")
+
+    # Ahead of the RIP tape. Display ENTRY cards are not alerts.
+    ch = snapshot.get("challenge") if isinstance(snapshot.get("challenge"), dict) else {}
+    from odte_scanner.alerts.exits import (
+        format_challenge_journal_entry,
+        format_challenge_journal_exit,
+        format_challenge_status,
+    )
+
+    mode = _challenge_mode(ch)
+    if mode:
+        sync = ch.get("sync") if isinstance(ch.get("sync"), dict) else {}
+        reason = str(sync.get("pause_reason") or ch.get("pause_reason") or "")
+        _direct_alert(
+            out,
+            seen_local,
+            key=f"Challenge|STATUS|{mode}|{_challenge_pause_anchor(ch)}",
+            side="STATUS",
+            desk="Challenge",
+            symbol="CHALLENGE",
+            action=mode.upper(),
+            message=format_challenge_status(mode, reason),
+            row={"pause_reason": reason, "enter_mode": mode},
+        )
+    sync = ch.get("sync") if isinstance(ch.get("sync"), dict) else {}
+    entered_ids = {str(item) for item in (sync.get("entered") or [])}
+    for trade in _challenge_book(ch).get("trades") or []:
+        if not isinstance(trade, dict) or str(trade.get("id") or "") not in entered_ids:
+            continue
+        _direct_alert(
+            out,
+            seen_local,
+            key=_journal_key("ENTRY", trade),
+            side="BUY",
+            desk="Challenge",
+            symbol=str(trade.get("symbol") or "").upper(),
+            action="ENTRY",
+            message=format_challenge_journal_entry(trade),
+            row=trade,
+        )
+    exited_rows = [row for row in (ch.get("just_exited") or []) if isinstance(row, dict)]
+    if not exited_rows:
+        exited_ids = {str(item) for item in (sync.get("exited") or [])}
+        exited_rows = [
+            trade
+            for trade in (_challenge_book(ch).get("trades") or [])
+            if isinstance(trade, dict) and str(trade.get("id") or "") in exited_ids
+        ]
+    for trade in exited_rows:
+        _direct_alert(
+            out,
+            seen_local,
+            key=_journal_key("EXIT", trade),
+            side="SELL",
+            desk="Challenge",
+            symbol=str(trade.get("symbol") or "").upper(),
+            action="EXIT",
+            message=format_challenge_journal_exit(trade),
+            row=trade,
+        )
+
+    for raw in acts.get("buy_now") or []:
+        if swing_lane(raw if isinstance(raw, dict) else None):
+            continue
+        push(raw, "BUY", "Options")
+    for raw in acts.get("sell_now") or []:
+        if swing_lane(raw if isinstance(raw, dict) else None):
+            continue
+        push(raw, "SELL", "Options")
 
     lot = snapshot.get("lottery") or {}
     for r in lot.get("buy_now") or []:
@@ -728,12 +931,6 @@ def collect_trade_alerts(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
         push(r, "BUY", "ML6")
     for r in ml.get("sell_now") or []:
         push(r, "SELL", "ML6")
-
-    ch = snapshot.get("challenge") or {}
-    for r in ch.get("entry") or ch.get("buy_now") or []:
-        push({**(r or {}), "action": (r or {}).get("action") or "BUY_NOW"}, "BUY", "Challenge")
-    for r in ch.get("exit") or ch.get("sell_now") or []:
-        push({**(r or {}), "action": (r or {}).get("action") or "SELL_NOW"}, "SELL", "Challenge")
 
     o1k = snapshot.get("odte_1k") or {}
     for r in o1k.get("put_now") or o1k.get("entry") or o1k.get("in") or []:

@@ -462,7 +462,7 @@ def test_paper_size_respects_risk_and_leaves_lottery_at_one_lot(tmp_path: Path):
     assert qty["EEE"] == 1
 
     challenge_broker = _broker(tmp_path, "ch-size.json")
-    challenge = _trader(challenge_broker, max_risk_per_trade_usd=250)
+    challenge = _trader(challenge_broker, max_risk_per_trade_usd=250, challenge_paper=True)
     challenged = challenge.sync(
         challenge={
             "entry": [

@@ -28,9 +28,28 @@ _TIER_LABEL = {
     "sniper": ("🎯", "SNIPER"),
     "afternoon": ("🌅", "AFTERNOON PUTS"),
     "gold": ("⭐", "GOLD SETUP"),
+    "challenge": ("🏁", "CHALLENGE"),
+    "weekly": ("📈", "SWING · 1 week"),
+    "swing": ("📈", "SWING · 1–3M"),
 }
-_TIER_TARGET = {"diamond": 30, "sniper": 25, "afternoon": 100, "gold": 30}
-_TIER_STOP = {"diamond": 40, "sniper": 40, "afternoon": 40, "gold": 50}
+_TIER_TARGET = {
+    "diamond": 30,
+    "sniper": 25,
+    "afternoon": 100,
+    "gold": 30,
+    "challenge": 100,
+    "weekly": 100,
+    "swing": 80,
+}
+_TIER_STOP = {
+    "diamond": 40,
+    "sniper": 40,
+    "afternoon": 40,
+    "gold": 50,
+    "challenge": 50,
+    "weekly": 50,
+    "swing": 50,
+}
 _FILLED = {"filled", "partial"}
 _WORKING = {"submitted", "partial"}
 
@@ -142,6 +161,10 @@ def plain_exit_reason(detail: str, *, tier: str = "") -> str:
         return "2:45 PM CT flat"
     if "2:30" in text or "14:30" in low:
         return "2:30 PM CT flat"
+    # 15:45 ET is the challenge 0–1 DTE clock. Checked before "stop" so a
+    # "time-stop" line is not labeled as the premium stop.
+    if "15:45" in low:
+        return "15:45 ET flat"
     if low in {"flat", "flatten"}:
         return "10:30 CT flat"
     stop_rule = re.search(r"[≤<=]\s*[−\-]\s*(\d+(?:\.\d+)?)\s*%", text)
@@ -195,6 +218,118 @@ def format_exit_alert(
     return line
 
 
+def format_challenge_entry_alert(order: Any) -> str:
+    """One line when a Challenge paper buy is staged. No account id."""
+    symbol = str(getattr(order, "symbol", "") or "").upper()
+    right = str(getattr(order, "right", "") or "C")
+    expiry = getattr(order, "expiry", "")
+    strike = getattr(order, "strike", None)
+    try:
+        qty = max(1, int(getattr(order, "quantity", None) or 1))
+    except (TypeError, ValueError):
+        qty = 1
+    noun = "contract" if qty == 1 else "contracts"
+    status = str(getattr(order, "status", "") or "")
+    label = {
+        "filled": "Filled",
+        "partial": "Partial",
+        "submitted": "Limit working",
+        "dry_run": "Preview",
+        "deferred": "Queued for the open",
+    }.get(status, status or "Working")
+    price = _num(getattr(order, "fill_price", None)) if status in {"filled", "partial"} else None
+    if price is None or price <= 0:
+        price = _num(getattr(order, "limit_price", None))
+    price_bit = f" @ ${price:.2f}" if price is not None and price > 0 else ""
+    return (
+        f"🏁 CHALLENGE ENTRY — {symbol} {_strike_text(strike, right)} {_compact_expiry(expiry)}"
+        f" · {qty} {noun} · {label}{price_bit} · paper sandbox"
+    )
+
+
+def format_challenge_journal_entry(trade: dict[str, Any]) -> str:
+    """One line when the challenge journal books an entry. Not a broker fill."""
+    symbol = str(trade.get("symbol") or "").upper()
+    right = str(trade.get("right") or "C")
+    try:
+        qty = max(1, int(trade.get("contracts") or 1))
+    except (TypeError, ValueError):
+        qty = 1
+    noun = "contract" if qty == 1 else "contracts"
+    price = _num(trade.get("entry_ask"))
+    price_bit = f" @ ${price:.2f}" if price is not None and price > 0 else ""
+    return (
+        f"🏁 CHALLENGE ENTRY — {symbol} {_strike_text(trade.get('strike'), right)} {_compact_expiry(trade.get('expiry'))}"
+        f" · {qty} {noun} · journal{price_bit} · journal book"
+    )
+
+
+def format_challenge_journal_exit(trade: dict[str, Any]) -> str:
+    """One line when the challenge journal books an exit. P&L stays on that book."""
+    symbol = str(trade.get("symbol") or "").upper()
+    right = str(trade.get("right") or "C")
+    try:
+        qty = max(1, int(trade.get("contracts") or 1))
+    except (TypeError, ValueError):
+        qty = 1
+    noun = "contract" if qty == 1 else "contracts"
+    entry = _num(trade.get("entry_ask")) or 0.0
+    exit_px = _num(trade.get("exit_bid"))
+    if exit_px is None:
+        exit_px = _num(trade.get("mark")) or 0.0
+    pnl = _num(trade.get("pnl_usd"))
+    if pnl is None:
+        pnl = (exit_px - entry) * 100.0 * qty
+    pct = _num(trade.get("profit_pct"))
+    if pct is None and entry:
+        pct = (exit_px - entry) / entry * 100.0
+    why = plain_exit_reason(str(trade.get("exit_reason") or trade.get("reason") or ""), tier="challenge")
+    entry_bit = f"${entry:.2f}" if entry else "—"
+    exit_bit = f"${exit_px:.2f}" if exit_px else "—"
+    return (
+        f"🏁 CHALLENGE EXIT — {symbol} {_strike_text(trade.get('strike'), right)} {_compact_expiry(trade.get('expiry'))}"
+        f" · {qty} {noun} · journal"
+        f" · Entry {entry_bit} → Exit {exit_bit}"
+        f" · {_pct(pct or 0.0)} / {_money(pnl or 0.0)}"
+        f" · {why} · journal book"
+    )
+
+
+def format_challenge_status(mode: str, reason: str = "") -> str:
+    """One notice when auto-enter pauses or comes back quality-only."""
+    key = str(mode or "").strip().lower()
+    label = {
+        "paused": "🏁 CHALLENGE PAUSED — auto-enter is off",
+        "quality_only": "🏁 CHALLENGE RESUMED — quality only",
+    }.get(key)
+    if not label:
+        return ""
+    lines = [label]
+    why = str(reason or "").strip()
+    if why:
+        lines.append(why[:180])
+    if key == "paused":
+        lines.append("Board ENTRY cards stay on the desk until auto-enter resumes.")
+    else:
+        lines.append("Quality names can enter again. Sniper cards stay on the board only.")
+    lines.append("Paper sandbox only · journal book is separate")
+    return "\n".join(lines)
+
+
+def notify_challenge_entry(order: Any) -> str:
+    """Send the entry line. No-op when Telegram is not configured."""
+    text = format_challenge_entry_alert(order)
+    if str(getattr(order, "symbol", "") or "").upper() == "SPX":
+        return text
+    try:
+        from odte_scanner.alerts.telegram import send_telegram_text
+
+        send_telegram_text(text)
+    except Exception:  # noqa: BLE001
+        logger.info("challenge entry alert failed for %s", getattr(order, "symbol", ""))
+    return text
+
+
 def tally_text(pnls: list[float]) -> str:
     wins = sum(1 for value in pnls if value > 0)
     losses = sum(1 for value in pnls if value < 0)
@@ -233,6 +368,12 @@ def _tier_of_buy(order: Any) -> str | None:
         return "afternoon"
     if kind in {"sure_winner_gold", "sure_winner"} or desk == "sure_winner":
         return "gold"
+    if kind == "challenge" or desk == "challenge":
+        return "challenge"
+    if kind == "weekly" or desk == "weekly":
+        return "weekly"
+    if kind == "swing" or desk == "swing":
+        return "swing"
     return None
 
 
@@ -270,7 +411,7 @@ def _event_from_order(order: Any, orders: list[Any], now: datetime) -> dict[str,
     if str(getattr(order, "action", "") or "").upper() != "SELL":
         return None
     desk = str(getattr(order, "desk", "") or "")
-    if desk not in {"golden_exit", "diamond", "sniper", "sure_winner"}:
+    if desk not in {"golden_exit", "diamond", "sniper", "sure_winner", "challenge", "weekly", "swing"}:
         return None
     buy = _matching_buy(order, orders)
     tier = _tier_of(order, orders)

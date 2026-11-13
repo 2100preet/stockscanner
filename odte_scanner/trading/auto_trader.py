@@ -18,8 +18,8 @@ unusual-flow prints (including Flow-desk Golden) are included in that exclusion.
 When golden_only is false, the older desk router is unchanged:
   lottery  → 0DTE/1DTE BUY_NOW / SELL_NOW calls
   odte     → 0DTE action-board calls
-  weekly   → weekly action-board calls
-  swing    → swing quality / action-board calls
+  weekly   → 1-week action-board calls
+  swing    → swing, monthly, and leap action-board calls
   challenge→ ENTRY / EXIT calls or puts ($1k→$1M sleeve)
   and the 100% hist-win gate applies. That gate is a historical filter,
   not a guarantee. Golden-only routing does not also require 100% hist-win,
@@ -118,7 +118,8 @@ def paper_risk_kwargs(live: dict | None, risk: dict | None = None) -> dict[str, 
     return {
         "max_risk_per_trade_usd": _f(raw),
         "sure_winner_max_contracts": 3 if sw is None else max(1, sw),
-        "challenge_max_contracts": 2 if ch is None else max(1, ch),
+        # Challenge stays at 1–2 contracts even if config asks for more.
+        "challenge_max_contracts": 2 if ch is None else max(1, min(2, ch)),
     }
 
 
@@ -339,6 +340,16 @@ def _maybe_close_expired(broker: Any, now: datetime | None, force: bool = False)
     return expiry_mod.close_expired(broker, now)
 
 
+def board_option_desk(bucket: str) -> str:
+    """Desk name for an action-board contract. 0DTE stays odte. Monthly is swing."""
+    text = str(bucket or "").lower()
+    if "week" in text:
+        return "weekly"
+    if any(token in text for token in ("swing", "month", "leap")):
+        return "swing"
+    return "odte"
+
+
 def _maybe_import_history(broker: WebullBroker, now: datetime | None, *, force: bool = False, days: int = 1) -> dict[str, Any] | None:
     """Pull Webull order history for the current ET session, once a minute."""
     import time as _time
@@ -399,6 +410,7 @@ class AutoTrader:
         challenge_max_contracts: int = 2,
         edge_gate: bool = False,
         edge_route: set[str] | None = None,
+        challenge_paper: bool = False,
     ):
         self.broker = broker
         self.require_perfect_hist = bool(require_perfect_hist)
@@ -438,7 +450,10 @@ class AutoTrader:
             None if max_risk_per_trade_usd is None else float(max_risk_per_trade_usd)
         )
         self.sure_winner_max_contracts = max(1, int(sure_winner_max_contracts))
-        self.challenge_max_contracts = max(1, int(challenge_max_contracts))
+        self.challenge_max_contracts = max(1, min(2, int(challenge_max_contracts)))
+        # Off unless the owner sets live_trading.challenge_paper or CHALLENGE_PAPER=1.
+        # Exits of a challenge lot already on the book still run.
+        self.challenge_paper = bool(challenge_paper)
         self.max_orders_per_sync = max(1, int(max_orders_per_sync))
         # Separate from the HTTP budget so sells/cancels still run when buys are capped.
         self.max_golden_buys_per_sync = max(0, int(max_golden_buys_per_sync))
@@ -1900,6 +1915,65 @@ class AutoTrader:
             qty += 1
         return qty
 
+    def _is_challenge_desk(self, desk: str, second: bool = False) -> bool:
+        if str(desk or "").lower() == "challenge":
+            return True
+        return bool(second and self.second_desk == "challenge")
+
+    def _maybe_challenge_entry_alert(self, intent: WebullOrderIntent | None) -> WebullOrderIntent | None:
+        """Telegram when a challenge paper buy is actually staged. Exits use the exit alerter."""
+        if intent is None or str(getattr(intent, "desk", "") or "") != "challenge":
+            return intent
+        if not self.challenge_paper:
+            return intent
+        if str(getattr(intent, "status", "") or "") not in {"submitted", "filled", "partial", "dry_run", "deferred"}:
+            return intent
+        try:
+            from odte_scanner.alerts.exits import notify_challenge_entry
+
+            notify_challenge_entry(intent)
+        except Exception as exc:  # noqa: BLE001
+            logger.info("challenge entry alert not sent: %s", exc)
+        return intent
+
+    def _challenge_buy_rows(self, challenge: dict[str, Any] | None) -> list[dict[str, Any]]:
+        """Rows this sync may buy.
+
+        ``paper_orders`` (set by the snapshot) is the journal's open flips.
+        Older callers that only pass ``entry`` still work when the flag is on.
+        The flag off means no new challenge buy, even if the board shows ENTRY.
+        """
+        if not isinstance(challenge, dict):
+            return []
+        if "paper_orders" in challenge:
+            pending = [row for row in (challenge.get("paper_orders") or []) if isinstance(row, dict)]
+            has_work = bool(pending) or any(
+                isinstance(row, dict) for row in (challenge.get("entry") or [])
+            )
+        else:
+            pending = [
+                row
+                for row in list(challenge.get("entry") or [])
+                + [
+                    ticket
+                    for ticket in (challenge.get("tickets") or [])
+                    if isinstance(ticket, dict) and str(ticket.get("action") or "").upper() == "ENTRY"
+                ]
+                if isinstance(row, dict)
+            ]
+            has_work = bool(pending)
+        if not self.challenge_paper:
+            if has_work:
+                self._note_filtered(
+                    {"symbol": "CHALLENGE"},
+                    "challenge paper is off (set live_trading.challenge_paper or CHALLENGE_PAPER=1)",
+                )
+            return []
+        if not bool(getattr(self.broker, "paper", False)) or not bool(getattr(self.broker, "sandbox", False)):
+            self._note_filtered({"symbol": "CHALLENGE"}, "challenge orders are paper sandbox only")
+            return []
+        return pending
+
     def _route_buy(
         self,
         *,
@@ -1918,6 +1992,18 @@ class AutoTrader:
         sym = str(row.get("symbol") or "").upper()
         if not sym:
             return None
+        # Challenge buys are opt-in and sandbox-only. Checked before the quote
+        # fetch so an off desk does not spend an HTTP call. Exits do not use this.
+        if self._is_challenge_desk(desk, bool(self.golden_only and desk == self.second_desk)):
+            if not self.challenge_paper:
+                self._note_filtered(
+                    row,
+                    "challenge paper is off (set live_trading.challenge_paper or CHALLENGE_PAPER=1)",
+                )
+                return None
+            if not bool(getattr(self.broker, "paper", False)) or not bool(getattr(self.broker, "sandbox", False)):
+                self._note_filtered(row, "challenge orders are paper sandbox only")
+                return None
         if desk in _HOT_KINDS and not row.get("replaces"):
             # Before the quote fetch: an already-routed signal costs no HTTP call.
             # One signal is one entry. When spot moves, the board picks the next
@@ -2017,6 +2103,13 @@ class AutoTrader:
         else:
             limit_for_size = None
         quantity = self._paper_entry_qty(row, desk, second, limit_for_size)
+        if self._is_challenge_desk(desk, second):
+            stamped = _i(row.get("contracts_for_bankroll"))
+            if stamped is not None and stamped >= 1:
+                quantity = stamped
+            quantity = max(1, min(2, self.challenge_max_contracts, int(quantity)))
+            if expiry_is_today(row.get("expiry"), self._now):
+                quantity = 1
 
         ok, why = (True, "gate off")
         if self.golden_only and kind:
@@ -2137,8 +2230,8 @@ class AutoTrader:
             self.broker.save()
             return intent
         if preopen:
-            return self._defer_until_open(intent)
-        return self.broker.submit(intent)
+            return self._maybe_challenge_entry_alert(self._defer_until_open(intent))
+        return self._maybe_challenge_entry_alert(self.broker.submit(intent))
 
     def _gold_order_plan(self, row: dict[str, Any]) -> dict[str, Any]:
         """Store the config exit text on the buy. The engine does not parse it."""
@@ -2340,6 +2433,12 @@ class AutoTrader:
                 exit_tier = "afternoon"
             elif kind_name in {"sure_winner_gold", "sure_winner"} or str(opened.desk or "") == "sure_winner":
                 exit_tier = "gold"
+            elif str(opened.desk or "") == "challenge":
+                exit_tier = "challenge"
+            elif str(opened.desk or "") == "weekly":
+                exit_tier = "weekly"
+            elif str(opened.desk or "") == "swing":
+                exit_tier = "swing"
             entry_at = opened.created_at or opened.updated_at
         intent = self.broker.stage(
             desk=desk,
@@ -3123,7 +3222,7 @@ class AutoTrader:
                 if not isinstance(row, dict):
                     continue
                 bucket = str(row.get("dte_bucket") or row.get("horizon") or "odte").lower()
-                desk = "weekly" if "week" in bucket else ("swing" if "swing" in bucket else "odte")
+                desk = board_option_desk(bucket)
                 right = str(row.get("right") or "C").upper()
                 if right not in {"C", "P"}:
                     right = "C"
@@ -3134,7 +3233,7 @@ class AutoTrader:
                 if not isinstance(row, dict):
                     continue
                 bucket = str(row.get("dte_bucket") or row.get("horizon") or "odte").lower()
-                desk = "weekly" if "week" in bucket else ("swing" if "swing" in bucket else "odte")
+                desk = board_option_desk(bucket)
                 right = str(row.get("right") or "C").upper()
                 if right not in {"C", "P"}:
                     right = "C"
@@ -3143,7 +3242,9 @@ class AutoTrader:
         # --- Challenge sleeve (calls & puts) ---
         # When the second sleeve is challenge, gold buys run first and this
         # walk happens after them so the margin account keeps its budget.
+        # New buys require challenge_paper. Exits stay on either way.
         defer_challenge = bool(self.golden_only and self.second_desk == "challenge")
+        challenge_buys = self._challenge_buy_rows(challenge if isinstance(challenge, dict) else None)
         if challenge and budget > 0 and not defer_challenge:
             for row in challenge.get("exit") or []:
                 if budget <= 0:
@@ -3156,16 +3257,11 @@ class AutoTrader:
                             right=str(row.get("right") or "C"),
                         )
                     )
-            for row in list(challenge.get("entry") or []) + [
-                t
-                for t in (challenge.get("tickets") or [])
-                if isinstance(t, dict) and str(t.get("action") or "").upper() == "ENTRY"
-            ]:
+            for row in challenge_buys:
                 if budget <= 0:
                     break
                 if not isinstance(row, dict):
                     continue
-                # Dedupe if already in entry list
                 _take(
                     self._route_buy(
                         desk="challenge",
@@ -3251,11 +3347,7 @@ class AutoTrader:
                             right=str(row.get("right") or "C"),
                         )
                     )
-            for row in list(challenge.get("entry") or []) + [
-                t
-                for t in (challenge.get("tickets") or [])
-                if isinstance(t, dict) and str(t.get("action") or "").upper() == "ENTRY"
-            ]:
+            for row in challenge_buys:
                 if budget <= 0:
                     break
                 if not isinstance(row, dict):

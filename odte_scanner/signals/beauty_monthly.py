@@ -444,15 +444,24 @@ def decide_beauty_entry(
     )
 
 
-def days_to_deadline(deadline: str | date | None = "2026-10-31", *, now: datetime | None = None) -> int:
+def days_to_deadline(deadline: str | date | None = "2026-10-31", *, now: datetime | None = None) -> int | None:
+    """Calendar days until ``deadline``.
+
+    ``None`` / blank means there is no deadline. A past date is negative.
+    The old floor of 1 day made an expired deadline look like it was still
+    tomorrow and compressed the challenge pace forever.
+    """
     now = now or datetime.now(ET)
     if deadline is None:
-        return 30
+        return None
     if isinstance(deadline, str):
-        d = date.fromisoformat(deadline[:10])
+        text = deadline.strip()
+        if not text or text.lower() in {"none", "null", "off"}:
+            return None
+        d = date.fromisoformat(text[:10])
     else:
         d = deadline
-    return max(1, (d - now.date()).days)
+    return (d - now.date()).days
 
 
 def oct_end_pace_note(
@@ -465,6 +474,37 @@ def oct_end_pace_note(
 ) -> dict[str, Any]:
     """Math for $1k→$1M by Oct-end given current equity."""
     days = days_to_deadline(deadline, now=now)
+    if days is None:
+        return {
+            "deadline": None,
+            "days_left": None,
+            "flips_in_window": None,
+            "ideal_hold_days": ideal_hold_days,
+            "current_equity": round(float(equity), 2),
+            "target_usd": float(target_usd),
+            "mult_per_flip": None,
+            "pct_per_flip": None,
+            "feasible": False,
+            "expired": False,
+            "note": "No calendar deadline. Pace uses challenge_pace_months, not a 1-day sprint.",
+        }
+    if days <= 0:
+        return {
+            "deadline": deadline,
+            "days_left": days,
+            "flips_in_window": 0,
+            "ideal_hold_days": ideal_hold_days,
+            "current_equity": round(float(equity), 2),
+            "target_usd": float(target_usd),
+            "mult_per_flip": None,
+            "pct_per_flip": None,
+            "feasible": False,
+            "expired": True,
+            "note": (
+                f"Deadline {deadline} has passed ({abs(days)}d ago). "
+                "Pace uses challenge_pace_months, not a 1-day sprint."
+            ),
+        }
     flips = max(1, int(days // float(ideal_hold_days)))
     need = float(target_usd) / max(float(equity), 1.0)
     mult = need ** (1.0 / flips) if flips else need
