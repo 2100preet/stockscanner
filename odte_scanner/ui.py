@@ -609,8 +609,11 @@ PAGE = r"""
         <p class="lede" style="margin-top:0;font-size:.76rem">
           Direction of the break: puts below ORB15 and VWAP, calls above both.
           Asks $0.05–$0.40, 0–1 DTE, $25–$50 a ticket, max 3 a day.
-          <strong>LOG ONLY</strong> — not a BUY NOW and not sent to Webull.
+          <strong>log only · not traded</strong> — not a BUY NOW and not sent to Webull.
+          The log scores each ticket on its own exit plan (half at 5×, rest at 10× or a 50% giveback, hard 15:45 ET). Times in CT.
         </p>
+        <div id="lotteryV2Score" class="empty">Lottery v2 log score loads with the snapshot.</div>
+        <div class="status" style="margin:.75rem 0 .4rem">This snapshot</div>
         <div class="metric-row" id="lotteryV2Metrics"></div>
         <div id="lotteryV2Tickets" class="empty">No lottery v2 tickets this snapshot.</div>
         <div class="status" style="margin:.75rem 0 .4rem">SKIP / no tape</div>
@@ -1460,10 +1463,18 @@ PAGE = r"""
       const hint = { "Lottery": "Lottery", "Lottery v2": "Lottery", "RIP/META": "RIP / META", "Patterns": "Patterns" };
       el.innerHTML = PINNED_DESKS.map(desk => {
         const rows = all.filter(r => r._desk === desk);
+        let scoreHtml = "";
+        if (desk === "Lottery v2") {
+          try { scoreHtml = lotteryV2ScoreHtml((DATA.lottery_v2 || {}).score); }
+          catch (err) { scoreHtml = ""; }
+        }
+        const empty = (desk === "Lottery v2" && scoreHtml)
+          ? "No new Lottery v2 rows on this snapshot. The log score above is today's tickets — log only, not traded."
+          : `No ${desk} rows on this snapshot. This heading stays up so another desk cannot take its place. Open the <strong>${hint[desk] || desk}</strong> tab for the full lane.`;
         const body = rows.length
           ? `<div class="cards">${rows.map(nowBoardCard).join("")}</div>`
-          : `<div class="empty">No ${desk} rows on this snapshot. This heading stays up so another desk cannot take its place. Open the <strong>${hint[desk] || desk}</strong> tab for the full lane.</div>`;
-        return `<section class="pinned-desk"><h2>${desk} <span class="status">${rows.length}</span></h2>${body}</section>`;
+          : `<div class="empty">${empty}</div>`;
+        return `<section class="pinned-desk"><h2>${desk} <span class="status">${rows.length}</span></h2>${scoreHtml}${body}</section>`;
       }).join("");
     }
 
@@ -2370,12 +2381,82 @@ PAGE = r"""
       renderRecLog("lotteryRecLog", rec, "No lottery recommendations logged yet.", "lotteryRecLogMetrics");
     }
 
+    function lotteryV2ScoreHtml(score) {
+      if (!score || typeof score !== "object") return "";
+      const esc = (v) => String(v == null ? "" : v).replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+      const money = (n) => {
+        if (n == null || Number.isNaN(Number(n))) return "—";
+        const v = Number(n);
+        return (v >= 0 ? "+$" : "−$") + Math.abs(v).toFixed(2);
+      };
+      const tone = (n) => (Number(n) || 0) > 0 ? "up" : ((Number(n) || 0) < 0 ? "down" : "");
+      if (score.ok === false) {
+        return `<div class="pulse-card expected"><p class="pc-why"><strong>log only · not traded</strong> · ${esc(score.note || "Lottery v2 score unavailable.")}</p></div>`;
+      }
+      const today = score.today || {};
+      const since = score.since_start || {};
+      const win = since.win_rate_pct == null ? "—" : Math.round(Number(since.win_rate_pct)) + "%";
+      const m = (k, v, c) => `<div class="metric"><div class="k">${k}</div><div class="v ${c || ""}">${v}</div></div>`;
+      const todayPnl = today.n ? today.pnl_at_size : 0;
+      const todayPer = today.n ? today.pnl_per_contract : 0;
+      const metrics = `<div class="metric-row">`
+        + m("Today at size", money(todayPnl), tone(todayPnl))
+        + m("Today / contract", money(todayPer), tone(todayPer))
+        + m("Since start", money(since.pnl_at_size), tone(since.pnl_at_size))
+        + m("Trades", since.trades || 0)
+        + m("Win rate", win)
+        + m("Hit 5×", since.hit_5x || 0, (since.hit_5x || 0) ? "up" : "")
+        + m("Went to zero", since.went_to_zero || 0, (since.went_to_zero || 0) ? "down" : "")
+        + `</div>`;
+      const tickets = today.tickets || [];
+      const rows = tickets.map((r) => {
+        const right = String(r.right || "C").toUpperCase() === "P" ? "PUT" : "CALL";
+        const when = esc(r.entry_ct || "—") + (r.exit_ct ? " → " + esc(r.exit_ct) : "");
+        const exitPx = r.status === "live"
+          ? ("live " + (r.mark == null ? "—" : "$" + fmt(r.mark, 2)))
+          : (r.exit == null ? "—" : "$" + fmt(r.exit, 2));
+        const size = (r.size_usd == null ? "—" : "$" + fmt(r.size_usd, 0) + " · " + (r.contracts || 0) + " ct")
+          + (r.size_budget == null ? "" : " · $" + fmt(r.size_budget, 0) + " budget");
+        const legs = (r.status === "final" && r.half_exit != null && r.rest_exit != null)
+          ? `<div class="why">half $${fmt(r.half_exit, 2)} · rest $${fmt(r.rest_exit, 2)}</div>` : "";
+        const pnlCls = tone(r.pnl_at_size);
+        return `<tr>
+          <td class="mono">${when}</td>
+          <td><strong>${esc(r.symbol || "—")}</strong> <span class="tag">${right}</span></td>
+          <td class="mono">${r.entry == null ? "—" : "$" + fmt(r.entry, 2)}</td>
+          <td class="mono">${esc(exitPx)}</td>
+          <td>${esc(r.reason_label || r.reason || "—")}${legs}</td>
+          <td class="mono ${pnlCls}">${money(r.pnl_per_contract)}</td>
+          <td class="mono ${pnlCls}">${money(r.pnl_at_size)}<div class="why">${size}</div></td>
+        </tr>`;
+      }).join("");
+      const table = rows
+        ? `<div style="overflow-x:auto"><table class="pb-table" style="width:100%;font-size:12px"><thead><tr><th>Time (CT)</th><th>Ticket</th><th>Entry</th><th>Exit</th><th>Reason</th><th>P&amp;L / contract</th><th>P&amp;L at $50/$25 size</th></tr></thead><tbody>${rows}</tbody></table></div>`
+        : `<div class="empty">No Lottery v2 tickets logged today.</div>`;
+      const sinceLine = `Since ${esc(since.start_day || score.start_day || "—")} · ${since.trades || 0} trades · win ${win} · ${money(since.pnl_at_size)} at size · ${money(since.pnl_per_contract)} / contract · ${since.hit_5x || 0} hit 5× · ${since.went_to_zero || 0} went to zero`
+        + ((since.open || 0) ? ` · ${since.open} live` : "")
+        + ((since.unscored || 0) ? ` · ${since.unscored} not scored yet` : "");
+      return `<div class="pulse-card expected" style="margin:.2rem 0 .7rem">
+        <p class="pc-why"><strong>log only · not traded</strong> · today's log, scored on each ticket's exit plan. Times in CT.</p>
+        ${metrics}
+        <p class="pc-why">${sinceLine}</p>
+        ${table}
+      </div>`;
+    }
+
     function renderLotteryV2(board) {
       const metrics = document.getElementById("lotteryV2Metrics");
       const ticketsEl = document.getElementById("lotteryV2Tickets");
       const skipEl = document.getElementById("lotteryV2Skip");
-      if (!metrics && !ticketsEl) return;
+      const scoreEl = document.getElementById("lotteryV2Score");
+      if (!metrics && !ticketsEl && !scoreEl) return;
       const ch = board || {};
+      if (scoreEl) {
+        let html = "";
+        try { html = lotteryV2ScoreHtml(ch.score); }
+        catch (err) { html = `<div class="empty">Lottery v2 score failed to render.</div>`; }
+        scoreEl.innerHTML = html || `<div class="empty">No Lottery v2 log score on this snapshot.</div>`;
+      }
       const c = ch.counts || {};
       const m = (k,v,cls="") => `<div class="metric"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
       if (metrics) {
@@ -5326,6 +5407,41 @@ def _rip_v2_shadow_block() -> dict:
         return {"ok": False, "today": [], "shadow_only": True, "error": str(exc)[:200], "note": "RIP-v2 shadow unavailable."}
 
 
+def _attach_lottery_v2_score(board: dict | None, actions_cfg: dict | None = None) -> dict:
+    """Add the log score. A scoring failure leaves the board and sets score.ok false."""
+    base = dict(board or {})
+    try:
+        from odte_scanner.signals.lottery_v2 import rules_from_config
+        from odte_scanner.signals.lottery_v2_score import score_for_snapshot
+
+        rules = rules_from_config(actions_cfg or {})
+        path = Path(str(rules.log_path or "outputs/lottery_v2_log.json"))
+        if not path.is_absolute():
+            path = ROOT / path
+        return score_for_snapshot(base, log_path=path, rules=rules)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("lottery v2 score unavailable: %s", exc)
+        base["score"] = {
+            "ok": False,
+            "label": "Lottery v2 log",
+            "log_only": True,
+            "routed": False,
+            "not_traded": True,
+            "today": {"day": None, "tickets": [], "n": 0, "pnl_per_contract": None, "pnl_at_size": None},
+            "since_start": {
+                "trades": 0,
+                "win_rate_pct": None,
+                "pnl_per_contract": 0.0,
+                "pnl_at_size": 0.0,
+                "hit_5x": 0,
+                "went_to_zero": 0,
+            },
+            "error": str(exc)[:200],
+            "note": "Lottery v2 score unavailable.",
+        }
+        return base
+
+
 def _news_desk_block() -> dict:
     """📰 News Desk tile from disk. Alert only. A failure is an ok:false block."""
     try:
@@ -7690,6 +7806,8 @@ def create_app(config_path: str | None = None) -> Flask:
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("lottery v2 unavailable: %s", exc)
                     lottery_v2 = {**lottery_v2, "error": str(exc)}
+
+                lottery_v2 = _attach_lottery_v2_score(lottery_v2, actions_cfg)
 
                 # Unified walls map for all recommended surfaces (challenge + echo + action cards)
                 walls_by_symbol: dict[str, dict] = {}
