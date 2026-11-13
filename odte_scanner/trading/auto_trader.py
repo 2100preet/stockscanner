@@ -81,6 +81,23 @@ def _parse_iso(value: Any) -> datetime | None:
     return out if out.tzinfo else out.replace(tzinfo=timezone.utc)
 
 
+def _follows_open(order: WebullOrderIntent, since: str) -> bool:
+    """True when ``order`` is not from before the lot opened at ``since``.
+
+    ``since`` is the opening buy's created_at. A sell's exit_clock is the
+    trader clock; created_at is wall time. Those strings do not sort together:
+    a UTC stamp before 10:00 sorts before ``T10:01-05:00`` even when the exit
+    ran later that session, so the reject walk never reaches Limit $0.01.
+    """
+    if not since:
+        return True
+    opened = _parse_iso(since)
+    stamp = _parse_iso((order.meta or {}).get("exit_clock")) or _parse_iso(order.created_at)
+    if opened is None or stamp is None:
+        return str(order.created_at or "") >= since
+    return stamp >= opened
+
+
 def _hot_kind(order: WebullOrderIntent) -> str | None:
     kind = str((order.meta or {}).get("golden_kind") or "")
     if kind in _HOT_KINDS:
@@ -174,6 +191,8 @@ def _row_has_option_fields(row: dict[str, Any], *price_keys: str) -> tuple[bool,
 # bid is higher. Webull options reject MARKET, so this is the flatten when the
 # desk has no live bid (or only the entry price echoed back).
 FLATTEN_LIMIT = 0.01
+# How long a gold stop rests at the stop price while the bid is below it.
+HARD_STOP_REST_SEC = 15 * 60
 
 
 def _is_clock_flatten(row: dict[str, Any]) -> bool:
@@ -1412,6 +1431,30 @@ class AutoTrader:
             return limit <= FLATTEN_LIMIT + 1e-9
         return limit <= float(bid) + 0.011
 
+    def _hard_stop_rest_is_over(self, sell: WebullOrderIntent, bid: float | None) -> bool:
+        """A resting stop has sat above a live bid for HARD_STOP_REST_SEC."""
+        if bid is None or bid <= 0 or self._sell_limit_is_marketable(_f(sell.limit_price), bid):
+            return False
+        # exit_clock is the trader's clock when the stop was staged; created_at is wall time.
+        placed = _parse_iso((sell.meta or {}).get("exit_clock")) or _parse_iso(str(sell.created_at or ""))
+        now = self._now or datetime.now(timezone.utc)
+        if placed is None:
+            return False
+        return (now - placed).total_seconds() >= HARD_STOP_REST_SEC
+
+    def _hard_stop_timed_out(self, contract: str, since: str) -> bool:
+        """A stop on this lot already rested too long, so the next exit sells at the bid."""
+        if not contract:
+            return False
+        for sell in self.broker.orders:
+            if sell.action != "SELL" or str(sell.contract or "") != contract:
+                continue
+            if not _follows_open(sell, since):
+                continue
+            if (sell.meta or {}).get("hard_stop_timed_out"):
+                return True
+        return False
+
     def _maintain_working_sells(self) -> None:
         """Refresh resting sells during the option session and drop stale ones.
 
@@ -1456,7 +1499,16 @@ class AutoTrader:
             bid = self._lot_mark(position)
             if (sell.meta or {}).get("hard_stop"):
                 # A gold stop rests at the stop. Walking it down to each new
-                # bid is how a −50% stop filled at −67%.
+                # bid is how a −50% stop filled at −67%. But a stop the market
+                # has gapped through never fills: Nov 10 a QUBT Limit $0.12 stop
+                # sat for hours with the bid at $0.08. After a while, give up
+                # the rest and let the normal exit sell at the bid.
+                if self._hard_stop_rest_is_over(sell, bid):
+                    sell.meta["hard_stop_timed_out"] = True
+                    sell.meta["cancel_reason"] = (
+                        f"stop rested {int(HARD_STOP_REST_SEC // 60)} min above the bid — sell at the bid"
+                    )
+                    self.broker.cancel(sell)
                 continue
             if self._sell_limit_is_marketable(_f(sell.limit_price), bid):
                 continue
@@ -1586,6 +1638,8 @@ class AutoTrader:
             exit_desk = self.second_desk if desk == self.second_desk else "golden_exit"
             scaled = decision.peak_mark is not None
             hard_stop = str(decision.detail or "").startswith("stop loss") and self._uses_gold_exit(desk, order)
+            if hard_stop and self._hard_stop_timed_out(contract, str((order.created_at if order is not None else "") or "")):
+                hard_stop = False
             stop_px = self._gold_stop_price(order, desk, entry, str(expiry or "") or None) if hard_stop else None
             # Rest the stop AT the stop. A limit at a gapped bid fills past it.
             sell_bid = stop_px if stop_px is not None and stop_px > 0 else mark
@@ -2484,7 +2538,7 @@ class AutoTrader:
         for order in self.broker.orders:
             if order.action != "SELL" or order.status != "rejected" or str(order.contract or "") != contract:
                 continue
-            if since and str(order.created_at or "") < since:
+            if not _follows_open(order, since):
                 continue
             kind = str((order.meta or {}).get("reject_kind") or "")
             if not kind:

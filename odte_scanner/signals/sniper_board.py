@@ -21,6 +21,7 @@ from odte_scanner.signals.detected import (
 )
 from odte_scanner.signals.diamond import INDEX_ETFS, YAHOO_SYMBOL, Bar
 from odte_scanner.signals.diamond_board import (
+    closed_bars,
     index_opening_range,
     load_intraday_bars,
     modeled_spx_exits,
@@ -103,7 +104,10 @@ def choose_contract(
 def _lock_symbols(selected: list[dict[str, Any]], store: dict[str, Any], day: str) -> list[str]:
     prior = [str(sym).upper() for sym in (store.get("symbols") or [])] if store.get("day") == day else []
     ordered = [str(row["symbol"]).upper() for row in selected]
-    kept = [sym for sym in prior if sym in ordered]
+    # A name keeps its slot for the day even if it stops qualifying. Dropping
+    # it freed the slot for a new name: Nov 10 Diamond bought 5 names (GOOGL,
+    # MU, META, SPY, QQQ) plus the SPX alert against a cap of 3.
+    kept = list(dict.fromkeys(prior))[:DAILY_CAP]
     for sym in ordered:
         if sym in kept:
             continue
@@ -144,11 +148,9 @@ def build_sniper_board(
     window_open = time(8, 45) <= now_ct.time() < time(10, 30)
     path = store_path or DEFAULT_STORE
     store = _read_store(path)
-    trades = [
-        row
-        for row in run_universe(bars_by_symbol)
-        if row.get("day") == day and str(row.get("at") or "") <= moment.astimezone(timezone.utc).isoformat()
-    ]
+    # Closed bars only. The 9:19 META alert came from the 9:15 bar mid-bar.
+    bars_by_symbol = closed_bars(bars_by_symbol, moment)
+    trades = [row for row in run_universe(bars_by_symbol) if row.get("day") == day]
     ranked = apply_daily_cap(trades)
     allowed = _lock_symbols(ranked, store, day)
     detected = day_detected(store, day)
