@@ -81,6 +81,23 @@ def _parse_iso(value: Any) -> datetime | None:
     return out if out.tzinfo else out.replace(tzinfo=timezone.utc)
 
 
+def _follows_open(order: WebullOrderIntent, since: str) -> bool:
+    """True when ``order`` is not from before the lot opened at ``since``.
+
+    ``since`` is the opening buy's created_at. A sell's exit_clock is the
+    trader clock; created_at is wall time. Those strings do not sort together:
+    a UTC stamp before 10:00 sorts before ``T10:01-05:00`` even when the exit
+    ran later that session, so the reject walk never reaches Limit $0.01.
+    """
+    if not since:
+        return True
+    opened = _parse_iso(since)
+    stamp = _parse_iso((order.meta or {}).get("exit_clock")) or _parse_iso(order.created_at)
+    if opened is None or stamp is None:
+        return str(order.created_at or "") >= since
+    return stamp >= opened
+
+
 def _hot_kind(order: WebullOrderIntent) -> str | None:
     kind = str((order.meta or {}).get("golden_kind") or "")
     if kind in _HOT_KINDS:
@@ -1432,7 +1449,7 @@ class AutoTrader:
         for sell in self.broker.orders:
             if sell.action != "SELL" or str(sell.contract or "") != contract:
                 continue
-            if since and str(sell.created_at or "") < since:
+            if not _follows_open(sell, since):
                 continue
             if (sell.meta or {}).get("hard_stop_timed_out"):
                 return True
@@ -2521,7 +2538,7 @@ class AutoTrader:
         for order in self.broker.orders:
             if order.action != "SELL" or order.status != "rejected" or str(order.contract or "") != contract:
                 continue
-            if since and str(order.created_at or "") < since:
+            if not _follows_open(order, since):
                 continue
             kind = str((order.meta or {}).get("reject_kind") or "")
             if not kind:
