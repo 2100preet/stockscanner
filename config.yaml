@@ -812,3 +812,45 @@ backtest:
 
 logging:
   level: INFO
+
+# Kotegawa and Million Challenge are separate paper books. They do not share
+# trades, sizing, daily-loss counters, or state files with each other or with
+# Gold, Sniper, Diamond, Swing, Challenge, Afternoon Puts, Lottery, or RIP.
+# paper_only is enforced in code. A missing KOTEGAWA_ACCOUNT_ID /
+# MILLION_ACCOUNT_ID stays on the internal ledger and never falls back to
+# WEBULL_ACCOUNT_ID, WEBULL_ACCOUNT_ID_2, or a live account.
+kotegawa:
+  enabled: true
+  paper_only: true
+  starting_equity: 100000
+  state_path: outputs/kotegawa_state.json
+  fetch_bars: true
+  max_positions: 5
+  slot_pct: 0.20
+  sma_days: 25
+  entry_drop_pct: 0.10
+  hold_sessions: 3
+  daily_loss_usd: 3000
+
+million_challenge:
+  enabled: true
+  paper_only: true
+  starting_equity: 1000
+  state_path: outputs/million_challenge_state.json
+  fetch_bars: true
+  slot_pct: 0.10
+  max_contract_pct: 0.25
+  max_positions: 1
+  daily_losers: 2
+  daily_loss_pct: 0.20
+  signals:
+    - challenge_quality
+    - oversold_bounce
+  oversold_bounce:
+    target_pct: 50
+    stop_pct: 40
+    flatten_ct: "14:55"
+    low_days: 40
+    low_band_pct: 0.03
+    sma_days: 25
+    sma_drop_pct: 0.10

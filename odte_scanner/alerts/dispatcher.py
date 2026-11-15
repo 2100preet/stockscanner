@@ -981,7 +981,50 @@ def collect_trade_alerts(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             }
         )
 
+    _append_paper_desk_alerts(snapshot, out, seen_local)
     return _collapse_symbol_alerts(out)
+
+
+def _append_paper_desk_alerts(
+    snapshot: dict[str, Any],
+    out: list[dict[str, Any]],
+    seen_local: set[str],
+) -> None:
+    """Kotegawa and Million alerts already carry their [KOTEGAWA] / [MILLION] text.
+
+    They are appended after the existing desks so they do not take an earlier
+    slot in the pulse. A snapshot without these keys changes nothing.
+    """
+    for desk_key, label in (("kotegawa", "[KOTEGAWA]"), ("million_challenge", "[MILLION]")):
+        block = snapshot.get(desk_key)
+        if not isinstance(block, dict):
+            continue
+        for raw in block.get("alerts") or []:
+            if not isinstance(raw, dict):
+                continue
+            message = str(raw.get("message") or "")
+            if label not in message:
+                continue
+            key = str(raw.get("key") or "")
+            symbol = str(raw.get("symbol") or "").upper()
+            if not key or not symbol or key in seen_local:
+                continue
+            seen_local.add(key)
+            out.append(
+                {
+                    "key": key,
+                    "side": str(raw.get("side") or "BUY").upper(),
+                    "desk": str(raw.get("desk") or desk_key),
+                    "symbol": symbol,
+                    "action": str(raw.get("action") or raw.get("side") or "BUY").upper(),
+                    "contract": raw.get("contract"),
+                    "strike": raw.get("strike"),
+                    "expiry": raw.get("expiry"),
+                    "ask": raw.get("ask"),
+                    "message": message,
+                    "row": raw.get("row") if isinstance(raw.get("row"), dict) else raw,
+                }
+            )
 
 
 def _collapse_symbol_alerts(alerts: list[dict[str, Any]]) -> list[dict[str, Any]]:

@@ -21,6 +21,11 @@ SECTION_HTML = f"""
       <div style="overflow-x:auto">
         <table id="dailyPnlTable"></table>
       </div>
+      <h3>Paper desks</h3>
+      <p class="lede">Kotegawa and Million Challenge. Each book is paper-only and separate from the Webull total.</p>
+      <div style="overflow-x:auto">
+        <table id="paperDeskTable"></table>
+      </div>
       <h3>Not in the Webull total</h3>
       <div id="dailyPnlSide" class="empty">SPX modeled results and the internal journal stay out of the paper total.</div>
       <div class="metric-row" id="scorecardMetrics"></div>
@@ -272,6 +277,24 @@ CLIENT_JS = r"""
         });
       }
       var sc = (DATA && DATA.rows) ? DATA : ((DATA && DATA.scorecard) || {});
+      var deskTable = document.getElementById("paperDeskTable");
+      if (deskTable) {
+        var deskRows = (DATA && DATA.paper_desks) || sc.paper_desks || [];
+        if (!deskRows.length) {
+          deskTable.innerHTML = '<tbody><tr><td class="empty">No Kotegawa or Million paper trades yet.</td></tr></tbody>';
+        } else {
+          var deskHead = '<thead><tr><th>Desk</th><th>Trades</th><th>Win rate</th><th>Realized P&amp;L</th><th>Open</th><th>Equity</th></tr></thead>';
+          var deskBody = deskRows.map(function (row) {
+            var rate = row.win_rate == null ? "—" : ((Number(row.win_rate) * 100).toFixed(1) + "%");
+            var equity = row.equity == null ? "—" : ("$" + Number(row.equity).toFixed(2));
+            return '<tr><td>' + scEsc(row.desk) + '</td><td class="mono">' + scEsc(row.trades == null ? 0 : row.trades)
+              + '</td><td class="mono">' + scEsc(rate) + '</td><td class="mono">' + dailyPnlMoney(row.realized_pnl)
+              + '</td><td class="mono">' + scEsc(row.open_positions == null ? 0 : row.open_positions)
+              + '</td><td class="mono">' + scEsc(equity) + '</td></tr>';
+          }).join("");
+          deskTable.innerHTML = deskHead + '<tbody>' + deskBody + '</tbody>';
+        }
+      }
       var chainEl = document.getElementById("scorecardChain");
       var chain = sc.chain || {};
       if (chainEl) {
