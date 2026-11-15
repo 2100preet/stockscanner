@@ -44,6 +44,26 @@ EXIT_PLAN = (
     "In-sample model, not a promise."
 )
 _MODELED_EXIT_REASONS = frozenset({"stop", "target", "flat", "trail", "be"})
+# Bars are stamped at their start. A 09:15 bar is final at 09:20.
+BAR_MINUTES = 5
+
+
+def closed_bars(bars_by_symbol: dict[str, list[Bar]], now: datetime, minutes: int = BAR_MINUTES) -> dict[str, list[Bar]]:
+    """Only bars that have finished by ``now``.
+
+    The feed returns the bar that is still forming (a few seconds of trades
+    right after each boundary). A signal on it can vanish when the bar
+    closes: Nov 10 sent Diamond GOOGL/MU at 9:00:03 and a Sniper META alert
+    at 9:19:23 on bars that did not qualify once closed. ``now`` must be
+    timezone-aware; a naive one is read as CT, like the boards do.
+    """
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=CT)
+    span = timedelta(minutes=minutes)
+    out: dict[str, list[Bar]] = {}
+    for symbol, bars in (bars_by_symbol or {}).items():
+        out[symbol] = [bar for bar in (bars or []) if bar.ct() + span <= now]
+    return out
 
 
 def modeled_spx_exits(
@@ -150,10 +170,13 @@ def choose_call(
 
 
 def _lock_symbols(selected: list[dict[str, Any]], store: dict[str, Any], day: str) -> list[str]:
-    """Keep the names already sent today, then fill empty slots in signal order."""
+    """Keep every name already locked today, then fill empty slots in signal order."""
     prior = [str(sym).upper() for sym in (store.get("symbols") or [])] if store.get("day") == day else []
     ordered = [str(row["symbol"]).upper() for row in selected]
-    kept = [sym for sym in prior if sym in ordered]
+    # A name keeps its slot for the day even if it stops qualifying. Dropping
+    # it freed the slot for a new name: Nov 10 Diamond bought 5 names (GOOGL,
+    # MU, META, SPY, QQQ) plus the SPX alert against a cap of 3.
+    kept = list(dict.fromkeys(prior))[:DAILY_CAP]
     for sym in ordered:
         if sym in kept:
             continue
@@ -222,12 +245,8 @@ def build_diamond_board(
     window_open = time(9, 0) <= now_ct.time() < time(10, 30)
     path = store_path or DEFAULT_STORE
     store = _read_store(path)
-    trades = [
-        row
-        for row in run_universe(bars_by_symbol)
-        if row.get("day") == day and str(row.get("at") or "") <= moment.astimezone(timezone.utc).isoformat()
-    ]
-    # A bar stamped at 09:45 is known once that bar has closed. Compare in UTC.
+    # Closed bars only: a bar stamped 09:45 is known at 09:50 (see closed_bars).
+    trades = [row for row in run_universe(closed_bars(bars_by_symbol, moment)) if row.get("day") == day]
     ranked = apply_daily_cap(trades)
     allowed = _lock_symbols(ranked, store, day)
     # Only persist a lock while a send can still happen, so a late scan does

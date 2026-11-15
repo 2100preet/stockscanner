@@ -1205,6 +1205,19 @@ def _parse_iso_utc(value: Any) -> datetime | None:
     return out if out.tzinfo else out.replace(tzinfo=timezone.utc)
 
 
+def _stamp_after(left: Any, right: Any) -> bool:
+    """True when ``left`` is strictly later than ``right``.
+
+    Parsed instants, so a UTC stamp and an Eastern one compare by time.
+    Unparseable values fall back to the raw strings.
+    """
+    a = _parse_iso_utc(left)
+    b = _parse_iso_utc(right)
+    if a is not None and b is not None:
+        return a > b
+    return str(left or "") > str(right or "")
+
+
 class EndpointBudget:
     """Process-wide sliding-window budget per Webull endpoint.
 
@@ -1871,9 +1884,11 @@ class WebullBroker:
                 continue
             if order.status not in {"filled", "partial"}:
                 continue
-            if str(order.created_at or "") > str(sell.created_at or ""):
+            # Instant compare. A UTC created_at and an Eastern one do not sort
+            # as strings: before 10:00 UTC the UTC stamp looks earlier.
+            if _stamp_after(order.created_at, sell.created_at):
                 continue
-            if best is None or str(order.created_at or "") > str(best.created_at or ""):
+            if best is None or _stamp_after(order.created_at, best.created_at):
                 best = order
         if best is None:
             return

@@ -612,6 +612,21 @@ def format_reject_alert(
     return line + " · paper"
 
 
+def _reject_clock(order: Any) -> Any:
+    """When this sell belongs on the tape.
+
+    ``exit_clock`` is the trader clock passed into sync. ``created_at`` is wall
+    time, so a weekend or pre-dawn UTC run stamps Sunday while the session
+    clock has already rolled to the next weekday. The day filter has to follow
+    the trader clock, the same way a reject is counted against its lot.
+    """
+    meta = getattr(order, "meta", None) or {}
+    clock = meta.get("exit_clock")
+    if _parse_dt(clock) is not None:
+        return clock
+    return getattr(order, "created_at", None)
+
+
 def collect_reject_alerts(orders: list[Any] | None, *, now: datetime, seen: set[str]) -> list[dict[str, Any]]:
     """One exit-failure line per contract, reject kind, and day."""
     moment = now if now.tzinfo else now.replace(tzinfo=CT)
@@ -625,7 +640,8 @@ def collect_reject_alerts(orders: list[Any] | None, *, now: datetime, seen: set[
         meta = getattr(order, "meta", None) or {}
         if not meta.get("reject_code") and not meta.get("reject_reason"):
             continue  # rows from before reasons were stored
-        created = _as_ct(getattr(order, "created_at", None), now=moment)
+        stamp = _reject_clock(order)
+        created = _as_ct(stamp, now=moment)
         if created is None or created.date().isoformat() != today:
             continue
         tier = _tier_of(order, list(orders or []))
@@ -652,7 +668,7 @@ def collect_reject_alerts(orders: list[Any] | None, *, now: datetime, seen: set[
                     limit=_num(getattr(order, "limit_price", None)),
                     reason=meta.get("reject_reason") or meta.get("reject_code"),
                     next_step=meta.get("next_step"),
-                    at=getattr(order, "created_at", None),
+                    at=stamp,
                 ),
             }
         )
