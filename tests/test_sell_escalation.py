@@ -25,6 +25,11 @@ def _occ(symbol: str, expiry: str, right: str, strike: float) -> str:
 def _setup(tmp_path: Path, monkeypatch, error: str, *, held=True):
     now = session_et(11, 31)  # 10:31 CT
     expiry = iso_day(now)
+    # Order stamps use the wall clock. On a weekend the session clock is the
+    # next Monday, and the reject alert keeps only rows from that session day.
+    import odte_scanner.trading.webull as wb
+
+    monkeypatch.setattr(wb, "_now", lambda: now.astimezone(timezone.utc).isoformat())
     broker = WebullBroker(enabled=True, dry_run=False, app_key="k", app_secret="s", account_id="a",
                           ledger_path=tmp_path / "wb.json", submit_interval_sec=0)
     broker._hold_outside_session = lambda intent: None  # type: ignore[method-assign]
