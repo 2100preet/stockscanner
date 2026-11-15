@@ -263,3 +263,35 @@ def test_restored_buy_takes_the_desk_of_its_chase_sibling(tmp_path: Path):
     assert restored.desk == "sniper" and restored.meta["golden_kind"] == "sniper"
     assert restored.meta["sniper_flat_ct"] == "10:30" and restored.meta["desk_from"] == first.id
     assert AutoTrader(broker, golden_only=True)._tracks_exit(restored)
+
+
+def test_restored_sell_links_the_later_buy_across_offsets(tmp_path: Path):
+    """UTC and Eastern created_at values compare as instants, not text.
+
+    ``2026-11-16T09:30:00+00:00`` sorts after ``2026-11-16T08:00:00-05:00`` as
+    strings and before it as time. The 08:00 ET buy is the one this sell closed.
+    """
+    broker = _live_broker(tmp_path / "wb.json")
+    contract = "SPY261116C00746000"
+    early = broker.stage(desk="sniper", action="BUY", symbol="SPY", contract=contract,
+                         expiry="2026-11-16", strike=746, limit_price=1.0, meta={"golden_kind": "sniper"})
+    early.status = "filled"
+    early.fill_price = 1.0
+    early.created_at = "2026-11-16T09:30:00+00:00"  # 04:30 ET
+    later = broker.stage(desk="sniper", action="BUY", symbol="SPY", contract=contract,
+                         expiry="2026-11-16", strike=746, limit_price=2.0, meta={"golden_kind": "sniper"})
+    later.status = "filled"
+    later.fill_price = 2.0
+    later.created_at = "2026-11-16T08:00:00-05:00"  # 08:00 ET, 13:00 UTC
+    sell = broker.stage(desk="golden_exit", action="SELL", symbol="SPY", contract=contract,
+                        expiry="2026-11-16", strike=746, limit_price=3.0)
+    sell.created_at = "2026-11-16T15:00:00+00:00"  # 10:00 ET, after both
+    broker._link_sell_to_buy(sell)
+    assert sell.meta["closes_order_id"] == later.id
+    assert sell.meta["entry_price"] == 2.0
+
+    too_late = broker.stage(desk="golden_exit", action="SELL", symbol="SPY", contract=contract,
+                            expiry="2026-11-16", strike=746, limit_price=3.0)
+    too_late.created_at = "2026-11-16T09:00:00+00:00"  # 04:00 ET, before both buys
+    broker._link_sell_to_buy(too_late)
+    assert "closes_order_id" not in too_late.meta
