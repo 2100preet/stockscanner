@@ -33,6 +33,7 @@ from odte_scanner.desks.million import (
 )
 from odte_scanner.desks.million import _fresh as million_fresh
 from odte_scanner.desks.million import _load as load_million
+from odte_scanner.desks.portal_feed import shape_portal_feed
 from odte_scanner.desks.sp100 import oversold_universe, sp100_universe
 from odte_scanner.desks.store import DeskStateError
 from odte_scanner.json_util import atomic_write_text
@@ -64,6 +65,13 @@ def _should_cycle(cycle: bool | None) -> bool:
     if cycle is not None:
         return cycle
     return "PYTEST_CURRENT_TEST" not in os.environ
+
+
+def _as_of(now: datetime | None):
+    if now is None:
+        return None
+    moment = now if now.tzinfo is not None else now.replace(tzinfo=CT)
+    return moment.astimezone(CT).date()
 
 
 def _read_book(loader, fresh, path: Path, starting: float) -> dict[str, Any]:
@@ -449,7 +457,10 @@ def _portal_view_once(
             environ=environ,
         )
     else:
-        kotegawa = kotegawa_view(_read_book(load_kotegawa, kotegawa_fresh, kot_path, kot_start))
+        kotegawa = kotegawa_view(
+            _read_book(load_kotegawa, kotegawa_fresh, kot_path, kot_start),
+            as_of=_as_of(now),
+        )
 
     sources = [str(name) for name in (mil_cfg.get("signals") or [])]
     needs_bars = "oversold_bounce" in sources
@@ -503,11 +514,17 @@ def _portal_view_once(
             held = million_fresh(mil_start)
             held["status_note"] = "state file belongs to another desk"
         held["state_path"] = str(mil_path)
-        million = million_view(held)
+        million = million_view(held, as_of=_as_of(now))
         million["signals"] = sources
 
     rows = [kotegawa_row(kotegawa), million_row(million)]
-    return {"kotegawa": kotegawa, "million_challenge": million, "rows": rows}
+    portal = shape_portal_feed(kotegawa, million, now=now)
+    return {
+        "kotegawa": kotegawa,
+        "million_challenge": million,
+        "rows": rows,
+        "portal": portal,
+    }
 
 
 def scorecard_rows(cfg: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:

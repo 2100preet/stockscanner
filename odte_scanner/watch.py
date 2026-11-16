@@ -270,9 +270,9 @@ def run_watch(
                 challenge=snapshot.get("challenge") if isinstance(snapshot.get("challenge"), dict) else None,
                 now=started,
             )
-            snapshot["kotegawa"] = desk_view.get("kotegawa")
-            snapshot["million_challenge"] = desk_view.get("million_challenge")
-            snapshot["paper_desks"] = desk_view.get("rows")
+            from odte_scanner.desks.portal_feed import snapshot_fields
+
+            snapshot.update(snapshot_fields(desk_view))
         except Exception as exc:  # noqa: BLE001
             logger.debug("paper desks skipped: %s", exc)
 
