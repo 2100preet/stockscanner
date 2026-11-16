@@ -6,15 +6,21 @@ per session. Each entry risks 10% of this desk's equity, with a minimum of
 one contract, and skips the trade when one contract would be more than 25%
 of equity.
 
-``vwap_reclaim`` is the primary paper trade. It buys a same-day near-ATM
+``vwap_reclaim`` is the only signal that fills. It buys a same-day near-ATM
 call (nearest expiry if that name has no 0DTE) and exits at +50%, −40%,
 60 minutes after the fill, or 2:55 PM CT, whichever comes first. It is not
-held overnight. A 1DTE twin (+50% / −30% / 60 minutes) is logged and not
-filled. ``oversold_bounce`` is also log-only. ``challenge_quality`` still
-fills when it is listed and the desk has not already entered.
+held overnight. The 1DTE twin (+50% / −30% / 60 minutes), ``oversold_bounce``,
+and ``challenge_quality`` are log-only: the ticket and its would-be exit are
+recorded, cash does not move, and nothing is routed.
 
 Exits on a quality ticket stay +25% / −20%, plus the 15:45 ET flatten on a
-contract that expires today.
+contract that expires today. Those exits are recorded on the log ticket.
+
+Every mark, take-profit, stop, and exit uses the option contract's own
+quote. The underlying quote is only a sanity bound. A missing quote, a
+price above 20× the entry premium, or a price above half the underlying is
+not a fill. The 2:55 PM CT flatten then closes at the last valid option
+mark, or at 0 when the contract expired worthless.
 
 New entries stop for the day after two losing closes or after realized P&L
 reaches −20% of the equity this desk started the day with. Log-only tickets
@@ -23,11 +29,13 @@ do not change cash, do not count as those losers, and are not routed.
 
 from __future__ import annotations
 
+import logging
 import math
+import os
 import uuid
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 from zoneinfo import ZoneInfo
 
 from odte_scanner.desks.fills import buy_fill, sell_fill
@@ -36,7 +44,10 @@ from odte_scanner.desks.signals import build_signals
 from odte_scanner.desks.store import DeskStateError, load_desk_state, save_desk_state
 from odte_scanner.signals.hold_rules import expiry_is_today, past_odte_flatten
 
+logger = logging.getLogger(__name__)
+
 CT = ZoneInfo("America/Chicago")
+ET = ZoneInfo("America/New_York")
 DESK = "million_challenge"
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_STATE = ROOT / "outputs" / "million_challenge_state.json"
@@ -55,9 +66,16 @@ VWAP_TWIN_TARGET = 50.0
 VWAP_TWIN_STOP = 30.0
 VWAP_TIME_STOP_MINUTES = 60.0
 VWAP_FLATTEN_CT = "14:55"
-LOG_ONLY_SOURCES = {"oversold_bounce", "vwap_reclaim_1dte"}
+LOG_ONLY_SOURCES = {"oversold_bounce", "vwap_reclaim_1dte", "challenge_quality"}
 DAILY_LOSERS = 2
 DAILY_LOSS_PCT = 0.20
+# A near-ATM premium cannot print at the stock price. These bounds refuse
+# that quote instead of booking it. 20× entry is above every take-profit
+# this desk uses. Half the underlying is above any near-ATM premium and is
+# always below the stock price itself.
+MARK_ENTRY_MULTIPLE = 20.0
+MARK_UNDERLYING_FRACTION = 0.5
+FLATTEN_REASONS = frozenset({"session_flat", "flatten_0dte"})
 TARGET_DOUBLINGS = round(math.log(1_000_000 / STARTING_EQUITY, 2), 2)
 
 
@@ -189,10 +207,65 @@ def _fresh(starting: float) -> dict[str, Any]:
     }
 
 
-def _load(path: Path, starting: float) -> dict[str, Any]:
+def _file_epoch(saved: Mapping[str, Any] | None) -> int:
+    """Epoch stored on a book. A missing or unreadable value is 0."""
+    if not isinstance(saved, Mapping):
+        return 0
+    try:
+        return int(saved.get("ledger_epoch") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _configured_epoch(value: Any) -> int | None:
+    """Positive config epoch, or None when this run must not reset."""
+    if value is None or value is False:
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    if number <= 0:
+        return None
+    return number
+
+
+def _archive_state(path: Path) -> Path:
+    """Rename the live book aside. The name keeps the stem and a timestamp."""
+    stamp = datetime.now(CT).strftime("%Y%m%dT%H%M%S%f")
+    archive = path.with_name(f"{path.stem}.{stamp}.bak.json")
+    path.replace(archive)
+    return archive
+
+
+def _load(path: Path, starting: float, ledger_epoch: Any = None) -> dict[str, Any]:
+    """Load this desk's book.
+
+    When ``ledger_epoch`` is a positive integer and the file's epoch is
+    older (a missing epoch is 0), the file is renamed to
+    ``<stem>.<timestamp>.bak.json`` and the book starts over at ``starting``.
+    A file tagged for another desk is not archived and still raises.
+    """
+    configured = _configured_epoch(ledger_epoch)
     saved = load_desk_state(path, DESK)
+    if isinstance(saved, dict) and configured is not None and _file_epoch(saved) < configured:
+        archive = _archive_state(path)
+        book = _fresh(starting)
+        book["ledger_epoch"] = configured
+        save_desk_state(path, book)
+        logger.warning(
+            "million ledger epoch %s is older than %s; archived %s and reset to %.0f",
+            _file_epoch(saved),
+            configured,
+            archive.name,
+            starting,
+        )
+        return book
     if not isinstance(saved, dict):
-        return _fresh(starting)
+        book = _fresh(starting)
+        if configured is not None:
+            book["ledger_epoch"] = configured
+        return book
     book = _fresh(starting)
     book["starting_equity"] = float(saved.get("starting_equity") or starting)
     book["cash"] = float(saved.get("cash") if saved.get("cash") is not None else book["starting_equity"])
@@ -211,6 +284,10 @@ def _load(path: Path, starting: float) -> dict[str, Any]:
             known[level]["reached"] = True
             known[level]["reached_at"] = row.get("reached_at")
     book["milestones"] = list(known.values())
+    if configured is not None:
+        book["ledger_epoch"] = max(configured, _file_epoch(saved))
+    elif saved.get("ledger_epoch") is not None:
+        book["ledger_epoch"] = _file_epoch(saved)
     return book
 
 
@@ -229,26 +306,155 @@ def equity_of(book: Mapping[str, Any], marks: Mapping[str, float] | None = None)
     return total
 
 
-def _mark_quote(trade: Mapping[str, Any], quotes: Mapping[str, Any] | None) -> Mapping[str, Any]:
+def _positive(value: Any) -> float | None:
+    number = _f(value)
+    if number is None or number <= 0:
+        return None
+    return number
+
+
+def _contract_quote(trade: Mapping[str, Any], quotes: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    """Quote stored for this OCC contract.
+
+    The underlying symbol is never a key. Equity quotes live under that
+    symbol in the same map, and using one of them prices the option at the
+    stock.
+    """
     if not isinstance(quotes, Mapping):
         return {}
-    for key in (trade.get("contract"), trade.get("id"), trade.get("symbol")):
-        if key and isinstance(quotes.get(key), Mapping):
-            return quotes[key]
+    symbol = str(trade.get("symbol") or "")
+    contract = str(trade.get("contract") or "").strip()
+    keys: list[str] = []
+    if contract and contract != symbol:
+        keys.append(contract)
+    trade_id = str(trade.get("id") or "").strip()
+    if trade_id and trade_id not in {symbol, contract}:
+        keys.append(trade_id)
+    for key in keys:
+        raw = quotes.get(key)
+        if isinstance(raw, Mapping):
+            return raw
     return {}
 
 
+def _sell_basis(quote: Mapping[str, Any] | None) -> float | None:
+    """Price a sell from the option quote: bid, else last, else ask, else mid."""
+    if not isinstance(quote, Mapping):
+        return None
+    for key in ("bid", "last", "ask", "mid"):
+        price = _positive(quote.get(key))
+        if price is not None:
+            return price
+    return None
+
+
+def _underlying_price(trade: Mapping[str, Any], quotes: Mapping[str, Any] | None) -> float | None:
+    """Spot used only to reject an impossible option print.
+
+    The live equity quote wins over the spot saved at entry. It is never
+    returned as the option's own price.
+    """
+    symbol = str(trade.get("symbol") or "")
+    contract = str(trade.get("contract") or "").strip()
+    if isinstance(quotes, Mapping) and symbol and symbol != contract:
+        raw = quotes.get(symbol)
+        if isinstance(raw, Mapping):
+            for key in ("last", "mid", "close", "bid", "ask"):
+                price = _positive(raw.get(key))
+                if price is not None:
+                    return price
+    for key in ("spot", "underlying", "underlying_price"):
+        price = _positive(trade.get(key))
+        if price is not None:
+            return price
+    return None
+
+
+def _mark_rejection(price: float | None, entry: float, underlying: float | None) -> str | None:
+    """Why this number must not be treated as an option premium."""
+    if price is None or price <= 0:
+        return "missing option quote"
+    if entry > 0 and price > entry * MARK_ENTRY_MULTIPLE + 1e-9:
+        return "option mark is more than 20x the entry premium"
+    if (
+        underlying is not None
+        and underlying > 0
+        and price > underlying * MARK_UNDERLYING_FRACTION + 1e-9
+    ):
+        return "option mark is more than half the underlying price"
+    return None
+
+
 def _option_mark(trade: Mapping[str, Any], quotes: Mapping[str, Any] | None) -> tuple[float | None, float | None]:
-    """Return (mark used for triggers, bid used for the sell fill)."""
-    quote = _mark_quote(trade, quotes)
-    bid = _f(quote.get("bid"))
-    last = _f(quote.get("last"))
-    mid = _f(quote.get("mid"))
-    ask = _f(quote.get("ask"))
-    mark = last if last is not None else mid if mid is not None else bid if bid is not None else ask
-    if bid is None:
-        bid = mark
-    return mark, bid
+    """Return the option sell price, twice, when it passes the sanity guard.
+
+    The first value marks the position. The second is the sell basis. Both
+    are the contract bid (else last, else ask). A stock quote is not used.
+    """
+    basis = _sell_basis(_contract_quote(trade, quotes))
+    if _mark_rejection(basis, float(trade.get("entry") or 0), _underlying_price(trade, quotes)):
+        return None, None
+    return basis, basis
+
+
+def _expiry_instant(trade: Mapping[str, Any]) -> datetime | None:
+    """4:00 PM ET on the expiry date. That instant is the contract's end."""
+    text = str(trade.get("expiry") or "")[:10]
+    try:
+        day = date.fromisoformat(text)
+    except ValueError:
+        return None
+    return datetime(day.year, day.month, day.day, 16, 0, tzinfo=ET)
+
+
+def _contract_expired(trade: Mapping[str, Any], now: datetime) -> bool:
+    """True once the contract is past its 4:00 PM ET expiry instant."""
+    moment = _as_ct(now)
+    expiry = _expiry_instant(trade)
+    if expiry is not None:
+        return moment >= expiry.astimezone(CT)
+    if trade.get("dte") == 0:
+        close = datetime(moment.year, moment.month, moment.day, 15, 0, tzinfo=CT)
+        return moment >= close
+    return False
+
+
+def _expired_otm(trade: Mapping[str, Any], underlying: float | None) -> bool | None:
+    """True when an expired contract finished out of the money.
+
+    None means the strike or the spot is missing, so intrinsic is unknown.
+    """
+    if underlying is None:
+        return None
+    strike = _f(trade.get("strike"))
+    if strike is None:
+        return None
+    right = str(trade.get("right") or "C").upper()[:1]
+    if right == "P":
+        return underlying + 1e-9 >= strike
+    return underlying <= strike + 1e-9
+
+
+def _flatten_fallback(trade: Mapping[str, Any], now: datetime, underlying: float | None) -> float:
+    """Close price when the flatten has no usable option quote.
+
+    An expired worthless contract closes at 0. Anything still alive, or an
+    expired contract that finished in the money, closes at the last option
+    mark that itself passed the guard. The underlying price is not a choice.
+    """
+    entry = float(trade.get("entry") or 0)
+    if _contract_expired(trade, now):
+        otm = _expired_otm(trade, underlying)
+        if otm is None or otm:
+            return 0.0
+    for key in ("last_mark", "entry"):
+        price = _positive(trade.get(key))
+        if price is None:
+            continue
+        if _mark_rejection(price, entry, underlying):
+            continue
+        return price
+    return 0.0
 
 
 def contract_count(equity: float, fill: float, *, slot_pct: float, max_contract_pct: float) -> int | None:
@@ -301,7 +507,7 @@ def _stamp_milestones(book: dict[str, Any], equity: float, now: datetime) -> Non
 
 def _bracket_exit(
     trade: Mapping[str, Any],
-    change: float,
+    change: float | None,
     now: datetime,
     *,
     default_target: float,
@@ -309,12 +515,13 @@ def _bracket_exit(
     default_time: float | None,
     flatten: bool,
 ) -> str | None:
-    stop = _pct(trade.get("stop_pct"), default_stop) / 100.0
-    target = _pct(trade.get("target_pct"), default_target) / 100.0
-    if change <= -stop + 1e-12:
-        return "hard_stop"
-    if change + 1e-12 >= target:
-        return "take_profit"
+    if change is not None:
+        stop = _pct(trade.get("stop_pct"), default_stop) / 100.0
+        target = _pct(trade.get("target_pct"), default_target) / 100.0
+        if change <= -stop + 1e-12:
+            return "hard_stop"
+        if change + 1e-12 >= target:
+            return "take_profit"
     if default_time is not None:
         span = _minutes_setting(trade.get("time_stop_minutes"), default_time)
         if span is not None and _time_stop_due(trade, now, span):
@@ -333,12 +540,18 @@ def _bracket_exit(
     return None
 
 
-def _exit_reason(trade: Mapping[str, Any], mark: float, *, now: datetime) -> str | None:
+def _exit_reason(trade: Mapping[str, Any], mark: float | None, *, now: datetime) -> str | None:
+    """Why this ticket should close.
+
+    A missing mark still allows the clock exits (time stop, session flatten,
+    0DTE flatten). It cannot take a profit or stop, because those compare
+    two option premiums.
+    """
     entry = float(trade.get("entry") or 0)
-    if entry <= 0 or mark <= 0:
-        return None
+    change: float | None = None
+    if entry > 0 and mark is not None and mark > 0:
+        change = (mark / entry) - 1.0
     source = str(trade.get("source") or "challenge_quality")
-    change = (mark / entry) - 1.0
     if source == "vwap_reclaim":
         return _bracket_exit(
             trade,
@@ -369,9 +582,9 @@ def _exit_reason(trade: Mapping[str, Any], mark: float, *, now: datetime) -> str
             default_time=None,
             flatten=True,
         )
-    if change + 1e-12 >= QUALITY_TP:
+    if change is not None and change + 1e-12 >= QUALITY_TP:
         return "take_profit"
-    if change <= -QUALITY_STOP + 1e-12:
+    if change is not None and change <= -QUALITY_STOP + 1e-12:
         return "hard_stop"
     expiry = str(trade.get("expiry") or "")
     dte = trade.get("dte")
@@ -542,6 +755,7 @@ def public_view(book: Mapping[str, Any], *, status: str = "ok", reason: str | No
         ],
         "alerts": list(book.get("recent_alerts") or []),
         "state_path": book.get("state_path"),
+        "ledger_epoch": book.get("ledger_epoch"),
     }
 
 
@@ -608,6 +822,7 @@ def _record_log(
         "dte": idea.get("dte"),
         "contracts": count,
         "entry": fill if status == "open" else None,
+        "last_mark": fill if status == "open" else None,
         "cost": cost if status == "open" else 0.0,
         "target_pct": idea.get("target_pct"),
         "stop_pct": idea.get("stop_pct"),
@@ -619,6 +834,7 @@ def _record_log(
         "reason": skip_reason or idea.get("reason"),
         "route": "log_only",
         "vwap": idea.get("vwap"),
+        "spot": idea.get("spot"),
         "vix": tag.get("vix"),
         "vix_vs_prior": tag.get("vix_vs_prior"),
     }
@@ -626,15 +842,192 @@ def _record_log(
     return ticket
 
 
-def _close_log(ticket: dict[str, Any], fill: float, reason: str, now: datetime, session: date) -> None:
+def _default_quote_fetcher(trade: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Live bid/ask for this OCC contract. Tests do not hit the network.
+
+    The result is the contract quote from Tradier or Polygon. It is not the
+    underlying. A failure leaves the mark missing so the cycle skips the exit.
+    """
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return None
+    contract = str(trade.get("contract") or "").strip()
+    symbol = str(trade.get("symbol") or "")
+    if not contract or contract == symbol:
+        return None
+    try:
+        from odte_scanner.options.contract_quote import fetch_contract_quote
+
+        quote = fetch_contract_quote(
+            {
+                "symbol": symbol,
+                "contract": contract,
+                "expiry": trade.get("expiry"),
+                "strike": trade.get("strike"),
+                "right": trade.get("right"),
+            }
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("million option quote fetch failed %s %s: %s", symbol, contract, exc)
+        return None
+    return quote if isinstance(quote, dict) else None
+
+
+def _open_logs(book: Mapping[str, Any]) -> list[dict[str, Any]]:
+    return [
+        row
+        for row in book.get("log_only") or []
+        if isinstance(row, dict) and row.get("status") == "open"
+    ]
+
+
+def _with_contract_quotes(
+    book: Mapping[str, Any],
+    quotes: Mapping[str, Any] | None,
+    fetcher: Callable[[Mapping[str, Any]], Mapping[str, Any] | None] | None,
+) -> dict[str, Any]:
+    """Copy the quote map and fill any missing OCC keys from ``fetcher``.
+
+    Equity quotes stay under the underlying symbol so the sanity bound can
+    read the spot. They are not copied onto the contract.
+    """
+    out: dict[str, Any] = dict(quotes) if isinstance(quotes, Mapping) else {}
+    if fetcher is None:
+        return out
+    for ticket in [*_open_trades(book), *_open_logs(book)]:
+        contract = str(ticket.get("contract") or "").strip()
+        symbol = str(ticket.get("symbol") or "")
+        if not contract or contract == symbol:
+            continue
+        if isinstance(out.get(contract), Mapping):
+            continue
+        try:
+            fetched = fetcher(ticket)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("million option quote fetch failed %s %s: %s", symbol, contract, exc)
+            continue
+        if isinstance(fetched, Mapping):
+            out[contract] = dict(fetched)
+    return out
+
+
+def _fill_exit(
+    book: dict[str, Any],
+    ticket: dict[str, Any],
+    basis: float,
+    reason: str,
+    now: datetime,
+    session: date,
+    alerts: list[dict[str, Any]],
+    *,
+    moves_cash: bool,
+) -> None:
+    """Close one ticket at an option price.
+
+    ``basis`` is the option premium before slippage. Zero is a worthless
+    flatten and is not run through the bid fill. Log-only tickets record
+    the same exit and do not touch cash, alerts, or the daily loss count.
+    """
     contracts = int(ticket.get("contracts") or 0)
+    if basis <= 0:
+        fill = 0.0
+    else:
+        filled = sell_fill(bid=basis)
+        if filled is None:
+            return
+        fill = filled
     proceeds = fill * 100.0 * contracts
+    pnl = proceeds - float(ticket.get("cost") or 0)
+    moment = _as_ct(now)
     ticket["status"] = "closed"
     ticket["exit"] = fill
     ticket["exit_reason"] = reason
-    ticket["exit_at"] = _as_ct(now).isoformat()
+    ticket["exit_at"] = moment.isoformat()
     ticket["exit_session"] = session.isoformat()
-    ticket["pnl"] = proceeds - float(ticket.get("cost") or 0)
+    ticket["pnl"] = pnl
+    if not moves_cash:
+        return
+    book["cash"] = float(book["cash"]) + proceeds
+    text = (
+        f"{_prefix(ticket.get('source'))} SELL {ticket.get('symbol')} {contracts}x @ {fill:.2f} · "
+        f"{reason} · pnl {pnl:+.2f} · paper"
+    )
+    alert = _alert("SELL", ticket, text)
+    alerts.append(alert)
+    _remember(book, alert)
+
+
+def _flatten_reason(trade: Mapping[str, Any], now: datetime) -> str | None:
+    """Session flatten, independent of a time stop.
+
+    A missing quote skips the time stop. The flatten still has to run, or a
+    position opened more than an hour earlier would stay open at 2:55 PM CT
+    because the time stop is checked first.
+    """
+    source = str(trade.get("source") or "challenge_quality")
+    if source in {"vwap_reclaim", "oversold_bounce"}:
+        clock = trade.get("flatten_ct") or VWAP_FLATTEN_CT
+        if _session_flat_due(str(trade.get("entry_session") or ""), now, clock):
+            return "session_flat"
+        return None
+    if source == "vwap_reclaim_1dte":
+        try:
+            started = date.fromisoformat(str(trade.get("entry_session") or ""))
+        except ValueError:
+            return None
+        if _as_ct(now).date() > started:
+            return "session_flat"
+        return None
+    expiry = str(trade.get("expiry") or "")
+    dte = trade.get("dte")
+    if expiry and expiry_is_today(expiry, now) and past_odte_flatten(now):
+        return "flatten_0dte"
+    if not expiry and dte == 0 and past_odte_flatten(now):
+        return "flatten_0dte"
+    return None
+
+
+def _settle_open(
+    book: dict[str, Any],
+    ticket: dict[str, Any],
+    *,
+    quotes: Mapping[str, Any],
+    now: datetime,
+    session: date,
+    alerts: list[dict[str, Any]],
+    moves_cash: bool,
+) -> None:
+    """Mark one open option and exit it only on the contract's own quote."""
+    if ticket.get("status") != "open":
+        return
+    entry = float(ticket.get("entry") or 0)
+    if entry <= 0:
+        return
+    basis = _sell_basis(_contract_quote(ticket, quotes))
+    underlying = _underlying_price(ticket, quotes)
+    rejection = _mark_rejection(basis, entry, underlying)
+    moment = _as_ct(now)
+    if rejection is None and basis is not None:
+        ticket["last_mark"] = basis
+        if moves_cash:
+            ticket["peak"] = max(float(ticket.get("peak") or entry), basis)
+        reason = _exit_reason(ticket, basis, now=moment)
+        if reason is None:
+            return
+        _fill_exit(book, ticket, basis, reason, moment, session, alerts, moves_cash=moves_cash)
+        return
+    reason = _flatten_reason(ticket, moment)
+    label = f"{ticket.get('symbol')} {ticket.get('contract')}"
+    if reason in FLATTEN_REASONS:
+        fallback = _flatten_fallback(ticket, moment, underlying)
+        logger.warning(
+            "million flatten without a usable option quote %s: %s; closing at %.4f",
+            label,
+            rejection,
+            fallback,
+        )
+        _fill_exit(book, ticket, fallback, reason, moment, session, alerts, moves_cash=moves_cash)
+        return
+    logger.warning("million option mark refused %s: %s", label, rejection)
 
 
 def run_million(
@@ -653,8 +1046,14 @@ def run_million(
     transport: Any = None,
     signals: list[str] | None = None,
     vix: Mapping[str, Any] | None = None,
+    quote_fetcher: Callable[[Mapping[str, Any]], Mapping[str, Any] | None] | None = None,
 ) -> dict[str, Any]:
-    """Advance the Million book. Paper only. Returns the public snapshot."""
+    """Advance the Million book. Paper only. Returns the public snapshot.
+
+    ``quote_fetcher`` loads the OCC quote when the caller did not pass one.
+    The default fetcher is skipped under pytest. It never substitutes the
+    underlying price.
+    """
     cfg = dict(section or {})
     starting = float(cfg.get("starting_equity") or STARTING_EQUITY)
     state_path = Path(path or cfg.get("state_path") or DEFAULT_STATE)
@@ -673,16 +1072,17 @@ def run_million(
     source_names = list(signals if signals is not None else (cfg.get("signals") or []))
     tag = vix_tag(vix)
 
+    epoch = cfg.get("ledger_epoch")
     if cfg.get("paper_only") is not True:
         try:
-            book = _load(state_path, starting)
+            book = _load(state_path, starting, ledger_epoch=epoch)
         except DeskStateError:
             book = _fresh(starting)
         book["state_path"] = str(state_path)
         return public_view(book, status="blocked", reason="paper_only")
 
     try:
-        book = _load(state_path, starting)
+        book = _load(state_path, starting, ledger_epoch=epoch)
     except DeskStateError as exc:
         empty = _fresh(starting)
         empty["state_path"] = str(state_path)
@@ -699,53 +1099,30 @@ def run_million(
     alerts: list[dict[str, Any]] = []
     route = resolve_route("million", host=host, live_trading=live_trading, environ=environ)
     book["route"] = route["mode"]
-    _roll_day(book, session, quotes)
+    fetcher = _default_quote_fetcher if quote_fetcher is None else quote_fetcher
+    marked = _with_contract_quotes(book, quotes, fetcher)
+    _roll_day(book, session, marked)
 
     for trade in _open_trades(book):
-        mark, bid = _option_mark(trade, quotes)
-        if mark is None:
-            mark = float(trade.get("entry") or 0)
-            bid = mark
-        trade["peak"] = max(float(trade.get("peak") or trade.get("entry") or 0), float(mark))
-        reason = _exit_reason(trade, float(mark), now=moment)
-        if reason is None or bid is None:
-            continue
-        fill = sell_fill(bid=bid, last=mark)
-        if fill is None:
-            continue
-        contracts = int(trade.get("contracts") or 0)
-        proceeds = fill * 100.0 * contracts
-        cost = float(trade.get("cost") or 0)
-        pnl = proceeds - cost
-        trade["status"] = "closed"
-        trade["exit"] = fill
-        trade["exit_reason"] = reason
-        trade["exit_at"] = moment.isoformat()
-        trade["exit_session"] = session.isoformat()
-        trade["pnl"] = pnl
-        book["cash"] = float(book["cash"]) + proceeds
-        text = (
-            f"{_prefix(trade.get('source'))} SELL {trade.get('symbol')} {contracts}x @ {fill:.2f} · "
-            f"{reason} · pnl {pnl:+.2f} · paper"
+        _settle_open(
+            book,
+            trade,
+            quotes=marked,
+            now=moment,
+            session=session,
+            alerts=alerts,
+            moves_cash=True,
         )
-        alert = _alert("SELL", trade, text)
-        alerts.append(alert)
-        _remember(book, alert)
-
-    for ticket in list(book.get("log_only") or []):
-        if not isinstance(ticket, dict) or ticket.get("status") != "open":
-            continue
-        mark, bid = _option_mark(ticket, quotes)
-        if mark is None:
-            mark = float(ticket.get("entry") or 0)
-            bid = mark
-        reason = _exit_reason(ticket, float(mark), now=moment)
-        if reason is None or bid is None:
-            continue
-        fill = sell_fill(bid=bid, last=mark)
-        if fill is None:
-            continue
-        _close_log(ticket, fill, reason, moment, session)
+    for ticket in _open_logs(book):
+        _settle_open(
+            book,
+            ticket,
+            quotes=marked,
+            now=moment,
+            session=session,
+            alerts=alerts,
+            moves_cash=False,
+        )
 
     realized = _realized_on(book, session)
     losers = _losers_on(book, session)
@@ -845,6 +1222,8 @@ def run_million(
                 "dte": idea.get("dte"),
                 "contracts": count,
                 "entry": fill,
+                "last_mark": fill,
+                "spot": idea.get("spot"),
                 "cost": cost,
                 "peak": fill,
                 "target_pct": idea.get("target_pct"),

@@ -435,6 +435,8 @@ def portal_view(
                 use_chains = loaded.get("chains")
             if vix is None:
                 use_vix = loaded.get("vix")
+        # ``quotes`` is the equity tape, keyed by underlying. Million marks
+        # options by OCC contract and reads this map only as the spot bound.
         million = run_million(
             mil_cfg,
             challenge=challenge,
@@ -449,7 +451,13 @@ def portal_view(
             vix=use_vix,
         )
     else:
-        million = million_view(_read_book(load_million, million_fresh, mil_path, mil_start))
+        try:
+            held = load_million(mil_path, mil_start, ledger_epoch=mil_cfg.get("ledger_epoch"))
+        except DeskStateError:
+            held = million_fresh(mil_start)
+            held["status_note"] = "state file belongs to another desk"
+        held["state_path"] = str(mil_path)
+        million = million_view(held)
         million["signals"] = sources
 
     rows = [kotegawa_row(kotegawa), million_row(million)]
