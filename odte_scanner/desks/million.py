@@ -1,18 +1,24 @@
 """Million Challenge paper desk. Options, $1,000 → $1,000,000.
 
 Separate from the existing Challenge sleeve: own ledger, own daily loss
-counter, own position. One option position at a time. Each entry risks 10%
-of this desk's equity, with a minimum of one contract, and skips the trade
-when one contract would be more than 25% of equity.
+counter, own position. One option position at a time, and one paper entry
+per session. Each entry risks 10% of this desk's equity, with a minimum of
+one contract, and skips the trade when one contract would be more than 25%
+of equity.
 
-Entries come from ``million_challenge.signals`` (see ``desks.signals``).
-``challenge_quality`` exits are +25% / −20%, plus the 15:45 ET flatten on a
-contract that expires today. ``oversold_bounce`` exits are a configurable
-take-profit (default +50%) and stop (default −40%). If neither hits, the
-position flattens at that entry session's close, by 2:55 PM CT.
+``vwap_reclaim`` is the primary paper trade. It buys a same-day near-ATM
+call (nearest expiry if that name has no 0DTE) and exits at +50%, −40%,
+60 minutes after the fill, or 2:55 PM CT, whichever comes first. It is not
+held overnight. A 1DTE twin (+50% / −30% / 60 minutes) is logged and not
+filled. ``oversold_bounce`` is also log-only. ``challenge_quality`` still
+fills when it is listed and the desk has not already entered.
+
+Exits on a quality ticket stay +25% / −20%, plus the 15:45 ET flatten on a
+contract that expires today.
 
 New entries stop for the day after two losing closes or after realized P&L
-reaches −20% of the equity this desk started the day with.
+reaches −20% of the equity this desk started the day with. Log-only tickets
+do not change cash, do not count as those losers, and are not routed.
 """
 
 from __future__ import annotations
@@ -43,6 +49,13 @@ QUALITY_STOP = 0.20
 OVERSOLD_TARGET = 50.0
 OVERSOLD_STOP = 40.0
 OVERSOLD_FLATTEN_CT = "14:55"
+VWAP_TARGET = 50.0
+VWAP_STOP = 40.0
+VWAP_TWIN_TARGET = 50.0
+VWAP_TWIN_STOP = 30.0
+VWAP_TIME_STOP_MINUTES = 60.0
+VWAP_FLATTEN_CT = "14:55"
+LOG_ONLY_SOURCES = {"oversold_bounce", "vwap_reclaim_1dte"}
 DAILY_LOSERS = 2
 DAILY_LOSS_PCT = 0.20
 TARGET_DOUBLINGS = round(math.log(1_000_000 / STARTING_EQUITY, 2), 2)
@@ -88,6 +101,51 @@ def _flatten_hm(value: Any) -> tuple[int, int]:
         return (14, 55)
 
 
+def _parse_instant(value: Any) -> datetime | None:
+    """Parse a fill time and keep its instant.
+
+    Aware values convert to Chicago. Naive values are Chicago, which is how
+    this desk writes ``entry_at``. A UTC offset is not read as a CT clock.
+    """
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=CT)
+    return parsed.astimezone(CT)
+
+
+def _minutes_since(entry_at: Any, now: datetime) -> float | None:
+    started = _parse_instant(entry_at)
+    if started is None:
+        return None
+    return (_as_ct(now) - started).total_seconds() / 60.0
+
+
+def _time_stop_due(trade: Mapping[str, Any], now: datetime, minutes: float) -> bool:
+    elapsed = _minutes_since(trade.get("entry_at"), now)
+    if elapsed is None:
+        return False
+    return elapsed + 1e-9 >= float(minutes)
+
+
+def _minutes_setting(value: Any, default: float) -> float | None:
+    try:
+        number = float(default if value is None else value)
+    except (TypeError, ValueError):
+        number = float(default)
+    if number <= 0:
+        return None
+    return number
+
+
 def _session_flat_due(entry_session: str, now: datetime, flatten_ct: Any) -> bool:
     """Flatten at the entry session's close, by 2:55 PM CT.
 
@@ -124,6 +182,7 @@ def _fresh(starting: float) -> dict[str, Any]:
         "day": None,
         "day_start_equity": starting,
         "trades": [],
+        "log_only": [],
         "recent_alerts": [],
         "sandbox_orders": [],
         "milestones": [{"level": level, "reached": False, "reached_at": None} for level in milestone_levels(starting)],
@@ -140,6 +199,7 @@ def _load(path: Path, starting: float) -> dict[str, Any]:
     book["day"] = saved.get("day")
     book["day_start_equity"] = float(saved.get("day_start_equity") or book["starting_equity"])
     book["trades"] = [dict(row) for row in saved.get("trades") or [] if isinstance(row, dict)]
+    book["log_only"] = [dict(row) for row in saved.get("log_only") or [] if isinstance(row, dict)]
     book["recent_alerts"] = list(saved.get("recent_alerts") or [])[-30:]
     book["sandbox_orders"] = list(saved.get("sandbox_orders") or [])[-30:]
     known = {round(float(row["level"]), 2): row for row in book["milestones"]}
@@ -239,35 +299,80 @@ def _stamp_milestones(book: dict[str, Any], equity: float, now: datetime) -> Non
             row["reached_at"] = _as_ct(now).isoformat()
 
 
-def _exit_reason(
+def _bracket_exit(
     trade: Mapping[str, Any],
-    mark: float,
-    *,
+    change: float,
     now: datetime,
-    target_pct: float,
-    stop_pct: float,
-    flatten_ct: str,
+    *,
+    default_target: float,
+    default_stop: float,
+    default_time: float | None,
+    flatten: bool,
 ) -> str | None:
+    stop = _pct(trade.get("stop_pct"), default_stop) / 100.0
+    target = _pct(trade.get("target_pct"), default_target) / 100.0
+    if change <= -stop + 1e-12:
+        return "hard_stop"
+    if change + 1e-12 >= target:
+        return "take_profit"
+    if default_time is not None:
+        span = _minutes_setting(trade.get("time_stop_minutes"), default_time)
+        if span is not None and _time_stop_due(trade, now, span):
+            return "time_stop"
+    if flatten:
+        clock = trade.get("flatten_ct") or VWAP_FLATTEN_CT
+        if _session_flat_due(str(trade.get("entry_session") or ""), now, clock):
+            return "session_flat"
+        return None
+    try:
+        started = date.fromisoformat(str(trade.get("entry_session") or ""))
+    except ValueError:
+        return None
+    if _as_ct(now).date() > started:
+        return "session_flat"
+    return None
+
+
+def _exit_reason(trade: Mapping[str, Any], mark: float, *, now: datetime) -> str | None:
     entry = float(trade.get("entry") or 0)
     if entry <= 0 or mark <= 0:
         return None
     source = str(trade.get("source") or "challenge_quality")
     change = (mark / entry) - 1.0
+    if source == "vwap_reclaim":
+        return _bracket_exit(
+            trade,
+            change,
+            now,
+            default_target=VWAP_TARGET,
+            default_stop=VWAP_STOP,
+            default_time=VWAP_TIME_STOP_MINUTES,
+            flatten=True,
+        )
+    if source == "vwap_reclaim_1dte":
+        return _bracket_exit(
+            trade,
+            change,
+            now,
+            default_target=VWAP_TWIN_TARGET,
+            default_stop=VWAP_TWIN_STOP,
+            default_time=VWAP_TIME_STOP_MINUTES,
+            flatten=False,
+        )
     if source == "oversold_bounce":
-        stop = _pct(trade.get("stop_pct"), stop_pct) / 100.0
-        target = _pct(trade.get("target_pct"), target_pct) / 100.0
-        if change <= -stop + 1e-12:
-            return "hard_stop"
-        if change + 1e-12 >= target:
-            return "take_profit"
-        clock = trade.get("flatten_ct") or flatten_ct
-        if _session_flat_due(str(trade.get("entry_session") or ""), now, clock):
-            return "session_flat"
-    else:
-        if change + 1e-12 >= QUALITY_TP:
-            return "take_profit"
-        if change <= -QUALITY_STOP + 1e-12:
-            return "hard_stop"
+        return _bracket_exit(
+            trade,
+            change,
+            now,
+            default_target=OVERSOLD_TARGET,
+            default_stop=OVERSOLD_STOP,
+            default_time=None,
+            flatten=True,
+        )
+    if change + 1e-12 >= QUALITY_TP:
+        return "take_profit"
+    if change <= -QUALITY_STOP + 1e-12:
+        return "hard_stop"
     expiry = str(trade.get("expiry") or "")
     dte = trade.get("dte")
     if expiry and expiry_is_today(expiry, now) and past_odte_flatten(now):
@@ -275,6 +380,71 @@ def _exit_reason(
     if not expiry and dte == 0 and past_odte_flatten(now):
         return "flatten_0dte"
     return None
+
+
+def _is_log_only(idea: Mapping[str, Any]) -> bool:
+    if idea.get("log_only") is True:
+        return True
+    return str(idea.get("source") or "") in LOG_ONLY_SOURCES
+
+
+def _entered_today(book: Mapping[str, Any], session: date) -> bool:
+    key = session.isoformat()
+    for trade in book.get("trades") or []:
+        if not isinstance(trade, dict) or trade.get("log_only") is True:
+            continue
+        if str(trade.get("entry_session") or "") == key:
+            return True
+    return False
+
+
+def _logged_today(book: Mapping[str, Any], source: str, symbol: str, session: date) -> bool:
+    key = session.isoformat()
+    for row in book.get("log_only") or []:
+        if not isinstance(row, dict):
+            continue
+        if row.get("source") == source and row.get("symbol") == symbol and row.get("entry_session") == key:
+            return True
+    return False
+
+
+def vix_tag(vix: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Level and up/down versus the prior close. Never a filter."""
+    if not isinstance(vix, Mapping):
+        return {"vix": None, "vix_vs_prior": None}
+    level = _f(vix.get("level"))
+    if level is None:
+        level = _f(vix.get("last"))
+    if level is None:
+        level = _f(vix.get("close"))
+    prior = _f(vix.get("prior_close"))
+    if prior is None:
+        prior = _f(vix.get("prev_close"))
+    if prior is None:
+        prior = _f(vix.get("previous_close"))
+    direction: str | None = None
+    if level is not None and prior is not None:
+        if level > prior + 1e-9:
+            direction = "up"
+        elif level < prior - 1e-9:
+            direction = "down"
+        else:
+            direction = "unchanged"
+    return {"vix": level, "vix_vs_prior": direction}
+
+
+def _vix_text(tag: Mapping[str, Any]) -> str:
+    level = tag.get("vix")
+    if level is None:
+        return ""
+    direction = tag.get("vix_vs_prior") or "n/a"
+    return f" · VIX {float(level):.2f} {direction}"
+
+
+def _prefix(source: Any) -> str:
+    if str(source or "").startswith("vwap_reclaim"):
+        return "[MILLION][VWAP]"
+    return "[MILLION]"
 
 
 def _alert(side: str, trade: Mapping[str, Any], text: str) -> dict[str, Any]:
@@ -352,6 +522,24 @@ def public_view(book: Mapping[str, Any], *, status: str = "ok", reason: str | No
         "milestones": list(book.get("milestones") or []),
         "milestones_reached": len(reached),
         "signals": list(book.get("signals") or []),
+        "log_only": [
+            {
+                "symbol": row.get("symbol"),
+                "source": row.get("source"),
+                "status": row.get("status"),
+                "contract": row.get("contract"),
+                "contracts": row.get("contracts"),
+                "entry": row.get("entry"),
+                "exit_reason": row.get("exit_reason"),
+                "pnl": row.get("pnl"),
+                "vix": row.get("vix"),
+                "vix_vs_prior": row.get("vix_vs_prior"),
+                "dte": row.get("dte"),
+                "log_only": True,
+            }
+            for row in book.get("log_only") or []
+            if isinstance(row, dict)
+        ],
         "alerts": list(book.get("recent_alerts") or []),
         "state_path": book.get("state_path"),
     }
@@ -370,6 +558,85 @@ def scorecard_row(view: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _record_log(
+    book: dict[str, Any],
+    idea: Mapping[str, Any],
+    *,
+    now: datetime,
+    session: date,
+    slot_pct: float,
+    max_contract_pct: float,
+    tag: Mapping[str, Any],
+    equity: float,
+    cash: float,
+) -> dict[str, Any] | None:
+    """Remember a ticket that is not filled and does not move cash."""
+    source = str(idea.get("source") or "")
+    symbol = str(idea.get("symbol") or "")
+    if not symbol or _logged_today(book, source, symbol, session):
+        return None
+    ask = _f(idea.get("ask"))
+    bid = _f(idea.get("bid"))
+    fill = buy_fill(bid=bid, ask=ask, last=ask)
+    if fill is None:
+        return None
+    count = contract_count(equity, fill, slot_pct=slot_pct, max_contract_pct=max_contract_pct)
+    status = "open"
+    skip_reason = None
+    if count is None:
+        status = "skipped"
+        skip_reason = "oversized"
+        count = 0
+    else:
+        one = fill * 100.0
+        while count > 0 and count * one > cash + 1e-9:
+            count -= 1
+        if count < 1:
+            status = "skipped"
+            skip_reason = "cash"
+            count = 0
+    cost = count * fill * 100.0
+    ticket = {
+        "id": f"mil-log-{symbol}-{session.isoformat()}-{uuid.uuid4().hex[:8]}",
+        "source": source,
+        "log_only": True,
+        "symbol": symbol,
+        "right": idea.get("right") or "C",
+        "contract": idea.get("contract"),
+        "expiry": idea.get("expiry"),
+        "strike": idea.get("strike"),
+        "dte": idea.get("dte"),
+        "contracts": count,
+        "entry": fill if status == "open" else None,
+        "cost": cost if status == "open" else 0.0,
+        "target_pct": idea.get("target_pct"),
+        "stop_pct": idea.get("stop_pct"),
+        "time_stop_minutes": idea.get("time_stop_minutes"),
+        "flatten_ct": idea.get("flatten_ct"),
+        "entry_at": _as_ct(now).isoformat(),
+        "entry_session": session.isoformat(),
+        "status": status,
+        "reason": skip_reason or idea.get("reason"),
+        "route": "log_only",
+        "vwap": idea.get("vwap"),
+        "vix": tag.get("vix"),
+        "vix_vs_prior": tag.get("vix_vs_prior"),
+    }
+    book["log_only"] = list(book.get("log_only") or []) + [ticket]
+    return ticket
+
+
+def _close_log(ticket: dict[str, Any], fill: float, reason: str, now: datetime, session: date) -> None:
+    contracts = int(ticket.get("contracts") or 0)
+    proceeds = fill * 100.0 * contracts
+    ticket["status"] = "closed"
+    ticket["exit"] = fill
+    ticket["exit_reason"] = reason
+    ticket["exit_at"] = _as_ct(now).isoformat()
+    ticket["exit_session"] = session.isoformat()
+    ticket["pnl"] = proceeds - float(ticket.get("cost") or 0)
+
+
 def run_million(
     section: Mapping[str, Any] | None,
     *,
@@ -385,6 +652,7 @@ def run_million(
     environ: Mapping[str, str] | None = None,
     transport: Any = None,
     signals: list[str] | None = None,
+    vix: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Advance the Million book. Paper only. Returns the public snapshot."""
     cfg = dict(section or {})
@@ -397,10 +665,13 @@ def run_million(
     daily_losers = int(cfg.get("daily_losers") or DAILY_LOSERS)
     daily_loss_pct = float(cfg.get("daily_loss_pct") or DAILY_LOSS_PCT)
     oversold_cfg = dict(cfg.get("oversold_bounce") or {})
-    target_pct = _pct(oversold_cfg.get("target_pct"), OVERSOLD_TARGET)
-    stop_pct = _pct(oversold_cfg.get("stop_pct"), OVERSOLD_STOP)
-    flatten_ct = str(oversold_cfg.get("flatten_ct") or OVERSOLD_FLATTEN_CT)
+    oversold_target = _pct(oversold_cfg.get("target_pct"), OVERSOLD_TARGET)
+    oversold_stop = _pct(oversold_cfg.get("stop_pct"), OVERSOLD_STOP)
+    oversold_flat = str(oversold_cfg.get("flatten_ct") or OVERSOLD_FLATTEN_CT)
+    vwap_cfg = dict(cfg.get("vwap_reclaim") or {})
+    twin_cfg = dict(cfg.get("vwap_reclaim_1dte") or {})
     source_names = list(signals if signals is not None else (cfg.get("signals") or []))
+    tag = vix_tag(vix)
 
     if cfg.get("paper_only") is not True:
         try:
@@ -436,14 +707,7 @@ def run_million(
             mark = float(trade.get("entry") or 0)
             bid = mark
         trade["peak"] = max(float(trade.get("peak") or trade.get("entry") or 0), float(mark))
-        reason = _exit_reason(
-            trade,
-            float(mark),
-            now=moment,
-            target_pct=target_pct,
-            stop_pct=stop_pct,
-            flatten_ct=flatten_ct,
-        )
+        reason = _exit_reason(trade, float(mark), now=moment)
         if reason is None or bid is None:
             continue
         fill = sell_fill(bid=bid, last=mark)
@@ -461,12 +725,27 @@ def run_million(
         trade["pnl"] = pnl
         book["cash"] = float(book["cash"]) + proceeds
         text = (
-            f"[MILLION] SELL {trade.get('symbol')} {contracts}x @ {fill:.2f} · {reason} · "
-            f"pnl {pnl:+.2f} · paper"
+            f"{_prefix(trade.get('source'))} SELL {trade.get('symbol')} {contracts}x @ {fill:.2f} · "
+            f"{reason} · pnl {pnl:+.2f} · paper"
         )
         alert = _alert("SELL", trade, text)
         alerts.append(alert)
         _remember(book, alert)
+
+    for ticket in list(book.get("log_only") or []):
+        if not isinstance(ticket, dict) or ticket.get("status") != "open":
+            continue
+        mark, bid = _option_mark(ticket, quotes)
+        if mark is None:
+            mark = float(ticket.get("entry") or 0)
+            bid = mark
+        reason = _exit_reason(ticket, float(mark), now=moment)
+        if reason is None or bid is None:
+            continue
+        fill = sell_fill(bid=bid, last=mark)
+        if fill is None:
+            continue
+        _close_log(ticket, fill, reason, moment, session)
 
     realized = _realized_on(book, session)
     losers = _losers_on(book, session)
@@ -480,7 +759,7 @@ def run_million(
     else:
         book["halt_reason"] = None
 
-    if not halted and not _open_trades(book):
+    if not halted:
         ideas, _ignored = build_signals(
             source_names,
             challenge=challenge,
@@ -489,10 +768,33 @@ def run_million(
             intraday=intraday,
             now=moment,
             oversold_settings=oversold_cfg,
+            vwap_settings=vwap_cfg,
+            twin_settings=twin_cfg,
         )
+        budget_equity = equity_of(book)
+        budget_cash = float(book["cash"])
         for idea in ideas:
-            if _open_trades(book):
-                break
+            if _is_log_only(idea):
+                logged = dict(idea)
+                if logged.get("source") == "oversold_bounce":
+                    logged["target_pct"] = oversold_target
+                    logged["stop_pct"] = oversold_stop
+                    logged["flatten_ct"] = oversold_flat
+                    logged["time_stop_minutes"] = None
+                _record_log(
+                    book,
+                    logged,
+                    now=moment,
+                    session=session,
+                    slot_pct=slot_pct,
+                    max_contract_pct=max_contract_pct,
+                    tag=tag,
+                    equity=budget_equity,
+                    cash=budget_cash,
+                )
+                continue
+            if _open_trades(book) or _entered_today(book, session):
+                continue
             ask = _f(idea.get("ask"))
             bid = _f(idea.get("bid"))
             fill = buy_fill(bid=bid, ask=ask, last=ask)
@@ -534,6 +836,7 @@ def run_million(
             trade = {
                 "id": f"mil-{idea.get('symbol')}-{session.isoformat()}-{uuid.uuid4().hex[:8]}",
                 "source": idea.get("source"),
+                "log_only": False,
                 "symbol": idea.get("symbol"),
                 "right": idea.get("right") or "C",
                 "contract": idea.get("contract"),
@@ -544,24 +847,41 @@ def run_million(
                 "entry": fill,
                 "cost": cost,
                 "peak": fill,
-                "target_pct": target_pct if idea.get("source") == "oversold_bounce" else None,
-                "stop_pct": stop_pct if idea.get("source") == "oversold_bounce" else None,
-                "flatten_ct": flatten_ct if idea.get("source") == "oversold_bounce" else None,
+                "target_pct": idea.get("target_pct"),
+                "stop_pct": idea.get("stop_pct"),
+                "time_stop_minutes": idea.get("time_stop_minutes"),
+                "flatten_ct": idea.get("flatten_ct"),
+                "vwap": idea.get("vwap"),
                 "entry_at": moment.isoformat(),
                 "entry_session": session.isoformat(),
                 "status": "open",
                 "reason": idea.get("reason"),
                 "route": route["mode"],
+                "vix": tag.get("vix"),
+                "vix_vs_prior": tag.get("vix_vs_prior"),
             }
             book["cash"] = float(book["cash"]) - cost
             book["trades"].append(trade)
             text = (
-                f"[MILLION] BUY {trade['symbol']} {count}x {trade['right']} @ {fill:.2f} · "
-                f"{trade['source']} · paper"
+                f"{_prefix(trade['source'])} BUY {trade['symbol']} {count}x {trade['right']} @ {fill:.2f} · "
+                f"{trade['source']}{_vix_text(tag)} · paper"
             )
             alert = _alert("BUY", trade, text)
             alerts.append(alert)
             _remember(book, alert)
+            twin = idea.get("twin")
+            if isinstance(twin, Mapping):
+                _record_log(
+                    book,
+                    twin,
+                    now=moment,
+                    session=session,
+                    slot_pct=slot_pct,
+                    max_contract_pct=max_contract_pct,
+                    tag=tag,
+                    equity=budget_equity,
+                    cash=budget_cash,
+                )
 
     _stamp_milestones(book, equity_of(book), moment)
     save_desk_state(state_path, book)

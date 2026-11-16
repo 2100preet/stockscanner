@@ -843,10 +843,25 @@ million_challenge:
   max_positions: 1
   daily_losers: 2
   daily_loss_pct: 0.20
+  # vwap_reclaim is the paper trade. oversold_bounce is recorded and not filled.
   signals:
+    - vwap_reclaim
     - challenge_quality
     - oversold_bounce
+  vwap_reclaim:
+    target_pct: 50
+    stop_pct: 40
+    time_stop_minutes: 60
+    flatten_ct: "14:55"
+    entry_cutoff_ct: "14:30"
+    touch_pct: 0.005
+  vwap_reclaim_1dte:
+    log_only: true
+    target_pct: 50
+    stop_pct: 30
+    time_stop_minutes: 60
   oversold_bounce:
+    log_only: true
     target_pct: 50
     stop_pct: 40
     flatten_ct: "14:55"

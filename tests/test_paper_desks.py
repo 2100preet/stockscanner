@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -24,8 +24,11 @@ from odte_scanner.desks.routing import (
 from odte_scanner.desks.service import scorecard_rows
 from odte_scanner.desks.signals import (
     build_signals,
+    intraday_bars_from_frame,
     oversold_bounce_signals,
     select_bounce_call,
+    select_reclaim_call,
+    vwap_reclaim_signals,
 )
 from odte_scanner.desks.sp100 import in_sp100, oversold_universe, sp100_universe
 from odte_scanner.ui import PAGE
@@ -73,7 +76,7 @@ def _mil_section(path: Path, **extra) -> dict:
         "paper_only": True,
         "starting_equity": 1_000,
         "state_path": str(path),
-        "signals": ["challenge_quality", "oversold_bounce"],
+        "signals": ["vwap_reclaim", "challenge_quality", "oversold_bounce"],
         "oversold_bounce": {"target_pct": 50, "stop_pct": 40, "flatten_ct": "14:55"},
     }
     cfg.update(extra)
@@ -170,8 +173,21 @@ def test_config_enables_both_desks_without_touching_existing_ones():
     assert cfg["million_challenge"]["enabled"] is True
     assert cfg["million_challenge"]["paper_only"] is True
     assert cfg["million_challenge"]["starting_equity"] == 1000
-    assert cfg["million_challenge"]["signals"] == ["challenge_quality", "oversold_bounce"]
+    assert cfg["million_challenge"]["signals"] == [
+        "vwap_reclaim",
+        "challenge_quality",
+        "oversold_bounce",
+    ]
+    vwap = cfg["million_challenge"]["vwap_reclaim"]
+    assert vwap["target_pct"] == 50 and vwap["stop_pct"] == 40
+    assert vwap["time_stop_minutes"] == 60
+    assert vwap["flatten_ct"] == "14:55"
+    assert vwap["entry_cutoff_ct"] == "14:30"
+    assert vwap["touch_pct"] == 0.005
+    twin = cfg["million_challenge"]["vwap_reclaim_1dte"]
+    assert twin["log_only"] is True and twin["target_pct"] == 50 and twin["stop_pct"] == 30
     bounce = cfg["million_challenge"]["oversold_bounce"]
+    assert bounce["log_only"] is True
     assert bounce["target_pct"] == 50 and bounce["stop_pct"] == 40
     assert bounce["flatten_ct"] == "14:55"
     assert cfg["million_challenge"]["state_path"] != cfg["kotegawa"]["state_path"]
@@ -629,6 +645,8 @@ def test_oversold_setup_is_the_low_or_the_sma_and_the_mix_keeps_order(tmp_path: 
     )
     assert first["open"][0]["source"] == "challenge_quality"
     assert first["open"][0]["symbol"] == "AMD"
+    assert any(row["source"] == "oversold_bounce" and row["status"] == "open" for row in first["log_only"])
+    assert all(row.get("source") != "oversold_bounce" for row in _book(path)["trades"])
 
     other = tmp_path / "mix2.json"
     second = run_million(
@@ -641,10 +659,15 @@ def test_oversold_setup_is_the_low_or_the_sma_and_the_mix_keeps_order(tmp_path: 
         path=other,
         signals=["oversold_bounce", "challenge_quality"],
     )
-    assert second["open"][0]["source"] == "oversold_bounce"
-    assert second["open"][0]["symbol"] == "QQQ"
-    assert _book(other)["trades"][0]["dte"] == 1
-    assert _book(other)["trades"][0]["expiry"] == "2026-11-17"
+    assert second["open"][0]["source"] == "challenge_quality"
+    assert second["open"][0]["symbol"] == "AMD"
+    logged = [row for row in _book(other)["log_only"] if row["source"] == "oversold_bounce"]
+    assert len(logged) == 1
+    assert logged[0]["symbol"] == "QQQ"
+    assert logged[0]["dte"] == 1
+    assert logged[0]["expiry"] == "2026-11-17"
+    assert logged[0]["status"] == "open"
+    assert all(row.get("source") != "oversold_bounce" for row in _book(other)["trades"])
     unused, ignored = build_signals(["nope"], challenge=challenge, now=MONDAY)
     assert unused == [] and ignored == ["nope"]
 
@@ -661,71 +684,91 @@ def _enter_bounce(path: Path, section: dict):
     )
 
 
+def _bounce_log(path: Path) -> dict:
+    rows = [row for row in _book(path).get("log_only") or [] if row.get("source") == "oversold_bounce"]
+    assert len(rows) == 1
+    return rows[0]
+
+
 def test_oversold_exits_are_fifty_forty_and_the_same_session_close(tmp_path: Path):
     path = tmp_path / "giveback.json"
     section = _mil_section(path, signals=["oversold_bounce"])
     opened = _enter_bounce(path, section)
-    entry = opened["open"][0]["entry"]
+    assert opened["open_positions"] == 0
+    assert opened["cash"] == 1000
+    assert _book(path)["trades"] == []
+    entry = _bounce_log(path)["entry"]
     quote = lambda px: {"QQQ": {"last": px, "bid": px}}
     held = run_million(section, quotes=quote(entry * 1.49), now=datetime(2026, 11, 16, 11, 0, tzinfo=CT), path=path, signals=["oversold_bounce"])
-    assert held["open_positions"] == 1
+    assert held["open_positions"] == 0
+    assert _bounce_log(path)["status"] == "open"
     # A giveback is not a trail. The old +80% arm / +50% lock is gone.
     faded = run_million(section, quotes=quote(entry * 1.10), now=datetime(2026, 11, 16, 12, 0, tzinfo=CT), path=path, signals=["oversold_bounce"])
-    assert faded["open_positions"] == 1
+    assert _bounce_log(path)["status"] == "open"
+    assert faded["cash"] == 1000
     target = run_million(section, quotes=quote(entry * 1.50), now=datetime(2026, 11, 16, 12, 5, tzinfo=CT), path=path, signals=["oversold_bounce"])
     assert target["open_positions"] == 0
-    assert _book(path)["trades"][0]["exit_reason"] == "take_profit"
+    assert _bounce_log(path)["exit_reason"] == "take_profit"
+    assert _book(path)["trades"] == []
 
     stop_path = tmp_path / "stop.json"
     stop_section = _mil_section(stop_path, signals=["oversold_bounce"])
-    opened = _enter_bounce(stop_path, stop_section)
-    entry = opened["open"][0]["entry"]
+    _enter_bounce(stop_path, stop_section)
+    entry = _bounce_log(stop_path)["entry"]
     shallow = run_million(stop_section, quotes=quote(entry * 0.80), now=datetime(2026, 11, 16, 11, 0, tzinfo=CT), path=stop_path, signals=["oversold_bounce"])
-    assert shallow["open_positions"] == 1
+    assert _bounce_log(stop_path)["status"] == "open"
+    assert shallow["cash"] == 1000
     almost = run_million(stop_section, quotes=quote(entry * 0.61), now=datetime(2026, 11, 16, 11, 5, tzinfo=CT), path=stop_path, signals=["oversold_bounce"])
-    assert almost["open_positions"] == 1
+    assert _bounce_log(stop_path)["status"] == "open"
     stopped = run_million(stop_section, quotes=quote(entry * 0.60), now=datetime(2026, 11, 16, 11, 6, tzinfo=CT), path=stop_path, signals=["oversold_bounce"])
     assert stopped["open_positions"] == 0
-    assert _book(stop_path)["trades"][0]["exit_reason"] == "hard_stop"
+    assert _bounce_log(stop_path)["exit_reason"] == "hard_stop"
+    assert stopped["entries_halted"] is False
 
     clock = tmp_path / "clock.json"
     clock_section = _mil_section(clock, signals=["oversold_bounce"])
-    opened = _enter_bounce(clock, clock_section)
-    entry = opened["open"][0]["entry"]
+    _enter_bounce(clock, clock_section)
+    entry = _bounce_log(clock)["entry"]
     before = run_million(clock_section, quotes=quote(entry), now=datetime(2026, 11, 16, 14, 54, tzinfo=CT), path=clock, signals=["oversold_bounce"])
-    assert before["open_positions"] == 1
+    assert _bounce_log(clock)["status"] == "open"
+    assert before["cash"] == 1000
     flat = run_million(clock_section, quotes=quote(entry), now=datetime(2026, 11, 16, 14, 55, tzinfo=CT), path=clock, signals=["oversold_bounce"])
     assert flat["open_positions"] == 0
-    assert _book(clock)["trades"][0]["exit_reason"] == "session_flat"
+    assert _bounce_log(clock)["exit_reason"] == "session_flat"
 
     late = tmp_path / "late.json"
     late_section = _mil_section(late, signals=["oversold_bounce"])
     _enter_bounce(late, late_section)
+    entry = _bounce_log(late)["entry"]
     nxt = run_million(late_section, quotes=quote(entry), now=TUESDAY_OPEN, path=late, signals=["oversold_bounce"])
     assert nxt["open_positions"] == 0
-    assert _book(late)["trades"][0]["exit_reason"] == "session_flat"
+    assert _bounce_log(late)["exit_reason"] == "session_flat"
+    assert nxt["cash"] == 1000
 
 
 def test_oversold_target_and_stop_stay_configurable(tmp_path: Path):
     path = tmp_path / "custom.json"
     section = _mil_section(path, signals=["oversold_bounce"], oversold_bounce={"target_pct": 30, "stop_pct": 25, "flatten_ct": "14:55"})
-    opened = _enter_bounce(path, section)
-    entry = opened["open"][0]["entry"]
+    _enter_bounce(path, section)
+    entry = _bounce_log(path)["entry"]
     quote = lambda px: {"QQQ": {"last": px, "bid": px}}
     held = run_million(section, quotes=quote(entry * 1.29), now=datetime(2026, 11, 16, 11, 0, tzinfo=CT), path=path, signals=["oversold_bounce"])
-    assert held["open_positions"] == 1
+    assert _bounce_log(path)["status"] == "open"
+    assert held["open_positions"] == 0
     done = run_million(section, quotes=quote(entry * 1.30), now=datetime(2026, 11, 16, 11, 5, tzinfo=CT), path=path, signals=["oversold_bounce"])
-    assert _book(path)["trades"][0]["exit_reason"] == "take_profit"
+    assert _bounce_log(path)["exit_reason"] == "take_profit"
     assert done["open_positions"] == 0
+    assert done["cash"] == 1000
 
     path2 = tmp_path / "custom_stop.json"
     section2 = _mil_section(path2, signals=["oversold_bounce"], oversold_bounce={"target_pct": 30, "stop_pct": 25})
-    opened = _enter_bounce(path2, section2)
-    entry = opened["open"][0]["entry"]
+    _enter_bounce(path2, section2)
+    entry = _bounce_log(path2)["entry"]
     still = run_million(section2, quotes=quote(entry * 0.76), now=datetime(2026, 11, 16, 11, 0, tzinfo=CT), path=path2, signals=["oversold_bounce"])
-    assert still["open_positions"] == 1
+    assert _bounce_log(path2)["status"] == "open"
     stopped = run_million(section2, quotes=quote(entry * 0.75), now=datetime(2026, 11, 16, 11, 5, tzinfo=CT), path=path2, signals=["oversold_bounce"])
-    assert _book(path2)["trades"][0]["exit_reason"] == "hard_stop"
+    assert _bounce_log(path2)["exit_reason"] == "hard_stop"
+    assert _book(path2)["trades"] == []
 
 
 def test_desks_do_not_share_state_files_or_daily_limits(tmp_path: Path):
@@ -942,3 +985,526 @@ def test_scorecard_rows_and_telegram_labels(tmp_path: Path):
     assert any(text.startswith("[KOTEGAWA]") for text in messages)
     assert any(text.startswith("[MILLION]") for text in messages)
     assert kot_book["desk"] != mil_book["desk"]
+
+
+UTC = timezone.utc
+
+
+def _vwap_bar(moment: datetime, high: float, low: float, close: float, *, volume: float = 100, interval: str = "1m", closed: bool = True) -> dict:
+    return {
+        "ts": moment,
+        "high": high,
+        "low": low,
+        "close": close,
+        "volume": volume,
+        "interval": interval,
+        "closed": closed,
+    }
+
+
+def _reclaim_tape(touch_high: float = 101.0, *, interval: str = "1m", second: datetime | None = None, closed: bool = True) -> list[dict]:
+    """Bar 1 prints under its VWAP. Bar 2 is the reclaim, unless touch_high is short of it."""
+    start = datetime(2026, 11, 16, 9, 35, tzinfo=CT)
+    nxt = second or datetime(2026, 11, 16, 9, 36, tzinfo=CT)
+    return [
+        _vwap_bar(start, 100.0, 99.8, 99.9, interval=interval),
+        _vwap_bar(nxt, touch_high, 100.2, 100.6, interval=interval, closed=closed),
+    ]
+
+
+def _reclaim_chain() -> list[dict]:
+    spot = 100.0
+    return [
+        {"right": "P", "strike": spot, "dte": 0, "expiry": "2026-11-16", "bid": 1.0, "ask": 1.1, "contract": "PUT"},
+        {"right": "C", "strike": spot + 5, "dte": 0, "expiry": "2026-11-16", "bid": 0.40, "ask": 0.50, "contract": "FAR0"},
+        {"right": "C", "strike": spot, "dte": 0, "expiry": "2026-11-16", "bid": 1.20, "ask": 1.30, "contract": "DTE0"},
+        {"right": "C", "strike": spot, "dte": 1, "expiry": "2026-11-17", "bid": 1.80, "ask": 2.00, "contract": "DTE1"},
+        {"right": "C", "strike": spot, "dte": 5, "expiry": "2026-11-23", "bid": 1.50, "ask": 1.60, "contract": "WEEK"},
+    ]
+
+
+def _series_vwap(bars: list[dict]) -> float:
+    total = 0.0
+    volume = 0.0
+    for bar in bars:
+        typical = (bar["high"] + bar["low"] + bar["close"]) / 3.0
+        total += typical * bar["volume"]
+        volume += bar["volume"]
+    return total / volume
+
+
+def _vwap_context(tape: list[dict] | None = None, chain: list[dict] | None = None):
+    return {"SPY": tape if tape is not None else _reclaim_tape()}, {"SPY": chain if chain is not None else _reclaim_chain()}
+
+
+def _marks_at_entry(path: Path, *, primary: float = 1.0, twin: float = 1.0) -> dict:
+    book = _book(path)
+    quotes = {}
+    for row in list(book.get("trades") or []) + list(book.get("log_only") or []):
+        if row.get("status") != "open" or row.get("entry") in (None, 0):
+            continue
+        scale = twin if row.get("source") == "vwap_reclaim_1dte" else primary
+        px = float(row["entry"]) * scale
+        for key in (row.get("contract"), row.get("id")):
+            if key:
+                quotes[key] = {"last": px, "bid": px}
+    return quotes
+
+
+def test_vwap_reclaim_triggers_after_price_was_below_session_vwap():
+    now = datetime(2026, 11, 16, 9, 40, tzinfo=CT)
+    short = _reclaim_tape(100.70)
+    assert short[-1]["high"] < _series_vwap(short) * 1.005
+    assert vwap_reclaim_signals(chains={"SPY": _reclaim_chain()}, intraday={"SPY": short}, now=now) == []
+
+    exact = _reclaim_tape(100.71)
+    assert exact[-1]["high"] >= _series_vwap(exact) * 1.005
+    hit = vwap_reclaim_signals(chains={"SPY": _reclaim_chain()}, intraday={"SPY": exact}, now=now)
+    assert len(hit) == 1
+    assert hit[0]["source"] == "vwap_reclaim"
+    assert hit[0]["symbol"] == "SPY"
+    assert hit[0]["contract"] == "DTE0"
+    assert hit[0]["dte"] == 0
+    assert hit[0]["log_only"] is False
+    assert hit[0]["twin"]["source"] == "vwap_reclaim_1dte"
+    assert hit[0]["twin"]["contract"] == "DTE1"
+    assert hit[0]["twin"]["dte"] == 1
+    assert hit[0]["twin"]["log_only"] is True
+    assert hit[0]["twin"]["stop_pct"] == 30
+    assert hit[0]["stop_pct"] == 40
+
+    never_below = [
+        _vwap_bar(datetime(2026, 11, 16, 9, 35, tzinfo=CT), 100, 100, 100),
+        _vwap_bar(datetime(2026, 11, 16, 9, 36, tzinfo=CT), 102, 101, 101.5),
+    ]
+    premarket = [_vwap_bar(datetime(2026, 11, 16, 8, 0, tzinfo=CT), 90, 89, 89.5), *never_below]
+    assert vwap_reclaim_signals(chains={"SPY": _reclaim_chain()}, intraday={"SPY": never_below}, now=now) == []
+    assert vwap_reclaim_signals(chains={"SPY": _reclaim_chain()}, intraday={"SPY": premarket}, now=now) == []
+    forming = _reclaim_tape(closed=False)
+    assert vwap_reclaim_signals(chains={"SPY": _reclaim_chain()}, intraday={"SPY": forming}, now=now) == []
+    daily = [_vwap_bar(datetime(2026, 11, 16, 9, 36, tzinfo=CT), 110, 90, 105, interval="1d")]
+    assert vwap_reclaim_signals(chains={"SPY": _reclaim_chain()}, intraday={"SPY": daily}, now=now) == []
+    assert vwap_reclaim_signals(chains={"NVDA": _reclaim_chain()}, intraday={"NVDA": _reclaim_tape()}, now=now) == []
+    assert vwap_reclaim_signals(chains={"QQQ": _reclaim_chain()}, intraday={"QQQ": _reclaim_tape(interval="5m")}, now=now)[0]["interval"] == "5m"
+
+    # 20:29 UTC is 14:29 CT. Reading the UTC hour as Chicago would reject the bar.
+    late_ok = _reclaim_tape(second=datetime(2026, 11, 16, 20, 29, tzinfo=UTC))
+    assert vwap_reclaim_signals(
+        chains={"SPY": _reclaim_chain()},
+        intraday={"SPY": late_ok},
+        now=datetime(2026, 11, 16, 14, 29, tzinfo=CT),
+    )
+    assert vwap_reclaim_signals(
+        chains={"SPY": _reclaim_chain()},
+        intraday={"SPY": _reclaim_tape()},
+        now=datetime(2026, 11, 16, 14, 30, tzinfo=CT),
+    ) == []
+    assert vwap_reclaim_signals(
+        chains={"SPY": _reclaim_chain()},
+        intraday={"SPY": _reclaim_tape(second=datetime(2026, 11, 16, 20, 30, tzinfo=UTC))},
+        now=datetime(2026, 11, 16, 20, 30, tzinfo=UTC),
+    ) == []
+
+    fallback = [row for row in _reclaim_chain() if row["contract"] != "DTE0" and row["contract"] != "FAR0"]
+    picked = select_reclaim_call(fallback, 100.6, now, min_dte=0, prefer_dte=0)
+    assert picked["contract"] == "DTE1"
+    only_today = select_reclaim_call(
+        [row for row in _reclaim_chain() if row["dte"] == 0],
+        100.6,
+        now,
+        min_dte=1,
+        prefer_dte=1,
+    )
+    assert only_today is None
+
+
+def test_vwap_frame_keeps_the_utc_instant():
+    import pandas as pd
+
+    index = pd.DatetimeIndex(
+        [
+            datetime(2026, 11, 16, 15, 35, tzinfo=UTC),
+            datetime(2026, 11, 16, 15, 36, tzinfo=UTC),
+        ]
+    )
+    tape = _reclaim_tape()
+    frame = pd.DataFrame(
+        {
+            "Open": [99.9, 100.4],
+            "High": [tape[0]["high"], tape[1]["high"]],
+            "Low": [tape[0]["low"], tape[1]["low"]],
+            "Close": [tape[0]["close"], tape[1]["close"]],
+            "Volume": [100, 100],
+        },
+        index=index,
+    )
+    now = datetime(2026, 11, 16, 9, 40, tzinfo=CT)
+    bars = intraday_bars_from_frame(frame, interval="1m", now=now)
+    assert all(bar["closed"] for bar in bars)
+    assert bars[0]["ts"].astimezone(CT).hour == 9
+    hit = vwap_reclaim_signals(chains={"SPY": _reclaim_chain()}, intraday={"SPY": bars}, now=now)
+    assert len(hit) == 1 and hit[0]["contract"] == "DTE0"
+
+
+def test_vwap_reclaim_is_the_primary_paper_trade(tmp_path: Path):
+    path = tmp_path / "vwap.json"
+    section = _mil_section(path, signals=["vwap_reclaim", "challenge_quality"])
+    tape, chain = _vwap_context()
+    view = run_million(
+        section,
+        challenge={"entry": [_quality("AMD")]},
+        chains=chain,
+        intraday=tape,
+        now=datetime(2026, 11, 16, 9, 40, tzinfo=CT),
+        path=path,
+        vix={"level": 18.4, "prior_close": 17.1},
+    )
+    assert view["open_positions"] == 1
+    assert view["open"][0]["symbol"] == "SPY"
+    assert view["open"][0]["source"] == "vwap_reclaim"
+    trade = _book(path)["trades"][0]
+    assert trade["contract"] == "DTE0"
+    assert trade["dte"] == 0
+    assert trade["contracts"] == 1
+    fill = 1.25 * 1.0005
+    assert trade["entry"] == pytest.approx(fill)
+    assert trade["cost"] == pytest.approx(fill * 100)
+    assert _book(path)["cash"] == pytest.approx(1000 - fill * 100)
+    assert view["cash"] == round(1000 - fill * 100, 2)
+    assert trade["vix"] == pytest.approx(18.4)
+    assert trade["vix_vs_prior"] == "up"
+    assert trade["time_stop_minutes"] == 60
+    assert trade["target_pct"] == 50 and trade["stop_pct"] == 40
+    assert view["cycle_alerts"][0]["message"].startswith("[MILLION][VWAP] BUY SPY")
+    assert "VIX 18.40 up" in view["cycle_alerts"][0]["message"]
+    twin = [row for row in _book(path)["log_only"] if row["source"] == "vwap_reclaim_1dte"]
+    assert len(twin) == 1
+    assert twin[0]["contract"] == "DTE1"
+    assert twin[0]["status"] == "open"
+    assert twin[0]["stop_pct"] == 30
+    assert twin[0]["route"] == "log_only"
+    assert twin[0]["vix_vs_prior"] == "up"
+    assert _book(path)["sandbox_orders"] == []
+    assert all(row["source"] != "vwap_reclaim_1dte" for row in _book(path)["trades"])
+    assert all(row.get("symbol") != "AMD" for row in _book(path)["trades"])
+
+    # The 1DTE twin stops at -30 while the filled 0DTE is still inside -40.
+    faded = run_million(
+        section,
+        quotes=_marks_at_entry(path, primary=0.70, twin=0.70),
+        now=datetime(2026, 11, 16, 9, 50, tzinfo=CT),
+        path=path,
+        signals=["vwap_reclaim"],
+    )
+    assert faded["open_positions"] == 1
+    assert _book(path)["trades"][0]["status"] == "open"
+    assert twin_row(path)["status"] == "closed"
+    assert twin_row(path)["exit_reason"] == "hard_stop"
+    assert _book(path)["cash"] == pytest.approx(1000 - fill * 100)
+
+
+def twin_row(path: Path) -> dict:
+    return [row for row in _book(path)["log_only"] if row["source"] == "vwap_reclaim_1dte"][0]
+
+
+def test_vwap_reclaim_time_stop_uses_elapsed_instants(tmp_path: Path):
+    path = tmp_path / "time.json"
+    section = _mil_section(path, signals=["vwap_reclaim"])
+    tape, chain = _vwap_context()
+    run_million(
+        section,
+        chains=chain,
+        intraday=tape,
+        now=datetime(2026, 11, 16, 10, 0, tzinfo=CT),
+        path=path,
+        vix={"last": 16.0, "prev_close": 16.0},
+    )
+    book = _book(path)
+    book["trades"][0]["entry_at"] = "2026-11-16T16:00:00+00:00"
+    book["log_only"][0]["entry_at"] = "2026-11-16T16:00:00+00:00"
+    path.write_text(json.dumps(book), encoding="utf-8")
+    assert _book(path)["trades"][0]["vix_vs_prior"] == "unchanged"
+
+    held = run_million(
+        section,
+        quotes=_marks_at_entry(path),
+        now=datetime(2026, 11, 16, 10, 59, tzinfo=CT),
+        path=path,
+        signals=["vwap_reclaim"],
+    )
+    assert held["open_positions"] == 1
+    assert twin_row(path)["status"] == "open"
+
+    utc_held = run_million(
+        section,
+        quotes=_marks_at_entry(path),
+        now=datetime(2026, 11, 16, 16, 59, tzinfo=UTC),
+        path=path,
+        signals=["vwap_reclaim"],
+    )
+    assert utc_held["open_positions"] == 1
+
+    stopped = run_million(
+        section,
+        quotes=_marks_at_entry(path),
+        now=datetime(2026, 11, 16, 17, 0, tzinfo=UTC),
+        path=path,
+        signals=["vwap_reclaim"],
+    )
+    assert stopped["open_positions"] == 0
+    assert _book(path)["trades"][0]["exit_reason"] == "time_stop"
+    assert twin_row(path)["exit_reason"] == "time_stop"
+    again = run_million(
+        section,
+        chains=chain,
+        intraday=tape,
+        quotes=_marks_at_entry(path),
+        now=datetime(2026, 11, 16, 12, 0, tzinfo=CT),
+        path=path,
+        signals=["vwap_reclaim"],
+    )
+    assert again["open_positions"] == 0
+    assert len(_book(path)["trades"]) == 1
+
+
+def test_vwap_reclaim_flattens_at_1455_ct(tmp_path: Path):
+    path = tmp_path / "flat.json"
+    section = _mil_section(path, signals=["vwap_reclaim"])
+    late = _reclaim_tape(second=datetime(2026, 11, 16, 14, 11, tzinfo=CT))
+    late[0]["ts"] = datetime(2026, 11, 16, 14, 10, tzinfo=CT)
+    run_million(
+        section,
+        chains={"SPY": _reclaim_chain()},
+        intraday={"SPY": late},
+        now=datetime(2026, 11, 16, 14, 20, tzinfo=CT),
+        path=path,
+        vix={"level": 15.0, "prior_close": 16.2},
+    )
+    assert _book(path)["trades"][0]["vix_vs_prior"] == "down"
+    before = run_million(
+        section,
+        quotes=_marks_at_entry(path),
+        now=datetime(2026, 11, 16, 14, 54, tzinfo=CT),
+        path=path,
+        signals=["vwap_reclaim"],
+    )
+    assert before["open_positions"] == 1
+    assert twin_row(path)["status"] == "open"
+
+    # 14:55 UTC is 08:55 CT. The flatten is the Chicago instant, not the UTC clock.
+    utc_morning = run_million(
+        section,
+        quotes=_marks_at_entry(path),
+        now=datetime(2026, 11, 16, 14, 55, tzinfo=UTC),
+        path=path,
+        signals=["vwap_reclaim"],
+    )
+    assert utc_morning["open_positions"] == 1
+
+    flat = run_million(
+        section,
+        quotes=_marks_at_entry(path),
+        now=datetime(2026, 11, 16, 20, 55, tzinfo=UTC),
+        path=path,
+        signals=["vwap_reclaim"],
+    )
+    assert flat["open_positions"] == 0
+    assert _book(path)["trades"][0]["exit_reason"] == "session_flat"
+    assert twin_row(path)["status"] == "open"
+
+    twin_done = run_million(
+        section,
+        quotes=_marks_at_entry(path),
+        now=datetime(2026, 11, 16, 15, 20, tzinfo=CT),
+        path=path,
+        signals=["vwap_reclaim"],
+    )
+    assert twin_done["open_positions"] == 0
+    assert twin_row(path)["exit_reason"] == "time_stop"
+    assert flat["cash"] == twin_done["cash"]
+
+
+def test_vwap_reclaim_falls_back_to_the_nearest_expiry_without_0dte(tmp_path: Path):
+    path = tmp_path / "nearest.json"
+    chain = [row for row in _reclaim_chain() if row["dte"] != 0]
+    run_million(
+        _mil_section(path, signals=["vwap_reclaim"]),
+        chains={"SPY": chain},
+        intraday={"SPY": _reclaim_tape()},
+        now=datetime(2026, 11, 16, 9, 40, tzinfo=CT),
+        path=path,
+    )
+    trade = _book(path)["trades"][0]
+    assert trade["contract"] == "DTE1"
+    assert trade["dte"] == 1
+    assert twin_row(path)["contract"] == "WEEK"
+    assert twin_row(path)["status"] == "open"
+    assert twin_row(path)["log_only"] is True
+
+
+def test_oversold_bounce_is_log_only_and_does_not_fill(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("WEBULL_ACCOUNT_ID", "SHOULD-NOT-USE")
+    monkeypatch.setenv("WEBULL_ACCOUNT_ID_2", "SHOULD-NOT-USE-2")
+    monkeypatch.setenv("WEBULL_LIVE", "1")
+    monkeypatch.delenv("MILLION_ACCOUNT_ID", raising=False)
+
+    def boom(_payload):
+        raise AssertionError("log-only oversold bounce must not send an order")
+
+    path = tmp_path / "shadow.json"
+    section = _mil_section(path, signals=["oversold_bounce"])
+    view = run_million(
+        section,
+        bars={"QQQ": _setup_daily()},
+        chains={"QQQ": _bounce_chain()},
+        intraday={"QQQ": [_minute(10, 5, 103.5)]},
+        now=datetime(2026, 11, 16, 10, 6, tzinfo=CT),
+        path=path,
+        host="api.webull.com",
+        transport=boom,
+        vix={"level": 19.0, "prior_close": 18.0},
+    )
+    assert view["open_positions"] == 0
+    assert view["cash"] == 1000
+    assert view["route"] == "internal"
+    assert view["cycle_alerts"] == []
+    assert _book(path)["trades"] == []
+    assert _book(path)["sandbox_orders"] == []
+    logged = _bounce_log(path)
+    assert logged["status"] == "open"
+    assert logged["route"] == "log_only"
+    assert logged["vix"] == pytest.approx(19.0)
+    assert logged["vix_vs_prior"] == "up"
+    assert "SHOULD-NOT-USE" not in path.read_text(encoding="utf-8")
+
+    lost = run_million(
+        section,
+        quotes={"QQQ": {"last": logged["entry"] * 0.60, "bid": logged["entry"] * 0.60}},
+        now=datetime(2026, 11, 16, 11, 0, tzinfo=CT),
+        path=path,
+        signals=["oversold_bounce"],
+        vix={"level": 17.0, "prior_close": 18.0},
+    )
+    assert lost["entries_halted"] is False
+    assert lost["cash"] == 1000
+    assert _bounce_log(path)["exit_reason"] == "hard_stop"
+    assert _bounce_log(path)["pnl"] < 0
+
+    quiet = tmp_path / "no-vix.json"
+    run_million(
+        _mil_section(quiet, signals=["oversold_bounce"]),
+        bars={"QQQ": _setup_daily()},
+        chains={"QQQ": _bounce_chain()},
+        intraday={"QQQ": [_minute(10, 5, 103.5)]},
+        now=datetime(2026, 11, 16, 10, 6, tzinfo=CT),
+        path=quiet,
+    )
+    assert _bounce_log(quiet)["status"] == "open"
+    assert _bounce_log(quiet)["vix"] is None
+    assert _bounce_log(quiet)["vix_vs_prior"] is None
+
+
+def test_vwap_reclaim_never_falls_back_to_a_shared_or_live_account(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("WEBULL_ACCOUNT_ID", "SHOULD-NOT-USE")
+    monkeypatch.setenv("WEBULL_ACCOUNT_ID_2", "SHOULD-NOT-USE-2")
+    monkeypatch.setenv("WEBULL_PAPER_ACCOUNT_ID", "SHOULD-NOT-USE-PAPER")
+    monkeypatch.setenv("WEBULL_LIVE", "1")
+    monkeypatch.delenv("MILLION_ACCOUNT_ID", raising=False)
+    tape, chain = _vwap_context()
+
+    def boom(_payload):
+        raise AssertionError("transport called")
+
+    missing = tmp_path / "missing.json"
+    blocked = run_million(
+        _mil_section(missing, signals=["vwap_reclaim"]),
+        chains=chain,
+        intraday=tape,
+        now=datetime(2026, 11, 16, 9, 40, tzinfo=CT),
+        path=missing,
+        host=SANDBOX_HOST,
+        live_trading={"sandbox": True, "paper": True},
+        environ=_GuardEnv(),
+        transport=boom,
+    )
+    assert blocked["route"] == "internal"
+    assert blocked["open_positions"] == 1
+    assert _book(missing)["sandbox_orders"] == []
+    assert "SHOULD-NOT-USE" not in missing.read_text(encoding="utf-8")
+    assert "account_id" not in blocked
+
+    live = tmp_path / "live.json"
+    stayed = run_million(
+        _mil_section(live, signals=["vwap_reclaim"]),
+        chains=chain,
+        intraday=tape,
+        now=datetime(2026, 11, 16, 9, 40, tzinfo=CT),
+        path=live,
+        host="api.webull.com",
+        environ=_GuardEnv({"MILLION_ACCOUNT_ID": "M-SANDBOX", "WEBULL_LIVE": "1"}),
+        transport=boom,
+    )
+    assert stayed["route"] == "internal"
+    assert stayed["open_positions"] == 1
+    assert _book(live)["sandbox_orders"] == []
+
+    calls = []
+
+    def transport(payload):
+        calls.append(payload)
+        return {"ok": True}
+
+    routed = tmp_path / "routed.json"
+    sent = run_million(
+        _mil_section(routed, signals=["vwap_reclaim"]),
+        chains=chain,
+        intraday=tape,
+        now=datetime(2026, 11, 16, 9, 40, tzinfo=CT),
+        path=routed,
+        host=SANDBOX_HOST,
+        live_trading={"sandbox": True, "paper": True},
+        environ=_GuardEnv(
+            {
+                "MILLION_ACCOUNT_ID": "M-SANDBOX",
+                "WEBULL_ACCOUNT_ID": "SHOULD-NOT-USE",
+                "WEBULL_ACCOUNT_ID_2": "SHOULD-NOT-USE-2",
+                "WEBULL_LIVE": "1",
+            }
+        ),
+        transport=transport,
+    )
+    assert sent["route"] == "sandbox"
+    assert len(calls) == 1
+    assert calls[0]["account_id"] == "M-SANDBOX"
+    assert calls[0]["host"] == SANDBOX_HOST
+    assert calls[0]["order"]["contract"] == "DTE0"
+    assert "SHOULD-NOT-USE" not in json.dumps(calls)
+    assert _book(routed)["sandbox_orders"] == [
+        {"symbol": "SPY", "side": "BUY", "account_id": "M-SANDBOX", "host": SANDBOX_HOST}
+    ]
+    assert "account_id" not in sent
+
+    calls.clear()
+    refused = tmp_path / "refused.json"
+    paper = run_million(
+        _mil_section(refused, signals=["vwap_reclaim"]),
+        chains=chain,
+        intraday=tape,
+        now=datetime(2026, 11, 16, 9, 40, tzinfo=CT),
+        path=refused,
+        host="api.webull.com",
+        live_trading={"sandbox": False, "paper": False},
+        environ={"MILLION_ACCOUNT_ID": "M-SANDBOX", "WEBULL_LIVE": "1", "WEBULL_ACCOUNT_ID": "SHOULD-NOT-USE"},
+        transport=transport,
+    )
+    assert paper["route"] == "internal"
+    assert calls == []
+    assert _book(refused)["sandbox_orders"] == []
+    with pytest.raises(RoutingError):
+        submit_sandbox_order(
+            desk="million",
+            account_id="SHOULD-NOT-USE",
+            host="api.webull.com",
+            order={"side": "BUY", "symbol": "SPY"},
+            transport=transport,
+        )
