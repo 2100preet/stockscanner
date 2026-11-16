@@ -294,7 +294,14 @@ def _exit_reason(
     return None
 
 
+def _alert_session(side: str, trade: Mapping[str, Any]) -> str | None:
+    raw = trade.get("exit_session") if side == "SELL" else trade.get("entry_session")
+    text = str(raw or "")[:10]
+    return text or None
+
+
 def _alert(side: str, trade: Mapping[str, Any], text: str) -> dict[str, Any]:
+    """Fill notice for the portal and Telegram. This does not place an order."""
     return {
         "key": f"KOTEGAWA|{side}|{trade.get('id')}",
         "side": side,
@@ -302,7 +309,20 @@ def _alert(side: str, trade: Mapping[str, Any], text: str) -> dict[str, Any]:
         "symbol": trade.get("symbol"),
         "action": side,
         "message": text,
-        "row": {"symbol": trade.get("symbol"), "id": trade.get("id")},
+        "session": _alert_session(side, trade),
+        "paper": True,
+        "log_only": False,
+        "shares": trade.get("shares"),
+        "entry": trade.get("entry"),
+        "exit": trade.get("exit"),
+        "ask": trade.get("entry") if side == "BUY" else None,
+        "bid": trade.get("exit") if side == "SELL" else None,
+        "row": {
+            "symbol": trade.get("symbol"),
+            "id": trade.get("id"),
+            "shares": trade.get("shares"),
+            "entry": trade.get("entry"),
+        },
     }
 
 
@@ -310,16 +330,45 @@ def _remember(book: dict[str, Any], alert: dict[str, Any]) -> None:
     book["recent_alerts"] = (list(book.get("recent_alerts") or []) + [alert])[-30:]
 
 
-def public_view(book: Mapping[str, Any], *, status: str = "ok", reason: str | None = None) -> dict[str, Any]:
+def _open_position(row: Mapping[str, Any]) -> dict[str, Any]:
+    entry = _f(row.get("entry"))
+    mark = _f(row.get("last_mark"))
+    shares = int(row.get("shares") or 0)
+    unrealized = None
+    if entry is not None and mark is not None and shares > 0:
+        unrealized = round((mark - entry) * shares, 2)
+    symbol = row.get("symbol")
+    contract = f"{symbol} {shares} sh" if symbol and shares else symbol
+    return {
+        "symbol": symbol,
+        "shares": row.get("shares"),
+        "contract": contract,
+        "entry": row.get("entry"),
+        "entry_session": row.get("entry_session"),
+        "mark": mark,
+        "unrealized_pnl": unrealized,
+    }
+
+
+def public_view(
+    book: Mapping[str, Any],
+    *,
+    status: str = "ok",
+    reason: str | None = None,
+    as_of: date | None = None,
+) -> dict[str, Any]:
     trades = [row for row in book.get("trades") or [] if isinstance(row, dict)]
     closed = [row for row in trades if row.get("status") == "closed"]
     opened = [row for row in trades if row.get("status") == "open"]
     wins = sum(1 for row in closed if float(row.get("pnl") or 0) > 0)
     losses = sum(1 for row in closed if float(row.get("pnl") or 0) < 0)
     realized = sum(float(row.get("pnl") or 0) for row in closed)
+    # Equity stays marked at entry so the scorecard number does not move
+    # when a quote is missing. The open row carries the live mark separately.
     marks = {str(row.get("symbol")): float(row.get("entry") or 0) for row in opened}
     equity = equity_of(book, marks)
     win_rate = (wins / len(closed)) if closed else None
+    day = as_of or _as_ct(None).date()
     return {
         "desk": DESK,
         "name": "Kotegawa",
@@ -332,20 +381,13 @@ def public_view(book: Mapping[str, Any], *, status: str = "ok", reason: str | No
         "cash": round(float(book.get("cash") or 0), 2),
         "starting_equity": float(book.get("starting_equity") or STARTING_EQUITY),
         "realized_pnl": round(realized, 2),
+        "realized_today": round(_realized_on(book, day), 2),
         "win_rate": win_rate,
         "wins": wins,
         "losses": losses,
         "trades": len(closed),
         "open_positions": len(opened),
-        "open": [
-            {
-                "symbol": row.get("symbol"),
-                "shares": row.get("shares"),
-                "entry": row.get("entry"),
-                "entry_session": row.get("entry_session"),
-            }
-            for row in opened
-        ],
+        "open": [_open_position(row) for row in opened],
         "entries_halted": bool(book.get("entries_halted")),
         "halt_reason": book.get("halt_reason"),
         "alerts": list(book.get("recent_alerts") or []),
@@ -521,7 +563,12 @@ def run_kotegawa(
             alerts.append(alert)
             _remember(book, alert)
 
+    for trade in _open_trades(book):
+        symbol = str(trade.get("symbol") or "")
+        series = None if bars is None else list(bars.get(symbol) or bars.get(normalize_symbol(symbol)) or [])
+        trade["last_mark"] = _mark_for(trade, quotes, series or None)
+
     save_desk_state(state_path, book)
-    view = public_view(book)
+    view = public_view(book, as_of=session)
     view["cycle_alerts"] = alerts
     return view

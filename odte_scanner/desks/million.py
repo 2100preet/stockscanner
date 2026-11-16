@@ -660,17 +660,41 @@ def _prefix(source: Any) -> str:
     return "[MILLION]"
 
 
+def _alert_session(side: str, trade: Mapping[str, Any]) -> str | None:
+    raw = trade.get("exit_session") if side == "SELL" else trade.get("entry_session")
+    text = str(raw or "")[:10]
+    return text or None
+
+
 def _alert(side: str, trade: Mapping[str, Any], text: str) -> dict[str, Any]:
+    """Fill notice for the portal and Telegram. Log-only tickets never call this."""
     return {
         "key": f"MILLION|{side}|{trade.get('id')}",
         "side": side,
         "desk": "Million",
         "symbol": trade.get("symbol"),
         "action": side,
+        "source": trade.get("source"),
         "contract": trade.get("contract"),
         "expiry": trade.get("expiry"),
+        "strike": trade.get("strike"),
+        "right": trade.get("right"),
         "message": text,
-        "row": {"symbol": trade.get("symbol"), "id": trade.get("id"), "contract": trade.get("contract")},
+        "session": _alert_session(side, trade),
+        "paper": True,
+        "log_only": False,
+        "contracts": trade.get("contracts"),
+        "entry": trade.get("entry"),
+        "exit": trade.get("exit"),
+        "ask": trade.get("entry") if side == "BUY" else None,
+        "bid": trade.get("exit") if side == "SELL" else None,
+        "row": {
+            "symbol": trade.get("symbol"),
+            "id": trade.get("id"),
+            "contract": trade.get("contract"),
+            "source": trade.get("source"),
+            "right": trade.get("right"),
+        },
     }
 
 
@@ -691,7 +715,34 @@ def _roll_day(book: dict[str, Any], session: date, quotes: Mapping[str, Any] | N
     book["day_start_equity"] = equity_of(book, marks)
 
 
-def public_view(book: Mapping[str, Any], *, status: str = "ok", reason: str | None = None) -> dict[str, Any]:
+def _open_position(row: Mapping[str, Any]) -> dict[str, Any]:
+    entry = _f(row.get("entry"))
+    mark = _f(row.get("last_mark"))
+    contracts = int(row.get("contracts") or 0)
+    unrealized = None
+    if entry is not None and mark is not None and contracts > 0:
+        unrealized = round((mark - entry) * 100.0 * contracts, 2)
+    return {
+        "symbol": row.get("symbol"),
+        "source": row.get("source"),
+        "contracts": row.get("contracts"),
+        "contract": row.get("contract"),
+        "entry": row.get("entry"),
+        "expiry": row.get("expiry"),
+        "strike": row.get("strike"),
+        "right": row.get("right"),
+        "mark": mark,
+        "unrealized_pnl": unrealized,
+    }
+
+
+def public_view(
+    book: Mapping[str, Any],
+    *,
+    status: str = "ok",
+    reason: str | None = None,
+    as_of: date | None = None,
+) -> dict[str, Any]:
     trades = [row for row in book.get("trades") or [] if isinstance(row, dict)]
     closed = [row for row in trades if row.get("status") == "closed"]
     opened = [row for row in trades if row.get("status") == "open"]
@@ -701,6 +752,7 @@ def public_view(book: Mapping[str, Any], *, status: str = "ok", reason: str | No
     equity = equity_of(book)
     win_rate = (wins / len(closed)) if closed else None
     reached = [row for row in book.get("milestones") or [] if row.get("reached")]
+    day = as_of or _as_ct(None).date()
     return {
         "desk": DESK,
         "name": "Million Challenge",
@@ -713,21 +765,13 @@ def public_view(book: Mapping[str, Any], *, status: str = "ok", reason: str | No
         "cash": round(float(book.get("cash") or 0), 2),
         "starting_equity": float(book.get("starting_equity") or STARTING_EQUITY),
         "realized_pnl": round(realized, 2),
+        "realized_today": round(_realized_on(book, day), 2),
         "win_rate": win_rate,
         "wins": wins,
         "losses": losses,
         "trades": len(closed),
         "open_positions": len(opened),
-        "open": [
-            {
-                "symbol": row.get("symbol"),
-                "source": row.get("source"),
-                "contracts": row.get("contracts"),
-                "entry": row.get("entry"),
-                "expiry": row.get("expiry"),
-            }
-            for row in opened
-        ],
+        "open": [_open_position(row) for row in opened],
         "entries_halted": bool(book.get("entries_halted")),
         "halt_reason": book.get("halt_reason"),
         "doublings": round(doublings_of(equity, float(book.get("starting_equity") or STARTING_EQUITY)), 4),
@@ -748,6 +792,7 @@ def public_view(book: Mapping[str, Any], *, status: str = "ok", reason: str | No
                 "vix": row.get("vix"),
                 "vix_vs_prior": row.get("vix_vs_prior"),
                 "dte": row.get("dte"),
+                "entry_session": row.get("entry_session"),
                 "log_only": True,
             }
             for row in book.get("log_only") or []
@@ -1264,6 +1309,6 @@ def run_million(
 
     _stamp_milestones(book, equity_of(book), moment)
     save_desk_state(state_path, book)
-    view = public_view(book)
+    view = public_view(book, as_of=session)
     view["cycle_alerts"] = alerts
     return view

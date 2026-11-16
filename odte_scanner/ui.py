@@ -332,6 +332,13 @@ PAGE = r"""
     .tabs button[data-tab="nowboard"].active { color: var(--long); }
     .now-desk { font-family: "Instrument Serif", Georgia, serif; font-size: 1.05rem; font-weight: 400; margin: 1rem 0 .5rem; }
     .now-desk .status { margin-left: .4rem; }
+    .paper-desk-grid { display: grid; gap: .65rem; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); margin: .35rem 0 .85rem; }
+    .paper-desk-card { border: 1px solid var(--line); border-radius: .75rem; padding: .7rem .85rem; background: rgba(255,255,255,.03); }
+    .paper-desk-card .k { color: var(--muted); font-size: .68rem; text-transform: uppercase; letter-spacing: .06em; }
+    .paper-desk-card .v { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: .92rem; margin-top: .12rem; }
+    .paper-desk-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: .45rem .7rem; margin: .45rem 0 .2rem; }
+    #paperLogOnly { margin: 0 0 .9rem; color: var(--muted); font-size: .84rem; }
+    #paperLogOnly summary { cursor: pointer; }
   </style>
 </head>
 <body>
@@ -386,7 +393,12 @@ PAGE = r"""
 
     <section class="tabpane active" id="tab-nowboard">
       <h2>BUY NOW / SELL NOW — all desks</h2>
-      <p class="lede">Live option BUY NOW / SELL NOW across <strong>Gold Setup</strong> (1–2/day · MAX/HIGH/SOLID · gold/amber · GO HUGE sizing), 0DTE, weeklies, swing, <strong>Lottery</strong>, <strong>Lottery v2</strong> (log only), <strong>RIP/META</strong>, <strong>Patterns</strong> (double bottom/top · golden triangle), <strong>Levels</strong>, ML6, Challenge, and 0DTE $1K IN/OUT. Lottery, Lottery v2, RIP/META, and Patterns each keep their own heading below even when empty. Hist win ≥80% (n≥5) gates Options BUY NOW. Same losing OCC stays blocked; mega names can still BUY when tape is ripping (see RIP tab). SETUP rows are quality tape without a contract yet — not a buy.</p>
+      <p class="lede">Live option BUY NOW / SELL NOW across <strong>Gold Setup</strong> (1–2/day · MAX/HIGH/SOLID · gold/amber · GO HUGE sizing), 0DTE, weeklies, swing, <strong>Lottery</strong>, <strong>Lottery v2</strong> (log only), <strong>RIP/META</strong>, <strong>Patterns</strong> (double bottom/top · golden triangle), <strong>Levels</strong>, ML6, Challenge, and 0DTE $1K IN/OUT. <strong>[KOTEGAWA]</strong> and <strong>[MILLION]</strong> paper BUY/SELL fills stay on this board for the day. Lottery, Lottery v2, RIP/META, and Patterns each keep their own heading below even when empty. Hist win ≥80% (n≥5) gates Options BUY NOW. Same losing OCC stays blocked; mega names can still BUY when tape is ripping (see RIP tab). SETUP rows are quality tape without a contract yet — not a buy.</p>
+      <div class="paper-desk-grid" id="paperDeskCards"></div>
+      <details id="paperLogOnly" hidden>
+        <summary>Log-only · not alerts</summary>
+        <div id="paperLogOnlyBody"></div>
+      </details>
       <div class="metric-row" id="nowBoardMetrics"></div>
       <p class="lede" id="nowBoardNote" style="margin-top:0;font-size:.76rem"></p>
       <div id="nowBoardPinned"></div>
@@ -1288,7 +1300,7 @@ PAGE = r"""
       const text = String(d == null ? "" : d);
       return /^\s*sure[\s_-]*winners?\s*$/i.test(text) ? "Gold Setup" : text;
     }
-    const NOW_DESK_ORDER = ["Sure Winner", "0DTE", "1 Week", "Swing 1–3M", "Levels", "Lottery", "Lottery v2", "ML6", "Challenge", "0DTE $1K", "Options", "Beauty 1mo", "RIP/META", "Patterns"];
+    const NOW_DESK_ORDER = ["Sure Winner", "[KOTEGAWA]", "[MILLION]", "0DTE", "1 Week", "Swing 1–3M", "Levels", "Lottery", "Lottery v2", "ML6", "Challenge", "0DTE $1K", "Options", "Beauty 1mo", "RIP/META", "Patterns"];
 
     function horizonDesk(row, fallback) {
       const b = String(row.dte_bucket || row.horizon || row.hold_style || row.style || "").toLowerCase();
@@ -1315,7 +1327,7 @@ PAGE = r"""
       const { closedAt, openOccs } = closedAtByContract();
       const add = (row, side, desk) => {
         if (!row || !row.symbol) return;
-        if (side === "BUY" && isStaleSettledBuy(row, closedAt, openOccs)) return;
+        if (side === "BUY" && !row.paper && isStaleSettledBuy(row, closedAt, openOccs)) return;
         row = withOpenEntryTime(row, openIdx);
         const key = [
           side,
@@ -1376,6 +1388,16 @@ PAGE = r"""
       const k1 = DATA.odte_1k || {};
       (k1.put_now || k1.entry || k1.in || []).forEach(r => add(Object.assign({}, r, { action: r.alert_action || "BUY_NOW", right: r.right || "P" }), "BUY", "0DTE $1K"));
       (k1.exit_now || k1.exit || k1.out || []).forEach(r => add(Object.assign({}, r, { action: r.alert_action || "SELL_NOW" }), "SELL", "0DTE $1K"));
+      const paperPortal = DATA.paper_portal || {};
+      (paperPortal.alerts || []).forEach(r => {
+        if (!r || r.log_only) return;
+        const side = String(r.side || r.action || "").toUpperCase() === "SELL" ? "SELL" : "BUY";
+        add(Object.assign({}, r, {
+          action: side === "BUY" ? "BUY_NOW" : "SELL_NOW",
+          paper: true,
+          detail: r.detail || r.message || "",
+        }), side, r.label || r.desk || "Paper");
+      });
       const ac = DATA.action_cards || {};
       const histOk = (sym, hz) => {
         const w = winLookup(sym, hz);
@@ -1403,7 +1425,8 @@ PAGE = r"""
       const wait = r._side === "WAIT";
       const setup = r._side === "SETUP";
       const log = r._side === "LOG";
-      const right = String(r.right || "C").toUpperCase() === "P" ? "PUT" : "CALL";
+      const rawRight = r.right == null || String(r.right).trim() === "" ? "" : String(r.right).trim().toUpperCase();
+      const right = rawRight === "P" ? "PUT" : (rawRight ? "CALL" : (r.paper ? "SHARES" : "CALL"));
       const win = Number(r.win_pct ?? r.hist_win_pct);
       const n = Number(r.win_samples ?? r.hist_samples);
       const gated = buy && win >= 80 && (Number.isNaN(n) || n >= 3);
@@ -1423,7 +1446,9 @@ PAGE = r"""
           ? `${sureTier || "SURE"} · ${r.size_label || (r.go_huge ? "GO HUGE" : "SIZE UP")}`
           : (isLevel ? "BUY LEVEL" : (isBeauty ? "BUY BEAUTY" : (isRip ? "BUY RIP" : (gated ? "ENTER NOW" : "BUY NOW")))))
         : (setup ? "SETUP · not BUY" : (wait ? "WAIT" : "SELL NOW")));
-      const strike = r.strike == null ? "—" : `${fmt(r.strike, Number(r.strike) % 1 ? 2 : 0)}${right === "PUT" ? "p" : "c"}`;
+      const strike = r.strike == null
+        ? (r.paper && r.shares ? `${r.shares} sh` : (r.paper && r.contract ? r.contract : "—"))
+        : `${fmt(r.strike, Number(r.strike) % 1 ? 2 : 0)}${right === "PUT" ? "p" : "c"}`;
       const px = (buy || log) ? (r.ask ?? r.entry_ask) : (r.bid ?? r.mark ?? r.ask ?? r.exit_bid);
       const orderLine = orderPriceText(r.display_price_label, r.display_price);
       const when = rowAskedAt(r);
@@ -1436,7 +1461,7 @@ PAGE = r"""
         : "";
       return `<article class="action-card ${cls}">
         <div class="ac-top">
-          <div class="ac-sym">${r.symbol} <span class="tag">${deskLabel(r._desk)}</span>${isSure ? ` <span class="badge ${sureCls}">${sureTier || "SURE"}</span>` : ""}${r.hold_style ? ` <span class="tag">${r.hold_style}</span>` : ""} <span class="tag">${right}</span></div>
+          <div class="ac-sym">${r.symbol} <span class="tag">${deskLabel(r._desk)}</span>${r.paper ? ` <span class="tag">paper</span>` : ""}${isSure ? ` <span class="badge ${sureCls}">${sureTier || "SURE"}</span>` : ""}${r.hold_style ? ` <span class="tag">${r.hold_style}</span>` : ""} <span class="tag">${right}</span></div>
           <div class="ac-dir ${isSure ? sureCls : (buy && gated ? "" : (buy ? "long" : (wait || setup ? "wait" : "short")))}">${label}</div>
         </div>
         <div class="ac-conf">${deskLabel(r._desk)} · ${when && when !== "—" ? when : "time —"}${confLine}${showEntry ? ` · entered ${entryWhen}` : ""}</div>
@@ -1541,10 +1566,10 @@ PAGE = r"""
           const win = r.win_pct ?? r.hist_win_pct ?? w.pct;
           return `<tr>
             <td><span class="badge ${badge}">${side}</span></td>
-            <td><span class="tag">${deskLabel(r._desk)}</span></td>
+            <td><span class="tag">${deskLabel(r._desk)}</span>${r.paper ? ' <span class="tag">paper</span>' : ''}</td>
             <td><strong>${r.symbol}</strong></td>
             <td class="mono">${rowAskedAt(r)}</td>
-            <td class="mono">${r.strike == null ? "—" : fmt(r.strike, 2) + right} ${r.expiry || ""}</td>
+            <td class="mono">${r.strike == null ? (r.paper ? (r.shares ? r.shares + " sh" : (r.contract || "—")) : "—") : fmt(r.strike, 2) + right} ${r.expiry || ""}</td>
             <td class="mono">${px == null ? "—" : "$" + fmt(px, 2)}</td>
             <td class="mono">${win == null ? "—" : fmt(win, 0) + "%"}</td>
             <td class="mono">${sr}</td>
@@ -4727,7 +4752,76 @@ PAGE = r"""
         ${board.ok === false ? `<div class="pulse-card expected"><p class="pc-why">${esc(board.note || "News Desk unavailable.")}</p></div>` : table + shadowBox}`;
     }
 
+    function renderPaperDeskCards() {
+      const host = document.getElementById("paperDeskCards");
+      if (!host) return;
+      const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+      const money = (n) => {
+        if (n == null || Number.isNaN(Number(n))) return "—";
+        const v = Number(n);
+        const body = "$" + Math.abs(v).toFixed(2);
+        if (v > 0) return '<span class="up">+' + body + "</span>";
+        if (v < 0) return '<span class="down">−' + body + "</span>";
+        return body;
+      };
+      const rate = (card) => {
+        if (card.win_rate == null) return (card.trades || 0) + " · —";
+        const pct = (Number(card.win_rate) * 100).toFixed(0) + "%";
+        return (card.trades || 0) + " · " + pct + " · " + (card.wins || 0) + "W/" + (card.losses || 0) + "L";
+      };
+      const portal = DATA.paper_portal || {};
+      const cards = (portal.cards && portal.cards.length) ? portal.cards : [
+        {label: "[KOTEGAWA]", name: "Kotegawa", equity: null, realized_today: null, trades: 0, win_rate: null, open: []},
+        {label: "[MILLION]", name: "Million", equity: null, realized_today: null, trades: 0, win_rate: null, open: [], doublings: null, target_doublings: 10},
+      ];
+      const openHtml = (rows) => {
+        if (!rows || !rows.length) return "<div class='why'>Flat</div>";
+        return rows.map((row) => {
+          const name = row.contract || row.symbol || "open";
+          const entry = row.entry == null ? "—" : "$" + fmt(row.entry, 2);
+          const mark = row.mark == null ? "—" : "$" + fmt(row.mark, 2);
+          return `<div class="why"><strong>${esc(name)}</strong> · entry ${entry} · mark ${mark} · unreal ${money(row.unrealized_pnl)}</div>`;
+        }).join("");
+      };
+      host.innerHTML = cards.map((card) => {
+        const doubles = card.target_doublings == null ? "" : `<div><div class="k">Doublings</div><div class="v">${card.doublings == null ? "—" : fmt(card.doublings, 2)} of ~${Math.round(Number(card.target_doublings))}</div></div>`;
+        return `<article class="paper-desk-card">
+          <div class="ac-top">
+            <div class="ac-sym">${esc(card.label || card.name || "Paper")}</div>
+            <span class="tag">paper</span>
+          </div>
+          <div class="paper-desk-metrics">
+            <div><div class="k">Equity</div><div class="v">${card.equity == null ? "—" : "$" + fmt(card.equity, 2)}</div></div>
+            <div><div class="k">Today</div><div class="v">${money(card.realized_today)}</div></div>
+            <div><div class="k">Trades</div><div class="v">${rate(card)}</div></div>
+            ${doubles}
+          </div>
+          ${openHtml(card.open)}
+        </article>`;
+      }).join("");
+    }
+
+    function renderPaperLogOnly() {
+      const box = document.getElementById("paperLogOnly");
+      const body = document.getElementById("paperLogOnlyBody");
+      if (!box || !body) return;
+      const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+      const rows = ((DATA.paper_portal || {}).log_only || []).filter((row) => row && row.log_only !== false);
+      if (!rows.length) {
+        box.hidden = true;
+        body.innerHTML = "";
+        return;
+      }
+      box.hidden = false;
+      body.innerHTML = rows.map((row) => {
+        const pnl = row.pnl == null || Number.isNaN(Number(row.pnl)) ? "" : " · pnl $" + Number(row.pnl).toFixed(2);
+        return `<div class="why">${esc(row.source || "log")} · ${esc(row.symbol || "—")} · ${esc(row.contract || "—")} · ${esc(row.status || "logged")}${pnl}</div>`;
+      }).join("");
+    }
+
     function paint() {
+      try { renderPaperDeskCards(); } catch (err) { console.error(err); }
+      try { renderPaperLogOnly(); } catch (err) { console.error(err); }
       try { renderScorecard(); } catch (err) { console.error(err); }
       try { renderEdge(); } catch (err) { console.error(err); }
       try { renderDiamondBanner(); } catch (err) { console.error(err); }
@@ -4981,7 +5075,8 @@ PAGE = r"""
         const isBuy = /BUY|ENTRY|PUT_NOW|CALL_NOW|IN\b/.test(act) || side === "BUY" || row.side === "IN";
         const isSell = /SELL|EXIT|OUT\b/.test(act) || side === "SELL" || row.side === "OUT";
         if (!isBuy && !isSell) return;
-        const right = String(row.right || "C").toUpperCase() === "P" ? "PUT" : "CALL";
+        const rawRight = row.right == null || String(row.right).trim() === "" ? "" : String(row.right).trim().toUpperCase();
+        const right = rawRight === "P" ? "PUT" : (rawRight ? "CALL" : (row.paper ? "SHARES" : "CALL"));
         const key = [
           isBuy ? "BUY" : "SELL",
           desk,
@@ -5048,6 +5143,12 @@ PAGE = r"""
       const o1k = DATA.odte_1k || {};
       (o1k.put_now || o1k.entry || o1k.in || []).forEach(r => push({...r, action: r.alert_action || "BUY_NOW", side: "IN"}, "BUY", "0DTE $1K"));
       (o1k.exit_now || o1k.exit || o1k.out || []).forEach(r => push({...r, action: r.alert_action || "SELL_NOW", side: "OUT"}, "SELL", "0DTE $1K"));
+      const paperPortal = DATA.paper_portal || {};
+      (paperPortal.alerts || []).forEach(r => {
+        if (!r || r.log_only) return;
+        const side = String(r.side || r.action || "").toUpperCase() === "SELL" ? "SELL" : "BUY";
+        push(Object.assign({}, r, { action: side, paper: true, detail: r.detail || r.message || "" }), side, r.label || r.desk || "Paper");
+      });
       return out;
     }
 
@@ -8295,7 +8396,7 @@ def create_app(config_path: str | None = None) -> Flask:
                         "chain": {"ok": False, "error": str(exc)},
                     }
 
-                paper_desk_view: dict = {"kotegawa": {}, "million_challenge": {}, "rows": []}
+                paper_desk_view: dict = {"kotegawa": {}, "million_challenge": {}, "rows": [], "portal": {}}
                 try:
                     from odte_scanner.desks.service import portal_view
 
@@ -8306,9 +8407,12 @@ def create_app(config_path: str | None = None) -> Flask:
                     )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("paper desks failed: %s", exc)
+                from odte_scanner.desks.portal_feed import snapshot_fields
+
+                paper_fields = snapshot_fields(paper_desk_view)
                 if isinstance(scorecard_public, dict):
                     scorecard_public = dict(scorecard_public)
-                    scorecard_public["paper_desks"] = list(paper_desk_view.get("rows") or [])
+                    scorecard_public["paper_desks"] = list(paper_fields["paper_desks"])
 
                 return sanitize_for_json(
                         {
@@ -8360,9 +8464,10 @@ def create_app(config_path: str | None = None) -> Flask:
                         "rec_log": rec_log_payload,
                         "webull": webull_payload,
                         "scorecard": scorecard_public,
-                        "kotegawa": paper_desk_view.get("kotegawa") or {},
-                        "million_challenge": paper_desk_view.get("million_challenge") or {},
-                        "paper_desks": paper_desk_view.get("rows") or [],
+                        "kotegawa": paper_fields["kotegawa"],
+                        "million_challenge": paper_fields["million_challenge"],
+                        "paper_desks": paper_fields["paper_desks"],
+                        "paper_portal": paper_fields["paper_portal"],
                         "edge": _edge_report(scorecard_public),
                         "spx_strategy": spx_strategy,
                         "expected_move": _expected_move_block(),
