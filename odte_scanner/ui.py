@@ -5398,19 +5398,32 @@ def create_app(config_path: str | None = None) -> Flask:
     def index():
         return render_template_string(PAGE)
 
+    def _scorecard_payload() -> dict:
+        from odte_scanner.scorecard.service import public_view
+
+        view = public_view()
+        if not isinstance(view, dict):
+            return {}
+        view = dict(view)
+        try:
+            from odte_scanner.desks.service import scorecard_rows
+
+            view["paper_desks"] = scorecard_rows(cfg)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("paper desk scorecard rows failed: %s", exc)
+            view.setdefault("paper_desks", [])
+        return view
+
     @app.get("/scorecard")
     @app.get("/scorecard.html")
     def scorecard_page():
         from odte_scanner.scorecard.page import render_scorecard_page
-        from odte_scanner.scorecard.service import public_view
 
-        return render_scorecard_page(live=True, initial=public_view())
+        return render_scorecard_page(live=True, initial=_scorecard_payload())
 
     @app.get("/api/scorecard")
     def scorecard_api():
-        from odte_scanner.scorecard.service import public_view
-
-        return jsonify(public_view())
+        return jsonify(_scorecard_payload())
 
     @app.get("/api/scorecard/daily_pnl")
     def scorecard_daily_pnl_api():
@@ -8282,6 +8295,21 @@ def create_app(config_path: str | None = None) -> Flask:
                         "chain": {"ok": False, "error": str(exc)},
                     }
 
+                paper_desk_view: dict = {"kotegawa": {}, "million_challenge": {}, "rows": []}
+                try:
+                    from odte_scanner.desks.service import portal_view
+
+                    paper_desk_view = portal_view(
+                        cfg,
+                        challenge=challenge if isinstance(challenge, dict) else None,
+                        quotes=quotes if isinstance(quotes, dict) else None,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("paper desks failed: %s", exc)
+                if isinstance(scorecard_public, dict):
+                    scorecard_public = dict(scorecard_public)
+                    scorecard_public["paper_desks"] = list(paper_desk_view.get("rows") or [])
+
                 return sanitize_for_json(
                         {
                         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -8332,6 +8360,9 @@ def create_app(config_path: str | None = None) -> Flask:
                         "rec_log": rec_log_payload,
                         "webull": webull_payload,
                         "scorecard": scorecard_public,
+                        "kotegawa": paper_desk_view.get("kotegawa") or {},
+                        "million_challenge": paper_desk_view.get("million_challenge") or {},
+                        "paper_desks": paper_desk_view.get("rows") or [],
                         "edge": _edge_report(scorecard_public),
                         "spx_strategy": spx_strategy,
                         "expected_move": _expected_move_block(),

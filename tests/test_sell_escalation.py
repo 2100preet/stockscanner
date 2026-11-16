@@ -1,7 +1,7 @@
 """Rejected sells: re-check the position, walk the price down, show the reason."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import odte_scanner.edge  # noqa: F401  (import order: avoids a diamond/edge cycle)

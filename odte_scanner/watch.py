@@ -262,6 +262,20 @@ def run_watch(
             except Exception as exc:  # noqa: BLE001
                 logger.debug("journal sync skipped: %s", exc)
 
+        try:
+            from odte_scanner.desks.service import portal_view
+
+            desk_view = portal_view(
+                cfg,
+                challenge=snapshot.get("challenge") if isinstance(snapshot.get("challenge"), dict) else None,
+                now=started,
+            )
+            snapshot["kotegawa"] = desk_view.get("kotegawa")
+            snapshot["million_challenge"] = desk_view.get("million_challenge")
+            snapshot["paper_desks"] = desk_view.get("rows")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("paper desks skipped: %s", exc)
+
         from odte_scanner.json_util import atomic_write_text
 
         snapshot["finished_at"] = datetime.now(timezone.utc).isoformat()
