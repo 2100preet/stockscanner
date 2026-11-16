@@ -843,11 +843,18 @@ million_challenge:
   max_positions: 1
   daily_losers: 2
   daily_loss_pct: 0.20
-  # vwap_reclaim is the paper trade. oversold_bounce is recorded and not filled.
+  # A state file whose ledger_epoch is missing or lower is archived and the
+  # book restarts at starting_equity. This bump discards the corrupt Million
+  # ledger once. Kotegawa and Webull sandbox funds are not reset.
+  ledger_epoch: 1
+  # vwap_reclaim is the only signal that fills. challenge_quality and
+  # oversold_bounce are recorded and not filled. The 1DTE twin is log-only.
   signals:
     - vwap_reclaim
     - challenge_quality
     - oversold_bounce
+  challenge_quality:
+    log_only: true
   vwap_reclaim:
     target_pct: 50
     stop_pct: 40

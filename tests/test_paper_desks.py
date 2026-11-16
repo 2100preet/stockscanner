@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -186,6 +187,9 @@ def test_config_enables_both_desks_without_touching_existing_ones():
     assert vwap["touch_pct"] == 0.005
     twin = cfg["million_challenge"]["vwap_reclaim_1dte"]
     assert twin["log_only"] is True and twin["target_pct"] == 50 and twin["stop_pct"] == 30
+    quality = cfg["million_challenge"]["challenge_quality"]
+    assert quality["log_only"] is True
+    assert cfg["million_challenge"]["ledger_epoch"] == 1
     bounce = cfg["million_challenge"]["oversold_bounce"]
     assert bounce["log_only"] is True
     assert bounce["target_pct"] == 50 and bounce["stop_pct"] == 40
@@ -366,7 +370,30 @@ def test_kotegawa_refuses_another_desks_state_file(tmp_path: Path):
     assert path.read_text(encoding="utf-8") == original
 
 
-def test_million_challenge_quality_entry_exit_and_size(tmp_path: Path):
+def _option_book(px: float, *, contract: str, symbol: str, underlying: float) -> dict:
+    """Option premium under the OCC key, stock price under the underlying."""
+    return {
+        contract: {"bid": px, "ask": px, "last": px},
+        symbol: {"last": underlying, "bid": underlying, "ask": underlying},
+    }
+
+
+def _quality_log(path: Path, symbol: str | None = None) -> dict:
+    rows = [row for row in _book(path).get("log_only") or [] if row.get("source") == "challenge_quality"]
+    if symbol is not None:
+        rows = [row for row in rows if row.get("symbol") == symbol]
+    assert len(rows) == 1
+    return rows[0]
+
+
+def test_challenge_quality_is_log_only(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("WEBULL_ACCOUNT_ID", "SHOULD-NOT-USE")
+    monkeypatch.setenv("WEBULL_LIVE", "1")
+    monkeypatch.delenv("MILLION_ACCOUNT_ID", raising=False)
+
+    def boom(_payload):
+        raise AssertionError("log-only challenge_quality must not send an order")
+
     path = tmp_path / "million_state.json"
     section = _mil_section(path, signals=["challenge_quality"])
     board = {
@@ -376,55 +403,83 @@ def test_million_challenge_quality_entry_exit_and_size(tmp_path: Path):
             _quality("AAPL", certainty_tier="weak", hist_win_pct=50, hist_samples=2, contract="AAPL0"),
         ]
     }
-    view = run_million(section, challenge=board, now=MONDAY, path=path)
-    assert view["open_positions"] == 1
-    assert view["open"][0]["symbol"] == "NVDA"
-    assert view["open"][0]["contracts"] == 1
-    trade = _book(path)["trades"][0]
+    view = run_million(
+        section,
+        challenge=board,
+        now=MONDAY,
+        path=path,
+        host="api.webull.com",
+        transport=boom,
+    )
+    assert view["open_positions"] == 0
+    assert view["cash"] == 1000
+    assert view["trades"] == 0
+    assert view["cycle_alerts"] == []
+    assert view["entries_halted"] is False
+    assert _book(path)["trades"] == []
+    assert _book(path)["sandbox_orders"] == []
+    logged = _quality_log(path, "NVDA")
     fill = ((1.9 + 2.0) / 2) * 1.0005
-    assert trade["entry"] == pytest.approx(fill)
-    assert trade["source"] == "challenge_quality"
-    assert "[MILLION]" in view["cycle_alerts"][0]["message"]
+    assert logged["status"] == "open"
+    assert logged["log_only"] is True
+    assert logged["route"] == "log_only"
+    assert logged["contracts"] == 1
+    assert logged["entry"] == pytest.approx(fill)
+    # SPY is an index sniper, and the weak AAPL ticket is not quality. Neither is logged.
+    assert all(row.get("symbol") not in {"SPY", "AAPL"} for row in _book(path)["log_only"])
 
     held = run_million(
         section,
-        quotes={"NVDA": {"last": fill * 1.19, "bid": fill * 1.19}},
+        quotes=_option_book(fill * 1.19, contract=logged["contract"], symbol="NVDA", underlying=180),
         now=MONDAY,
         path=path,
         signals=["challenge_quality"],
     )
-    assert held["open_positions"] == 1
+    assert held["cash"] == 1000
+    assert held["entries_halted"] is False
+    assert _quality_log(path, "NVDA")["status"] == "open"
+    assert held["cycle_alerts"] == []
 
     stopped = run_million(
         section,
-        quotes={"NVDA": {"last": fill * 0.80, "bid": fill * 0.80}},
+        quotes=_option_book(fill * 0.80, contract=logged["contract"], symbol="NVDA", underlying=180),
         now=MONDAY,
         path=path,
         signals=["challenge_quality"],
     )
-    assert stopped["open_positions"] == 0
-    assert _book(path)["trades"][0]["exit_reason"] == "hard_stop"
+    closed = _quality_log(path, "NVDA")
+    assert closed["status"] == "closed"
+    assert closed["exit_reason"] == "hard_stop"
+    assert closed["exit"] == pytest.approx(fill * 0.80 * 0.9995)
+    assert stopped["cash"] == 1000
+    assert stopped["entries_halted"] is False
+    assert stopped["trades"] == 0
+    assert _book(path)["trades"] == []
 
 
-def test_million_quality_target_is_25_not_40_stop_and_flattens_0dte(tmp_path: Path):
+def test_challenge_quality_logs_the_would_be_exit_without_cash(tmp_path: Path):
     path = tmp_path / "million_state.json"
     section = _mil_section(path, signals=["challenge_quality"])
-    opened = run_million(
+    run_million(
         section,
         challenge={"entry": [_quality("AMD", expiry="2026-11-16", dte=0, contract="AMD0")]},
         now=MONDAY,
         path=path,
     )
-    fill = opened["open"][0]["entry"]
+    logged = _quality_log(path, "AMD")
+    fill = logged["entry"]
     winner = run_million(
         section,
-        quotes={"AMD": {"last": fill * 1.25, "bid": fill * 1.25}},
+        quotes=_option_book(fill * 1.25, contract="AMD0", symbol="AMD", underlying=100),
         now=MONDAY,
         path=path,
         signals=["challenge_quality"],
     )
-    assert _book(path)["trades"][0]["exit_reason"] == "take_profit"
-    assert winner["trades"] == 1
+    assert _quality_log(path, "AMD")["exit_reason"] == "take_profit"
+    assert _quality_log(path, "AMD")["exit"] == pytest.approx(fill * 1.25 * 0.9995)
+    assert winner["trades"] == 0
+    assert winner["cash"] == 1000
+    assert winner["open_positions"] == 0
 
     path2 = tmp_path / "flat.json"
     section2 = _mil_section(path2, signals=["challenge_quality"])
@@ -436,13 +491,15 @@ def test_million_quality_target_is_25_not_40_stop_and_flattens_0dte(tmp_path: Pa
     )
     flat = run_million(
         section2,
-        quotes={"MSFT": {"last": 1.95, "bid": 1.95}},
+        quotes=_option_book(1.95, contract="MSFT0", symbol="MSFT", underlying=400),
         now=datetime(2026, 11, 16, 15, 46, tzinfo=ET),
         path=path2,
         signals=["challenge_quality"],
     )
-    assert _book(path2)["trades"][0]["exit_reason"] == "flatten_0dte"
+    assert _quality_log(path2, "MSFT")["exit_reason"] == "flatten_0dte"
+    assert _quality_log(path2, "MSFT")["exit"] == pytest.approx(1.95 * 0.9995)
     assert flat["open_positions"] == 0
+    assert flat["cash"] == 1000
 
     path3 = tmp_path / "swing.json"
     section3 = _mil_section(path3, signals=["challenge_quality"])
@@ -454,12 +511,14 @@ def test_million_quality_target_is_25_not_40_stop_and_flattens_0dte(tmp_path: Pa
     )
     held = run_million(
         section3,
-        quotes={"COST": {"last": 1.95, "bid": 1.95}},
+        quotes=_option_book(1.95, contract="COST261118C00100000", symbol="COST", underlying=400),
         now=datetime(2026, 11, 16, 15, 46, tzinfo=ET),
         path=path3,
         signals=["challenge_quality"],
     )
-    assert held["open_positions"] == 1
+    assert _quality_log(path3, "COST")["status"] == "open"
+    assert held["open_positions"] == 0
+    assert held["cash"] == 1000
 
 
 def test_million_sizes_ten_percent_and_skips_an_oversized_contract(tmp_path: Path):
@@ -470,7 +529,11 @@ def test_million_sizes_ten_percent_and_skips_an_oversized_contract(tmp_path: Pat
         now=MONDAY,
         path=cheap,
     )
-    assert _book(cheap)["trades"][0]["contracts"] == 2
+    cheap_ticket = [row for row in _book(cheap)["log_only"] if row["source"] == "challenge_quality"][0]
+    assert cheap_ticket["contracts"] == 2
+    assert cheap_ticket["status"] == "open"
+    assert _book(cheap)["trades"] == []
+    assert _book(cheap)["cash"] == 1000
 
     fat = tmp_path / "fat.json"
     view = run_million(
@@ -481,6 +544,10 @@ def test_million_sizes_ten_percent_and_skips_an_oversized_contract(tmp_path: Pat
     )
     assert view["open_positions"] == 0
     assert view["cash"] == 1000
+    assert _book(fat)["trades"] == []
+    skipped = [row for row in _book(fat)["log_only"] if row["source"] == "challenge_quality"][0]
+    assert skipped["status"] == "skipped"
+    assert skipped["reason"] == "oversized"
 
 
 def test_million_one_position_and_daily_loss_limits(tmp_path: Path):
@@ -492,8 +559,10 @@ def test_million_one_position_and_daily_loss_limits(tmp_path: Path):
         now=MONDAY,
         path=path,
     )
-    assert view["open_positions"] == 1
-    assert view["open"][0]["symbol"] == "NVDA"
+    assert view["open_positions"] == 0
+    assert view["cash"] == 1000
+    assert _book(path)["trades"] == []
+    assert {row["symbol"] for row in _book(path)["log_only"]} == {"NVDA", "AAPL"}
 
     losers = tmp_path / "losers.json"
     losers.write_text(
@@ -513,15 +582,18 @@ def test_million_one_position_and_daily_loss_limits(tmp_path: Path):
         ),
         encoding="utf-8",
     )
+    tape, chain = _vwap_context()
     halted = run_million(
-        _mil_section(losers, signals=["challenge_quality"]),
-        challenge={"entry": [_quality("NVDA")]},
-        now=MONDAY,
+        _mil_section(losers, signals=["vwap_reclaim"]),
+        chains=chain,
+        intraday=tape,
+        now=datetime(2026, 11, 16, 9, 40, tzinfo=CT),
         path=losers,
     )
     assert halted["entries_halted"] is True
     assert halted["halt_reason"] == "two losers"
     assert halted["open_positions"] == 0
+    assert all(row.get("status") != "open" for row in _book(losers)["trades"])
 
     loss = tmp_path / "loss.json"
     loss.write_text(
@@ -541,13 +613,15 @@ def test_million_one_position_and_daily_loss_limits(tmp_path: Path):
         encoding="utf-8",
     )
     blocked = run_million(
-        _mil_section(loss, signals=["challenge_quality"]),
-        challenge={"entry": [_quality("NVDA")]},
-        now=MONDAY,
+        _mil_section(loss, signals=["vwap_reclaim"]),
+        chains=chain,
+        intraday=tape,
+        now=datetime(2026, 11, 16, 9, 40, tzinfo=CT),
         path=loss,
     )
     assert blocked["entries_halted"] is True
     assert blocked["open_positions"] == 0
+    assert all(row.get("status") != "open" for row in _book(loss)["trades"])
 
 
 def test_million_milestones_track_doublings(tmp_path: Path):
@@ -643,10 +717,11 @@ def test_oversold_setup_is_the_low_or_the_sma_and_the_mix_keeps_order(tmp_path: 
         path=path,
         signals=["challenge_quality", "oversold_bounce"],
     )
-    assert first["open"][0]["source"] == "challenge_quality"
-    assert first["open"][0]["symbol"] == "AMD"
-    assert any(row["source"] == "oversold_bounce" and row["status"] == "open" for row in first["log_only"])
-    assert all(row.get("source") != "oversold_bounce" for row in _book(path)["trades"])
+    assert first["open_positions"] == 0
+    assert first["cash"] == 1000
+    assert [row["source"] for row in first["log_only"]] == ["challenge_quality", "oversold_bounce"]
+    assert first["log_only"][0]["symbol"] == "AMD"
+    assert _book(path)["trades"] == []
 
     other = tmp_path / "mix2.json"
     second = run_million(
@@ -659,8 +734,9 @@ def test_oversold_setup_is_the_low_or_the_sma_and_the_mix_keeps_order(tmp_path: 
         path=other,
         signals=["oversold_bounce", "challenge_quality"],
     )
-    assert second["open"][0]["source"] == "challenge_quality"
-    assert second["open"][0]["symbol"] == "AMD"
+    assert second["open_positions"] == 0
+    assert second["cash"] == 1000
+    assert [row["source"] for row in second["log_only"]] == ["oversold_bounce", "challenge_quality"]
     logged = [row for row in _book(other)["log_only"] if row["source"] == "oversold_bounce"]
     assert len(logged) == 1
     assert logged[0]["symbol"] == "QQQ"
@@ -698,7 +774,7 @@ def test_oversold_exits_are_fifty_forty_and_the_same_session_close(tmp_path: Pat
     assert opened["cash"] == 1000
     assert _book(path)["trades"] == []
     entry = _bounce_log(path)["entry"]
-    quote = lambda px: {"QQQ": {"last": px, "bid": px}}
+    quote = lambda px: _option_book(px, contract="DTE1", symbol="QQQ", underlying=102)
     held = run_million(section, quotes=quote(entry * 1.49), now=datetime(2026, 11, 16, 11, 0, tzinfo=CT), path=path, signals=["oversold_bounce"])
     assert held["open_positions"] == 0
     assert _bounce_log(path)["status"] == "open"
@@ -709,6 +785,7 @@ def test_oversold_exits_are_fifty_forty_and_the_same_session_close(tmp_path: Pat
     target = run_million(section, quotes=quote(entry * 1.50), now=datetime(2026, 11, 16, 12, 5, tzinfo=CT), path=path, signals=["oversold_bounce"])
     assert target["open_positions"] == 0
     assert _bounce_log(path)["exit_reason"] == "take_profit"
+    assert _bounce_log(path)["exit"] == pytest.approx(entry * 1.50 * 0.9995)
     assert _book(path)["trades"] == []
 
     stop_path = tmp_path / "stop.json"
@@ -723,6 +800,7 @@ def test_oversold_exits_are_fifty_forty_and_the_same_session_close(tmp_path: Pat
     stopped = run_million(stop_section, quotes=quote(entry * 0.60), now=datetime(2026, 11, 16, 11, 6, tzinfo=CT), path=stop_path, signals=["oversold_bounce"])
     assert stopped["open_positions"] == 0
     assert _bounce_log(stop_path)["exit_reason"] == "hard_stop"
+    assert _bounce_log(stop_path)["exit"] == pytest.approx(entry * 0.60 * 0.9995)
     assert stopped["entries_halted"] is False
 
     clock = tmp_path / "clock.json"
@@ -751,7 +829,7 @@ def test_oversold_target_and_stop_stay_configurable(tmp_path: Path):
     section = _mil_section(path, signals=["oversold_bounce"], oversold_bounce={"target_pct": 30, "stop_pct": 25, "flatten_ct": "14:55"})
     _enter_bounce(path, section)
     entry = _bounce_log(path)["entry"]
-    quote = lambda px: {"QQQ": {"last": px, "bid": px}}
+    quote = lambda px: _option_book(px, contract="DTE1", symbol="QQQ", underlying=102)
     held = run_million(section, quotes=quote(entry * 1.29), now=datetime(2026, 11, 16, 11, 0, tzinfo=CT), path=path, signals=["oversold_bounce"])
     assert _bounce_log(path)["status"] == "open"
     assert held["open_positions"] == 0
@@ -783,17 +861,19 @@ def test_desks_do_not_share_state_files_or_daily_limits(tmp_path: Path):
 
     sym = _names(1)[0]
     kot_view = run_kotegawa(_kot_section(kot), bars={sym: _dropped(80)}, now=ENTRY, path=kot)
+    tape, chain = _vwap_context()
     mil_view = run_million(
-        _mil_section(mil, signals=["challenge_quality"]),
-        challenge={"entry": [_quality()]},
-        now=MONDAY,
+        _mil_section(mil, signals=["vwap_reclaim"]),
+        chains=chain,
+        intraday=tape,
+        now=datetime(2026, 11, 16, 9, 40, tzinfo=CT),
         path=mil,
     )
     assert kot_view["open_positions"] == 1
     assert mil_view["open_positions"] == 1
     assert _book(kot)["desk"] == "kotegawa"
     assert _book(mil)["desk"] == "million_challenge"
-    assert "NVDA" not in json.dumps(_book(kot))
+    assert "SPY" not in json.dumps(_book(kot))
     assert sym not in {row["symbol"] for row in _book(mil)["trades"]}
     for path in (challenge, paper, webull):
         assert path.read_text(encoding="utf-8") == sentinel
@@ -952,10 +1032,12 @@ def test_scorecard_rows_and_telegram_labels(tmp_path: Path):
     mil = tmp_path / "million_challenge_state.json"
     sym = _names(1)[0]
     run_kotegawa(_kot_section(kot), bars={sym: _dropped(80)}, now=ENTRY, path=kot)
+    tape, chain = _vwap_context()
     run_million(
-        _mil_section(mil, signals=["challenge_quality"]),
-        challenge={"entry": [_quality()]},
-        now=MONDAY,
+        _mil_section(mil, signals=["vwap_reclaim"]),
+        chains=chain,
+        intraday=tape,
+        now=datetime(2026, 11, 16, 9, 40, tzinfo=CT),
         path=mil,
     )
     cfg = {
@@ -1047,7 +1129,11 @@ def _marks_at_entry(path: Path, *, primary: float = 1.0, twin: float = 1.0) -> d
         px = float(row["entry"]) * scale
         for key in (row.get("contract"), row.get("id")):
             if key:
-                quotes[key] = {"last": px, "bid": px}
+                quotes[key] = {"last": px, "bid": px, "ask": px}
+        symbol = str(row.get("symbol") or "")
+        if symbol and symbol not in quotes:
+            # A stock print in the same map must not become the option mark.
+            quotes[symbol] = {"last": 400.0, "bid": 400.0, "ask": 400.0}
     return quotes
 
 
@@ -1187,6 +1273,8 @@ def test_vwap_reclaim_is_the_primary_paper_trade(tmp_path: Path):
     assert _book(path)["sandbox_orders"] == []
     assert all(row["source"] != "vwap_reclaim_1dte" for row in _book(path)["trades"])
     assert all(row.get("symbol") != "AMD" for row in _book(path)["trades"])
+    quality_logs = [row for row in _book(path)["log_only"] if row["source"] == "challenge_quality"]
+    assert len(quality_logs) == 1 and quality_logs[0]["symbol"] == "AMD" and quality_logs[0]["status"] == "open"
 
     # The 1DTE twin stops at -30 while the filled 0DTE is still inside -40.
     faded = run_million(
@@ -1379,7 +1467,7 @@ def test_oversold_bounce_is_log_only_and_does_not_fill(tmp_path: Path, monkeypat
 
     lost = run_million(
         section,
-        quotes={"QQQ": {"last": logged["entry"] * 0.60, "bid": logged["entry"] * 0.60}},
+        quotes=_option_book(logged["entry"] * 0.60, contract="DTE1", symbol="QQQ", underlying=102),
         now=datetime(2026, 11, 16, 11, 0, tzinfo=CT),
         path=path,
         signals=["oversold_bounce"],
@@ -1388,6 +1476,7 @@ def test_oversold_bounce_is_log_only_and_does_not_fill(tmp_path: Path, monkeypat
     assert lost["entries_halted"] is False
     assert lost["cash"] == 1000
     assert _bounce_log(path)["exit_reason"] == "hard_stop"
+    assert _bounce_log(path)["exit"] == pytest.approx(logged["entry"] * 0.60 * 0.9995)
     assert _bounce_log(path)["pnl"] < 0
 
     quiet = tmp_path / "no-vix.json"
@@ -1508,3 +1597,383 @@ def test_vwap_reclaim_never_falls_back_to_a_shared_or_live_account(tmp_path: Pat
             order={"side": "BUY", "symbol": "SPY"},
             transport=transport,
         )
+
+
+def _seed_option(
+    path: Path,
+    *,
+    source: str = "challenge_quality",
+    entry: float = 0.19,
+    contracts: int = 5,
+    symbol: str = "TSLA",
+    contract: str = "TSLA261116C00390000",
+    strike: float = 390,
+    expiry: str = "2026-11-16",
+    spot: float = 376.92,
+    last_mark: float | None = None,
+    flatten_ct: str | None = None,
+    cash: float | None = None,
+) -> None:
+    """An already-open option. Entry is the premium, not the stock."""
+    cost = entry * 100.0 * contracts
+    path.write_text(
+        json.dumps(
+            {
+                "desk": "million_challenge",
+                "paper_only": True,
+                "starting_equity": 1000,
+                "cash": 1000 - cost if cash is None else cash,
+                "day": "2026-11-16",
+                "day_start_equity": 1000,
+                "ledger_epoch": 1,
+                "trades": [
+                    {
+                        "id": f"mil-{symbol.lower()}",
+                        "source": source,
+                        "log_only": False,
+                        "symbol": symbol,
+                        "right": "C",
+                        "contract": contract,
+                        "expiry": expiry,
+                        "strike": strike,
+                        "dte": 0,
+                        "contracts": contracts,
+                        "entry": entry,
+                        "last_mark": entry if last_mark is None else last_mark,
+                        "spot": spot,
+                        "cost": cost,
+                        "peak": entry,
+                        "status": "open",
+                        "entry_at": "2026-11-16T09:11:00-06:00",
+                        "entry_session": "2026-11-16",
+                        "target_pct": 50 if source == "vwap_reclaim" else None,
+                        "stop_pct": 40 if source == "vwap_reclaim" else None,
+                        "time_stop_minutes": 60 if source == "vwap_reclaim" else None,
+                        "flatten_ct": flatten_ct,
+                    }
+                ],
+                "log_only": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_million_exit_uses_the_option_quote_not_the_underlying(tmp_path: Path, caplog):
+    """The 9:11 CT TSLA print: 5x at $0.19 must not sell at the $376.92 stock."""
+    caplog.set_level(logging.WARNING)
+    path = tmp_path / "tsla.json"
+    _seed_option(path)
+    section = _mil_section(path, signals=[])
+    stock = {"TSLA": {"last": 376.92, "bid": 376.92, "ask": 376.95}}
+    held = run_million(section, quotes=stock, now=datetime(2026, 11, 16, 10, 0, tzinfo=CT), path=path)
+    trade = _book(path)["trades"][0]
+    assert held["open_positions"] == 1
+    assert trade["status"] == "open"
+    assert trade.get("exit") is None
+    assert held["cash"] == pytest.approx(1000 - 0.19 * 500)
+    assert "376.92" not in " ".join(alert["message"] for alert in held["cycle_alerts"])
+    assert any("refused" in rec.message and "TSLA" in rec.message for rec in caplog.records)
+
+    quiet = run_million(
+        section,
+        quotes={**stock, "TSLA261116C00390000": {"bid": 0.22, "ask": 0.24, "last": 0.23}},
+        now=datetime(2026, 11, 16, 10, 5, tzinfo=CT),
+        path=path,
+    )
+    assert quiet["open_positions"] == 1
+    assert _book(path)["trades"][0]["status"] == "open"
+
+    sold = run_million(
+        section,
+        quotes={**stock, "TSLA261116C00390000": {"bid": 0.24, "ask": 0.26, "last": 376.92}},
+        now=datetime(2026, 11, 16, 10, 6, tzinfo=CT),
+        path=path,
+    )
+    closed = _book(path)["trades"][0]
+    assert closed["status"] == "closed"
+    assert closed["exit_reason"] == "take_profit"
+    assert closed["exit"] == pytest.approx(0.24 * 0.9995)
+    assert closed["exit"] != pytest.approx(376.92)
+    assert _book(path)["cash"] == pytest.approx(1000 - 0.19 * 500 + 0.24 * 0.9995 * 500)
+    assert "376.92" not in sold["cycle_alerts"][0]["message"]
+
+    fetched = tmp_path / "fetched.json"
+    _seed_option(fetched)
+    seen = []
+
+    def fetch(trade):
+        seen.append(trade["contract"])
+        return {"bid": 0.30, "ask": 0.32, "last": 0.31}
+
+    filled = run_million(
+        _mil_section(fetched, signals=[]),
+        quotes=stock,
+        now=datetime(2026, 11, 16, 10, 0, tzinfo=CT),
+        path=fetched,
+        quote_fetcher=fetch,
+    )
+    assert seen == ["TSLA261116C00390000"]
+    got = _book(fetched)["trades"][0]
+    assert got["exit_reason"] == "take_profit"
+    assert got["exit"] == pytest.approx(0.30 * 0.9995)
+    assert _book(fetched)["cash"] == pytest.approx(1000 - 0.19 * 500 + 0.30 * 0.9995 * 500)
+
+
+def test_million_sanity_guard_refuses_impossible_marks(tmp_path: Path, caplog):
+    caplog.set_level(logging.WARNING)
+    path = tmp_path / "bound.json"
+    _seed_option(path)
+    section = _mil_section(path, signals=[])
+    now = datetime(2026, 11, 16, 10, 0, tzinfo=CT)
+    refused = run_million(
+        section,
+        quotes={
+            "TSLA": {"last": 376.92, "bid": 376.92},
+            "TSLA261116C00390000": {"bid": 3.81, "ask": 3.90, "last": 3.85},
+        },
+        now=now,
+        path=path,
+    )
+    assert refused["open_positions"] == 1
+    assert _book(path)["cash"] == pytest.approx(1000 - 0.19 * 500)
+    assert any("20x" in rec.message for rec in caplog.records)
+
+    wide = tmp_path / "wide.json"
+    _seed_option(wide, entry=10.0, contracts=1, symbol="QQQ", contract="QQQ0", strike=500, spot=100)
+    blocked = run_million(
+        _mil_section(wide, signals=[]),
+        quotes={"QQQ": {"last": 100.0, "bid": 100.0}, "QQQ0": {"bid": 60.0, "ask": 61.0, "last": 60.0}},
+        now=now,
+        path=wide,
+    )
+    assert blocked["open_positions"] == 1
+    assert any("half the underlying" in rec.message for rec in caplog.records)
+
+    allowed = run_million(
+        _mil_section(wide, signals=[]),
+        quotes={"QQQ": {"last": 100.0, "bid": 100.0}, "QQQ0": {"bid": 40.0, "ask": 41.0, "last": 40.0}},
+        now=datetime(2026, 11, 16, 10, 5, tzinfo=CT),
+        path=wide,
+    )
+    assert _book(wide)["trades"][0]["exit"] == pytest.approx(40.0 * 0.9995)
+    assert allowed["open_positions"] == 0
+
+    poisoned = tmp_path / "poison.json"
+    _seed_option(poisoned)
+
+    def stock_as_option(_trade):
+        return {"bid": 376.92, "last": 376.92, "ask": 376.95}
+
+    stayed = run_million(
+        _mil_section(poisoned, signals=[]),
+        quotes={"TSLA": {"last": 376.92, "bid": 376.92}},
+        now=now,
+        path=poisoned,
+        quote_fetcher=stock_as_option,
+    )
+    assert stayed["open_positions"] == 1
+    assert _book(poisoned)["trades"][0].get("exit") is None
+
+
+def test_million_flatten_without_option_quote_uses_last_mark_or_zero(tmp_path: Path):
+    path = tmp_path / "flat.json"
+    _seed_option(
+        path,
+        source="vwap_reclaim",
+        entry=1.25,
+        contracts=1,
+        symbol="SPY",
+        contract="SPY0",
+        strike=100,
+        expiry="2026-11-16",
+        spot=500,
+        last_mark=1.40,
+        flatten_ct="14:55",
+    )
+    section = _mil_section(path, signals=[])
+    flat = run_million(
+        section,
+        quotes={"SPY": {"last": 500.0, "bid": 500.0, "ask": 500.2}},
+        now=datetime(2026, 11, 16, 14, 55, tzinfo=CT),
+        path=path,
+    )
+    closed = _book(path)["trades"][0]
+    assert closed["exit_reason"] == "session_flat"
+    assert closed["exit"] == pytest.approx(1.40 * 0.9995)
+    assert closed["exit"] != pytest.approx(500)
+    assert flat["cash"] == pytest.approx(1000 - 1.25 * 100 + 1.40 * 0.9995 * 100)
+
+    worthless = tmp_path / "zero.json"
+    _seed_option(
+        worthless,
+        source="vwap_reclaim",
+        entry=0.19,
+        contracts=5,
+        strike=390,
+        expiry="2026-11-16",
+        spot=376.92,
+        last_mark=0.19,
+        flatten_ct="14:55",
+    )
+    expired = run_million(
+        _mil_section(worthless, signals=[]),
+        quotes={"TSLA": {"last": 376.92, "bid": 376.92}},
+        now=TUESDAY_OPEN,
+        path=worthless,
+    )
+    gone = _book(worthless)["trades"][0]
+    assert gone["exit"] == 0
+    assert gone["exit_reason"] == "session_flat"
+    assert gone["pnl"] == pytest.approx(-0.19 * 500)
+    assert expired["cash"] == pytest.approx(1000 - 0.19 * 500)
+    assert "376.92" not in expired["cycle_alerts"][0]["message"]
+
+    itm = tmp_path / "itm.json"
+    _seed_option(
+        itm,
+        source="vwap_reclaim",
+        entry=1.25,
+        contracts=1,
+        symbol="SPY",
+        contract="SPY0",
+        strike=100,
+        expiry="2026-11-16",
+        spot=376,
+        last_mark=1.40,
+        flatten_ct="14:55",
+    )
+    run_million(
+        _mil_section(itm, signals=[]),
+        quotes={"SPY": {"last": 376.0, "bid": 376.0}},
+        now=TUESDAY_OPEN,
+        path=itm,
+    )
+    kept = _book(itm)["trades"][0]
+    assert kept["exit"] == pytest.approx(1.40 * 0.9995)
+    assert kept["exit"] != pytest.approx(376)
+
+
+def test_million_ledger_epoch_resets_only_the_million_book(tmp_path: Path):
+    mil = tmp_path / "million_challenge_state.json"
+    kot = tmp_path / "kotegawa_state.json"
+    webull = tmp_path / "webull_orders.json"
+    mil.write_text(
+        json.dumps(
+            {
+                "desk": "million_challenge",
+                "paper_only": True,
+                "starting_equity": 1000,
+                "cash": 189365.68,
+                "day": "2026-11-16",
+                "day_start_equity": 189365.68,
+                "trades": [
+                    {
+                        "id": "bad",
+                        "symbol": "TSLA",
+                        "status": "closed",
+                        "pnl": 188365.68,
+                        "exit": 376.92,
+                        "exit_session": "2026-11-16",
+                    }
+                ],
+                "milestones": [{"level": 2000, "reached": True, "reached_at": "2026-11-16T09:20:00-06:00"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    kot_body = json.dumps(
+        {"desk": "kotegawa", "paper_only": True, "cash": 100000, "starting_equity": 100000, "trades": [{"id": "keep", "status": "open"}]}
+    )
+    kot.write_text(kot_body, encoding="utf-8")
+    webull_body = '{"orders": [{"id": "sandbox-leave-me"}]}'
+    webull.write_text(webull_body, encoding="utf-8")
+
+    view = run_million(
+        _mil_section(mil, ledger_epoch=1, signals=[]),
+        now=MONDAY,
+        path=mil,
+        host="api.webull.com",
+        environ=_GuardEnv(),
+    )
+    assert view["cash"] == 1000
+    assert view["equity"] == 1000
+    assert view["doublings"] == 0
+    assert view["open_positions"] == 0
+    assert view["trades"] == 0
+    assert view["ledger_epoch"] == 1
+    assert all(not row["reached"] for row in view["milestones"])
+    assert _book(mil)["trades"] == []
+    archives = list(tmp_path.glob("million_challenge_state.*.bak.json"))
+    assert len(archives) == 1
+    assert json.loads(archives[0].read_text(encoding="utf-8"))["cash"] == 189365.68
+    assert kot.read_text(encoding="utf-8") == kot_body
+    assert webull.read_text(encoding="utf-8") == webull_body
+    assert not list(tmp_path.glob("kotegawa_state.*.bak.json"))
+
+    again = run_million(_mil_section(mil, ledger_epoch=1, signals=[]), now=MONDAY, path=mil)
+    assert again["cash"] == 1000
+    assert len(list(tmp_path.glob("million_challenge_state.*.bak.json"))) == 1
+
+    kept = tmp_path / "kept.json"
+    kept.write_text(
+        json.dumps(
+            {
+                "desk": "million_challenge",
+                "ledger_epoch": 1,
+                "paper_only": True,
+                "starting_equity": 1000,
+                "cash": 1500,
+                "day": "2026-11-16",
+                "day_start_equity": 1500,
+                "trades": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    held = run_million(_mil_section(kept, ledger_epoch=1, signals=[]), now=MONDAY, path=kept)
+    assert held["cash"] == 1500
+    assert list(tmp_path.glob("kept.*.bak.json")) == []
+
+
+def test_vwap_reclaim_still_fills(tmp_path: Path):
+    path = tmp_path / "vwap.json"
+    section = _mil_section(path, signals=["vwap_reclaim", "challenge_quality"])
+    tape, chain = _vwap_context()
+    opened = run_million(
+        section,
+        challenge={"entry": [_quality("NVDA")]},
+        chains=chain,
+        intraday=tape,
+        now=datetime(2026, 11, 16, 9, 40, tzinfo=CT),
+        path=path,
+    )
+    assert opened["open_positions"] == 1
+    assert opened["open"][0]["source"] == "vwap_reclaim"
+    assert opened["cash"] < 1000
+    trade = _book(path)["trades"][0]
+    assert trade["contract"] == "DTE0"
+    assert _book(path)["trades"] and all(row["source"] == "vwap_reclaim" for row in _book(path)["trades"])
+    quality = [row for row in _book(path)["log_only"] if row["source"] == "challenge_quality"]
+    assert len(quality) == 1 and quality[0]["status"] == "open"
+    entry = trade["entry"]
+    bid = entry * 1.60
+    sold = run_million(
+        section,
+        quotes={
+            "DTE0": {"bid": bid, "ask": bid, "last": bid},
+            "DTE1": {"bid": entry, "ask": entry, "last": entry},
+            "SPY": {"last": 400.0, "bid": 400.0, "ask": 400.2},
+        },
+        now=datetime(2026, 11, 16, 9, 50, tzinfo=CT),
+        path=path,
+        signals=["vwap_reclaim"],
+    )
+    closed = _book(path)["trades"][0]
+    assert closed["status"] == "closed"
+    assert closed["exit_reason"] == "take_profit"
+    assert closed["exit"] == pytest.approx(bid * 0.9995)
+    assert closed["exit"] != pytest.approx(400)
+    assert _book(path)["cash"] == pytest.approx(1000 - entry * 100 + bid * 0.9995 * 100)
+    assert sold["cycle_alerts"][0]["message"].startswith("[MILLION][VWAP] SELL SPY")
+    assert "400.00" not in sold["cycle_alerts"][0]["message"]

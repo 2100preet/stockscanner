@@ -10,7 +10,8 @@ Sources are named in ``million_challenge.signals``. Three ship with the desk:
   is attached for the desk to log without filling.
 * ``challenge_quality`` — the scanner's quality-only Challenge entries
   (perfect/elite hist, snipers blocked), using ``ChallengeTracker`` as the
-  definition of quality.
+  definition of quality. Log-only, same as ``oversold_bounce``: the desk
+  records the ticket and the would-be exit and does not fill it.
 * ``oversold_bounce`` — SPY and QQQ only, log-only. A session that closes
   within 3% of the 40-day low, or at least 10% under the 25-day SMA, arms
   the next session. The entry is the first closed 1-minute or 5-minute bar
@@ -289,6 +290,7 @@ def challenge_quality_signals(
                 "ask": ask,
                 "spot": _f(ticket.get("spot")),
                 "reason": "challenge_quality",
+                "log_only": True,
             }
         )
 
@@ -772,8 +774,9 @@ def build_signals(
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Run the configured sources in order. Unknown names are ignored.
 
-    ``vwap_reclaim`` is the primary trade. ``oversold_bounce`` is returned
-    with ``log_only`` set, and its 1DTE twin rides on the reclaim idea.
+    ``vwap_reclaim`` is the only trade that fills. ``challenge_quality`` and
+    ``oversold_bounce`` are returned with ``log_only`` set, and the 1DTE
+    twin rides on the reclaim idea.
     """
     out: list[dict[str, Any]] = []
     ignored: list[str] = []
