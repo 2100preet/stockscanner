@@ -5613,6 +5613,12 @@ def create_app(config_path: str | None = None) -> Flask:
 
             def _build_snapshot_payload():
                 _free_desk_disk()
+                try:
+                    from odte_scanner.market.volume_cache import schedule_liquid_volume_warm
+
+                    schedule_liquid_volume_warm()
+                except Exception:  # noqa: BLE001
+                    logger.debug("liquid volume warm not scheduled", exc_info=True)
                 from odte_scanner.calendars import resolve_yahoo_symbol
                 from odte_scanner.data.live_quotes import fetch_live_quote
                 from odte_scanner.options.live_chain import refresh_candidate_quote

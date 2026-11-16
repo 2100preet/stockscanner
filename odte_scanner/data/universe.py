@@ -38,7 +38,7 @@ DRAM_MEMORY_UNIVERSE: list[str] = [
 # Liquid mid / small-cap optionables (challenge + screener breadth)
 MID_SMALL_UNIVERSE: list[str] = [
     # Mid-cap growth / thematic
-    "DKNG", "CELH", "PATH", "IOT", "DUOL", "GTLB", "CFLT", "BILL", "TOST", "APP",
+    "DKNG", "CELH", "PATH", "IOT", "DUOL", "HUBS", "GTLB", "CFLT", "BILL", "TOST", "APP",
     "TTD", "MDB", "ENPH", "SEDG", "FSLR", "RUN", "CHPT", "BLNK", "WOLF", "ON",
     "MRVL", "WDC", "STX", "ENTG", "TER", "KLAC", "LRCX", "CDNS", "SNPS", "ANET",
     # Small / high-beta optionables
@@ -166,7 +166,7 @@ _MID = {
     "COIN", "MSTR", "HOOD", "LYFT", "SQ", "NET", "DDOG", "MDB", "ZS", "OKTA",
     "ROKU", "SNAP", "PINS", "RBLX", "U", "SOFI", "AFRM", "UPST", "RIVN", "LCID",
     "NIO", "MARA", "RIOT", "SMCI", "HPE", "PDD", "JD", "SE", "SLB", "OXY", "HAL",
-    "F", "GM", "DKNG", "CELH", "PATH", "IOT", "DUOL", "GTLB", "CFLT", "BILL",
+    "F", "GM", "DKNG", "CELH", "PATH", "IOT", "DUOL", "HUBS", "GTLB", "CFLT", "BILL",
     "TOST", "APP", "TTD", "ENPH", "SEDG", "FSLR", "RUN", "ON", "WDC", "STX",
     "ENTG", "TER", "HIMS", "OSCR", "CVNA", "W", "CHWY", "DRAM", "SNDK", "NXPI",
     # Mid-tier earnings darlings
@@ -183,7 +183,7 @@ FOCUS_DEFAULT: list[str] = [
     "AAPL", "MSFT", "NVDA", "TSLA", "AMD", "META", "AMZN", "GOOGL", "BABA", "AVGO",
     "INTC", "MU", "USO", "UNG", "NFLX", "CRM", "ORCL", "ADBE", "QCOM", "AMAT",
     "ARM", "PLTR", "COIN", "MSTR", "HOOD", "UBER", "JPM", "BAC", "XOM", "COST",
-    "TSM", "DIA", "XLK", "XLE", "SOXX", "HYG", "EEM", "SPCX", "DDOG",
+    "TSM", "DIA", "XLK", "XLE", "SOXX", "HYG", "EEM", "SPCX", "DDOG", "HUBS", "DUOL",
     # Mega healthcare / banks (Johnson & Johnson was liquid-only — missing on focus Pages)
     "JNJ", "WFC", "UNH", "PFE",
     # Airlines — oil-easing / pre-earnings sector rips (AAL Oct 20 +7–8% miss)

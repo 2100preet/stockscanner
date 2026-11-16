@@ -68,6 +68,8 @@ tickers:
   - EEM
   - SPCX  # SpaceX — recent IPO; include for swing/earnings watch
   - DDOG  # Datadog — liquid mid; promote to focus for options/earnings
+  - HUBS  # HubSpot — liquid mid software; focus options scan
+  - DUOL  # Duolingo — already on the mid sleeve; elevate onto the focus scan
   # Most-anticipated earnings darlings (week of Aug 10 2026)
   - CRWV  # CoreWeave
   - CBRS  # Cerebras

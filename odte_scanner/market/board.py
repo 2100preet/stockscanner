@@ -96,6 +96,29 @@ def _score_map(scores: list[dict[str, Any]] | None) -> dict[str, dict[str, Any]]
     return out
 
 
+def _daily_volume_map() -> dict[str, dict[str, Any]]:
+    """Session volume written for the whole liquid universe. Local file only."""
+    try:
+        from odte_scanner.market.volume_cache import read_volume_cache
+
+        symbols = read_volume_cache().get("symbols") or {}
+        return symbols if isinstance(symbols, dict) else {}
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("daily volume cache unread: %s", exc)
+        return {}
+
+
+def _merge_volume(parquet: dict[str, Any], daily: dict[str, Any] | None) -> dict[str, Any]:
+    """Prefer the daily liquid cache when it has a print. Parquet fills gaps."""
+    if not daily or daily.get("day_volume") in (None, 0):
+        return parquet
+    out = dict(parquet)
+    for key in ("day_volume", "avg_volume_20", "rel_volume", "last", "change_pct", "volume_source"):
+        if daily.get(key) is not None:
+            out[key] = daily[key]
+    return out
+
+
 def build_market_board(
     *,
     scores: list[dict[str, Any]] | None = None,
@@ -137,13 +160,14 @@ def build_market_board(
     earnings_watch = scan_earnings_calendar(uni_sorted, aliases=aliases, fetch=False, max_fetch=0)
     smap = _score_map(scores)
     wr_syms = (win_table or {}).get("symbols") or {}
+    daily_volume = _daily_volume_map()
 
     rows: list[dict[str, Any]] = []
     for sym in uni:
         earn = earn_map.get(sym) or {}
         q = quotes.get(sym) or {}
         sc = smap.get(sym) or {}
-        vol = _volume_from_cache(sym, yahoo_symbol=aliases.get(sym))
+        vol = _merge_volume(_volume_from_cache(sym, yahoo_symbol=aliases.get(sym)), daily_volume.get(sym))
         last = None
         if q.get("last") is not None:
             last = float(q["last"])
@@ -228,7 +252,8 @@ def build_market_board(
             "Not a full US market scan — Yahoo rate limits force a curated liquid optionable "
             "universe. Earnings cache warms ~"
             f"{int(earnings_max_fetch or 0)} names per refresh until coverage is complete. "
-            "Volume uses local daily history cache (rel vol = day / 20d avg)."
+            "Volume uses the daily liquid-universe cache when it is warm, else local "
+            "history (rel vol = day / 20d avg)."
         ),
         "by_earnings": by_earnings[:80],
         "by_volume": by_volume[:80],
