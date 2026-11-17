@@ -5,7 +5,7 @@ The shaper only reads books the desks already wrote. It does not place orders.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -294,3 +294,25 @@ def test_main_page_wires_the_feed_and_scorecard_paints_from_embedded_data():
     assert '"desk": "Kotegawa"' in html
     assert "renderScorecard();\n    loadScorecard();" in html
     assert "function renderPaperDeskTable" in html
+
+
+def test_alerts_saved_before_session_field_use_the_day_in_the_trade_id():
+    from odte_scanner.desks.portal_feed import shape_portal_feed
+
+    old = {
+        "key": "KOTEGAWA|BUY|kot-SNDK-2026-11-16-059f8c81",
+        "side": "BUY",
+        "symbol": "SNDK",
+        "message": "[KOTEGAWA] BUY SNDK 24 sh @ 814.01 · paper",
+        "row": {"id": "kot-SNDK-2026-11-16-059f8c81", "symbol": "SNDK"},
+    }
+    kot = {"alerts": [old], "open": []}
+    same_day = shape_portal_feed(kot, {}, now=datetime(2026, 11, 16, 15, 0, tzinfo=timezone.utc))
+    next_day = shape_portal_feed(kot, {}, now=datetime(2026, 11, 17, 15, 0, tzinfo=timezone.utc))
+    assert [row["symbol"] for row in same_day["alerts"]] == ["SNDK"]
+    assert next_day["alerts"] == []
+
+
+def test_paper_fill_rows_render_as_filled_not_buy_now():
+    assert '"PAPER BUY · FILLED"' in PAGE
+    assert 'display_price_label: filled == null ? "" : "Filled @"' in PAGE

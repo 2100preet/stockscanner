@@ -8,6 +8,7 @@ alert feed.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any, Mapping
 from zoneinfo import ZoneInfo
@@ -115,6 +116,23 @@ def _feed_row(raw: Mapping[str, Any], *, label: str) -> dict[str, Any]:
     }
 
 
+_DAY = re.compile(r"(20\d\d-\d\d-\d\d)")
+
+
+def _alert_day(raw: Mapping[str, Any]) -> str | None:
+    """Session of a fill alert. Alerts saved before ``session`` existed carry
+    the day in the trade id (``kot-SNDK-2026-11-16-…``)."""
+    session = str(raw.get("session") or "")[:10]
+    if session:
+        return session
+    nested = raw.get("row") if isinstance(raw.get("row"), Mapping) else {}
+    for text in (nested.get("id"), raw.get("key")):
+        found = _DAY.search(str(text or ""))
+        if found:
+            return found.group(1)
+    return None
+
+
 def _fills(block: Mapping[str, Any], *, label: str, today: str) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for raw in _alert_rows(block):
@@ -123,9 +141,9 @@ def _fills(block: Mapping[str, Any], *, label: str, today: str) -> list[dict[str
         side = str(raw.get("side") or raw.get("action") or "").upper()
         if side not in _FILL_SIDES:
             continue
-        session = str(raw.get("session") or "")[:10]
-        if session and session != today:
-            continue
+        session = _alert_day(raw)
+        if session != today:
+            continue  # no day at all is treated as not today
         symbol = raw.get("symbol")
         nested = raw.get("row") if isinstance(raw.get("row"), Mapping) else {}
         if not symbol and not nested.get("symbol"):
