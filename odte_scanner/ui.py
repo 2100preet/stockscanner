@@ -5446,6 +5446,16 @@ def _news_desk_block() -> dict:
         return {"ok": False, "events": [], "alert_only": True, "error": str(exc)[:200], "note": "News Desk unavailable."}
 
 
+def _squeeze_fire_block() -> dict:
+    """Squeeze Fire study from disk. Alert only. A failure is an ok:false block."""
+    try:
+        from odte_scanner.signals.squeeze_fire import public_block
+
+        return public_block()
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "today": [], "alert_only": True, "error": str(exc)[:200]}
+
+
 def _expected_move_block() -> dict:
     """Morning expected-move board from disk. The fast loop overlays a fresher one."""
     try:
@@ -7690,7 +7700,9 @@ def create_app(config_path: str | None = None) -> Flask:
                     if bool(actions_cfg.get("power_hour_enabled", True)):
                         from odte_scanner.signals.power_hour import (
                             build_power_hour_board,
+                            power_hour_quote_order,
                             resolve_power_hour_symbols,
+                            resolve_priority_symbols,
                         )
 
                         ph_syms = resolve_power_hour_symbols(
@@ -7698,8 +7710,9 @@ def create_app(config_path: str | None = None) -> Flask:
                             config=cfg,
                         )
                         max_q = int(actions_cfg.get("power_hour_max_quote_fetch", 48))
+                        ph_priority = resolve_priority_symbols(cfg)
                         if live_marks:
-                            for s in (["QQQ"] + ph_syms)[:max_q]:
+                            for s in power_hour_quote_order(ph_syms, priority=ph_priority, cap=max_q):
                                 if s not in quotes:
                                     aliases.setdefault(s, resolve_yahoo_symbol(s, cfg))
                                     try:
@@ -7715,6 +7728,7 @@ def create_app(config_path: str | None = None) -> Flask:
                             fetch_bars=bool(actions_cfg.get("power_hour_fetch_bars", True)) and live_marks,
                             max_bar_fetch=int(actions_cfg.get("power_hour_max_bar_fetch", 16)),
                             aliases=aliases,
+                            priority=ph_priority,
                         )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("power hour board unavailable: %s", exc)
@@ -8483,6 +8497,7 @@ def create_app(config_path: str | None = None) -> Flask:
                         "confluence": _confluence_block(),
                         "rip_v2_shadow": _rip_v2_shadow_block(),
                         "news_desk": _news_desk_block(),
+                        "squeeze_fire": _squeeze_fire_block(),
                         }
                     )
 

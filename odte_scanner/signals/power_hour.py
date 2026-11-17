@@ -735,6 +735,52 @@ def resolve_power_hour_symbols(
     return out
 
 
+# Recent listings and high-range focus names that must not fall past the
+# live-quote cap (SPCX sat at #61 behind a 48-name cap on Nov 16, 2026).
+DEFAULT_PRIORITY_SYMBOLS: tuple[str, ...] = (
+    "SPCX", "CRWV", "NBIS", "IREN", "ASTS", "CRCL",
+    "CBRS", "FLY", "FIGR", "GEMI", "BETA", "XE",
+)
+
+
+def resolve_priority_symbols(config: dict[str, Any] | None = None) -> list[str]:
+    raw = ((config or {}).get("actions") or {}).get("power_hour_priority_symbols")
+    if raw is None:
+        raw = list(DEFAULT_PRIORITY_SYMBOLS)
+    if isinstance(raw, str):
+        raw = [s for s in raw.replace(",", " ").split() if s]
+    out: list[str] = []
+    for sym in raw:
+        key = str(sym).replace(".", "-").upper().strip()
+        if key and key not in out:
+            out.append(key)
+    return out
+
+
+def power_hour_quote_order(
+    symbols: list[str],
+    *,
+    priority: list[str] | tuple[str, ...] | None = None,
+    cap: int = 48,
+) -> list[str]:
+    """Names that get a live quote, in order: QQQ, specials, priority, the rest.
+
+    Only names already on the board are added, and the cap is unchanged, so
+    the number of quote requests per cycle stays the same.
+    """
+    board = [str(s).upper() for s in symbols]
+    on_board = set(board)
+    order: list[str] = []
+    for sym in ["QQQ", *SPECIAL_TICKERS, *(priority or ()), *board]:
+        key = str(sym).upper()
+        if key in order:
+            continue
+        if key != "QQQ" and key not in on_board:
+            continue
+        order.append(key)
+    return order[: max(1, int(cap))]
+
+
 def build_power_hour_board(
     *,
     quotes: dict[str, dict[str, Any]] | None = None,
@@ -745,6 +791,8 @@ def build_power_hour_board(
     max_bar_fetch: int = 16,
     aliases: dict[str, str] | None = None,
     now: datetime | None = None,
+    priority: list[str] | None = None,
+    priority_bar_slots: int = 6,
 ) -> dict[str, Any]:
     quotes = quotes or {}
     aliases = aliases or {}
@@ -756,6 +804,15 @@ def build_power_hour_board(
     fetch_list = [s for s in SPECIAL_TICKERS if s in symbols or s == "QQQ"]
     if "QQQ" not in fetch_list:
         fetch_list.insert(0, "QQQ")
+    # Up to ``priority_bar_slots`` priority names (recent listings / widest
+    # range) get VWAP bars before the momentum-ranked rest, inside max_bar_fetch.
+    added = 0
+    for s in priority or []:
+        if len(fetch_list) >= max_bar_fetch or added >= max(0, int(priority_bar_slots)):
+            break
+        if s in symbols and s not in fetch_list:
+            fetch_list.append(s)
+            added += 1
     ranked = sorted(
         [s for s in symbols if s not in fetch_list],
         key=lambda s: abs(float((quotes.get(s) or {}).get("mom_15m_pct") or (quotes.get(s) or {}).get("session_change_pct") or 0)),
