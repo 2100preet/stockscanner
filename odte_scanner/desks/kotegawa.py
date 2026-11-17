@@ -343,7 +343,18 @@ def _remember(book: dict[str, Any], alert: dict[str, Any]) -> None:
     book["recent_alerts"] = (list(book.get("recent_alerts") or []) + [alert])[-30:]
 
 
-def _open_position(row: Mapping[str, Any]) -> dict[str, Any]:
+def _nth_session(start: date, n: int) -> date:
+    """The n-th weekday counting ``start`` as session 1."""
+    cursor = start
+    count = 1 if start.weekday() < 5 else 0
+    while count < n:
+        cursor += timedelta(days=1)
+        if cursor.weekday() < 5:
+            count += 1
+    return cursor
+
+
+def _open_position(row: Mapping[str, Any], *, hold_sessions: int = HOLD_SESSIONS) -> dict[str, Any]:
     entry = _f(row.get("entry"))
     mark = _f(row.get("last_mark"))
     shares = int(row.get("shares") or 0)
@@ -352,14 +363,73 @@ def _open_position(row: Mapping[str, Any]) -> dict[str, Any]:
         unrealized = round((mark - entry) * shares, 2)
     symbol = row.get("symbol")
     contract = f"{symbol} {shares} sh" if symbol and shares else symbol
+    time_exit = None
+    try:
+        time_exit = _nth_session(date.fromisoformat(str(row.get("entry_session"))[:10]), hold_sessions).isoformat()
+    except ValueError:
+        pass
     return {
         "symbol": symbol,
         "shares": row.get("shares"),
         "contract": contract,
         "entry": row.get("entry"),
+        "entry_at": row.get("entry_at"),
         "entry_session": row.get("entry_session"),
         "mark": mark,
+        "marked_at": row.get("last_mark_at"),
         "unrealized_pnl": unrealized,
+        "target": round(entry * (1.0 + TAKE_PROFIT), 2) if entry else None,
+        "stop": round(entry * (1.0 - DISASTER_STOP), 2) if entry else None,
+        "time_exit": time_exit,
+    }
+
+
+def _closed_trade(row: Mapping[str, Any]) -> dict[str, Any]:
+    entry = _f(row.get("entry"))
+    exit_px = _f(row.get("exit"))
+    shares = int(row.get("shares") or 0)
+    pnl = _f(row.get("pnl"))
+    cost = _f(row.get("cost")) or ((entry or 0) * shares)
+    return {
+        "symbol": row.get("symbol"),
+        "shares": shares or None,
+        "entry": entry,
+        "entry_at": row.get("entry_at"),
+        "exit": exit_px,
+        "exit_at": row.get("exit_at"),
+        "exit_reason": row.get("exit_reason"),
+        "pnl": round(pnl, 2) if pnl is not None else None,
+        "pnl_pct": round(pnl / cost * 100.0, 2) if pnl is not None and cost else None,
+    }
+
+
+CLOSED_SHOWN = 20
+
+
+def strategy_summary(cfg: Mapping[str, Any] | None = None) -> dict[str, str]:
+    """Plain-words rules from the live config, for the portal tile."""
+    c = dict(cfg or {})
+    drop = float(c.get("entry_drop_pct") or ENTRY_DROP) * 100
+    sma_days = int(c.get("sma_days") or SMA_DAYS)
+    slots = int(c.get("max_positions") or MAX_POSITIONS)
+    slot = float(c.get("slot_pct") or SLOT_PCT) * 100
+    hold = int(c.get("hold_sessions") or HOLD_SESSIONS)
+    loss = float(c.get("daily_loss_usd") or DAILY_LOSS_USD)
+    start = float(c.get("starting_equity") or STARTING_EQUITY)
+    return {
+        "instrument": "Stocks (shares), long only",
+        "universe": "Current S&P 100 names",
+        "entry": (
+            f"Buy a stock whose close is at least {drop:g}% below its {sma_days}-day average; "
+            "deepest drop first. No SPY filter."
+        ),
+        "window": f"Entries 2:50–3:00 PM CT only. Holds overnight, up to {hold} trading days.",
+        "exit": (
+            f"Take profit +{TAKE_PROFIT * 100:g}% (intraday), disaster stop −{DISASTER_STOP * 100:g}%, "
+            f"else sell at the close of trading day {hold} (entry day = day 1)."
+        ),
+        "sizing": f"Up to {slots} positions, {slot:g}% of desk equity each. Starts with ${start:,.0f}.",
+        "risk": f"No new entries after −${loss:,.0f} realized in a day; exits still run.",
     }
 
 
@@ -408,6 +478,10 @@ def public_view(
         "trades": len(closed),
         "open_positions": len(opened),
         "open": [_open_position(row) for row in opened],
+        "closed": [
+            _closed_trade(row)
+            for row in sorted(closed, key=lambda r: str(r.get("exit_at") or ""), reverse=True)[:CLOSED_SHOWN]
+        ],
         "entries_halted": bool(book.get("entries_halted")),
         "halt_reason": book.get("halt_reason"),
         "alerts": list(book.get("recent_alerts") or []),

@@ -332,7 +332,15 @@ PAGE = r"""
     .tabs button[data-tab="nowboard"].active { color: var(--long); }
     .now-desk { font-family: "Instrument Serif", Georgia, serif; font-size: 1.05rem; font-weight: 400; margin: 1rem 0 .5rem; }
     .now-desk .status { margin-left: .4rem; }
-    .paper-desk-grid { display: grid; gap: .65rem; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); margin: .35rem 0 .85rem; }
+    .paper-desk-grid { display: grid; gap: .65rem; grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr)); margin: .35rem 0 .85rem; }
+    .paper-desk-card h4 { margin: .6rem 0 .25rem; font-size: .74rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+    .paper-desk-card .pd-note { font-size: .72rem; color: var(--muted); margin: .15rem 0 .35rem; }
+    .paper-desk-card .pd-table-wrap { overflow-x: auto; }
+    .paper-desk-card table.pd-table { width: 100%; border-collapse: collapse; font-size: .74rem; }
+    .paper-desk-card table.pd-table th, .paper-desk-card table.pd-table td { text-align: left; padding: .22rem .35rem; border-bottom: 1px solid var(--line); white-space: nowrap; }
+    .paper-desk-card dl.pd-rules { display: grid; grid-template-columns: max-content 1fr; gap: .2rem .6rem; font-size: .74rem; margin: .3rem 0; }
+    .paper-desk-card dl.pd-rules dt { color: var(--muted); }
+    .paper-desk-card dl.pd-rules dd { margin: 0; }
     .paper-desk-card { border: 1px solid var(--line); border-radius: .75rem; padding: .7rem .85rem; background: rgba(255,255,255,.03); }
     .paper-desk-card .k { color: var(--muted); font-size: .68rem; text-transform: uppercase; letter-spacing: .06em; }
     .paper-desk-card .v { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: .92rem; margin-top: .12rem; }
@@ -394,6 +402,7 @@ PAGE = r"""
     <section class="tabpane active" id="tab-nowboard">
       <h2>BUY NOW / SELL NOW — all desks</h2>
       <p class="lede">Live option BUY NOW / SELL NOW across <strong>Gold Setup</strong> (1–2/day · MAX/HIGH/SOLID · gold/amber · GO HUGE sizing), 0DTE, weeklies, swing, <strong>Lottery</strong>, <strong>Lottery v2</strong> (log only), <strong>RIP/META</strong>, <strong>Patterns</strong> (double bottom/top · golden triangle), <strong>Levels</strong>, ML6, Challenge, and 0DTE $1K IN/OUT. <strong>[KOTEGAWA]</strong> and <strong>[MILLION]</strong> paper BUY/SELL fills stay on this board for the day. Lottery, Lottery v2, RIP/META, and Patterns each keep their own heading below even when empty. Hist win ≥80% (n≥5) gates Options BUY NOW. Same losing OCC stays blocked; mega names can still BUY when tape is ripping (see RIP tab). SETUP rows are quality tape without a contract yet — not a buy.</p>
+      <h2>Paper desks · Kotegawa &amp; Million <em style="font-size:.8rem">· paper ledger (internal, not Webull)</em></h2>
       <div class="paper-desk-grid" id="paperDeskCards"></div>
       <details id="paperLogOnly" hidden>
         <summary>Log-only · not alerts</summary>
@@ -418,6 +427,8 @@ PAGE = r"""
     </section>
 
     <section class="tabpane" id="tab-overview">
+      <h2>Paper desks · Kotegawa &amp; Million <em style="font-size:.8rem">· paper ledger (internal, not Webull)</em></h2>
+      <div class="paper-desk-grid" id="paperDeskCardsOverview"></div>
       <div class="metric-row" id="perfCards"></div>
       <p class="lede" id="insightSummary"></p>
       <p class="lede" id="winLegend" style="font-size:.78rem">
@@ -4762,52 +4773,115 @@ PAGE = r"""
     }
 
     function renderPaperDeskCards() {
-      const host = document.getElementById("paperDeskCards");
-      if (!host) return;
+      const hosts = ["paperDeskCards", "paperDeskCardsOverview"].map((id) => document.getElementById(id)).filter(Boolean);
+      if (!hosts.length) return;
       const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
       const money = (n) => {
         if (n == null || Number.isNaN(Number(n))) return "—";
         const v = Number(n);
-        const body = "$" + Math.abs(v).toFixed(2);
+        const body = "$" + Math.abs(v).toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 2});
         if (v > 0) return '<span class="up">+' + body + "</span>";
         if (v < 0) return '<span class="down">−' + body + "</span>";
         return body;
       };
+      const plain = (n) => (n == null || Number.isNaN(Number(n))) ? "—" : "$" + Number(n).toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 2});
+      const pct = (n) => {
+        if (n == null || Number.isNaN(Number(n))) return "—";
+        const v = Number(n);
+        const body = Math.abs(v).toFixed(1) + "%";
+        return v > 0 ? '<span class="up">+' + body + "</span>" : (v < 0 ? '<span class="down">−' + body + "</span>" : body);
+      };
+      const filled = (n) => n == null ? "—" : "Filled @ $" + fmt(n, 2);
+      const when = (iso) => iso ? fmtCST(iso) : "—";
+      const reason = (r) => String(r || "—").replace(/_/g, " ");
       const rate = (card) => {
         if (card.win_rate == null) return (card.trades || 0) + " · —";
-        const pct = (Number(card.win_rate) * 100).toFixed(0) + "%";
-        return (card.trades || 0) + " · " + pct + " · " + (card.wins || 0) + "W/" + (card.losses || 0) + "L";
+        return (card.trades || 0) + " · " + (Number(card.win_rate) * 100).toFixed(0) + "% · " + (card.wins || 0) + "W/" + (card.losses || 0) + "L";
       };
+      const optName = (row) => {
+        if (row.strike != null && row.expiry) {
+          const e = String(row.expiry);
+          const right = String(row.right || "C").toUpperCase().slice(0, 1);
+          return `${row.symbol || ""} ${e.slice(5, 7)}/${e.slice(8, 10)} ${Number(row.strike)}${right}`;
+        }
+        return row.contract || row.symbol || "—";
+      };
+      const name = (card, row) => card.desk === "kotegawa"
+        ? `${row.symbol || "—"} · ${row.shares || "?"} sh`
+        : `${optName(row)} ×${row.contracts || "?"}`;
       const portal = DATA.paper_portal || {};
       const cards = (portal.cards && portal.cards.length) ? portal.cards : [
-        {label: "[KOTEGAWA]", name: "Kotegawa", equity: null, realized_today: null, trades: 0, win_rate: null, open: []},
-        {label: "[MILLION]", name: "Million", equity: null, realized_today: null, trades: 0, win_rate: null, open: [], doublings: null, target_doublings: 10},
+        {desk: "kotegawa", label: "[KOTEGAWA]", name: "Kotegawa", open: [], closed: [], strategy: {}},
+        {desk: "million_challenge", label: "[MILLION]", name: "Million", open: [], closed: [], strategy: {}, target_doublings: 10},
       ];
-      const openHtml = (rows) => {
-        if (!rows || !rows.length) return "<div class='why'>Flat</div>";
-        return rows.map((row) => {
-          const name = row.contract || row.symbol || "open";
-          const entry = row.entry == null ? "—" : "$" + fmt(row.entry, 2);
-          const mark = row.mark == null ? "—" : "$" + fmt(row.mark, 2);
-          return `<div class="why"><strong>${esc(name)}</strong> · entry ${entry} · mark ${mark} · unreal ${money(row.unrealized_pnl)}</div>`;
-        }).join("");
+      const rules = (st) => {
+        const order = [["instrument", "Trades"], ["universe", "Universe"], ["entry", "Entry"], ["exit", "Exit / stop / target"], ["window", "Window / flat"], ["sizing", "Sizing"], ["risk", "Daily limit"], ["log_only", "Log only"]];
+        const rows = order.filter(([k]) => st && st[k]).map(([k, label]) => `<dt>${label}</dt><dd>${esc(st[k])}</dd>`).join("");
+        return rows ? `<details class="pd-strategy" open><summary>Strategy</summary><dl class="pd-rules">${rows}</dl></details>` : "";
       };
-      host.innerHTML = cards.map((card) => {
+      const exitPlan = (card, row) => {
+        const parts = [];
+        if (row.target != null) parts.push("target $" + fmt(row.target, 2));
+        if (row.stop != null) parts.push("stop $" + fmt(row.stop, 2));
+        if (card.desk === "kotegawa" && row.time_exit) {
+          const d = new Date(String(row.time_exit) + "T12:00:00");
+          const day = Number.isNaN(d.getTime()) ? esc(row.time_exit) : d.toLocaleDateString("en-US", {weekday: "short", month: "short", day: "numeric"});
+          parts.push("else sells at the " + day + " close (3:00 PM CT)");
+        }
+        if (card.desk !== "kotegawa") {
+          if (row.time_stop_at) parts.push("time stop " + when(row.time_stop_at));
+          if (row.flatten_ct) parts.push("flat by " + esc(row.flatten_ct) + " CT");
+        }
+        return parts.join(" · ") || "—";
+      };
+      const openTable = (card) => {
+        const rows = card.open || [];
+        if (!rows.length) return "<div class='why'>Flat — no open positions.</div>";
+        const body = rows.map((row) => {
+          const cost = row.entry == null ? null : Number(row.entry) * (card.desk === "kotegawa" ? Number(row.shares || 0) : 100 * Number(row.contracts || 0));
+          const upct = (row.unrealized_pnl == null || !cost) ? null : Number(row.unrealized_pnl) / cost * 100;
+          return `<tr><td><strong>${esc(name(card, row))}</strong></td><td>${when(row.entry_at)}</td><td>${filled(row.entry)}</td>`
+            + `<td>${row.mark == null ? "—" : "$" + fmt(row.mark, 2)}</td><td>${money(row.unrealized_pnl)} ${pct(upct)}</td><td>${exitPlan(card, row)}</td></tr>`;
+        }).join("");
+        return `<div class="pd-table-wrap"><table class="pd-table"><thead><tr><th>Position</th><th>Entry (CT)</th><th>Entry</th><th>Live mark</th><th>Unrealized</th><th>Exit plan</th></tr></thead><tbody>${body}</tbody></table></div>`;
+      };
+      const closedTable = (card) => {
+        const rows = card.closed || [];
+        if (!rows.length) return "<div class='why'>No closed trades yet.</div>";
+        const body = rows.map((row) => `<tr><td><strong>${esc(name(card, row))}</strong></td><td>${when(row.entry_at)}</td><td>${filled(row.entry)}</td>`
+          + `<td>${when(row.exit_at)}</td><td>${filled(row.exit)}</td><td>${money(row.pnl)}</td><td>${pct(row.pnl_pct)}</td><td>${esc(reason(row.exit_reason))}</td></tr>`).join("");
+        return `<div class="pd-table-wrap"><table class="pd-table"><thead><tr><th>Trade</th><th>Entry (CT)</th><th>Entry</th><th>Exit (CT)</th><th>Exit</th><th>P&amp;L $</th><th>P&amp;L %</th><th>Why</th></tr></thead><tbody>${body}</tbody></table></div>`;
+      };
+      const html = cards.map((card) => {
         const doubles = card.target_doublings == null ? "" : `<div><div class="k">Doublings</div><div class="v">${card.doublings == null ? "—" : fmt(card.doublings, 2)} of ~${Math.round(Number(card.target_doublings))}</div></div>`;
+        const halted = card.entries_halted ? `<div class="pd-note">New entries halted today${card.halt_reason ? " · " + esc(card.halt_reason) : ""} (exits still run).</div>` : "";
+        const src = card.source ? ` · ${esc(card.source)}` : "";
+        const marked = card.marked_at ? ` · marks ${when(card.marked_at)}` : "";
         return `<article class="paper-desk-card">
           <div class="ac-top">
-            <div class="ac-sym">${esc(card.label || card.name || "Paper")}</div>
-            <span class="tag">paper</span>
+            <div class="ac-sym">${esc(card.label || "")} ${esc(card.name || "Paper")}</div>
+            <span class="tag">paper ledger · internal, not Webull</span>
           </div>
+          <div class="pd-note">Simulated fills on this desk's own ledger. Not a trade call and no broker order${src}${marked}.</div>
           <div class="paper-desk-metrics">
-            <div><div class="k">Equity</div><div class="v">${card.equity == null ? "—" : "$" + fmt(card.equity, 2)}</div></div>
+            <div><div class="k">Equity</div><div class="v">${plain(card.equity)}</div></div>
+            <div><div class="k">Cash</div><div class="v">${plain(card.cash)}</div></div>
+            <div><div class="k">Running P&amp;L</div><div class="v">${money(card.total_pnl)}</div></div>
+            <div><div class="k">Realized</div><div class="v">${money(card.realized_pnl)}</div></div>
+            <div><div class="k">Unrealized</div><div class="v">${money(card.unrealized_pnl)}</div></div>
             <div><div class="k">Today</div><div class="v">${money(card.realized_today)}</div></div>
-            <div><div class="k">Trades</div><div class="v">${rate(card)}</div></div>
+            <div><div class="k">Closed trades</div><div class="v">${rate(card)}</div></div>
             ${doubles}
           </div>
-          ${openHtml(card.open)}
+          ${halted}
+          ${rules(card.strategy)}
+          <h4>Open positions (${(card.open || []).length})</h4>
+          ${openTable(card)}
+          <h4>Closed trades</h4>
+          ${closedTable(card)}
         </article>`;
       }).join("");
+      hosts.forEach((host) => { host.innerHTML = html; });
     }
 
     function renderPaperLogOnly() {
@@ -9060,6 +9134,24 @@ def create_app(config_path: str | None = None) -> Flask:
         if second and second != str(broker.account_id or ""):
             take("second", broker.list_option_positions(second))
         return {"books": books, "positions": rows, "n": len(rows)}
+
+    @app.get("/api/paper_desks")
+    def paper_desks():
+        """Kotegawa and Million books, read from the saved ledgers (no cycle).
+
+        Paper ledger only. The static Pages export reads this so it shows the
+        live books instead of an empty CI copy.
+        """
+        from odte_scanner.desks.service import portal_view as _paper_portal_view
+
+        view = _paper_portal_view(cfg, cycle=False)
+        out = {}
+        for key in ("kotegawa", "million_challenge"):
+            block = dict(view.get(key) or {})
+            block.pop("state_path", None)
+            out[key] = block
+        out["generated_at"] = datetime.now(timezone.utc).isoformat()
+        return jsonify(sanitize_for_json(out))
 
     @app.get("/api/version")
     def version():
