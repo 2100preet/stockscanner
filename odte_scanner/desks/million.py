@@ -746,7 +746,110 @@ def _open_position(row: Mapping[str, Any]) -> dict[str, Any]:
         "strike": row.get("strike"),
         "right": row.get("right"),
         "mark": mark,
+        "marked_at": row.get("last_mark_at"),
         "unrealized_pnl": unrealized,
+        "entry_at": row.get("entry_at"),
+        **_exit_levels(row),
+    }
+
+
+def _pct_setting(value: Any, default: float) -> float:
+    number = _f(value)
+    return float(number) if number is not None and number > 0 else default
+
+
+def _exit_levels(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Target / stop premiums and the time exits for one option position."""
+    entry = _f(row.get("entry"))
+    target_pct = _pct_setting(row.get("target_pct"), VWAP_TARGET)
+    stop_pct = _pct_setting(row.get("stop_pct"), VWAP_STOP)
+    minutes = _f(row.get("time_stop_minutes"))
+    time_stop_at = None
+    try:
+        opened = datetime.fromisoformat(str(row.get("entry_at")))
+        if minutes and minutes > 0:
+            from datetime import timedelta
+
+            time_stop_at = (opened + timedelta(minutes=float(minutes))).isoformat()
+    except ValueError:
+        pass
+    return {
+        "target": round(entry * (1.0 + target_pct / 100.0), 2) if entry else None,
+        "stop": round(entry * (1.0 - stop_pct / 100.0), 2) if entry else None,
+        "target_pct": target_pct,
+        "stop_pct": stop_pct,
+        "time_stop_at": time_stop_at,
+        "flatten_ct": row.get("flatten_ct") or VWAP_FLATTEN_CT,
+    }
+
+
+def _closed_trade(row: Mapping[str, Any]) -> dict[str, Any]:
+    entry = _f(row.get("entry"))
+    exit_px = _f(row.get("exit"))
+    contracts = int(row.get("contracts") or 0)
+    pnl = _f(row.get("pnl"))
+    cost = _f(row.get("cost")) or ((entry or 0) * 100.0 * contracts)
+    return {
+        "symbol": row.get("symbol"),
+        "contract": row.get("contract"),
+        "contracts": contracts or None,
+        "right": row.get("right"),
+        "strike": row.get("strike"),
+        "expiry": row.get("expiry"),
+        "entry": entry,
+        "entry_at": row.get("entry_at"),
+        "exit": exit_px,
+        "exit_at": row.get("exit_at"),
+        "exit_reason": row.get("exit_reason"),
+        "pnl": round(pnl, 2) if pnl is not None else None,
+        "pnl_pct": round(pnl / cost * 100.0, 2) if pnl is not None and cost else None,
+    }
+
+
+CLOSED_SHOWN = 20
+
+
+def strategy_summary(cfg: Mapping[str, Any] | None = None) -> dict[str, str]:
+    """Plain-words rules from the live config, for the portal tile."""
+    c = dict(cfg or {})
+    vw = dict(c.get("vwap_reclaim") or {})
+    touch = _pct_setting(vw.get("touch_pct"), 0.005) * 100
+    target = _pct_setting(vw.get("target_pct"), VWAP_TARGET)
+    stop = _pct_setting(vw.get("stop_pct"), VWAP_STOP)
+    minutes = _pct_setting(vw.get("time_stop_minutes"), VWAP_TIME_STOP_MINUTES)
+    flatten = str(vw.get("flatten_ct") or VWAP_FLATTEN_CT)
+    cutoff = str(vw.get("entry_cutoff_ct") or "14:30")
+    slot = _pct_setting(c.get("slot_pct"), SLOT_PCT) * 100
+    cap = _pct_setting(c.get("max_contract_pct"), MAX_CONTRACT_PCT) * 100
+    losers = int(c.get("daily_losers") or DAILY_LOSERS)
+    loss = _pct_setting(c.get("daily_loss_pct"), DAILY_LOSS_PCT) * 100
+    start = _pct_setting(c.get("starting_equity"), STARTING_EQUITY)
+
+    def clock(hhmm: str) -> str:
+        try:
+            hour, minute = (int(part) for part in hhmm.split(":")[:2])
+        except ValueError:
+            return hhmm
+        return f"{(hour - 1) % 12 + 1}:{minute:02d} {'AM' if hour < 12 else 'PM'} CT"
+
+    return {
+        "instrument": "Options: one same-day near-the-money call at a time (nearest expiry if no 0DTE)",
+        "universe": "SPY and QQQ",
+        "entry": (
+            f"VWAP reclaim: after price trades below session VWAP, a closed 1- or 5-minute bar at or "
+            f"above VWAP +{touch:g}%. One paper entry per day."
+        ),
+        "window": f"Regular hours; no new entries at or after {clock(cutoff)}. Flat by {clock(flatten)}, never overnight.",
+        "exit": (
+            f"+{target:g}% take profit, −{stop:g}% stop on the option's own quote, {minutes:g} minutes after the fill, "
+            f"or the {clock(flatten)} flatten, whichever comes first."
+        ),
+        "sizing": (
+            f"Risks {slot:g}% of desk equity per entry (minimum 1 contract); skips if 1 contract is over "
+            f"{cap:g}% of equity. Starts with ${start:,.0f}; goal $1,000,000."
+        ),
+        "risk": f"No new entries after {losers} losing closes or −{loss:g}% of the day's starting equity.",
+        "log_only": "1DTE twin, oversold bounce and challenge-quality tickets are logged only and move no cash.",
     }
 
 
@@ -786,6 +889,10 @@ def public_view(
         "trades": len(closed),
         "open_positions": len(opened),
         "open": [_open_position(row) for row in opened],
+        "closed": [
+            _closed_trade(row)
+            for row in sorted(closed, key=lambda r: str(r.get("exit_at") or ""), reverse=True)[:CLOSED_SHOWN]
+        ],
         "entries_halted": bool(book.get("entries_halted")),
         "halt_reason": book.get("halt_reason"),
         "doublings": round(doublings_of(equity, float(book.get("starting_equity") or STARTING_EQUITY)), 4),

@@ -22,6 +22,7 @@ from odte_scanner.desks.kotegawa import (
     public_view as kotegawa_view,
     run_kotegawa,
     scorecard_row as kotegawa_row,
+    strategy_summary as kotegawa_strategy,
 )
 from odte_scanner.desks.kotegawa import _fresh as kotegawa_fresh
 from odte_scanner.desks.kotegawa import _load as load_kotegawa
@@ -30,6 +31,7 @@ from odte_scanner.desks.million import (
     public_view as million_view,
     run_million,
     scorecard_row as million_row,
+    strategy_summary as million_strategy,
 )
 from odte_scanner.desks.million import _fresh as million_fresh
 from odte_scanner.desks.million import _load as load_million
@@ -412,6 +414,52 @@ def _fetch_vix_tag() -> dict[str, Any] | None:
     return {"level": level, "prior_close": prior}
 
 
+REMOTE_URL = "https://stockscanner.fly.dev/api/paper_desks"
+
+
+def _on_github_actions() -> bool:
+    return os.environ.get("GITHUB_ACTIONS") == "true" and "PYTEST_CURRENT_TEST" not in os.environ
+
+
+def _fetch_remote_books(url: str) -> Mapping[str, Any] | None:
+    import requests
+
+    response = requests.get(url, timeout=10)
+    response.raise_for_status()
+    body = response.json()
+    return body if isinstance(body, Mapping) else None
+
+
+def _remote_view(cfg: Mapping[str, Any] | None, *, now: datetime | None = None) -> dict[str, Any] | None:
+    """Read-only copy of the live desk books for a static export.
+
+    Alerts are dropped: Fly already sent them, and this copy must not resend.
+    """
+    url = os.environ.get("PAPER_DESKS_URL") or REMOTE_URL
+    try:
+        body = _fetch_remote_books(url)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("paper desks: live books unavailable (%s)", exc)
+        return None
+    if not body:
+        return None
+    views: dict[str, dict[str, Any]] = {}
+    for key in ("kotegawa", "million_challenge"):
+        view = body.get(key)
+        if not isinstance(view, Mapping):
+            return None
+        views[key] = {**dict(view), "alerts": [], "cycle_alerts": [], "source": "live desk (Fly)"}
+    config = cfg or {}
+    views["kotegawa"].setdefault("strategy", kotegawa_strategy(_section(config, "kotegawa")))
+    views["million_challenge"].setdefault("strategy", million_strategy(_section(config, "million_challenge")))
+    return {
+        "kotegawa": views["kotegawa"],
+        "million_challenge": views["million_challenge"],
+        "rows": [kotegawa_row(views["kotegawa"]), million_row(views["million_challenge"])],
+        "portal": shape_portal_feed(views["kotegawa"], views["million_challenge"], now=now),
+    }
+
+
 def portal_view(
     cfg: Mapping[str, Any] | None = None,
     *,
@@ -444,6 +492,14 @@ def portal_view(
         environ=environ,
         quote_fetcher=quote_fetcher,
     )
+    if cycle is None and _on_github_actions():
+        # The Pages / alert workflows must never advance these books: their
+        # outputs/ starts empty, so a cycle there would open phantom paper
+        # trades and send [KOTEGAWA]/[MILLION] alerts. Show the Fly books.
+        remote = _remote_view(cfg, now=now)
+        if remote is not None:
+            return remote
+        return _portal_view_once(cfg, cycle=False, **args)
     if not _should_cycle(cycle):
         return _portal_view_once(cfg, cycle=False, **args)
     if not _CYCLE_LOCK.acquire(blocking=False):
@@ -567,6 +623,8 @@ def _portal_view_once(
         million = million_view(held, as_of=_as_of(now))
         million["signals"] = sources
 
+    kotegawa = {**kotegawa, "strategy": kotegawa_strategy(kot_cfg)}
+    million = {**million, "strategy": million_strategy(mil_cfg)}
     rows = [kotegawa_row(kotegawa), million_row(million)]
     portal = shape_portal_feed(kotegawa, million, now=now)
     return {
@@ -579,5 +637,5 @@ def _portal_view_once(
 
 def scorecard_rows(cfg: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
     """Read both ledgers without running a cycle."""
-    view = portal_view(cfg, cycle=False)
+    view = (_remote_view(cfg) if _on_github_actions() else None) or portal_view(cfg, cycle=False)
     return list(view.get("rows") or [])

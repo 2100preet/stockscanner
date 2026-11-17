@@ -177,8 +177,47 @@ def _position(row: Mapping[str, Any]) -> dict[str, Any]:
         "unrealized_pnl": unrealized,
         "right": row.get("right"),
         "expiry": row.get("expiry"),
+        "strike": row.get("strike"),
         "source": row.get("source"),
+        "entry_at": row.get("entry_at"),
+        "marked_at": row.get("marked_at"),
+        "target": _num(row.get("target")),
+        "stop": _num(row.get("stop")),
+        "time_exit": row.get("time_exit"),
+        "time_stop_at": row.get("time_stop_at"),
+        "flatten_ct": row.get("flatten_ct"),
     }
+
+
+_CLOSED_KEYS = (
+    "symbol", "contract", "contracts", "shares", "right", "strike", "expiry",
+    "entry", "entry_at", "exit", "exit_at", "exit_reason", "pnl", "pnl_pct",
+)
+
+
+def _closed(rows: Any) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in rows or []:
+        if isinstance(row, Mapping):
+            out.append({key: row.get(key) for key in _CLOSED_KEYS if row.get(key) is not None})
+    return out[:20]
+
+
+def _unrealized(view: Mapping[str, Any], opened: list[dict[str, Any]]) -> float | None:
+    given = _num(view.get("unrealized_pnl"))
+    if given is not None:
+        return given
+    values = [row["unrealized_pnl"] for row in opened if row.get("unrealized_pnl") is not None]
+    return round(sum(values), 2) if values else (0.0 if not opened else None)
+
+
+def _total(view: Mapping[str, Any]) -> float | None:
+    """Running P&L since the start: equity minus starting equity."""
+    equity = _num(view.get("equity"))
+    start = _num(view.get("starting_equity"))
+    if equity is None or start is None:
+        return None
+    return round(equity - start, 2)
 
 
 def _card(view: Mapping[str, Any], *, label: str, name: str, desk: str, doublings: bool) -> dict[str, Any]:
@@ -197,6 +236,18 @@ def _card(view: Mapping[str, Any], *, label: str, name: str, desk: str, doubling
         "win_rate": _num(view.get("win_rate")),
         "open_positions": int(view.get("open_positions") or len(opened)),
         "open": opened,
+        "closed": _closed(view.get("closed")),
+        "cash": _num(view.get("cash")),
+        "starting_equity": _num(view.get("starting_equity")),
+        "unrealized_pnl": _unrealized(view, opened),
+        "total_pnl": _total(view),
+        "marked_at": view.get("marked_at"),
+        "status": view.get("status"),
+        "route": view.get("route") or "internal",
+        "entries_halted": bool(view.get("entries_halted")),
+        "halt_reason": view.get("halt_reason"),
+        "strategy": dict(view.get("strategy") or {}),
+        "source": view.get("source"),
     }
     if doublings:
         card["doublings"] = _num(view.get("doublings"))
