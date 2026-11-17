@@ -182,6 +182,48 @@ def _store_bar_cache(desk: str, bars: Mapping[str, list[Mapping[str, Any]]]) -> 
     atomic_write_text(path, json.dumps(payload, default=str))
 
 
+def _tradier_quotes(symbols: list[str]) -> Mapping[str, Any]:
+    from odte_scanner.data.tradier import fetch_quotes
+
+    result = fetch_quotes(symbols, timeout=6.0)
+    return result.get("quotes") or {}
+
+
+def _quotes_for_open_positions(
+    book: Mapping[str, Any],
+    quotes: Mapping[str, Any] | None,
+    fetch: Callable[[list[str]], Mapping[str, Any]] | None,
+) -> dict[str, Any] | None:
+    """Add live quotes for open Kotegawa stocks the portal scan did not quote.
+
+    The scan quotes the focus list; Kotegawa holds S&P 100 names. Without a
+    quote the position is marked (and its stop/target checked) against the
+    cached daily bar. At most a handful of symbols, one batched request.
+    """
+    held = sorted(
+        {
+            str(row.get("symbol") or "").upper()
+            for row in (book.get("trades") or [])
+            if isinstance(row, Mapping) and row.get("status") == "open" and row.get("symbol")
+        }
+    )
+    have = dict(quotes or {})
+    missing = [sym for sym in held if not isinstance(have.get(sym), Mapping) or have[sym].get("last") in (None, 0)]
+    if not missing:
+        return dict(quotes) if quotes is not None else None
+    loader = fetch or _tradier_quotes
+    try:
+        fresh = loader(missing) or {}
+    except Exception as exc:  # noqa: BLE001
+        logger.info("kotegawa quotes skipped: %s", exc)
+        return dict(quotes) if quotes is not None else None
+    for sym in missing:
+        row = fresh.get(sym)
+        if isinstance(row, Mapping) and row.get("last") not in (None, 0):
+            have[sym] = dict(row)
+    return have
+
+
 def _bars_for(
     desk: str,
     symbols: list[str],
@@ -383,6 +425,7 @@ def portal_view(
     cycle: bool | None = None,
     fetcher: Callable[[list[str]], Mapping[str, list[Mapping[str, Any]]]] | None = None,
     environ: Mapping[str, str] | None = None,
+    quote_fetcher: Callable[[list[str]], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Public books plus the scorecard rows for both desks.
 
@@ -399,6 +442,7 @@ def portal_view(
         vix=vix,
         fetcher=fetcher,
         environ=environ,
+        quote_fetcher=quote_fetcher,
     )
     if not _should_cycle(cycle):
         return _portal_view_once(cfg, cycle=False, **args)
@@ -424,6 +468,7 @@ def _portal_view_once(
     cycle: bool | None = None,
     fetcher: Callable[[list[str]], Mapping[str, list[Mapping[str, Any]]]] | None = None,
     environ: Mapping[str, str] | None = None,
+    quote_fetcher: Callable[[list[str]], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Public books plus the scorecard rows for both desks."""
     config = cfg or {}
@@ -447,10 +492,15 @@ def _portal_view_once(
             fetch=want_bars and bars is None,
             fetcher=fetcher,
         )
+        kot_quotes = _quotes_for_open_positions(
+            _read_book(load_kotegawa, kotegawa_fresh, kot_path, kot_start),
+            quotes,
+            quote_fetcher,
+        )
         kotegawa = run_kotegawa(
             kot_cfg,
             bars=kot_bars,
-            quotes=quotes,
+            quotes=kot_quotes,
             now=now,
             path=kot_path,
             live_trading=live,
