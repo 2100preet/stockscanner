@@ -100,6 +100,8 @@ _FAMILY = {
     "GUIDE_RAISE": "GUIDE", "GUIDE_CUT": "GUIDE", "MA_TARGET": "MA", "MA_ACQUIRER": "MA",
 }
 # Event types alerted even outside the app's scan universe (still need price/volume).
+# Listed on the tile for liquid names ($10+, 1M+ avg volume) as context; never sent.
+CONTEXT_TYPES = {"DEBT_TENDER", "ANALYST"}
 CATALYST_TYPES = {"FDA_APPROVAL", "FDA_CRL", "TRIAL_FAIL", "TRIAL_DATA", "MA_TARGET", "MA_ACQUIRER"}
 # 8-K items worth reading the exhibit for.
 _EDGAR_ITEMS = {"1.01", "1.03", "1.05", "2.01", "2.02", "2.05", "2.06", "3.02", "4.02", "5.02", "7.01", "8.01"}
@@ -1033,7 +1035,8 @@ def _cycle_body(state: dict[str, Any], moment: datetime, day: str, *, rt: Runtim
     pending_new = [e for e in events if e["type"] == "EARN_PENDING" and e.get("ticker") in rt.universe]
     state["pending"] = list(state.get("pending") or []) + pending_new
     events = [e for e in events if e not in pending_new] + _recheck_pending(state, moment, rt)
-    need = sorted({e["ticker"] for e in events if e.get("ticker") and (e.get("alertable") or e.get("needs_move"))})
+    need = sorted({e["ticker"] for e in events if e.get("ticker") and (
+        e.get("alertable") or e.get("needs_move") or e.get("type") in CONTEXT_TYPES)})
     quotes = rt.quotes.get(need) if need else {}
     recorded_keys = {_record_key(day, e) for e in state.get("events") or []}
     sent = recorded = 0
@@ -1066,8 +1069,12 @@ def _handle_event(ev: dict[str, Any], state: dict[str, Any], moment: datetime, d
     ev.pop("text_guidance", None)
     if ev.pop("needs_move", False):
         _tag_by_move(ev, moment, rt, quotes, extended_fn)
-    if not (ev.get("alertable") or ev.get("type") in {"FDA_OTHER", "EARN_OUT"}):
-        return "skipped"  # routine, dividends, law-firm spam: not listed
+    if ev.get("type") in CONTEXT_TYPES:
+        # Context for a liquid name (debt tender, analyst action): listed on the tile, never sent.
+        if not ev.get("ticker") or ev.get("stale") or liquidity_check(quotes.get(ev["ticker"]))[0] is not True:
+            return "skipped"
+    elif not (ev.get("alertable") or ev.get("type") in {"FDA_OTHER", "EARN_OUT"}):
+        return "skipped"  # routine, dividends, law-firm spam, opinion pieces: not listed
     go, why = _gate(ev, moment, rt, quotes, state)
     tk = ev.get("ticker")
     if go:

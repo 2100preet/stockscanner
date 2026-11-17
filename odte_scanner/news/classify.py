@@ -73,6 +73,9 @@ LABELS = {
     "BANKRUPTCY": "Bankruptcy",
     "EXEC_CHANGE": "Executive change",
     "BUYBACK": "Buyback",
+    "DEBT_TENDER": "Debt tender / redemption",
+    "ANALYST": "Analyst rating / price target",
+    "OPINION": "Opinion / listicle",
     "DIVIDEND": "Dividend",
     "ROUTINE": "Routine notice",
     "LAWFIRM": "Law-firm solicitation",
@@ -100,6 +103,8 @@ NOTES = {
     "RESTATEMENT": "accounting restatement — negative; watch, don't chase",
     "BANKRUPTCY": "bankruptcy filing — avoid",
     "EXEC_CHANGE": "CEO/CFO change — context only",
+    "DEBT_TENDER": "debt buyback — context only, not a catalyst",
+    "ANALYST": "analyst action — context only",
 }
 
 BEAT_PCT = 3.0
@@ -248,11 +253,13 @@ def _ma_role(headline: str, company: str | None) -> str | None:
     """'MA_TARGET', 'MA_ACQUIRER', or None when the headline is not a deal."""
     # Blank-check names ("Haymaker Acquisition Corp V") are not deals.
     h1 = re.sub(r"\b(acquisition|merger)s? (corp(oration)?|co|company|holdings?|ltd|limited|inc)\b\.?", "", headline[:220], flags=re.I)
+    if _has(h1, r"priority review voucher", r"\bPRV\b"):
+        return None  # buying a regulatory voucher is not a company deal
     if _has(h1, r"long stop date", r"outside date", r"extend\w* (the )?(tender|exchange) offer", r"expiration (date )?of (the )?(tender|exchange) offer"):
         return None  # deal housekeeping, not news
     if _has(h1, r"separate trading", r"\bunits?\b.{0,40}\b(begin|commence) trading", r"pricing of .{0,40}initial public offering"):
         return None
-    if not _has(h1, r"acqui", r"merger", r"business combination", r"\bto buy\b", r"take[- ]private", r"go[- ]private", r"buyout"):
+    if not _has(h1, r"acqui", r"merger", r"business combination", r"\bagree[sd]? to buy\b", r"\bdeal to buy\b", r"take[- ]private", r"go[- ]private", r"buyout"):
         return None
     if _has(h1, r"\b(complet\w+|clos(es|ed|ing)|consummat\w+)\b.{0,40}(acquisition|merger|sale|transaction)",
             r"(stockholders|shareholders) (vote|approve|approval)", r"approv\w+ by (stockholders|shareholders)"):
@@ -261,12 +268,12 @@ def _ma_role(headline: str, company: str | None) -> str | None:
             r"take[- ]private", r"stockholders will receive \$", r"\$[\d.]+ per share in (an all-)?cash"):
         return "MA_TARGET"
     token = name_token(company)
-    verb = re.search(r"acqui\w*|merger|business combination|\bto buy\b|buyout", h1, re.I)
+    verb = re.search(r"acqui\w*|merger|business combination|\bagree[sd]? to buy\b|\bdeal to buy\b|buyout", h1, re.I)
     if token and verb:
         pos = h1.lower().find(token.lower())
         if 0 <= pos < verb.start():
             return "MA_ACQUIRER"
-        if pos > verb.start() and re.search(r"(acqui\w*|to buy|buyout) (of )?.{0,60}" + re.escape(token), h1, re.I):
+        if pos > verb.start() and re.search(r"(acqui\w*|agree[sd]? to buy|deal to buy|buyout) (of )?.{0,60}" + re.escape(token), h1, re.I):
             return "MA_TARGET"
     if _has(h1, r"(definitive agreement|agreement|agree[sd]?) to (acquire|merge|combine)",
             r"announces? (the )?(strategic )?acquisition of", r"\bto acquire\b"):
@@ -303,6 +310,17 @@ def classify(
         }
 
     # --- noise first
+    # Opinion pieces and listicles from news aggregators ("X vs Y: Which Stock to Buy?").
+    filed_results = "2.02" in item_set or "ERN" in subj
+    if not filed_results and _has(h_short, r"\b(vs\.?|versus)\s[^:]{1,60}[:?]", r"\bstocks? to (buy|sell|own|watch)\b", r"\bbetter (stock|buy)\b",
+            r"\bshould you (buy|sell)\b", r"\btime to (buy|sell)\b", r"(not too late|reasons?) to buy",
+            r"here'?s why", r"\bbuy the (stock|dip)\b", r"\bis it (a )?(buy|sell)\b", r"\btop \d+ stocks?\b",
+            r"millionaire", r"\bgrowth stocks?\b", r"\bdividend stocks?\b", r"\?\s*$"):
+        return done("OPINION", 0)
+    if not filed_results and not _has(h_short, r"guidance|outlook|forecast") and _has(
+            h_short, r"\banalyst (upgrade|downgrade|rating|action)s?\b", r"\b(upgrade[sd]?|downgrade[sd]?) (to|by|from|at)\b", r"initiates? coverage",
+            r"price target", r"\b(outperform|underperform|overweight|underweight|buy|sell|neutral) rating"):
+        return done("ANALYST", 0)
     if "ATY" in subj or _has(h, r"shareholder alert", r"investor alert", r"investor notice", r"deadline alert",
                             r"class action", r"securities fraud", r"law firm", r"levi & korsinsky", r"rosen law",
                             r"pomerantz", r"bronstein", r"faruqi", r"glancy", r"robbins geller", r"kessler topaz",
@@ -384,6 +402,10 @@ def classify(
     if role:
         return done(role, +1 if role == "MA_TARGET" else 0)
     # --- financing
+    if _has(h_short, r"tender offers? (for|to purchase) .{0,60}\b(notes|debentures|bonds)\b",
+            r"offers? to purchase .{0,60}\b(notes|debentures|bonds)\b", r"redemption of .{0,40}\b(notes|debentures)\b",
+            r"(consent solicitation|exchange offer)s? .{0,40}\b(notes|debentures)\b"):
+        return done("DEBT_TENDER", 0)
     if _has(h, r"\b(closing|closes|closed|completion|completes|completed)\b.{0,40}offering"):
         return done("OFFERING_CLOSED", 0)
     offering = _has(
