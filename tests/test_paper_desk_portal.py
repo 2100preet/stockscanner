@@ -218,7 +218,9 @@ def test_cards_populate_equity_open_mark_and_doublings(tmp_path: Path):
     feed = shape_portal_feed(marked_kot, marked_mil, now=QUIET)
     kot_card, mil_card = feed["cards"]
     assert kot_card["label"] == "[KOTEGAWA]" and kot_card["paper"] is True
-    assert kot_card["equity"] == pytest.approx(100_000, abs=1)
+    shares = int(marked_kot["open"][0]["shares"])
+    assert kot_card["equity"] == pytest.approx(marked_kot["cash"] + shares * entry * 1.02, abs=0.01)
+    assert kot_card["equity"] > 100_000
     assert kot_card["realized_today"] == 0
     assert kot_card["trades"] == 0 and kot_card["win_rate"] is None
     opened = kot_card["open"][0]

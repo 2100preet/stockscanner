@@ -1048,7 +1048,8 @@ def test_scorecard_rows_and_telegram_labels(tmp_path: Path):
     assert [row["desk"] for row in rows] == ["Kotegawa", "Million"]
     for row in rows:
         assert {"trades", "win_rate", "realized_pnl", "open_positions", "equity"} <= set(row)
-    assert rows[0]["equity"] == 100_000
+    # Marked to the latest close, so only entry slippage separates it from the start.
+    assert rows[0]["equity"] == pytest.approx(100_000, abs=50)
     assert rows[0]["open_positions"] == 1
     assert rows[0]["trades"] == 0
     assert rows[1]["open_positions"] == 1

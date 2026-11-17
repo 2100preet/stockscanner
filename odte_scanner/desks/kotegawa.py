@@ -205,6 +205,19 @@ def _mark_for(trade: Mapping[str, Any], quotes: Mapping[str, Any] | None, bars: 
         close = _f(bars[-1].get("close"))
         if close is not None and close > 0:
             return close
+    # No price this cycle: keep the last good mark rather than snapping the
+    # position back to its entry price.
+    kept = _f(trade.get("last_mark"))
+    if kept is not None and kept > 0:
+        return kept
+    return float(trade.get("entry") or 0)
+
+
+def _held_mark(trade: Mapping[str, Any]) -> float:
+    """Saved mark for a position, or its entry when it was never marked."""
+    mark = _f(trade.get("last_mark"))
+    if mark is not None and mark > 0:
+        return mark
     return float(trade.get("entry") or 0)
 
 
@@ -363,10 +376,15 @@ def public_view(
     wins = sum(1 for row in closed if float(row.get("pnl") or 0) > 0)
     losses = sum(1 for row in closed if float(row.get("pnl") or 0) < 0)
     realized = sum(float(row.get("pnl") or 0) for row in closed)
-    # Equity stays marked at entry so the scorecard number does not move
-    # when a quote is missing. The open row carries the live mark separately.
-    marks = {str(row.get("symbol")): float(row.get("entry") or 0) for row in opened}
+    # Equity is cash plus each open position at its last saved mark. The cycle
+    # refreshes that mark from the live quote; a missing quote keeps the
+    # previous mark (never the entry price once the position has been marked).
+    marks = {str(row.get("symbol")): _held_mark(row) for row in opened}
     equity = equity_of(book, marks)
+    unrealized = sum(
+        (_held_mark(row) - float(row.get("entry") or 0)) * float(row.get("shares") or 0) for row in opened
+    )
+    marked_at = max((str(row.get("last_mark_at") or "") for row in opened), default="") or None
     win_rate = (wins / len(closed)) if closed else None
     day = as_of or _as_ct(None).date()
     return {
@@ -381,6 +399,8 @@ def public_view(
         "cash": round(float(book.get("cash") or 0), 2),
         "starting_equity": float(book.get("starting_equity") or STARTING_EQUITY),
         "realized_pnl": round(realized, 2),
+        "unrealized_pnl": round(unrealized, 2),
+        "marked_at": marked_at,
         "realized_today": round(_realized_on(book, day), 2),
         "win_rate": win_rate,
         "wins": wins,
@@ -566,7 +586,10 @@ def run_kotegawa(
     for trade in _open_trades(book):
         symbol = str(trade.get("symbol") or "")
         series = None if bars is None else list(bars.get(symbol) or bars.get(normalize_symbol(symbol)) or [])
-        trade["last_mark"] = _mark_for(trade, quotes, series or None)
+        mark = _mark_for(trade, quotes, series or None)
+        if mark != _f(trade.get("last_mark")):
+            trade["last_mark_at"] = moment.isoformat()
+        trade["last_mark"] = mark
 
     save_desk_state(state_path, book)
     view = public_view(book, as_of=session)
