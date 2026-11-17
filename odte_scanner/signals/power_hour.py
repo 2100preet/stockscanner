@@ -735,11 +735,14 @@ def resolve_power_hour_symbols(
     return out
 
 
-# Recent listings and high-range focus names that must not fall past the
+# Recent listings and big afternoon movers that must not fall past the
 # live-quote cap (SPCX sat at #61 behind a 48-name cap on Nov 16, 2026).
+# Ordered so the 6 VWAP-bar slots go to SPCX and the most consistent
+# 12:00–3:00 PM CT movers (60-day ranking, both halves).
 DEFAULT_PRIORITY_SYMBOLS: tuple[str, ...] = (
-    "SPCX", "CRWV", "NBIS", "IREN", "ASTS", "CRCL",
-    "CBRS", "FLY", "FIGR", "GEMI", "BETA", "XE",
+    "SPCX", "MARA", "RIOT", "WULF", "IREN", "CBRS",
+    "LUNR", "APLD", "ASTS", "CRWV", "NBIS", "AVGO",
+    "CRCL", "FLY", "FIGR", "GEMI", "BETA", "XE",
 )
 
 
@@ -752,6 +755,16 @@ def resolve_priority_symbols(config: dict[str, Any] | None = None) -> list[str]:
     out: list[str] = []
     for sym in raw:
         key = str(sym).replace(".", "-").upper().strip()
+        if key and key not in out:
+            out.append(key)
+    return out
+
+
+def with_priority_names(symbols: list[str], priority: list[str] | tuple[str, ...] | None) -> list[str]:
+    """Board names plus any priority name not already on it (display only)."""
+    out = [str(s).upper() for s in symbols]
+    for sym in priority or ():
+        key = str(sym).upper()
         if key and key not in out:
             out.append(key)
     return out
