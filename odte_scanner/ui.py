@@ -7703,6 +7703,7 @@ def create_app(config_path: str | None = None) -> Flask:
                             power_hour_quote_order,
                             resolve_power_hour_symbols,
                             resolve_priority_symbols,
+                            with_priority_names,
                         )
 
                         ph_syms = resolve_power_hour_symbols(
@@ -7711,6 +7712,9 @@ def create_app(config_path: str | None = None) -> Flask:
                         )
                         max_q = int(actions_cfg.get("power_hour_max_quote_fetch", 48))
                         ph_priority = resolve_priority_symbols(cfg)
+                        # Priority names outside the focus list (MARA, RIOT, LUNR) join the
+                        # Power Hour board only. Display only; the scan universe is unchanged.
+                        ph_syms = with_priority_names(ph_syms, ph_priority)
                         if live_marks:
                             for s in power_hour_quote_order(ph_syms, priority=ph_priority, cap=max_q):
                                 if s not in quotes:

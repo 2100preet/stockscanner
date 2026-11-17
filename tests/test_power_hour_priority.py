@@ -50,3 +50,26 @@ def test_priority_bar_slots_are_capped(monkeypatch):
     assert fetched[0] == "QQQ"
     assert fetched[9:15] == ["SPCX", "N000", "N001", "N002", "N003", "N004"]
     assert len(fetched) == 22
+
+
+def test_config_priority_fits_inside_the_quote_cap():
+    from odte_scanner.config import load_config
+
+    cfg = load_config()
+    pri = ph.resolve_priority_symbols(cfg)
+    assert pri[0] == "SPCX" and "AVGO" in pri
+    assert pri == list(ph.DEFAULT_PRIORITY_SYMBOLS)
+    actions = cfg.get("actions") or {}
+    cap = int(actions.get("power_hour_max_quote_fetch", 48))
+    assert cap == 48
+    assert 1 + len(ph.SPECIAL_TICKERS) + len(pri) < cap
+    assert int(actions.get("power_hour_max_bar_fetch", 16)) <= 22
+    board = ph.with_priority_names(ph.resolve_power_hour_symbols("focus", config=cfg), pri)
+    assert {"MARA", "RIOT", "LUNR"} <= set(board)
+    order = ph.power_hour_quote_order(board, priority=pri, cap=cap)
+    # Every priority name gets a live quote, inside the unchanged cap.
+    assert set(pri) <= set(order) and len(order) == cap
+
+
+def test_with_priority_names_appends_without_duplicates():
+    assert ph.with_priority_names(["SPY", "SPCX"], ["spcx", "MARA"]) == ["SPY", "SPCX", "MARA"]

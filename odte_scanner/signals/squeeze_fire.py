@@ -49,12 +49,18 @@ NOTE = (
     "Never places an order. The Nov 16 backtest of this rule showed no edge."
 )
 
-# SPCX is the miss that started this. The others are focus names with the
-# widest average intraday range in the 60-day backtest data (about 6–8% a
-# day) that also list liquid weekly options: CRWV (7.0%), NBIS (7.2%),
-# IREN (7.4%), ASTS (7.7%) and CRCL (6.2%, recent listing). Per-name samples
-# were 0–4 signals, so this is a range/liquidity pick, not a proven edge.
-DEFAULT_SYMBOLS: tuple[str, ...] = ("SPCX", "CRWV", "NBIS", "IREN", "ASTS", "CRCL")
+# SPCX is the miss that started this. CRWV, NBIS, IREN, ASTS and CRCL were the
+# widest-range focus names with liquid weeklies (Nov 16 backtest data). AVGO was
+# added on request. MARA, RIOT, WULF, APLD, CBRS and LUNR were added from a
+# Nov 16 ranking of 60 days of 5-minute bars on 148 names: median 12:00–3:00 PM
+# CT range of 2.6–3.3%, top 30 in BOTH 30-day halves, and an at-the-money weekly
+# call spread under 10% with open interest above 1,000. Per-name signal counts
+# are thin (about 18 signals in 60 days across all 13), so this is a "moves a
+# lot in the afternoon" list, not a proven edge.
+DEFAULT_SYMBOLS: tuple[str, ...] = (
+    "SPCX", "CRWV", "NBIS", "IREN", "ASTS", "CRCL", "AVGO",
+    "MARA", "RIOT", "WULF", "APLD", "CBRS", "LUNR",
+)
 EXCLUDED = frozenset({"SPX", "SPXW", "XSP", "NDX", "RUT", "VIX"})
 
 BAR_MIN = 5

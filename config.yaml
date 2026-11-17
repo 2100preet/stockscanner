@@ -546,11 +546,14 @@ actions:
   power_hour_symbols: focus
   power_hour_max_bar_fetch: 22   # 16 + 6 priority slots (small 1m bar pulls)
   # Recent listings / widest-range names quoted before the 48-name cap (display only).
-  power_hour_priority_symbols: [SPCX, CRWV, NBIS, IREN, ASTS, CRCL, CBRS, FLY, FIGR, GEMI, BETA, XE]
+  # Order matters: the first 6 also get VWAP bars. Big 12:00–3:00 PM CT movers (Nov 16 60-day ranking).
+  # 18 names + QQQ + 8 specials = 27, still inside the 48-quote cap.
+  power_hour_priority_symbols: [SPCX, MARA, RIOT, WULF, IREN, CBRS, LUNR, APLD, ASTS, CRWV, NBIS, AVGO, CRCL, FLY, FIGR, GEMI, BETA, XE]
   # Squeeze Fire: Telegram ALERT ONLY + 30-day paper study of the suggested call. Never orders.
   # SQUEEZE_FIRE_LOOP=0 stops the thread; SQUEEZE_FIRE_TELEGRAM=0 keeps it silent.
   squeeze_fire_enabled: true
-  squeeze_fire_symbols: [SPCX, CRWV, NBIS, IREN, ASTS, CRCL]
+  # 13 names: about 13 small 5m-bar requests every 5 minutes, 8:55–3:05 CT.
+  squeeze_fire_symbols: [SPCX, CRWV, NBIS, IREN, ASTS, CRCL, AVGO, MARA, RIOT, WULF, APLD, CBRS, LUNR]
   power_hour_max_quote_fetch: 48
   power_hour_fetch_bars: true
   # Hold / time-stop (industry desk practice)

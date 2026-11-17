@@ -168,7 +168,13 @@ def test_default_config_lists_the_chosen_names():
     from odte_scanner.config import load_config
 
     cfg = load_config()
-    assert sf.resolve_symbols(cfg) == ["SPCX", "CRWV", "NBIS", "IREN", "ASTS", "CRCL"]
+    syms = sf.resolve_symbols(cfg)
+    assert syms == list(sf.DEFAULT_SYMBOLS)
+    assert syms[:7] == ["SPCX", "CRWV", "NBIS", "IREN", "ASTS", "CRCL", "AVGO"]
+    assert {"MARA", "RIOT", "WULF", "APLD", "CBRS", "LUNR"} <= set(syms)
+    # Kept small: about one 5m-bar request per name every 5 minutes.
+    assert 10 <= len(syms) <= 15
+    assert not set(syms) & sf.EXCLUDED
     assert (cfg.get("actions") or {}).get("squeeze_fire_enabled") is True
 
 
