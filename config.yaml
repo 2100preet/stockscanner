@@ -544,7 +544,13 @@ actions:
   # Never places orders. NEWS_DESK_TELEGRAM=0 keeps it on the portal tile but silent.
   news_desk_enabled: true
   power_hour_symbols: focus
-  power_hour_max_bar_fetch: 16
+  power_hour_max_bar_fetch: 22   # 16 + 6 priority slots (small 1m bar pulls)
+  # Recent listings / widest-range names quoted before the 48-name cap (display only).
+  power_hour_priority_symbols: [SPCX, CRWV, NBIS, IREN, ASTS, CRCL, CBRS, FLY, FIGR, GEMI, BETA, XE]
+  # Squeeze Fire: Telegram ALERT ONLY + 30-day paper study of the suggested call. Never orders.
+  # SQUEEZE_FIRE_LOOP=0 stops the thread; SQUEEZE_FIRE_TELEGRAM=0 keeps it silent.
+  squeeze_fire_enabled: true
+  squeeze_fire_symbols: [SPCX, CRWV, NBIS, IREN, ASTS, CRCL]
   power_hour_max_quote_fetch: 48
   power_hour_fetch_bars: true
   # Hold / time-stop (industry desk practice)

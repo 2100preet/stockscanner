@@ -124,6 +124,13 @@ def start_live_desk_worker(config_path: str | None = None) -> bool:
         start_news_desk_worker(config_path)
     except Exception as exc:  # noqa: BLE001
         logger.warning("news desk did not start: %s", exc)
+    # Squeeze Fire: Telegram alert + paper study only, its own daemon thread.
+    try:
+        from odte_scanner.signals.squeeze_fire import start_squeeze_fire_worker
+
+        start_squeeze_fire_worker(config_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("squeeze fire did not start: %s", exc)
     if not _env_flag("LIVE_DESK_LOOP", True):
         logger.info("LIVE_DESK_LOOP disabled — no background scan worker")
         return fast_started
