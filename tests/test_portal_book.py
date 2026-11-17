@@ -59,6 +59,7 @@ def _orders() -> list[dict]:
         quantity=1,
         limit_price=3.10,
         status="cancelled",
+        created_at="2026-11-02T14:52:00+00:00",
         meta={"golden_kind": "sniper"},
     )
     return [buy.to_dict(), sell.to_dict(), cancelled.to_dict()]
@@ -66,7 +67,7 @@ def _orders() -> list[dict]:
 
 def test_tile_prefers_the_traded_strike_and_the_fill():
     card = annotate_card(
-        {"symbol": "SPY", "strike": 759, "right": "C", "expiry": "2026-11-02", "ask": 1.22, "contract": "SPY261102C00759000"},
+        {"symbol": "SPY", "strike": 759, "right": "C", "expiry": "2026-11-02", "ask": 1.22, "contract": "SPY261102C00759000", "day_cst": "2026-11-02"},
         _orders(),
         "sniper",
     )
@@ -84,7 +85,7 @@ def test_tile_prefers_the_traded_strike_and_the_fill():
 def test_working_and_cancelled_labels():
     assert status_label({"status": "submitted"}) == "working limit"
     assert status_label({"status": "cancelled"}) == "cancelled"
-    card = annotate_card({"symbol": "AMZN", "strike": 255, "right": "C", "ask": 4.0}, _orders(), "sniper")
+    card = annotate_card({"symbol": "AMZN", "strike": 255, "right": "C", "ask": 4.0, "day_cst": "2026-11-02"}, _orders(), "sniper")
     assert card["order_status_label"] == "cancelled"
     assert card["traded_strike"] == 250
     assert card["strike_differs"] is True
@@ -114,7 +115,7 @@ def test_overlay_uses_the_fast_board_and_the_ledger():
         sniper={
             "ok": True,
             "signals": [
-                {"symbol": "SPY", "strike": 759, "right": "C", "ask": 1.22, "send": False, "expiry": "2026-11-02"}
+                {"symbol": "SPY", "strike": 759, "right": "C", "ask": 1.22, "send": False, "expiry": "2026-11-02", "day_cst": "2026-11-02"}
             ],
         }
     )

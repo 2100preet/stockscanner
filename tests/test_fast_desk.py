@@ -298,13 +298,13 @@ def test_hot_route_buys_spy_once_and_skips_spx(tmp_path):
 
 
 def test_activity_labels_and_version(monkeypatch):
-    assert activity_premium_label({"status": "submitted", "limit_price": 1.05}) == "Limit (working) $1.05"
+    assert activity_premium_label({"status": "submitted", "limit_price": 1.05}) == "Limit $1.05 (working)"
     assert activity_premium_label({"status": "filled", "limit_price": 1.05, "fill_price": 1.22}) == "Filled @ $1.22"
     assert activity_premium_label({"status": "partial", "limit_price": 1.30, "fill_price": 1.10}) == (
-        "Filled @ $1.10 · Limit (working) $1.30"
+        "Filled @ $1.10 · Limit $1.30 (working)"
     )
     assert "function orderPremiumLabel" in PAGE
-    assert "Limit (working)" in PAGE
+    assert "(working)" in PAGE and "Limit (working) " not in PAGE
     assert "Filled @" in PAGE
     assert "function quoteText" in PAGE
     assert "Bid " in PAGE

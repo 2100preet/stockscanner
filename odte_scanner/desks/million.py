@@ -660,6 +660,20 @@ def _prefix(source: Any) -> str:
     return "[MILLION]"
 
 
+def _contract_text(trade: Mapping[str, Any]) -> str:
+    """``QQQ 11/16 600C`` from the ticket. Falls back to the OCC symbol."""
+    symbol = str(trade.get("symbol") or "")
+    right = str(trade.get("right") or "C").upper()[:1]
+    strike = _f(trade.get("strike"))
+    expiry = str(trade.get("expiry") or "")[:10]
+    if strike is None or not expiry:
+        contract = str(trade.get("contract") or "").strip()
+        return f"{symbol} {contract or right}".strip()
+    strike_text = f"{strike:g}"
+    day = f"{expiry[5:7]}/{expiry[8:10]}" if len(expiry) == 10 else expiry
+    return f"{symbol} {day} {strike_text}{right}"
+
+
 def _alert(side: str, trade: Mapping[str, Any], text: str) -> dict[str, Any]:
     return {
         "key": f"MILLION|{side}|{trade.get('id')}",
@@ -948,8 +962,8 @@ def _fill_exit(
         return
     book["cash"] = float(book["cash"]) + proceeds
     text = (
-        f"{_prefix(ticket.get('source'))} SELL {ticket.get('symbol')} {contracts}x @ {fill:.2f} · "
-        f"{reason} · pnl {pnl:+.2f} · paper"
+        f"{_prefix(ticket.get('source'))} SELL {_contract_text(ticket)} ×{contracts} · "
+        f"Filled @ ${fill:.2f} (paper ledger) · {reason} · P&L {pnl:+.2f}"
     )
     alert = _alert("SELL", ticket, text)
     alerts.append(alert)
@@ -1242,8 +1256,8 @@ def run_million(
             book["cash"] = float(book["cash"]) - cost
             book["trades"].append(trade)
             text = (
-                f"{_prefix(trade['source'])} BUY {trade['symbol']} {count}x {trade['right']} @ {fill:.2f} · "
-                f"{trade['source']}{_vix_text(tag)} · paper"
+                f"{_prefix(trade['source'])} BUY {_contract_text(trade)} ×{count} · "
+                f"Filled @ ${fill:.2f} (paper ledger) · {trade['source']}{_vix_text(tag)}"
             )
             alert = _alert("BUY", trade, text)
             alerts.append(alert)

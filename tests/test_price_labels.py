@@ -51,6 +51,7 @@ def test_strike_differs_drops_the_other_contract_quotes():
         quantity=1,
         limit_price=2.49,
         status="submitted",
+        created_at="2026-11-04T15:00:00+00:00",
         meta={"golden_kind": "sniper", "signal_ask": 2.49},
     )
     card = annotate_card(
@@ -62,6 +63,7 @@ def test_strike_differs_drops_the_other_contract_quotes():
             "bid": 3.55,
             "ask": 3.75,
             "contract": "GOOGL261104P00280000",
+            "day_cst": "2026-11-04",
         },
         [order.to_dict()],
         "sniper",
@@ -85,6 +87,7 @@ def test_strike_differs_drops_the_other_contract_quotes():
             "ask": 3.75,
             "live_bid": 2.78,
             "live_ask": 2.93,
+            "day_cst": "2026-11-04",
         },
         [order.to_dict()],
         "sniper",

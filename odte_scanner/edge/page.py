@@ -253,9 +253,10 @@ EDGE_JS = r"""
       var reconcile = (DATA && DATA.pnl_reconcile) || {};
       var trips = reconcile.trips || [];
       if (reconcileEl && reconcile.fill_pnl != null) {
+        var reconcileSpan = reconcile.since ? (" since " + reconcile.since + " (fills still in the order file; the Scorecard daily P&L adds older fills from the round-trip log)") : "";
         reconcileEl.textContent = reconcile.match
-          ? ("Webull paper P&L $" + edgeNum(reconcile.fill_pnl, 2) + " matches the exit alerts.")
-          : ("Webull paper P&L $" + edgeNum(reconcile.fill_pnl, 2) + " vs alerts $" + edgeNum(reconcile.alert_pnl, 2) + ".");
+          ? ("Webull paper P&L $" + edgeNum(reconcile.fill_pnl, 2) + reconcileSpan + " matches the exit alerts.")
+          : ("Webull paper P&L $" + edgeNum(reconcile.fill_pnl, 2) + reconcileSpan + " vs alerts $" + edgeNum(reconcile.alert_pnl, 2) + ".");
       }
       if (bookEl) {
         var deskName = function (tier) {

@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -41,6 +42,10 @@ ROOT = Path(__file__).resolve().parents[2]
 BAR_TTL = timedelta(hours=6)
 VWAP_TTL = timedelta(seconds=60)
 CT = ZoneInfo("America/Chicago")
+# One cycle at a time. The web snapshot and the live desk loop build their own
+# Flask apps, so the snapshot gate does not cover both. Two cycles at once both
+# load the same book, and the later save drops the other cycle's fills.
+_CYCLE_LOCK = threading.Lock()
 
 
 def _abs(path: str | Path) -> Path:
@@ -358,6 +363,47 @@ def _fetch_vix_tag() -> dict[str, Any] | None:
 
 
 def portal_view(
+    cfg: Mapping[str, Any] | None = None,
+    *,
+    challenge: Mapping[str, Any] | None = None,
+    quotes: Mapping[str, Any] | None = None,
+    bars: Mapping[str, list[Mapping[str, Any]]] | None = None,
+    chains: Mapping[str, list[Mapping[str, Any]]] | None = None,
+    intraday: Mapping[str, Mapping[str, Any]] | None = None,
+    now: datetime | None = None,
+    vix: Mapping[str, Any] | None = None,
+    cycle: bool | None = None,
+    fetcher: Callable[[list[str]], Mapping[str, list[Mapping[str, Any]]]] | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Public books plus the scorecard rows for both desks.
+
+    A cycle that finds another cycle running reads the saved books instead of
+    advancing them a second time.
+    """
+    args = dict(
+        challenge=challenge,
+        quotes=quotes,
+        bars=bars,
+        chains=chains,
+        intraday=intraday,
+        now=now,
+        vix=vix,
+        fetcher=fetcher,
+        environ=environ,
+    )
+    if not _should_cycle(cycle):
+        return _portal_view_once(cfg, cycle=False, **args)
+    if not _CYCLE_LOCK.acquire(blocking=False):
+        logger.info("paper desks: cycle already running; serving saved books")
+        return _portal_view_once(cfg, cycle=False, **args)
+    try:
+        return _portal_view_once(cfg, cycle=True, **args)
+    finally:
+        _CYCLE_LOCK.release()
+
+
+def _portal_view_once(
     cfg: Mapping[str, Any] | None = None,
     *,
     challenge: Mapping[str, Any] | None = None,

@@ -53,3 +53,25 @@ def _fresh_webull_budget():
     yield
     webull.WEBULL_BUDGET.reset()
     webull._DETAIL_LAST.clear()
+
+
+@pytest.fixture(autouse=True)
+def _no_live_market_or_telegram_keys(monkeypatch):
+    """The suite runs like CI: no quote vendor or Telegram credentials.
+
+    A developer shell with TRADIER_ACCESS_TOKEN or POLYGON_API_KEY exported
+    made tests price contracts off the live market (a BABA weekly at $3.85
+    instead of the card's $0.50), and a Telegram token could send real
+    messages. A test that needs a key sets its own fake value.
+    """
+    for name in (
+        "TRADIER_ACCESS_TOKEN",
+        "TRADIER_TOKEN",
+        "POLYGON_API_KEY",
+        "MASSIVE_API_KEY",
+        "UW_API_KEY",
+        "UNUSUAL_WHALES_API_KEY",
+        "TELEGRAM_BOT_TOKEN",
+        "TELEGRAM_CHAT_ID",
+    ):
+        monkeypatch.delenv(name, raising=False)

@@ -234,9 +234,28 @@ def resample_15m(bars_1m: pd.DataFrame | None, *, now: datetime | None = None) -
         return None
     try:
         out = df.resample("15min", label="left", closed="left").agg(cols).dropna(subset=["Close"])
-        return out if not out.empty else None
     except Exception:  # noqa: BLE001
         return None
+    # Closed bars only. The bucket that started less than 15 minutes before the
+    # decision clock is still forming, and its high/low/close move every tick.
+    clock = _decision_clock(now)
+    try:
+        ends = out.index + pd.Timedelta(minutes=15)
+        out = out.loc[ends <= clock]
+    except Exception:  # noqa: BLE001
+        pass
+    return out if not out.empty else None
+
+
+def _decision_clock(now: datetime | None) -> pd.Timestamp:
+    """The decision time in US/Eastern. Live calls use the wall clock."""
+    if now is None:
+        moment = datetime.now(ET)
+    elif now.tzinfo is None:
+        moment = now.replace(tzinfo=ET)
+    else:
+        moment = now.astimezone(ET)
+    return pd.Timestamp(moment)
 
 
 def fetch_intraday_1m(symbol: str, *, yahoo_symbol: str | None = None) -> pd.DataFrame | None:

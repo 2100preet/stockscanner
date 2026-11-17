@@ -437,8 +437,8 @@ def run_kotegawa(
         trade["pnl"] = pnl
         book["cash"] = float(book["cash"]) + proceeds
         text = (
-            f"[KOTEGAWA] SELL {symbol} {shares} sh @ {fill:.2f} · {reason} · "
-            f"pnl {pnl:+.2f} · paper"
+            f"[KOTEGAWA] SELL {symbol} {shares} sh · Filled @ ${fill:.2f} (paper ledger) · {reason} · "
+            f"P&L {pnl:+.2f}"
         )
         alert = _alert("SELL", trade, text)
         alerts.append(alert)
@@ -516,7 +516,7 @@ def run_kotegawa(
             book["trades"].append(trade)
             held.add(symbol)
             marks[symbol] = last or fill
-            text = f"[KOTEGAWA] BUY {symbol} {shares} sh @ {fill:.2f} · paper"
+            text = f"[KOTEGAWA] BUY {symbol} {shares} sh · Filled @ ${fill:.2f} (paper ledger)"
             alert = _alert("BUY", trade, text)
             alerts.append(alert)
             _remember(book, alert)

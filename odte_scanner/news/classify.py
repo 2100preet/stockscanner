@@ -158,9 +158,31 @@ _HEAD_VERB = re.compile(
 _HEAD_CUT = re.compile(r"(\b\d{4}\b|\bDocument\b|\)|:|—|–|\||\bContact\b[^A-Z]*)\s*", re.I)
 
 
+_INVISIBLE = re.compile(r"[\u200b\u200c\u200d\u2060\ufeff\u00ad]")
+_MONTH = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?"
+# "aex991x3q26supplementalq Clover Health ..." — an exhibit file name ahead of the title.
+_LEAD_FILE = re.compile(r"^(?:[a-z0-9_.\-]*(?:ex[-_]?99|ex\d{3,}|\.htm)[a-z0-9_.\-]*\s+)+", re.I)
+# "Nov 16, 2026 9:00 AM Eastern Standard Time Air Industries ..." — a wire timestamp ahead of the title.
+_LEAD_DATE = re.compile(
+    r"^" + _MONTH + r"\s\d{1,2},?\s20\d\d(?:,?\s\d{1,2}:\d\d\s?(?:[AaPp]\.?[Mm]\.?)?(?:\s[A-Z][a-z]+){0,3}(?:\sTime)?)?[\s,\-–—|]*"
+)
+
+
+def _clean_lead(text: str) -> str:
+    out = _INVISIBLE.sub("", text or "").replace("\u00a0", " ")
+    out = re.sub(r"\s+", " ", out).strip()
+    for _ in range(3):
+        before = out
+        out = _LEAD_FILE.sub("", out).strip()
+        out = _LEAD_DATE.sub("", out).strip()
+        if out == before:
+            break
+    return out
+
+
 def headline_of(text: str, limit: int = 350, company: str | None = None) -> str:
     """Strip exhibit boilerplate (addresses, contacts, dates, file names) and return the headline window."""
-    window = re.sub(r"\s+", " ", (text or "")[:2000]).strip()
+    window = _clean_lead(re.sub(r"\s+", " ", _INVISIBLE.sub("", (text or "")[:2000])).strip())
     matches = list(_BOILER.finditer(window[:700]))
     if matches:
         window = window[matches[-1].end():]
@@ -182,7 +204,7 @@ def headline_of(text: str, limit: int = 350, company: str | None = None) -> str:
             if start > 0 and verb.start() - start > 100:
                 start = verb.start()
         window = window[start:]
-    return window.strip()[:limit]
+    return _clean_lead(window)[:limit]
 
 
 _SUBHEAD = re.compile(
@@ -191,12 +213,80 @@ _SUBHEAD = re.compile(
 )
 
 
+# Words that start a two-word dateline city ("New York", "San Diego").
+_CITY_LEAD = r"(?:New|San|Los|Las|Salt|St\.?|Saint|Fort|Ft\.|Palo|Santa|Del|El|Grand|Jersey|Kansas|Oklahoma|Long|West|East|North|South|Hong|Tel|Mexico|Buenos|Sao|São|Rio|Cape|Abu|Kuala|Oak|Park|Baton|Little|Des|Ann|Bay|Beverly|Boca|Coral|Cedar|Silicon|Menlo|Redwood|Mountain|Woodland|Fort)"
+_CITY = r"(?:" + _CITY_LEAD + r"\s)?[A-Z][A-Za-z.'\-]+"
+_DATE_MARK = re.compile(r"[\s,\-–—]" + _MONTH + r"\s\d{1,2},\s20\d\d")
+_TAIL_CITY = (
+    # "New York, NY –" / "Miami, FL" / "Nes-Ziona, Israel," / "FRISCO, Texas"
+    re.compile(r"\s" + _CITY + r",(?:\s[A-Z][A-Za-z.]+){1,2}\.?[\s,\-–—]*$"),
+    # "New York –" / "Macau,"
+    re.compile(r"\s" + _CITY + r"\s?[,\-–—][\s,\-–—]*$"),
+)
+_AND_CITY = re.compile(r"\s" + _CITY + r",(?:\s[A-Z][A-Za-z.]+){1,2}\.?\s(?:and|&)$")
+
+
+_STATE_TAIL = re.compile(r"\s" + _CITY + r",\s[A-Z]{2}\.?$")
+_PLACE_WORDS = {
+    "in", "at", "to", "of", "for", "from", "near", "and", "with", "by", "into", "across",
+    "outside", "inside", "based", "headquartered", "via", "the", "&",
+}
+_LEAD_WORD = re.compile(r"\s" + _CITY_LEAD + r"$")
+
+
+def _rightmost_tail(text: str, pattern: re.Pattern[str]) -> int | None:
+    """Latest space-start where ``pattern`` runs to the end of ``text``."""
+    for start in range(len(text) - 1, 19, -1):
+        if text[start] != " ":
+            continue
+        got = pattern.match(text, start)
+        if got and got.end() == len(text):
+            lead = _LEAD_WORD.search(text[:start])
+            cut = lead.start() if lead and lead.start() >= 20 else start  # "New" + "York, NY"
+            joined = _AND_CITY.search(text[:cut])
+            while joined and joined.start() >= 20:  # "FRISCO, Texas and BURLINGTON, Mass."
+                cut = joined.start()
+                joined = _AND_CITY.search(text[:cut])
+            before = text[:cut].split()
+            if before and before[-1].lower() in _PLACE_WORDS:
+                return None  # "opens office in Austin, TX" is the title
+            return cut
+    return None
+
+
+def _strip_dateline(text: str) -> str:
+    """Drop a trailing "City, ST – Month DD, YYYY –" dateline after the title.
+
+    The title is title case like the city. With a date after it, a city that
+    ends in a comma or dash is removed. Without a date, only "City, ST".
+    """
+    mark = _DATE_MARK.search(text, 20)
+    if mark is None:
+        trimmed = text.rstrip()
+        hit = _rightmost_tail(trimmed, _STATE_TAIL)
+        return trimmed[:hit].rstrip(" ,;:-–—") if hit is not None else text
+    trimmed = text[: mark.start()].rstrip()
+    for pattern in _TAIL_CITY:
+        hit = _rightmost_tail(trimmed, pattern)
+        if hit is None:
+            continue
+        trimmed = trimmed[:hit]
+        joined = _AND_CITY.search(trimmed)
+        while joined and joined.start() >= 20:
+            trimmed = trimmed[: joined.start()]
+            joined = _AND_CITY.search(trimmed)
+        break
+    return trimmed.rstrip(" ,;:-–—")
+
+
 def display_headline(headline: str, limit: int = 180) -> str:
     """The title alone: cut at the first sub-head bullet or dateline, then at a word boundary."""
-    text = re.sub(r"\s+", " ", headline or "").strip()
+    text = _clean_lead(re.sub(r"\s+", " ", headline or "").strip())
     cut = _SUBHEAD.search(text, 20)
     if cut:
         text = text[: cut.start()].rstrip(" ,;:-—")
+    text = _strip_dateline(text)
+    text = re.sub(r"\s*_{3,}.*$", "", text)  # form rule lines ("______")
     if len(text) > limit:
         text = text[:limit].rsplit(" ", 1)[0] + "…"
     return text

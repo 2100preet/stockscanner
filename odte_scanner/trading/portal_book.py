@@ -7,8 +7,12 @@ expiry, right, fill, and status. Signal strike stays as a secondary label.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import re
+from datetime import date, datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
+
+_CT = ZoneInfo("America/Chicago")
 
 _FILLED = {"filled", "partial"}
 _WORKING = {"submitted", "staged", "deferred", "dry_run"}
@@ -121,9 +125,24 @@ def tier_of(order: dict[str, Any] | None) -> str | None:
     return None
 
 
+_SURE_COPY = re.compile(r"\bsure[\s_-]*winners?\b", re.I)
+_SURE_BADGE = re.compile(r"(?<![\w-])SURE(?![\w-])")
+
+
+def public_reason(text: Any) -> str:
+    """Customer copy for a stored order reason.
+
+    Orders saved before the Gold Setup rename still say "Sure-winner #HIGH".
+    The ledger keeps the raw text. Anything shown on the portal says Gold Setup.
+    """
+    out = _SURE_COPY.sub("Gold Setup", str(text or ""))
+    return _SURE_BADGE.sub("Gold", out)
+
+
 def public_order(order: dict[str, Any]) -> dict[str, Any]:
     """Allow-listed fields. Account ids and credentials stay off the payload."""
     out = {key: order.get(key) for key in _PUBLIC_FIELDS}
+    out["reason"] = public_reason(order.get("reason")) if order.get("reason") is not None else None
     out["golden_kind"] = _meta(order).get("golden_kind")
     out["exit_tier"] = _meta(order).get("exit_tier")
     out["entry_price"] = _meta(order).get("entry_price")
@@ -176,6 +195,87 @@ def _match(orders: list[dict[str, Any]], *, symbol: str, tier: str, action: str)
     return found
 
 
+def _instant(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment
+
+
+def _order_day(order: dict[str, Any]) -> date | None:
+    """Trading day (Central) the order was placed."""
+    moment = _instant(order.get("created_at")) or _instant(order.get("updated_at"))
+    return moment.astimezone(_CT).date() if moment else None
+
+
+def card_day(card: dict[str, Any], now: datetime | None = None) -> date:
+    """Trading day (Central) of a signal card. Falls back to today."""
+    text = str(card.get("day_cst") or "").strip()[:10]
+    if text:
+        try:
+            return date.fromisoformat(text)
+        except ValueError:
+            pass
+    for key in ("signaled_at", "detected_at", "entered_at", "recommended_at"):
+        moment = _instant(card.get(key))
+        if moment is not None:
+            return moment.astimezone(_CT).date()
+    clock = now or datetime.now(timezone.utc)
+    if clock.tzinfo is None:
+        clock = clock.replace(tzinfo=timezone.utc)
+    return clock.astimezone(_CT).date()
+
+
+def _right(value: Any) -> str:
+    return str(value or "").strip().upper()[:1]
+
+
+def _card_entry(card: dict[str, Any], buys: list[dict[str, Any]], day: date) -> dict[str, Any] | None:
+    """The card's own buy: placed the card's day, same right, same expiry.
+
+    An order from an earlier session, or for another expiry, belongs to a
+    different signal and is never shown on this card. The exact contract
+    wins. A different strike on the same expiry is the traded contract when
+    the desk moved the strike. The latest attempt wins over an older one.
+    """
+    contract = str(card.get("contract") or "").strip()
+    right = _right(card.get("right"))
+    expiry = str(card.get("expiry") or "").strip()[:10]
+    same_day = [order for order in buys if _order_day(order) == day]
+    # An undated order can only be this card's when it is the exact contract.
+    undated = [order for order in buys if _order_day(order) is None]
+    exact = [
+        order
+        for order in same_day + undated
+        if contract and str(order.get("contract") or "") == contract
+    ]
+    pool = exact
+    if not pool:
+        pool = [
+            order
+            for order in same_day
+            if (not right or not _right(order.get("right")) or _right(order.get("right")) == right)
+            and (not expiry or not str(order.get("expiry") or "") or str(order.get("expiry") or "")[:10] == expiry)
+        ]
+    if not pool:
+        return None
+    live = [order for order in pool if str(order.get("status") or "").lower() not in _CANCELLED]
+    pick_from = live or pool
+    return max(
+        pick_from,
+        key=lambda order: (
+            (_instant(order.get("created_at")) or datetime.min.replace(tzinfo=timezone.utc)),
+            -_RANK.get(str(order.get("status") or "").lower(), 9),
+        ),
+    )
+
+
 def _lunch_order(order: dict[str, Any]) -> bool:
     meta = _meta(order)
     if meta.get("leg") or meta.get("exclude_pnl"):
@@ -184,16 +284,22 @@ def _lunch_order(order: dict[str, Any]) -> bool:
     return "lunch" in text
 
 
-def annotate_card(card: dict[str, Any], orders: list[dict[str, Any]], tier: str) -> dict[str, Any]:
-    """Stamp the traded contract onto a signal card. The signal strike remains."""
+def annotate_card(
+    card: dict[str, Any],
+    orders: list[dict[str, Any]],
+    tier: str,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Stamp the card's own same-day order onto it. The signal strike remains."""
     if tier == "lunch":
-        return _annotate_lunch(card, orders)
+        return _annotate_lunch(card, orders, now=now)
     out = dict(card)
     symbol = str(card.get("symbol") or "").upper()
     if symbol == "SPX":
         return out
     buys = _match(orders, symbol=symbol, tier=tier, action="BUY")
-    entry = _best(buys)
+    entry = _card_entry(card, buys, card_day(card, now))
     if entry is None:
         return out
     traded_strike = entry.get("strike")
@@ -245,6 +351,7 @@ def annotate_card(card: dict[str, Any], orders: list[dict[str, Any]], tier: str)
         and str(order.get("symbol") or "").upper() == symbol
         and (not contract or str(order.get("contract") or "") == contract)
         and (tier_of(order) in {None, tier})
+        and _not_before(order, entry)
     ]
     exit_order = _best([row for row in sells if str(row.get("status") or "").lower() in _FILLED]) or _best(sells)
     if exit_order is not None:
@@ -264,12 +371,27 @@ def annotate_card(card: dict[str, Any], orders: list[dict[str, Any]], tier: str)
     return out
 
 
-def _annotate_lunch(card: dict[str, Any], orders: list[dict[str, Any]]) -> dict[str, Any]:
+def _not_before(order: dict[str, Any], entry: dict[str, Any]) -> bool:
+    """A sell placed before the matched buy belongs to an earlier trade."""
+    sold = _instant(order.get("created_at"))
+    bought = _instant(entry.get("created_at"))
+    if sold is None or bought is None:
+        return True
+    return sold >= bought
+
+
+def _annotate_lunch(
+    card: dict[str, Any],
+    orders: list[dict[str, Any]],
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
     """A credit is a sell to open and a buy to close. The tile keeps both legs."""
     out = dict(card)
     if str(card.get("symbol") or "").upper() == "SPX":
         return out
     symbol = str(card.get("symbol") or "").upper()
+    day = card_day(card, now)
     opens = [
         order
         for order in orders
@@ -277,6 +399,7 @@ def _annotate_lunch(card: dict[str, Any], orders: list[dict[str, Any]]) -> dict[
         and str(order.get("symbol") or "").upper() == symbol
         and str(order.get("action") or "").upper() == "SELL"
         and str(_meta(order).get("role") or "open") == "open"
+        and _order_day(order) == day
     ]
     entry = _best(opens)
     if entry is None:
@@ -320,21 +443,32 @@ def _annotate_lunch(card: dict[str, Any], orders: list[dict[str, Any]]) -> dict[
     return out
 
 
-def annotate_board(board: dict[str, Any] | None, orders: list[dict[str, Any]], tier: str) -> dict[str, Any] | None:
+def annotate_board(
+    board: dict[str, Any] | None,
+    orders: list[dict[str, Any]],
+    tier: str,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any] | None:
     if not isinstance(board, dict):
         return board
     out = dict(board)
     cards: list[Any] = []
     for card in board.get("signals") or []:
         if isinstance(card, dict):
-            cards.append(annotate_card(card, orders, tier))
+            cards.append(annotate_card(card, orders, tier, now=now))
         else:
             cards.append(card)
     out["signals"] = cards
     return out
 
 
-def annotate_sure(board: dict[str, Any] | None, orders: list[dict[str, Any]]) -> dict[str, Any] | None:
+def annotate_sure(
+    board: dict[str, Any] | None,
+    orders: list[dict[str, Any]],
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any] | None:
     if not isinstance(board, dict):
         return board
     out = dict(board)
@@ -342,7 +476,7 @@ def annotate_sure(board: dict[str, Any] | None, orders: list[dict[str, Any]]) ->
         rows: list[Any] = []
         for card in board.get(key) or []:
             if isinstance(card, dict):
-                rows.append(annotate_card(card, orders, "gold"))
+                rows.append(annotate_card(card, orders, "gold", now=now))
             else:
                 rows.append(card)
         out[key] = rows
@@ -429,7 +563,7 @@ def round_trips(
                 "exit": exit_px,
                 "contracts": qty,
                 "pnl": round(pnl, 2),
-                "reason": str(order.get("reason") or ""),
+                "reason": public_reason(order.get("reason")),
                 "order_id": str(order.get("id") or ""),
                 "expired": expired,
                 "itm": bool(_meta(order).get("itm")) if expired else False,
@@ -501,7 +635,7 @@ def _lunch_trips(book: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "exit": debit,
                 "contracts": qty,
                 "pnl": round(pnl, 2),
-                "reason": str(order.get("reason") or ""),
+                "reason": public_reason(order.get("reason")),
                 "order_id": str(order.get("id") or ""),
                 "raw_desk": "lunch_credit",
                 "exited_at": str(order.get("updated_at") or order.get("created_at") or ""),
@@ -565,8 +699,21 @@ def reconcile_pnl(orders: list[dict[str, Any]] | None) -> dict[str, Any]:
     trips = round_trips(book)
     fill_pnl = round(sum(float(trip["pnl"]) for trip in trips), 2)
     unpriced = _unpriced_exits(book)
+    days = sorted(
+        day
+        for day in (
+            (_instant(trip.get("exited_at")) or None) for trip in trips
+        )
+        if day is not None
+    )
+    since = days[0].astimezone(_CT).date().isoformat() if days else None
     return {
         "fill_pnl": fill_pnl,
+        # Scope of fill_pnl: fills still in the order file, routed desks only.
+        # The scorecard daily P&L also counts older fills kept in the
+        # round-trip log, so its all-time total is a different window.
+        "since": since,
+        "scope": "Sniper, Diamond, Gold Setup, Afternoon Puts, Lunch-Break Credit fills in the retained order file",
         "alert_pnl": fill_pnl,
         "match": unpriced == 0,
         "unpriced": unpriced,

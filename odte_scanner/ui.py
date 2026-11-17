@@ -1420,7 +1420,7 @@ PAGE = r"""
         ? "LOG ONLY"
         : (buy
         ? (isSure
-          ? `${sureTier || "SURE"} · ${r.size_label || (r.go_huge ? "GO HUGE" : "SIZE UP")}`
+          ? `${sureTier || "GOLD"} · ${r.size_label || (r.go_huge ? "GO HUGE" : "SIZE UP")}`
           : (isLevel ? "BUY LEVEL" : (isBeauty ? "BUY BEAUTY" : (isRip ? "BUY RIP" : (gated ? "ENTER NOW" : "BUY NOW")))))
         : (setup ? "SETUP · not BUY" : (wait ? "WAIT" : "SELL NOW")));
       const strike = r.strike == null ? "—" : `${fmt(r.strike, Number(r.strike) % 1 ? 2 : 0)}${right === "PUT" ? "p" : "c"}`;
@@ -1436,7 +1436,7 @@ PAGE = r"""
         : "";
       return `<article class="action-card ${cls}">
         <div class="ac-top">
-          <div class="ac-sym">${r.symbol} <span class="tag">${deskLabel(r._desk)}</span>${isSure ? ` <span class="badge ${sureCls}">${sureTier || "SURE"}</span>` : ""}${r.hold_style ? ` <span class="tag">${r.hold_style}</span>` : ""} <span class="tag">${right}</span></div>
+          <div class="ac-sym">${r.symbol} <span class="tag">${deskLabel(r._desk)}</span>${isSure ? ` <span class="badge ${sureCls}">${sureTier || "GOLD"}</span>` : ""}${r.hold_style ? ` <span class="tag">${r.hold_style}</span>` : ""} <span class="tag">${right}</span></div>
           <div class="ac-dir ${isSure ? sureCls : (buy && gated ? "" : (buy ? "long" : (wait || setup ? "wait" : "short")))}">${label}</div>
         </div>
         <div class="ac-conf">${deskLabel(r._desk)} · ${when && when !== "—" ? when : "time —"}${confLine}${showEntry ? ` · entered ${entryWhen}` : ""}</div>
@@ -3514,12 +3514,12 @@ PAGE = r"""
       const fill = money(o && o.fill_price);
       const limit = money(o && o.limit_price);
       if (o && o.premium_label) return o.premium_label;
-      if (status === "partial" && fill && limit) return "Filled @ " + fill + " · Limit (working) " + limit;
+      if (status === "partial" && fill && limit) return "Filled @ " + fill + " · Limit " + limit + " (working)";
       if ((status === "filled" || status === "partial") && fill) return "Filled @ " + fill;
       if (status === "filled" && limit) return "Filled @ " + limit;
       if (!limit) return "—";
       if (status === "cancelled" || status === "rejected" || status === "skipped") return limit;
-      return "Limit (working) " + limit;
+      return "Limit " + limit + " (working)";
     }
 
     function renderExitHealth(health, latency) {
@@ -3962,7 +3962,7 @@ PAGE = r"""
         const isSure = kind === "sure" || !!row.sure_winner || !!sureWinnerCardClass(row);
         const sureCls = isSure ? (sureWinnerCardClass(row) || "sure-solid") : "";
         const tag = isSure
-          ? `${sureTier || "SURE"} · ${row.size_label || "GO HUGE"}`
+          ? `${sureTier || "GOLD"} · ${row.size_label || "GO HUGE"}`
           : (kind === "must" ? "MUST TRADE" : (kind === "radar" ? "RADAR HOT" : "EXIT NOW"));
         const view = tradedView(row);
         const strikeTxt = view.strike;
@@ -4024,7 +4024,7 @@ PAGE = r"""
               ? (sureBoard.note || "Gold/amber = capped high-conviction tickets. MAX = GO HUGE (×3), HIGH = SIZE UP (×2). Hist edge ≠ guaranteed profit.")
               : "Hist-gated tickets with strike, strike-rate, and expiry up top. EXIT cards are live positions/tickets the desk says leave now. Hist edge ≠ guaranteed future profit."}</div>
           </div>
-          <div class="status">SURE ${topSure.length} · MUST ${topMust.length} · EXIT ${topExit.length}</div>
+          <div class="status">GOLD ${topSure.length} · MUST ${topMust.length} · EXIT ${topExit.length}</div>
         </div>
         <div class="pb-grid">${grid}</div>`;
     }
@@ -4048,7 +4048,7 @@ PAGE = r"""
         m("Closed", `${t.closed_n||0} · W${t.win_n||0}/L${t.loss_n||0}`),
         m("Open", String(t.open_n||0)),
         m("Desk conf", conf.pct==null?"—":`${fmt(conf.pct,0)}%`, conf.pct>=75?"up":""),
-        m("Webull paper", (DATA.pnl_reconcile||{}).fill_pnl==null?"—":`$${fmt((DATA.pnl_reconcile||{}).fill_pnl,2)}`, (DATA.pnl_reconcile||{}).match?"up":""),
+        m((DATA.pnl_reconcile||{}).since ? `Webull paper since ${(DATA.pnl_reconcile||{}).since}` : "Webull paper", (DATA.pnl_reconcile||{}).fill_pnl==null?"—":`$${fmt((DATA.pnl_reconcile||{}).fill_pnl,2)}`, (DATA.pnl_reconcile||{}).match?"up":""),
         m("Vs alerts", (DATA.pnl_reconcile||{}).match ? "match" : ((DATA.pnl_reconcile||{}).alert_pnl==null?"—":`$${fmt((DATA.pnl_reconcile||{}).alert_pnl,2)}`), (DATA.pnl_reconcile||{}).match?"up":"down"),
       ].join("");
 
@@ -4808,7 +4808,7 @@ PAGE = r"""
       const rc = (DATA.radar && DATA.radar.counts) || {};
       const sc = (DATA.sure_winners && DATA.sure_winners.counts) || {};
       document.getElementById("counts").textContent =
-        `SURE ${sc.winners||0} · BUY ${c.buy_now||0} · SELL ${c.sell_now||0} · WAIT ${c.wait||0} · RIP ${(DATA.rip_radar&&DATA.rip_radar.counts&&DATA.rip_radar.counts.buy_rip)||0} · LOTTO B/S ${lc.buy_now||0}/${lc.sell_now||0} · ML6 B/S ${(DATA.ml6&&DATA.ml6.actions&&DATA.ml6.actions.counts&&DATA.ml6.actions.counts.buy_now)||0}/${(DATA.ml6&&DATA.ml6.actions&&DATA.ml6.actions.counts&&DATA.ml6.actions.counts.sell_now)||0} · RADAR HOT ${rc.hot||0}`;
+        `GOLD ${sc.winners||0} · BUY ${c.buy_now||0} · SELL ${c.sell_now||0} · WAIT ${c.wait||0} · RIP ${(DATA.rip_radar&&DATA.rip_radar.counts&&DATA.rip_radar.counts.buy_rip)||0} · LOTTO B/S ${lc.buy_now||0}/${lc.sell_now||0} · ML6 B/S ${(DATA.ml6&&DATA.ml6.actions&&DATA.ml6.actions.counts&&DATA.ml6.actions.counts.buy_now)||0}/${(DATA.ml6&&DATA.ml6.actions&&DATA.ml6.actions.counts&&DATA.ml6.actions.counts.sell_now)||0} · RADAR HOT ${rc.hot||0}`;
       const gate = acts.hist_win_gate || DATA.hist_win_gate || {};
       const gateEl = document.getElementById("histWinGate");
       if (gateEl) {
