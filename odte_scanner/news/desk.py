@@ -512,6 +512,22 @@ def _resolve(item: dict[str, Any], rt: Runtime) -> list[str]:
 
 
 _FORM_COVER = re.compile(r"SECURITIES AND EXCHANGE COMMISSION|FORM (8-K|6-K)\b|CURRENT REPORT", re.I)
+# Investor-deck covers and disclaimers are not a headline.
+_DECK_COVER = re.compile(r"LEGAL DISCLAIMER|this presentation (contains|includes|has been)|forward[- ]looking statements", re.I)
+_TITLE_VERB = re.compile(
+    r"\b(reports?|announces?|provides|posts|delivers|enters|completes?|declares?|appoints|names|receives?|"
+    r"launches|agrees?|acquires?|acquired|prices|pricing|updates?|raises|lowers|withdraws|achieves|unveils|"
+    r"signs|files|grants?|presents?|reminds|expands|enhances|finalizes|results|offering|merger|acquisition)\b",
+    re.I,
+)
+
+
+def _not_a_title(headline: str) -> bool:
+    """A deck cover, a disclaimer, or the filer's name alone ("DIAMONDROCK HOSPITALITY COMPANY")."""
+    text = headline.strip()
+    if _DECK_COVER.search(text[:200]):
+        return True
+    return len(text.split()) <= 5 and not _TITLE_VERB.search(text)
 ITEM_NAMES = {
     "1.01": "material agreement",
     "1.03": "bankruptcy",
@@ -581,7 +597,7 @@ def build_events(
                 logger.info("news desk exhibit %s failed: %s", adsh, F.redact_error(str(exc)))
                 text = ""
             headline = headline_of(text, company=item.get("company")) or ""
-            if not headline or _FORM_COVER.search(headline[:160]):
+            if not headline or _FORM_COVER.search(headline[:160]) or _not_a_title(headline):
                 headline = edgar_headline(item)  # no press release: describe the filing
         seen.add(iid)
         seen_order.append(iid)

@@ -60,7 +60,7 @@ def test_fills_attach_labels_and_pnl():
                "limit_price": 2.5, "quantity": 1, "meta": {"signal_bid": 2.4, "signal_ask": 2.6}}]
     C.attach_fills(ev, orders)
     p = ev[0]["paper"]
-    assert p["price_label"] == "Limit (working) $2.50" and p["quote_label"] == "Bid $2.40 / Ask $2.60"
+    assert p["price_label"] == "Limit $2.50 (working)" and p["quote_label"] == "Bid $2.40 / Ask $2.60"
 
 
 def test_cycle_dedupes_and_resends_on_score_increase(tmp_path):

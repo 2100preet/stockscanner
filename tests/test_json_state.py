@@ -55,7 +55,8 @@ def _journal_text() -> str:
 
 def test_trailing_comma_matches_the_live_decode_error():
     broken = _journal_text().rstrip()[:-1].rstrip() + ",\n}\n"
-    with pytest.raises(json.JSONDecodeError, match="property name enclosed in double quotes"):
+    # Python 3.12 says "Expecting property name enclosed in double quotes"; 3.13 says "Illegal trailing comma".
+    with pytest.raises(json.JSONDecodeError, match="property name enclosed in double quotes|Illegal trailing comma"):
         json.loads(broken)
     salvaged = salvage_json(broken)
     assert [row["symbol"] for row in salvaged["trades"]] == ["NVDA", "AMD"]

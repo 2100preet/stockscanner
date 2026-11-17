@@ -15,13 +15,13 @@ def _money(value: Any) -> str | None:
 
 
 def activity_premium_label(order: dict[str, Any] | None) -> str:
-    """``Limit (working) $1.05`` while the buy rests, ``Filled @ $1.22`` after a fill."""
+    """``Limit $1.05 (working)`` while the buy rests, ``Filled @ $1.22`` after a fill."""
     row = order or {}
     status = str(row.get("status") or "")
     fill = _money(row.get("fill_price"))
     limit = _money(row.get("limit_price"))
     if status == "partial" and fill and limit:
-        return f"Filled @ {fill} · Limit (working) {limit}"
+        return f"Filled @ {fill} · Limit {limit} (working)"
     if status in {"filled", "partial"} and fill:
         return f"Filled @ {fill}"
     if status == "filled" and limit:
@@ -30,4 +30,4 @@ def activity_premium_label(order: dict[str, Any] | None) -> str:
         return "—"
     if status in {"cancelled", "rejected", "skipped"}:
         return limit
-    return f"Limit (working) {limit}"
+    return f"Limit {limit} (working)"

@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -32,6 +33,7 @@ from odte_scanner.desks.million import (
 )
 from odte_scanner.desks.million import _fresh as million_fresh
 from odte_scanner.desks.million import _load as load_million
+from odte_scanner.desks.portal_feed import shape_portal_feed
 from odte_scanner.desks.sp100 import oversold_universe, sp100_universe
 from odte_scanner.desks.store import DeskStateError
 from odte_scanner.json_util import atomic_write_text
@@ -41,6 +43,10 @@ ROOT = Path(__file__).resolve().parents[2]
 BAR_TTL = timedelta(hours=6)
 VWAP_TTL = timedelta(seconds=60)
 CT = ZoneInfo("America/Chicago")
+# One cycle at a time. The web snapshot and the live desk loop build their own
+# Flask apps, so the snapshot gate does not cover both. Two cycles at once both
+# load the same book, and the later save drops the other cycle's fills.
+_CYCLE_LOCK = threading.Lock()
 
 
 def _abs(path: str | Path) -> Path:
@@ -59,6 +65,13 @@ def _should_cycle(cycle: bool | None) -> bool:
     if cycle is not None:
         return cycle
     return "PYTEST_CURRENT_TEST" not in os.environ
+
+
+def _as_of(now: datetime | None):
+    if now is None:
+        return None
+    moment = now if now.tzinfo is not None else now.replace(tzinfo=CT)
+    return moment.astimezone(CT).date()
 
 
 def _read_book(loader, fresh, path: Path, starting: float) -> dict[str, Any]:
@@ -371,6 +384,47 @@ def portal_view(
     fetcher: Callable[[list[str]], Mapping[str, list[Mapping[str, Any]]]] | None = None,
     environ: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
+    """Public books plus the scorecard rows for both desks.
+
+    A cycle that finds another cycle running reads the saved books instead of
+    advancing them a second time.
+    """
+    args = dict(
+        challenge=challenge,
+        quotes=quotes,
+        bars=bars,
+        chains=chains,
+        intraday=intraday,
+        now=now,
+        vix=vix,
+        fetcher=fetcher,
+        environ=environ,
+    )
+    if not _should_cycle(cycle):
+        return _portal_view_once(cfg, cycle=False, **args)
+    if not _CYCLE_LOCK.acquire(blocking=False):
+        logger.info("paper desks: cycle already running; serving saved books")
+        return _portal_view_once(cfg, cycle=False, **args)
+    try:
+        return _portal_view_once(cfg, cycle=True, **args)
+    finally:
+        _CYCLE_LOCK.release()
+
+
+def _portal_view_once(
+    cfg: Mapping[str, Any] | None = None,
+    *,
+    challenge: Mapping[str, Any] | None = None,
+    quotes: Mapping[str, Any] | None = None,
+    bars: Mapping[str, list[Mapping[str, Any]]] | None = None,
+    chains: Mapping[str, list[Mapping[str, Any]]] | None = None,
+    intraday: Mapping[str, Mapping[str, Any]] | None = None,
+    now: datetime | None = None,
+    vix: Mapping[str, Any] | None = None,
+    cycle: bool | None = None,
+    fetcher: Callable[[list[str]], Mapping[str, list[Mapping[str, Any]]]] | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
     """Public books plus the scorecard rows for both desks."""
     config = cfg or {}
     kot_cfg = _section(config, "kotegawa")
@@ -403,7 +457,10 @@ def portal_view(
             environ=environ,
         )
     else:
-        kotegawa = kotegawa_view(_read_book(load_kotegawa, kotegawa_fresh, kot_path, kot_start))
+        kotegawa = kotegawa_view(
+            _read_book(load_kotegawa, kotegawa_fresh, kot_path, kot_start),
+            as_of=_as_of(now),
+        )
 
     sources = [str(name) for name in (mil_cfg.get("signals") or [])]
     needs_bars = "oversold_bounce" in sources
@@ -457,11 +514,17 @@ def portal_view(
             held = million_fresh(mil_start)
             held["status_note"] = "state file belongs to another desk"
         held["state_path"] = str(mil_path)
-        million = million_view(held)
+        million = million_view(held, as_of=_as_of(now))
         million["signals"] = sources
 
     rows = [kotegawa_row(kotegawa), million_row(million)]
-    return {"kotegawa": kotegawa, "million_challenge": million, "rows": rows}
+    portal = shape_portal_feed(kotegawa, million, now=now)
+    return {
+        "kotegawa": kotegawa,
+        "million_challenge": million,
+        "rows": rows,
+        "portal": portal,
+    }
 
 
 def scorecard_rows(cfg: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
