@@ -29,6 +29,7 @@ from typing import Any, Callable, Iterable
 from zoneinfo import ZoneInfo
 
 from odte_scanner.news import feeds as F
+from odte_scanner.news.biotech_watch import bio_snippet
 from odte_scanner.news.classify import classify, display_headline, earnings_by_move, headline_of, tag
 
 logger = logging.getLogger(__name__)
@@ -637,6 +638,9 @@ def build_events(
                     "reaction_day": reaction_day(published).isoformat(),
                     "eps_surprise_pct": eps_surprise(rt, tk, moment) if tk else None,
                     "text_guidance": text[:2500] if tag["type"] == "EARN_PENDING" else None,
+                    "cik": item.get("cik") if item.get("source") == "edgar" else None,
+                    # Short catalyst snippet for the biotech watch (PDUFA / AdCom date); popped each cycle.
+                    "bio_text": bio_snippet(headline, text),
                 }
             )
     state["seen"] = seen_order[-MAX_SEEN:]
@@ -1032,7 +1036,7 @@ def run_cycle(
         try:
             return _cycle_body(state, moment, day, rt=rt, fetchers=fetchers, text_fn=text_fn, send=send,
                                telegram=telegram, extended_fn=extended_fn, shadow_kwargs=shadow_kwargs,
-                               shadow_path=shadow_path, force=force)
+                               shadow_path=shadow_path, force=force, store_path=store_path)
         finally:
             # Always persist seen ids and sends, so an error can never cause a repeat alert.
             state["updated_at"] = moment.isoformat()
@@ -1044,7 +1048,8 @@ def _cycle_body(state: dict[str, Any], moment: datetime, day: str, *, rt: Runtim
                 fetchers: dict[str, Callable[[], Any]] | None, text_fn: Callable[[int, str], str] | None,
                 send: Callable[[str], dict[str, Any]] | None, telegram: bool | None,
                 extended_fn: Callable[[str, datetime], float | None] | None,
-                shadow_kwargs: dict[str, Any] | None, shadow_path: Path | None, force: bool) -> dict[str, Any]:
+                shadow_kwargs: dict[str, Any] | None, shadow_path: Path | None, force: bool,
+                store_path: Path | None = None) -> dict[str, Any]:
     items = gather(state, moment, rt=rt, fetchers=fetchers if fetchers is not None else default_fetchers(), force=force)
     events = build_events(state, items, moment, rt=rt, text_fn=text_fn)
     # Only scan-universe names wait for a surprise; other earnings are not alert material.
@@ -1065,12 +1070,43 @@ def _cycle_body(state: dict[str, Any], moment: datetime, day: str, *, rt: Runtim
             continue
         sent += outcome == "sent"
         recorded += outcome in {"sent", "recorded"}
+    _biotech_pass(events, quotes, moment, rt=rt, send=send, telegram=telegram,
+                  store_path=(store_path.parent / "biotech_watch_day.json") if store_path else None)
     try:
         finalized = run_shadow(state, moment, rt=rt, shadow_path=shadow_path, **(shadow_kwargs or {}))
     except Exception as exc:  # noqa: BLE001
         logger.warning("news shadow pass failed: %s", exc)
         finalized = 0
     return {"ok": True, "items": len(items), "recorded": recorded, "sent": sent, "shadow_finalized": finalized}
+
+
+_TICKER_CIK: dict[str, Any] = {"loaded_at": None, "map": {}}
+
+
+def _cik_for(rt: Runtime, ticker: str) -> int | None:
+    """Ticker -> CIK from the desk's CIK map (inverse built once per map load)."""
+    if _TICKER_CIK["loaded_at"] != rt.cik.loaded_at:
+        _TICKER_CIK["map"] = {t: c for c, t in rt.cik.cik_to_ticker.items()}
+        _TICKER_CIK["loaded_at"] = rt.cik.loaded_at
+    return _TICKER_CIK["map"].get(str(ticker or "").upper())
+
+
+def _biotech_pass(events: list[dict[str, Any]], quotes: dict[str, dict[str, Any]], moment: datetime, *,
+                  rt: Runtime, send: Callable[[str], dict[str, Any]] | None, telegram: bool | None,
+                  store_path: Path | None = None) -> None:
+    """🧬 Biotech Catalyst Watch rides this cycle (alert only). Its failure never stops the desk."""
+    try:
+        # Only the live loop (default sender) runs it; desk tests inject their own sender.
+        if send is None and env_flag("BIOTECH_WATCH", True):
+            from odte_scanner.news import biotech_watch as B
+
+            B.run_pass(events, quotes, moment, quote_fn=lambda syms: rt.quotes.get(syms, max_age=B.SPIKE_EVERY_SEC - 60),
+                       cik_fn=lambda tk: _cik_for(rt, tk), telegram=telegram, store_path=store_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("biotech watch pass failed: %s", exc)
+    finally:
+        for ev in events:
+            ev.pop("bio_text", None)
 
 
 def _record_key(day: str, ev: dict[str, Any]) -> str:
@@ -1191,6 +1227,12 @@ def _sleep_for(moment: datetime, state_path: Path | None = None) -> float:
 def _worker_loop(config_path: str | None) -> None:
     logger.info("News desk started (alert only) poll=%ss telegram=%s", poll_seconds(), telegram_enabled())
     RUNTIME.universe = load_universe(config_path)
+    try:
+        from odte_scanner.news import biotech_watch as B
+
+        B.RUNTIME.watchlist = B.load_watchlist(config_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("biotech watchlist load failed: %s", exc)
     while True:
         started = time.monotonic()
         try:

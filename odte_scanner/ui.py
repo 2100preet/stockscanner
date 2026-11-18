@@ -387,6 +387,7 @@ PAGE = r"""
     <div id="confluenceBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="ripV2ShadowBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="newsDeskBanner" class="pulse-banner" aria-live="polite"></div>
+    <div id="biotechWatchBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="loadNote" class="loading" style="display:none;margin-bottom:.6rem"></div>
     <div id="alertToasts" aria-live="assertive"></div>
 
@@ -4743,6 +4744,36 @@ PAGE = r"""
         ${board.ok === false ? `<div class="pulse-card expected"><p class="pc-why">${esc(board.note || "RIP-v2 shadow unavailable.")}</p></div>` : statsTable + today}`;
     }
 
+    function renderBiotechWatch() {
+      const el = document.getElementById("biotechWatchBanner");
+      if (!el) return;
+      const board = DATA.biotech_watch || {};
+      el.classList.add("active", "expected");
+      const esc = (v) => String(v == null ? "" : v).replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+      const safeUrl = (u) => /^https?:\/\//i.test(String(u || "")) ? esc(u) : "";
+      const rows = (board.events || []).slice(0, 15).map((e) => {
+        const link = safeUrl(e.url);
+        const text = e.headline || e.label || "";
+        const head = link ? `<a href="${link}" target="_blank" rel="noopener noreferrer">${esc(text)}</a>` : esc(text);
+        const dil = e.dilution || {};
+        const dilTxt = (dil.status === "warn" ? "⚠️ " : "") + esc(dil.detail || "unknown");
+        const status = e.sent ? "sent" : esc(e.why_not_sent || "logged");
+        return `<tr><td>${esc(e.published_ct || e.seen_ct || "—")}</td><td><strong>${esc(e.ticker)}</strong></td><td>${esc(e.label)}</td><td>${esc(e.catalyst_date || "—")}</td><td>${head}</td><td>${esc(e.move_label || "—")}</td><td>${dilTxt}</td><td>${status}</td></tr>`;
+      }).join("");
+      const table = rows
+        ? `<div style="overflow-x:auto"><table class="pb-table" style="width:100%;font-size:12px"><thead><tr><th>Time</th><th>Ticker</th><th>Catalyst</th><th>Date</th><th>Headline</th><th>Move</th><th>Dilution</th><th>Alert</th></tr></thead><tbody>${rows}</tbody></table></div>`
+        : `<div class="pulse-card expected"><p class="pc-why">No biotech catalysts or volume spikes yet today.</p></div>`;
+      el.innerHTML = `
+        <div class="pb-head">
+          <div>
+            <h2 class="pb-title">🧬 Biotech Catalyst Watch <em>· alert only</em></h2>
+            <div class="pb-sub">trial readouts · FDA approval / CRL · PDUFA · AdCom · ${esc(board.spike_rule || "volume spikes")} · never places orders</div>
+          </div>
+          <div class="status">${board.ok === false ? "UNAVAILABLE" : ((board.n_events || 0) + " TODAY · " + (board.sent_today || 0) + " SENT")}</div>
+        </div>
+        ${board.ok === false ? `<div class="pulse-card expected"><p class="pc-why">${esc(board.note || "Biotech watch unavailable.")}</p></div>` : table + `<div class="pulse-card expected" style="margin-top:.4rem"><p class="pc-why">${esc(board.note || "")}</p></div>`}`;
+    }
+
     function renderNewsDesk() {
       const el = document.getElementById("newsDeskBanner");
       if (!el) return;
@@ -5090,6 +5121,7 @@ PAGE = r"""
       try { renderConfluence(); } catch (err) { console.error(err); }
       try { renderRipV2Shadow(); } catch (err) { console.error(err); }
       try { renderNewsDesk(); } catch (err) { console.error(err); }
+      try { renderBiotechWatch(); } catch (err) { console.error(err); }
       try { renderSpxStrategy(); } catch (err) { console.error(err); }
       renderMustTradeBanner();
       renderNowBoard();
@@ -5693,6 +5725,17 @@ def _news_desk_block() -> dict:
         return public_block()
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "events": [], "alert_only": True, "error": str(exc)[:200], "note": "News Desk unavailable."}
+
+
+def _biotech_watch_block() -> dict:
+    """🧬 Biotech Catalyst Watch tile from disk. Alert only. A failure is an ok:false block."""
+    try:
+        from odte_scanner.news.biotech_watch import public_block
+
+        return public_block()
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "events": [], "alert_only": True, "error": str(exc)[:200],
+                "note": "Biotech Catalyst Watch unavailable."}
 
 
 def _squeeze_fire_block() -> dict:
@@ -8760,6 +8803,7 @@ def create_app(config_path: str | None = None) -> Flask:
                         "confluence": _confluence_block(),
                         "rip_v2_shadow": _rip_v2_shadow_block(),
                         "news_desk": _news_desk_block(),
+                        "biotech_watch": _biotech_watch_block(),
                         "squeeze_fire": _squeeze_fire_block(),
                         "levels_card": _levels_card_block(),
                         }
