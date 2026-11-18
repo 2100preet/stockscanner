@@ -256,7 +256,7 @@ def run_fast_desk_cycle(
 
         routed_rows = list((route_meta or {}).get("submitted") or [])
         routed_rows.extend(list((route_meta or {}).get("recent") or []))
-        promote_routed_hot_alerts(snapshot, routed_rows)
+        promote_routed_hot_alerts(snapshot, routed_rows, now=moment)
     except Exception as exc:  # noqa: BLE001
         logger.info("fast desk promote failed: %s", exc)
 
@@ -434,7 +434,7 @@ def run_afternoon_puts_cycle(
 
         routed_rows = list((route_meta or {}).get("submitted") or [])
         routed_rows.extend(list((route_meta or {}).get("recent") or []))
-        promote_routed_hot_alerts(snapshot, routed_rows)
+        promote_routed_hot_alerts(snapshot, routed_rows, now=moment)
     except Exception as exc:  # noqa: BLE001
         logger.info("afternoon puts promote failed: %s", exc)
     sample = None

@@ -703,6 +703,8 @@ def collect_trade_alerts(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         if not _positive_price(row, "ask", "live_ask", "order_fill", "fill_price", "order_limit", "limit_price"):
             continue
+        if contract_expired_for_card(row):
+            continue
         sent_symbols.add(sym)
         push(row, "BUY", "Diamond", force=True)
 
@@ -720,6 +722,8 @@ def collect_trade_alerts(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         if not _positive_price(row, "ask", "live_ask", "order_fill", "fill_price", "order_limit", "limit_price"):
             continue
+        if contract_expired_for_card(row):
+            continue
         sniper_symbols.add(sym)
         push(row, "BUY", "Sniper", force=True)
 
@@ -736,6 +740,8 @@ def collect_trade_alerts(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
         if not sym or sym in afternoon_symbols:
             continue
         if not _positive_price(row, "ask", "live_ask", "order_fill", "fill_price", "order_limit", "limit_price"):
+            continue
+        if contract_expired_for_card(row):
             continue
         afternoon_symbols.add(sym)
         push(row, "BUY", "AfternoonPuts", force=True)
@@ -1159,29 +1165,101 @@ def _hot_desk(row: dict[str, Any]) -> str | None:
     return None
 
 
-def promote_routed_hot_alerts(snapshot: dict[str, Any], orders: list[dict[str, Any]] | None) -> None:
+def _card_session_day(row: dict[str, Any], now: datetime | None = None):
+    """Trading day (Central) this alert card belongs to."""
+    text = str(row.get("day_cst") or "").strip()[:10]
+    if text:
+        try:
+            return datetime.strptime(text, "%Y-%m-%d").date()
+        except ValueError:
+            pass
+    for key in ("signaled_at", "detected_at", "created_at"):
+        raw = str(row.get(key) or "").replace("Z", "+00:00")
+        if not raw:
+            continue
+        try:
+            moment = datetime.fromisoformat(raw)
+        except ValueError:
+            continue
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        from odte_scanner.time_cst import CT
+
+        return moment.astimezone(CT).date()
+    clock = now or datetime.now(timezone.utc)
+    if clock.tzinfo is None:
+        clock = clock.replace(tzinfo=timezone.utc)
+    from odte_scanner.time_cst import CT
+
+    return clock.astimezone(CT).date()
+
+
+def _order_session_day(order: dict[str, Any]):
+    raw = str(order.get("created_at") or order.get("updated_at") or "").replace("Z", "+00:00")
+    if raw:
+        try:
+            moment = datetime.fromisoformat(raw)
+        except ValueError:
+            moment = None
+        else:
+            if moment.tzinfo is None:
+                moment = moment.replace(tzinfo=timezone.utc)
+            from odte_scanner.time_cst import CT
+
+            return moment.astimezone(CT).date()
+    meta = order.get("meta") if isinstance(order.get("meta"), dict) else {}
+    text = str(meta.get("signal_day") or "").strip()[:10]
+    if text:
+        try:
+            return datetime.strptime(text, "%Y-%m-%d").date()
+        except ValueError:
+            pass
+    return None
+
+
+def _expiry_on(row: dict[str, Any]):
+    from odte_scanner.signals.hold_rules import parse_expiry_date
+
+    exp = parse_expiry_date(row.get("expiry"))
+    if exp is not None:
+        return exp
+    occ = _occ_parts(row.get("contract") or row.get("occ") or row.get("traded_contract"))
+    return parse_expiry_date(occ.get("expiry")) if occ else None
+
+
+def contract_expired_for_card(row: dict[str, Any], now: datetime | None = None) -> bool:
+    """True when the contract expired before the card's own session day.
+
+    Wall-clock ``now`` is not used as a fallback. Historical fixtures (and
+    replayed cards) would otherwise look expired when the suite runs later.
+    A live board always stamps ``day_cst`` / ``detected_at``, so yesterday's
+    expiry on today's card is still caught.
+    """
+    exp = _expiry_on(row)
+    if exp is None:
+        return False
+    # Ignore the clock fallback inside _card_session_day by only consulting
+    # fields that actually sit on the card.
+    probe = {k: row.get(k) for k in ("day_cst", "signaled_at", "detected_at", "created_at")}
+    if not any(probe.values()):
+        return False
+    return exp < _card_session_day(row, None)
+
+
+def promote_routed_hot_alerts(
+    snapshot: dict[str, Any],
+    orders: list[dict[str, Any]] | None,
+    *,
+    now: datetime | None = None,
+) -> None:
     """A routed Sniper/Diamond buy still alerts after ``send`` flips false.
 
     The 10:30 window flag must not swallow an order that already went to the
-    paper account. SPX is never promoted: it is alert-only.
+    paper account. SPX is never promoted: it is alert-only. Only a same-day,
+    unexpired buy is stamped onto the card — a fill from a prior session
+    (or an expired contract) must not overwrite today's signal.
     """
-    best: dict[tuple[str, str], dict[str, Any]] = {}
     rank = {"filled": 0, "partial": 1, "submitted": 2, "staged": 3, "dry_run": 4, "cancelled": 5}
-    for row in orders or []:
-        if not isinstance(row, dict):
-            continue
-        if str(row.get("action") or "").upper() != "BUY":
-            continue
-        status = str(row.get("status") or "")
-        if status not in _HOT_BUY_STATUSES:
-            continue
-        desk = _hot_desk(row)
-        sym = str(row.get("symbol") or "").upper()
-        if not desk or not sym or sym == "SPX":
-            continue
-        current = best.get((desk, sym))
-        if current is None or rank.get(status, 9) < rank.get(str(current.get("status") or ""), 9):
-            best[(desk, sym)] = row
     boards = (("sniper", "sniper"), ("diamond", "diamond"), ("afternoon", "afternoon_puts"))
     for name, key in boards:
         board = snapshot.get(key)
@@ -1191,9 +1269,52 @@ def promote_routed_hot_alerts(snapshot: dict[str, Any], orders: list[dict[str, A
             if not isinstance(card, dict):
                 continue
             sym = str(card.get("symbol") or "").upper()
-            order = best.get((name, sym))
-            if order is None or sym == "SPX":
+            if not sym or sym == "SPX":
                 continue
+            day = _card_session_day(card, now)
+            card_contract = str(card.get("contract") or "").strip()
+            card_expiry = str(card.get("expiry") or "")[:10]
+            eligible: list[dict[str, Any]] = []
+            for row in orders or []:
+                if not isinstance(row, dict):
+                    continue
+                if str(row.get("action") or "").upper() != "BUY":
+                    continue
+                status = str(row.get("status") or "")
+                if status not in _HOT_BUY_STATUSES:
+                    continue
+                if _hot_desk(row) != name:
+                    continue
+                if str(row.get("symbol") or "").upper() != sym:
+                    continue
+                exp = _expiry_on(row)
+                if exp is not None and exp < day:
+                    continue
+                order_day = _order_session_day(row)
+                # A dated row must be from this card's session. An undated
+                # row (a just-submitted test/cycle order) may attach only
+                # when the contract is not already expired.
+                if order_day is not None and order_day != day:
+                    continue
+                eligible.append(row)
+            if not eligible:
+                continue
+            exact = [row for row in eligible if card_contract and str(row.get("contract") or "") == card_contract]
+            same_exp = [
+                row
+                for row in eligible
+                if card_expiry and str(row.get("expiry") or "")[:10] == card_expiry
+            ]
+            pool = exact or same_exp or eligible
+            order = min(
+                pool,
+                key=lambda row: (
+                    rank.get(str(row.get("status") or ""), 9),
+                    # Latest attempt wins ties (e.g. a chase replacement).
+                    -(datetime.fromisoformat(str(row.get("created_at") or "1970-01-01T00:00:00+00:00").replace("Z", "+00:00")).timestamp()
+                      if row.get("created_at") else 0),
+                ),
+            )
             card["send"] = True
             card["routed_order"] = True
             if order.get("contract"):

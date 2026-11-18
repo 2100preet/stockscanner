@@ -449,3 +449,18 @@ def test_send_does_not_hold_the_alert_lock(monkeypatch, tmp_path):
     release.set()
     worker.join(3)
     assert not worker.is_alive()
+
+
+
+def test_route_buy_refuses_an_expired_contract(tmp_path):
+    broker, trader = _broker(tmp_path)
+    trader._now = _ct(9, 46, "2026-11-18")
+    card = _card()
+    card["expiry"] = "2026-11-17"
+    card["contract"] = "SPY261117P00737000"
+    card["strike"] = 737.0
+    card["day_cst"] = "2026-11-18"
+    out = trader._route_buy(desk="sniper", row=card, right="P")
+    assert out is None
+    assert broker.orders == []
+    assert any("expired contract" in str(row.get("reason") or "") for row in trader.filtered)
