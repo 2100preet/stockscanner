@@ -785,3 +785,148 @@ def test_quality_only_resume_is_one_notice_and_skips_sniper_cards():
     assert len(alerts) == 1
     assert alerts[0]["message"].splitlines()[0] == "🏁 CHALLENGE RESUMED — quality only"
     assert "SPY" not in alerts[0]["message"]
+
+
+
+def test_promote_does_not_reuse_yesterdays_fill():
+    """Today's 9:40 SPY put must not inherit yesterday's 737P fill."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    CT = ZoneInfo("America/Chicago")
+    now = datetime(2026, 11, 18, 9, 46, tzinfo=CT)
+    card = {
+        "symbol": "SPY",
+        "send": True,
+        "send_order": True,
+        "action": "SNIPER",
+        "desk": "Sniper",
+        "right": "P",
+        "strike": 730.0,
+        "expiry": "2026-11-18",
+        "dte": 0,
+        "ask": 3.20,
+        "bid": 3.10,
+        "spot": 729.65,
+        "contract": "SPY261118P00730000",
+        "day_cst": "2026-11-18",
+        "at_ct": "09:40",
+        "detected_at": "2026-11-18T15:45:58+00:00",
+        "signaled_at": "2026-11-18T15:40:00+00:00",
+        "detail": "Sniper · 15-minute opening-range retest, 9/21 EMA stack, put · signal 09:40 CT.",
+    }
+    yesterday = {
+        "id": "wb-2d29715278",
+        "symbol": "SPY",
+        "desk": "sniper",
+        "action": "BUY",
+        "status": "filled",
+        "strike": 737.0,
+        "right": "P",
+        "expiry": "2026-11-17",
+        "contract": "SPY261117P00737000",
+        "limit_price": 2.27,
+        "fill_price": 2.22,
+        "created_at": "2026-11-17T15:15:28+00:00",
+        "updated_at": "2026-11-17T15:15:31+00:00",
+        "meta": {"golden_kind": "sniper", "signal_day": "2026-11-17", "signal_at_ct": "09:10"},
+    }
+    today_working = {
+        "id": "wb-ad696b25a1",
+        "symbol": "SPY",
+        "desk": "sniper",
+        "action": "BUY",
+        "status": "submitted",
+        "strike": 730.0,
+        "right": "P",
+        "expiry": "2026-11-18",
+        "contract": "SPY261118P00730000",
+        "limit_price": 3.35,
+        "fill_price": None,
+        "created_at": "2026-11-18T15:48:49+00:00",
+        "meta": {"golden_kind": "sniper", "signal_day": "2026-11-18", "signal_at_ct": "09:40"},
+    }
+    snap = {"sniper": {"signals": [dict(card)]}}
+    # The bug: filled ranks above submitted, so yesterday's 737P painted the card.
+    disp.promote_routed_hot_alerts(snap, [yesterday, today_working], now=now)
+    out = snap["sniper"]["signals"][0]
+    assert out["contract"] == "SPY261118P00730000"
+    assert out["expiry"] == "2026-11-18"
+    assert float(out["strike"]) == 730.0
+    assert out["order_status"] == "submitted"
+    assert out["order_limit"] == 3.35
+    assert out.get("order_fill") in (None, "")
+    alerts = disp.collect_trade_alerts(snap)
+    assert alerts
+    text = alerts[0]["message"]
+    assert "730P" in text
+    assert "11/18" in text
+    assert "737P" not in text
+    assert "11/17" not in text
+    assert "Filled @ $2.22" not in text
+    assert "Limit $3.35 (working)" in text
+
+
+def test_promote_ignores_yesterday_when_today_has_no_order_yet():
+    """Do not stamp a prior-day fill onto a new signal before today's order exists."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    CT = ZoneInfo("America/Chicago")
+    now = datetime(2026, 11, 18, 9, 46, tzinfo=CT)
+    card = {
+        "symbol": "SPY",
+        "send": True,
+        "right": "P",
+        "strike": 730.0,
+        "expiry": "2026-11-18",
+        "ask": 3.20,
+        "spot": 729.65,
+        "contract": "SPY261118P00730000",
+        "day_cst": "2026-11-18",
+        "at_ct": "09:40",
+        "detected_at": "2026-11-18T15:45:58+00:00",
+        "detail": "Sniper put",
+    }
+    yesterday = {
+        "symbol": "SPY",
+        "desk": "sniper",
+        "action": "BUY",
+        "status": "filled",
+        "strike": 737.0,
+        "right": "P",
+        "expiry": "2026-11-17",
+        "contract": "SPY261117P00737000",
+        "fill_price": 2.22,
+        "limit_price": 2.27,
+        "created_at": "2026-11-17T15:15:28+00:00",
+        "meta": {"golden_kind": "sniper"},
+    }
+    snap = {"sniper": {"signals": [dict(card)]}}
+    disp.promote_routed_hot_alerts(snap, [yesterday], now=now)
+    out = snap["sniper"]["signals"][0]
+    assert out["contract"] == "SPY261118P00730000"
+    assert out["expiry"] == "2026-11-18"
+    assert out.get("order_fill") in (None, "")
+    assert out.get("order_status") in (None, "")
+
+
+def test_collect_skips_an_expired_contract_card():
+    """A stale card that already has yesterday's fill must not page Telegram."""
+    card = {
+        "symbol": "SPY",
+        "send": True,
+        "right": "P",
+        "strike": 737.0,
+        "expiry": "2026-11-17",
+        "contract": "SPY261117P00737000",
+        "order_fill": 2.22,
+        "order_limit": 2.27,
+        "order_status": "filled",
+        "spot": 729.65,
+        "day_cst": "2026-11-18",
+        "at_ct": "09:40",
+        "detected_at": "2026-11-18T15:45:58+00:00",
+        "detail": "Sniper put",
+    }
+    assert disp.collect_trade_alerts({"sniper": {"signals": [card]}}) == []

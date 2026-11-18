@@ -2068,6 +2068,14 @@ class AutoTrader:
             if not bool(getattr(self.broker, "paper", False)) or not bool(getattr(self.broker, "sandbox", False)):
                 self._note_filtered(row, "challenge orders are paper sandbox only")
                 return None
+        from odte_scanner.alerts.dispatcher import contract_expired_for_card
+
+        # Never buy a contract that already expired before this card's session.
+        # Compared to the card's day, not the wall clock, so historical test
+        # fixtures (and replay) still route.
+        if contract_expired_for_card(row):
+            self._note_filtered(row, "expired contract — not ordered")
+            return None
         if desk in _HOT_KINDS and not row.get("replaces"):
             # Before the quote fetch: an already-routed signal costs no HTTP call.
             # One signal is one entry. When spot moves, the board picks the next
