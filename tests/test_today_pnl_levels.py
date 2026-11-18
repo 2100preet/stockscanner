@@ -113,7 +113,10 @@ def test_today_pnl_groups_stay_separate(tmp_path: Path):
     assert alerts["Golden Flow"]["alerts"] == 1
     assert alerts["SPX plan (modeled)"]["modeled_realized"] == 3250.0
     text = board["telegram_text"]
-    assert text.startswith("📊 TODAY'S P&L") and "paper only" in text
+    assert text.startswith("📊 TODAY'S P&L") and "paper totals exclude Sniper LIVE" in text
+    assert "Sniper LIVE (real money, not in paper totals)" in text
+    assert board["sniper_live"]["separate_from_paper"] is True
+    assert board["webull"]["total"]["realized"] == 50.0  # live P&L is not mixed in
     assert "Webull paper desks (fills): +$50.00" in text
     assert "not in the desk total): +$133.25" in text
     assert "Million +$108.25 (1W/0L)" in text

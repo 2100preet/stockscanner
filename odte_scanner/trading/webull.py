@@ -2063,6 +2063,8 @@ class WebullBroker:
                         summary["voided_expiry"] = summary.get("voided_expiry", 0) + 1
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("expiry void check failed: %s", exc)
+                if (intent.meta or {}).get("live") or (intent.meta or {}).get("venue") == "webull_live":
+                    continue
                 try:
                     from odte_scanner.edge.round_trips import record_sell_fill
 
@@ -2073,6 +2075,10 @@ class WebullBroker:
             self.orders.sort(key=lambda o: str(o.created_at or ""), reverse=True)
             self.save()
         return summary
+
+    def _api_host(self) -> str:
+        """Paper broker is hard-locked to the sandbox host."""
+        return SANDBOX_TRADE_HOST
 
     def _assert_sandbox(self) -> None:
         if not self.sandbox or not self.paper:
@@ -2141,7 +2147,7 @@ class WebullBroker:
 
         remember_secret(self.app_key, self.app_secret)
         install_webull_log_redaction()
-        host = SANDBOX_TRADE_HOST
+        host = self._api_host()
         client = ApiClient(self.app_key, self.app_secret, self.region)
         client.add_endpoint(self.region, host)
         # Without these the SDK adds a DEBUG stdout handler and a
@@ -2221,7 +2227,7 @@ class WebullBroker:
                 "Webull account_id missing or still the account number. "
                 "Use the internal id from get_account_list."
             )
-        intent.meta["host"] = SANDBOX_TRADE_HOST
+        intent.meta["host"] = self._api_host()
         intent.meta["openapi_order"] = {
             "symbol": order["symbol"],
             "side": order["side"],
@@ -2260,7 +2266,7 @@ class WebullBroker:
                 "Webull account_id missing or still the account number. "
                 "Use the internal id from get_account_list."
             )
-        intent.meta["host"] = SANDBOX_TRADE_HOST
+        intent.meta["host"] = self._api_host()
         intent.meta["openapi_order"] = {
             "symbol": order["symbol"],
             "side": order["side"],
@@ -2411,6 +2417,8 @@ class WebullBroker:
             intent.action == "SELL"
             and intent.status in {"filled", "partial"}
             and not (intent.meta or {}).get("isolated_desk")
+            and not (intent.meta or {}).get("live")
+            and (intent.meta or {}).get("venue") != "webull_live"
         ):
             # Kotegawa / Million keep their own books; their sells stay out of
             # the Gold/desk edge samples.

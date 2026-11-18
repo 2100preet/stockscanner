@@ -391,6 +391,26 @@ def alert_group(body: dict[str, Any], day: str, counts: dict[str, int], spx: Any
 # ------------------------------------------------------------------ public
 
 
+
+def sniper_live_group(snap: dict[str, Any] | None, *, now: datetime | None = None) -> dict[str, Any]:
+    """Real-money Sniper LIVE book. Never folded into the paper totals."""
+    payload = {}
+    if isinstance(snap, dict) and isinstance(snap.get("sniper_live"), dict):
+        payload = dict(snap["sniper_live"])
+    else:
+        try:
+            from odte_scanner.trading.sniper_live import portal_view
+
+            payload = portal_view(now=now)
+        except Exception as exc:  # noqa: BLE001
+            payload = {"ok": False, "error": str(exc)[:200], "realized_pnl": 0.0, "enabled": False}
+    payload.setdefault("title", "Sniper LIVE")
+    payload.setdefault("real_money", True)
+    payload.setdefault("separate_from_paper", True)
+    payload["name"] = "Sniper LIVE"
+    return payload
+
+
 def build_today_pnl(
     body: dict[str, Any] | None,
     book: list[dict[str, Any]] | None,
@@ -413,9 +433,11 @@ def build_today_pnl(
         "webull": webull_group(list(book or []), day, counts, fetch_marks=fetch_marks),
         "internal": internal_group(snap, day, counts),
         "alert_only": alert_group(snap, day, counts, scorecard.get("spx_modeled")),
+        "sniper_live": sniper_live_group(snap, now=moment),
         "note": (
             "Realized = closed today (exit time, Central). Unrealized = open positions at the latest mark "
-            "versus entry. Webull desks and internal ledgers are separate books and are never added together."
+            "versus entry. Webull desks and internal ledgers are separate books and are never added together. "
+            "Sniper LIVE is real money and is never added to the paper totals."
         ),
     }
     out["telegram_text"] = format_telegram(out)
@@ -454,7 +476,7 @@ def format_telegram(board: dict[str, Any]) -> str:
     web_total = web["total"]
     internal = board["internal"]
     int_total = internal["total"]
-    lines = [f"📊 TODAY'S P&L · {day} · paper only"]
+    lines = [f"📊 TODAY'S P&L · {day} · paper totals exclude Sniper LIVE"]
     lines.append(
         f"Webull paper desks (fills): {_usd(web_total['realized'])} realized · {web_total['trades']} trades · "
         f"{web_total['wins']}W/{web_total['losses']}L"
@@ -481,6 +503,14 @@ def format_telegram(board: dict[str, Any]) -> str:
         else:
             alert_bits.append(f"{row['name']} {row.get('alerts', 0)} alert(s)")
     lines.append("Alert only (no orders): " + " · ".join(alert_bits))
+    live = board.get("sniper_live") if isinstance(board.get("sniper_live"), dict) else {}
+    if live:
+        lines.append(
+            f"Sniper LIVE (real money, not in paper totals): {_usd(live.get('realized_pnl'))} realized"
+            + (f" · {live.get('entries_today') or 0} entries" if live.get("entries_today") else "")
+            + (f" · open {live.get('open_n')} {_usd(live.get('unrealized_pnl'))}" if live.get("open_n") else "")
+            + (f" · {live.get('status')}" if live.get("status") else "")
+        )
     return "\n".join(lines)
 
 

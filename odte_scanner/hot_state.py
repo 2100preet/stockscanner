@@ -150,6 +150,15 @@ def apply_hot_overlay(
     }
     body["hot_at"] = hot.get("updated_at")
     try:
+        from odte_scanner.trading.sniper_live import portal_view as sniper_live_view
+
+        body["sniper_live"] = sniper_live_view()
+    except Exception:
+        body.setdefault(
+            "sniper_live",
+            {"title": "Sniper LIVE", "real_money": True, "enabled": False, "ready": False, "status": "off", "separate_from_paper": True},
+        )
+    try:
         from datetime import datetime, timedelta, timezone
 
         from odte_scanner.trading.exit_health import build_exit_health

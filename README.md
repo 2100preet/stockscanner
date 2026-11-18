@@ -193,6 +193,26 @@ On Fly (secrets, not the repo):
 
 Until `WEBULL_PAPER_SUBMIT=1` and the three sandbox values are set, golden signals are dry-run rows in `outputs/webull_orders.json` only.
 
+## Sniper LIVE (real Webull account, off by default)
+
+Paper Sniper is unchanged. When `SNIPER_LIVE_ENABLED=1` and the three live credentials below are set, each paper Sniper submit is also sent as **1 contract** to the real Webull account (`api.webull.com`). Other desks cannot route live. SPX is never routed. New live entries stop outside the Sniper window (8:45–10:30 CT) and after the daily realized-loss cap.
+
+This is **off** until the flag is set. `WEBULL_LIVE=1` still does not place production orders and does not arm Sniper LIVE.
+
+On Fly (secret **names** only — never commit values):
+
+| Env | Required | Effect |
+|-----|----------|--------|
+| `SNIPER_LIVE_ENABLED` | yes, to arm | Default off when unset. `1`/`true`/`on` turns the live mirror on. Set `0` or unset to turn it off. |
+| `WEBULL_LIVE_APP_KEY` | yes, to arm | Production OpenAPI app key (not the sandbox key) |
+| `WEBULL_LIVE_APP_SECRET` | yes, to arm | Production OpenAPI app secret |
+| `WEBULL_LIVE_ACCOUNT_ID` | yes, to arm | Internal production account id from `get_account_list`, not the account number |
+| `SNIPER_LIVE_MAX_DAILY_LOSS` | optional | Daily realized-loss cap for new live entries. Default `-200`. After the cap is hit, no new live entries; open live positions still exit. |
+
+Live fills are written to `outputs/sniper_live_orders.json`, not the paper ledger. Telegram uses a separate `[SNIPER LIVE]` tag. The portal tile is **Sniper LIVE** and is never added to paper P&L.
+
+The production Webull OpenAPI app is separate from the paper/sandbox app. It must be approved in the Developer Console (production, not paperTrade) with the **Trading** permission. Approval often takes 1–2 business days. Use the production app's key, secret, and account id. Production apps default to 2FA — unattended bot orders may need that setting reviewed on the application. An optional IP allow-list must include the Fly egress addresses if one is set.
+
 ## Tests
 
 ```bash
