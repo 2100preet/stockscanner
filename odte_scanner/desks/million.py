@@ -42,6 +42,7 @@ from odte_scanner.desks.fills import buy_fill, sell_fill
 from odte_scanner.desks.routing import resolve_route, submit_sandbox_order
 from odte_scanner.desks.signals import build_signals
 from odte_scanner.desks.store import DeskStateError, load_desk_state, save_desk_state
+from odte_scanner.desks import webull_desk
 from odte_scanner.signals.hold_rules import expiry_is_today, past_odte_flatten
 
 logger = logging.getLogger(__name__)
@@ -275,6 +276,9 @@ def _load(path: Path, starting: float, ledger_epoch: Any = None) -> dict[str, An
     book["log_only"] = [dict(row) for row in saved.get("log_only") or [] if isinstance(row, dict)]
     book["recent_alerts"] = list(saved.get("recent_alerts") or [])[-30:]
     book["sandbox_orders"] = list(saved.get("sandbox_orders") or [])[-30:]
+    for key in ("era", "era_since", "simulated"):
+        if saved.get(key) is not None:
+            book[key] = saved.get(key)
     known = {round(float(row["level"]), 2): row for row in book["milestones"]}
     for row in saved.get("milestones") or []:
         if not isinstance(row, dict):
@@ -295,9 +299,27 @@ def _open_trades(book: Mapping[str, Any]) -> list[dict[str, Any]]:
     return [row for row in book.get("trades") or [] if isinstance(row, dict) and row.get("status") == "open"]
 
 
+def _held_trades(book: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Positions the book owns: open, or open with a Webull sell working."""
+    return [
+        row
+        for row in book.get("trades") or []
+        if isinstance(row, dict) and row.get("status") in {"open", "closing"}
+    ]
+
+
+def _active_trades(book: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Held positions plus a Webull entry that is still working."""
+    return [
+        row
+        for row in book.get("trades") or []
+        if isinstance(row, dict) and row.get("status") in {"open", "closing", "pending"}
+    ]
+
+
 def equity_of(book: Mapping[str, Any], marks: Mapping[str, float] | None = None) -> float:
     total = float(book.get("cash") or 0)
-    for trade in _open_trades(book):
+    for trade in _held_trades(book):
         key = str(trade.get("id") or "")
         mark = None if marks is None else marks.get(key)
         if mark is None:
@@ -749,7 +771,48 @@ def _open_position(row: Mapping[str, Any]) -> dict[str, Any]:
         "marked_at": row.get("last_mark_at"),
         "unrealized_pnl": unrealized,
         "entry_at": row.get("entry_at"),
+        "status": row.get("status"),
+        "fill_source": row.get("fill_source") or "simulated (internal ledger)",
+        "order_label": webull_desk.working_label(row)
+        or (f"Filled @ ${float(entry):.2f}" if entry is not None else None),
         **_exit_levels(row),
+    }
+
+
+def _working_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    """A Webull entry still working, or one that ended without a fill."""
+    return {
+        "symbol": row.get("symbol"),
+        "contract": row.get("contract"),
+        "right": row.get("right"),
+        "strike": row.get("strike"),
+        "expiry": row.get("expiry"),
+        "contracts": row.get("target_qty") or row.get("contracts"),
+        "status": row.get("status"),
+        "order_label": webull_desk.working_label(row),
+        "signal_ask": row.get("signal_ask"),
+        "signal_at": row.get("signal_at"),
+        "reason": row.get("not_filled_reason"),
+        "fill_source": webull_desk.FILL_SOURCE,
+    }
+
+
+def _simulated_view(raw: Any) -> dict[str, Any] | None:
+    """The archived internal-ledger history. Simulated, not Webull fills."""
+    if not isinstance(raw, Mapping):
+        return None
+    trades = [row for row in raw.get("trades") or [] if isinstance(row, Mapping)]
+    return {
+        "label": raw.get("label") or "Simulated (internal ledger, not Webull fills)",
+        "archived_at": raw.get("archived_at"),
+        "note": raw.get("note"),
+        "realized_pnl": raw.get("realized_pnl"),
+        "ending_equity": raw.get("ending_equity"),
+        "trades": [
+            {**_closed_trade(row), "fill_source": "simulated", "audit": row.get("audit")}
+            for row in trades
+            if row.get("status") == "closed"
+        ][:20],
     }
 
 
@@ -803,6 +866,8 @@ def _closed_trade(row: Mapping[str, Any]) -> dict[str, Any]:
         "exit_reason": row.get("exit_reason"),
         "pnl": round(pnl, 2) if pnl is not None else None,
         "pnl_pct": round(pnl / cost * 100.0, 2) if pnl is not None and cost else None,
+        "fill_source": row.get("exit_fill_source") or row.get("fill_source") or "simulated (internal ledger)",
+        "order_label": f"Filled @ ${exit_px:.2f}" if exit_px is not None else None,
     }
 
 
@@ -862,7 +927,9 @@ def public_view(
 ) -> dict[str, Any]:
     trades = [row for row in book.get("trades") or [] if isinstance(row, dict)]
     closed = [row for row in trades if row.get("status") == "closed"]
-    opened = [row for row in trades if row.get("status") == "open"]
+    opened = [row for row in trades if row.get("status") in {"open", "closing"}]
+    working = [row for row in trades if row.get("status") == "pending"]
+    not_filled = [row for row in trades if row.get("status") == "not_filled"]
     wins = sum(1 for row in closed if float(row.get("pnl") or 0) > 0)
     losses = sum(1 for row in closed if float(row.get("pnl") or 0) < 0)
     realized = sum(float(row.get("pnl") or 0) for row in closed)
@@ -878,6 +945,16 @@ def public_view(
         "status": status,
         "reason": reason,
         "route": book.get("route") or "internal",
+        "fills": "webull" if (book.get("route") == "sandbox" or book.get("era") == "webull") else "simulated",
+        "fill_source": (
+            webull_desk.FILL_SOURCE
+            if (book.get("route") == "sandbox" or book.get("era") == "webull")
+            else "simulated (internal ledger)"
+        ),
+        "era_since": book.get("era_since"),
+        "working": [_working_row(row) for row in working],
+        "not_filled": [_working_row(row) for row in not_filled[-5:]],
+        "simulated": _simulated_view(book.get("simulated")),
         "equity": round(equity, 2),
         "cash": round(float(book.get("cash") or 0), 2),
         "starting_equity": float(book.get("starting_equity") or STARTING_EQUITY),
@@ -1161,28 +1238,54 @@ def _settle_open(
     session: date,
     alerts: list[dict[str, Any]],
     moves_cash: bool,
+    broker: Any = None,
 ) -> None:
-    """Mark one open option and exit it only on the contract's own quote."""
+    """Mark one open option and exit it only on the contract's own quote.
+
+    A Webull-routed trade does not close here: the exit is a Webull sell, and
+    the book closes at that sell's fill (``webull_desk.advance``).
+    """
     if ticket.get("status") != "open":
         return
     entry = float(ticket.get("entry") or 0)
     if entry <= 0:
         return
-    basis = _sell_basis(_contract_quote(ticket, quotes))
+    quote = _contract_quote(ticket, quotes)
+    basis = _sell_basis(quote)
     underlying = _underlying_price(ticket, quotes)
     rejection = _mark_rejection(basis, entry, underlying)
     moment = _as_ct(now)
+    routed = ticket.get("route") == "webull" and broker is not None and moves_cash
     if rejection is None and basis is not None:
         ticket["last_mark"] = basis
+        ticket["last_mark_at"] = moment.isoformat()
         if moves_cash:
             ticket["peak"] = max(float(ticket.get("peak") or entry), basis)
         reason = _exit_reason(ticket, basis, now=moment)
         if reason is None:
             return
+        if routed:
+            alert = webull_desk.open_exit(
+                book, broker, _spec(), ticket, reason,
+                bid=_positive(quote.get("bid")), ask=_positive(quote.get("ask")), mark=basis, now=moment,
+            )
+            if alert:
+                alerts.append(alert)
+                _remember(book, alert)
+            return
         _fill_exit(book, ticket, basis, reason, moment, session, alerts, moves_cash=moves_cash)
         return
     reason = _flatten_reason(ticket, moment)
     label = f"{ticket.get('symbol')} {ticket.get('contract')}"
+    if routed and reason in FLATTEN_REASONS and not _contract_expired(ticket, moment):
+        alert = webull_desk.open_exit(
+            book, broker, _spec(), ticket, reason,
+            bid=_positive(quote.get("bid")), ask=None, mark=ticket.get("last_mark"), now=moment,
+        )
+        if alert:
+            alerts.append(alert)
+            _remember(book, alert)
+        return
     if reason in FLATTEN_REASONS:
         fallback = _flatten_fallback(ticket, moment, underlying)
         logger.warning(
@@ -1194,6 +1297,180 @@ def _settle_open(
         _fill_exit(book, ticket, fallback, reason, moment, session, alerts, moves_cash=moves_cash)
         return
     logger.warning("million option mark refused %s: %s", label, rejection)
+
+
+def _spec(cfg: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """How this desk's Webull paper orders behave."""
+    orders = dict((cfg or {}).get("webull_orders") or {})
+    return {
+        "desk": "million",
+        "instrument": "OPTION",
+        "mult": 100.0,
+        "qty_key": "contracts",
+        "step_sec": float(orders.get("step_sec") or 15),
+        "entry_chase_sec": float(orders.get("entry_chase_sec") or 90),
+        "slippage": float(orders.get("slippage") or 0.10),
+        "head": lambda trade: _prefix(trade.get("source")),
+        "text": _contract_text,
+        "alert": _webull_alert,
+    }
+
+
+def _webull_alert(side: str, trade: Mapping[str, Any], text: str, event: str) -> dict[str, Any]:
+    alert = _alert(side, trade, text)
+    alert["key"] = f"MILLION|{side}|{trade.get('id')}|{event}"
+    alert["fill_source"] = webull_desk.FILL_SOURCE
+    alert["event"] = event
+    return alert
+
+
+def _fresh_quote(trade: Mapping[str, Any], fetcher: Callable[[Mapping[str, Any]], Mapping[str, Any] | None] | None) -> dict[str, Any]:
+    """Live bid/ask for this contract. Empty when the fetch fails."""
+    if fetcher is None:
+        return {}
+    try:
+        quote = fetcher(trade)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("million live quote failed %s: %s", trade.get("contract"), exc)
+        return {}
+    return dict(quote) if isinstance(quote, Mapping) else {}
+
+
+SIMULATED_NOTE = (
+    "Internal-ledger fills, priced by the app (buy at the quote mid, sell at the bid), not by a broker. "
+    "The Nov 17 QQQ 657C entry used a Yahoo chain quote about 15 minutes old: the app booked $1.99, "
+    "while that contract traded $2.44–$2.80 in the 11:22 CT minute."
+)
+
+
+def _switch_era(book: dict[str, Any], starting: float, now: datetime) -> bool:
+    """Start the Webull-paper book once. Simulated history is kept, labelled.
+
+    Waits while an internal-ledger trade is still open; it finishes on the
+    internal ledger first.
+    """
+    if book.get("era") == "webull":
+        return False
+    if any(row.get("route") != "webull" for row in _active_trades(book)):
+        return False
+    old = [dict(row) for row in book.get("trades") or [] if isinstance(row, dict)]
+    for row in old:
+        row["fill_source"] = "simulated"
+        if row.get("id") == "mil-QQQ-2026-11-17-9045f873":
+            row["audit"] = (
+                "Not achievable: entry $1.99 came from a ~15-min-old Yahoo quote; the contract traded "
+                "$2.44–$2.80 at 11:22 CT. At a real ~$2.60 ask the 25% sizing cap ($250 on $1,000) skips "
+                "the trade; forced in, the +50% target never prints and the −40% stop hits near 11:46 CT "
+                "(about −$110)."
+            )
+    if old:
+        realized = sum(float(row.get("pnl") or 0) for row in old if row.get("status") == "closed")
+        book["simulated"] = {
+            "label": "Simulated (internal ledger, not Webull fills)",
+            "archived_at": _as_ct(now).isoformat(),
+            "note": SIMULATED_NOTE,
+            "realized_pnl": round(realized, 2),
+            "ending_equity": round(equity_of(book), 2),
+            "trades": old,
+        }
+    book["trades"] = []
+    book["cash"] = float(starting)
+    book["day_start_equity"] = float(starting)
+    book["day"] = _as_ct(now).date().isoformat()
+    book["milestones"] = [{"level": lvl, "reached": False, "reached_at": None} for lvl in milestone_levels(starting)]
+    book["recent_alerts"] = []
+    book["era"] = "webull"
+    book["era_since"] = _as_ct(now).isoformat()
+    logger.warning("million: switched to Webull paper fills; simulated history archived in the book")
+    return True
+
+
+def _entry_deadline(trade: Mapping[str, Any], now: datetime) -> bool:
+    """No working Million buy after 14:30 CT (entry cutoff) or past 15:45 ET."""
+    moment = _as_ct(now)
+    return (moment.hour, moment.minute) >= (14, 30) or past_odte_flatten(moment)
+
+
+def _expire_unfilled(book: dict[str, Any], broker: Any, now: datetime, quotes: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """A routed contract past its expiry with no Webull sell fill closes at intrinsic/0."""
+    alerts: list[dict[str, Any]] = []
+    moment = _as_ct(now)
+    for trade in _held_trades(book):
+        if trade.get("route") != "webull" or not _contract_expired(trade, moment):
+            continue
+        work = trade.get("working") or {}
+        if work.get("id"):
+            intent = webull_desk._intent(broker, str(work["id"]))
+            if intent is not None and intent.status in {"submitted", "partial"}:
+                broker.cancel(intent)
+                webull_desk._confirm(broker, intent)
+                webull_desk._sync_row(trade, intent)
+        sold, avg = webull_desk._filled(trade, "SELL")
+        qty = int(trade.get("contracts") or 0)
+        left = qty - sold
+        if left <= 0:
+            continue
+        fallback = _flatten_fallback(trade, moment, _underlying_price(trade, quotes))
+        proceeds = (sold * avg + left * fallback) * 100.0
+        pnl = proceeds - float(trade.get("cost") or 0)
+        trade.update(
+            status="closed",
+            exit=(sold * avg + left * fallback) / qty if qty else fallback,
+            exit_reason=str(trade.get("exit_reason") or "expired") + " (expired, no Webull sell fill)",
+            exit_at=moment.isoformat(),
+            exit_session=moment.date().isoformat(),
+            pnl=pnl,
+            working=None,
+            exit_fill_source="expiry (no Webull fill)",
+        )
+        book["cash"] = float(book["cash"]) + proceeds
+        alert = _webull_alert(
+            "SELL",
+            trade,
+            f"{_prefix(trade.get('source'))} SELL {_contract_text(trade)} ×{left} · expired with no Webull sell fill · "
+            f"closed at ${fallback:.2f} · P&L {pnl:+.2f}",
+            "expired",
+        )
+        alerts.append(alert)
+        _remember(book, alert)
+    return alerts
+
+
+def advance_webull(
+    section: Mapping[str, Any] | None,
+    *,
+    live_trading: Mapping[str, Any] | None = None,
+    now: datetime | None = None,
+    environ: Mapping[str, str] | None = None,
+    broker: Any = None,
+    quote_fetcher: Callable[[Mapping[str, Any]], Mapping[str, Any] | None] | None = None,
+) -> dict[str, Any]:
+    """Fast tick: refresh, walk and settle Webull orders. Opens nothing new."""
+    cfg = dict(section or {})
+    if cfg.get("enabled") is not True or cfg.get("paper_only") is not True:
+        return {"skipped": "disabled"}
+    starting = float(cfg.get("starting_equity") or STARTING_EQUITY)
+    state_path = Path(cfg.get("state_path") or DEFAULT_STATE)
+    if not state_path.is_absolute():
+        state_path = ROOT / state_path
+    if not state_path.exists():
+        return {"skipped": "no book"}
+    book = _load(state_path, starting, ledger_epoch=cfg.get("ledger_epoch"))
+    if not any(row.get("status") in webull_desk.WORKING for row in book.get("trades") or []):
+        return {"working": 0}
+    route = resolve_route("million", live_trading=live_trading, environ=environ)
+    use = broker or webull_desk.desk_broker("million", route, live_trading=live_trading)
+    if use is None:
+        return {"skipped": "not routed"}
+    fetcher = _default_quote_fetcher if quote_fetcher is None else quote_fetcher
+    alerts = webull_desk.advance(
+        book, use, _spec(cfg), quote_fn=lambda t: _fresh_quote(t, fetcher), now=now, entry_deadline=_entry_deadline
+    )
+    for alert in alerts:
+        _remember(book, alert)
+    book["state_path"] = str(state_path)
+    save_desk_state(state_path, book)
+    return {"alerts": len(alerts)}
 
 
 def run_million(
@@ -1213,6 +1490,7 @@ def run_million(
     signals: list[str] | None = None,
     vix: Mapping[str, Any] | None = None,
     quote_fetcher: Callable[[Mapping[str, Any]], Mapping[str, Any] | None] | None = None,
+    broker: Any = None,
 ) -> dict[str, Any]:
     """Advance the Million book. Paper only. Returns the public snapshot.
 
@@ -1264,8 +1542,22 @@ def run_million(
     session = moment.date()
     alerts: list[dict[str, Any]] = []
     route = resolve_route("million", host=host, live_trading=live_trading, environ=environ)
+    wb = None
+    if route["mode"] == "sandbox":
+        wb = broker or webull_desk.desk_broker("million", route, live_trading=live_trading)
+        if wb is None:
+            route = {**route, "mode": "internal", "reason": "Webull paper submit is off"}
     book["route"] = route["mode"]
+    book["route_reason"] = route.get("reason")
     fetcher = _default_quote_fetcher if quote_fetcher is None else quote_fetcher
+    if wb is not None:
+        _switch_era(book, starting, moment)
+        for alert in webull_desk.advance(
+            book, wb, _spec(cfg), quote_fn=lambda t: _fresh_quote(t, fetcher), now=moment,
+            entry_deadline=_entry_deadline,
+        ):
+            alerts.append(alert)
+            _remember(book, alert)
     marked = _with_contract_quotes(book, quotes, fetcher)
     _roll_day(book, session, marked)
 
@@ -1278,7 +1570,10 @@ def run_million(
             session=session,
             alerts=alerts,
             moves_cash=True,
+            broker=wb,
         )
+    if wb is not None:
+        alerts.extend(_expire_unfilled(book, wb, moment, marked))
     for ticket in _open_logs(book):
         _settle_open(
             book,
@@ -1336,10 +1631,63 @@ def run_million(
                     cash=budget_cash,
                 )
                 continue
-            if _open_trades(book) or _entered_today(book, session):
+            if _active_trades(book) or _entered_today(book, session):
                 continue
-            ask = _f(idea.get("ask"))
-            bid = _f(idea.get("bid"))
+            if str(idea.get("symbol") or "").upper() == "SPX":
+                continue  # SPX is alert-only, never a paper order
+            # The chain bid/ask can be a delayed (~15 min) Yahoo quote. Price
+            # the entry from the contract's live quote when one is available.
+            live = _fresh_quote(idea, fetcher)
+            ask = _positive(live.get("ask"))
+            bid = _positive(live.get("bid"))
+            if ask is None:
+                if wb is not None:
+                    logger.info("million entry skipped: no live quote for %s", idea.get("contract"))
+                    continue
+                ask = _f(idea.get("ask"))
+                bid = _f(idea.get("bid"))
+            if wb is not None:
+                from odte_scanner.trading.risk_controls import kill_switch_state
+
+                if kill_switch_state().get("on"):
+                    book["halt_reason"] = "paper kill switch"
+                    continue
+                count = contract_count(equity_of(book), ask, slot_pct=slot_pct, max_contract_pct=max_contract_pct)
+                if count is None:
+                    continue
+                while count > 0 and count * ask * 100.0 > float(book["cash"]) + 1e-9:
+                    count -= 1
+                if count < 1:
+                    continue
+                trade = {
+                    "id": f"mil-{idea.get('symbol')}-{session.isoformat()}-{uuid.uuid4().hex[:8]}",
+                    "source": idea.get("source"),
+                    "log_only": False,
+                    "symbol": idea.get("symbol"),
+                    "right": idea.get("right") or "C",
+                    "contract": idea.get("contract"),
+                    "expiry": idea.get("expiry"),
+                    "strike": idea.get("strike"),
+                    "dte": idea.get("dte"),
+                    "contracts": count,
+                    "spot": idea.get("spot"),
+                    "target_pct": idea.get("target_pct"),
+                    "stop_pct": idea.get("stop_pct"),
+                    "time_stop_minutes": idea.get("time_stop_minutes"),
+                    "flatten_ct": idea.get("flatten_ct"),
+                    "vwap": idea.get("vwap"),
+                    "entry_session": session.isoformat(),
+                    "reason": idea.get("reason"),
+                    "vix": tag.get("vix"),
+                    "vix_vs_prior": tag.get("vix_vs_prior"),
+                    "chain_bid": _f(idea.get("bid")),
+                    "chain_ask": _f(idea.get("ask")),
+                }
+                alert = webull_desk.open_entry(book, wb, _spec(cfg), trade, bid=bid, ask=ask, now=moment)
+                if alert:
+                    alerts.append(alert)
+                    _remember(book, alert)
+                continue
             fill = buy_fill(bid=bid, ask=ask, last=ask)
             if fill is None:
                 continue

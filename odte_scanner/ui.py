@@ -416,7 +416,7 @@ PAGE = r"""
     <section class="tabpane active" id="tab-nowboard">
       <h2>BUY NOW / SELL NOW — all desks</h2>
       <p class="lede">Live option BUY NOW / SELL NOW across <strong>Gold Setup</strong> (1–2/day · MAX/HIGH/SOLID · gold/amber · GO HUGE sizing), 0DTE, weeklies, swing, <strong>Lottery</strong>, <strong>Lottery v2</strong> (log only), <strong>RIP/META</strong>, <strong>Patterns</strong> (double bottom/top · golden triangle), <strong>Levels</strong>, ML6, Challenge, and 0DTE $1K IN/OUT. <strong>[KOTEGAWA]</strong> and <strong>[MILLION]</strong> paper BUY/SELL fills stay on this board for the day. Lottery, Lottery v2, RIP/META, and Patterns each keep their own heading below even when empty. Hist win ≥80% (n≥5) gates Options BUY NOW. Same losing OCC stays blocked; mega names can still BUY when tape is ripping (see RIP tab). SETUP rows are quality tape without a contract yet — not a buy.</p>
-      <h2>Paper desks · Kotegawa &amp; Million <em style="font-size:.8rem">· paper ledger (internal, not Webull)</em></h2>
+      <h2>Paper desks · Kotegawa &amp; Million <em style="font-size:.8rem">· Webull paper fills (earlier simulated history archived on each tile)</em></h2>
       <div class="paper-desk-grid" id="paperDeskCards"></div>
       <details id="paperLogOnly" hidden>
         <summary>Log-only · not alerts</summary>
@@ -441,7 +441,7 @@ PAGE = r"""
     </section>
 
     <section class="tabpane" id="tab-overview">
-      <h2>Paper desks · Kotegawa &amp; Million <em style="font-size:.8rem">· paper ledger (internal, not Webull)</em></h2>
+      <h2>Paper desks · Kotegawa &amp; Million <em style="font-size:.8rem">· Webull paper fills (earlier simulated history archived on each tile)</em></h2>
       <div class="paper-desk-grid" id="paperDeskCardsOverview"></div>
       <div class="metric-row" id="perfCards"></div>
       <p class="lede" id="insightSummary"></p>
@@ -4831,7 +4831,7 @@ PAGE = r"""
         </div>
         <div class="ts-grid">
           <div class="ts-box"><h3>Webull paper desks <em style="font-weight:400">· Webull paper fills are the source of truth</em></h3>${table(web.rows || [])}${total(web.total || {})}</div>
-          <div class="ts-box"><h3>Internal paper ledgers <em style="font-weight:400">· not Webull orders</em></h3>${table(inn.rows || [])}${total(inn.total || {})}</div>
+          <div class="ts-box"><h3>Own-book desks <em style="font-weight:400">· Kotegawa &amp; Million on Webull paper with their own equity · journal sleeves internal · not in the total above</em></h3>${table(inn.rows || [])}${total(inn.total || {})}</div>
           <div class="ts-box"><h3>Alert-only desks <em style="font-weight:400">· no orders</em></h3>${alerts}</div>
         </div>`;
     }
@@ -4854,7 +4854,9 @@ PAGE = r"""
       const dayOf = (iso) => iso ? new Date(iso).toLocaleDateString("en-CA", {timeZone: "America/Chicago"}) : "";
       const box = (card) => {
         const fills = [];
-        (card.open || []).forEach((row) => fills.push({at: row.entry_at, html: `BUY ${topEsc(name(card, row))} · Filled @ $${fmt(row.entry, 2)} · open, mark ${row.mark == null ? "—" : "$" + fmt(row.mark, 2)} · ${topMoney(row.unrealized_pnl)}`}));
+        (card.working || []).forEach((row) => fills.push({at: row.signal_at, html: `BUY ${topEsc(name(card, row))} · ${topEsc(row.order_label || "working")} · Webull paper`}));
+        (card.not_filled || []).forEach((row) => fills.push({at: row.signal_at, html: `BUY ${topEsc(name(card, row))} · NOT FILLED · ${topEsc(row.reason || "cancelled")}`}));
+        (card.open || []).forEach((row) => fills.push({at: row.entry_at, html: `BUY ${topEsc(name(card, row))} · ${row.status === "closing" && row.order_label ? "SELL " + topEsc(row.order_label) + " · " : ""}Filled @ $${fmt(row.entry, 2)} · open, mark ${row.mark == null ? "—" : "$" + fmt(row.mark, 2)} · ${topMoney(row.unrealized_pnl)}`}));
         (card.closed || []).forEach((row) => {
           fills.push({at: row.entry_at, html: `BUY ${topEsc(name(card, row))} · Filled @ $${fmt(row.entry, 2)}`});
           fills.push({at: row.exit_at, html: `SELL ${topEsc(name(card, row))} · Filled @ $${fmt(row.exit, 2)} · ${topEsc(String(row.exit_reason || "").replace(/_/g, " "))} · ${topMoney(row.pnl)}`});
@@ -4864,7 +4866,7 @@ PAGE = r"""
           || `<p class="ts-line">No fills yet — waiting for its entry window.</p>`;
         const win = card.strategy && card.strategy.window ? `<p class="ts-line" style="color:var(--muted)">Window: ${topEsc(card.strategy.window)}</p>` : "";
         return `<div class="ts-box">
-          <h3>${topEsc(card.label || "")} ${topEsc(card.name || "Paper")} <em style="font-weight:400">· paper ledger · internal, not Webull</em></h3>
+          <h3>${topEsc(card.label || "")} ${topEsc(card.name || "Paper")} <em style="font-weight:400">· ${card.fills === "webull" ? "Webull paper fills" : (card.fills === "switching" ? "simulated positions finishing · Webull paper next" : "paper ledger · internal, not Webull")}</em></h3>
           <p class="ts-line">Equity <strong>$${fmt(card.equity, 2)}</strong> · today ${topMoney(card.realized_today)} realized · open ${(card.open || []).length} ${(card.open || []).length ? topMoney(card.unrealized_pnl) : ""} · closed ${card.trades || 0} (${card.wins || 0}W/${card.losses || 0}L)${card.entries_halted ? " · entries halted today" : ""}</p>
           ${shown}${win}
         </div>`;
@@ -4872,8 +4874,8 @@ PAGE = r"""
       el.innerHTML = `
         <div class="pb-head">
           <div>
-            <h2 class="pb-title">📒 Kotegawa &amp; Million <em>· paper ledger</em></h2>
-            <div class="pb-sub">Simulated fills on each desk's own ledger · Telegram [KOTEGAWA] / [MILLION] · full tiles in the BUY / SELL NOW tab · not financial advice</div>
+            <h2 class="pb-title">📒 Kotegawa &amp; Million <em>· Webull paper</em></h2>
+            <div class="pb-sub">Orders go to the Webull paper account; each book records only Webull's fills (own equity and loss limits, separate from the main desks) · earlier simulated fills are archived and labelled · Telegram [KOTEGAWA] / [MILLION] · full tiles in the BUY / SELL NOW tab · not financial advice</div>
           </div>
           <div class="status"><a style="color:#93c5fd" href="#paperDeskCards" onclick="document.querySelector('[data-tab=nowboard]')&&document.querySelector('[data-tab=nowboard]').click()">Full tiles ↓</a></div>
         </div>
@@ -4998,6 +5000,24 @@ PAGE = r"""
           + `<td>${when(row.exit_at)}</td><td>${filled(row.exit)}</td><td>${money(row.pnl)}</td><td>${pct(row.pnl_pct)}</td><td>${esc(reason(row.exit_reason))}</td></tr>`).join("");
         return `<div class="pd-table-wrap"><table class="pd-table"><thead><tr><th>Trade</th><th>Entry (CT)</th><th>Entry</th><th>Exit (CT)</th><th>Exit</th><th>P&amp;L $</th><th>P&amp;L %</th><th>Why</th></tr></thead><tbody>${body}</tbody></table></div>`;
       };
+      const workingTable = (card) => {
+        const rows = [...(card.working || []), ...(card.not_filled || [])];
+        if (!rows.length) return "";
+        const body = rows.map((row) => `<tr><td><strong>${esc(name(card, row))}</strong></td><td>${when(row.signal_at)}</td>`
+          + `<td>${esc(row.status === "pending" ? (row.order_label || "working") : "NOT FILLED")}</td><td>${esc(row.reason || (row.status === "pending" ? "walking to the ask" : ""))}</td></tr>`).join("");
+        return `<h4>Webull orders</h4><div class="pd-table-wrap"><table class="pd-table"><thead><tr><th>Order</th><th>Signal (CT)</th><th>Status</th><th>Note</th></tr></thead><tbody>${body}</tbody></table></div>`;
+      };
+      const simulatedBlock = (card) => {
+        const sim = card.simulated;
+        if (!sim) return "";
+        const rows = sim.trades || [];
+        const body = rows.map((row) => `<tr><td><strong>${esc(name(card, row))}</strong></td><td>${when(row.entry_at)}</td><td>${row.entry == null ? "—" : "$" + fmt(row.entry, 2)}</td>`
+          + `<td>${when(row.exit_at)}</td><td>${row.exit == null ? "—" : "$" + fmt(row.exit, 2)}</td><td>${money(row.pnl)}</td><td>${esc(row.audit || reason(row.exit_reason))}</td></tr>`).join("");
+        return `<details class="pd-sim"><summary>${esc(sim.label || "Simulated history")} · ${rows.length} trade(s) · ${money(sim.realized_pnl)} · not Webull fills</summary>`
+          + `<div class="pd-note">${esc(sim.note || "")}</div>`
+          + (rows.length ? `<div class="pd-table-wrap"><table class="pd-table"><thead><tr><th>Trade</th><th>Entry (CT)</th><th>Sim entry</th><th>Exit (CT)</th><th>Sim exit</th><th>Sim P&amp;L</th><th>Note</th></tr></thead><tbody>${body}</tbody></table></div>` : "")
+          + `</details>`;
+      };
       const html = cards.map((card) => {
         const doubles = card.target_doublings == null ? "" : `<div><div class="k">Doublings</div><div class="v">${card.doublings == null ? "—" : fmt(card.doublings, 2)} of ~${Math.round(Number(card.target_doublings))}</div></div>`;
         const halted = card.entries_halted ? `<div class="pd-note">New entries halted today${card.halt_reason ? " · " + esc(card.halt_reason) : ""} (exits still run).</div>` : "";
@@ -5006,9 +5026,13 @@ PAGE = r"""
         return `<article class="paper-desk-card">
           <div class="ac-top">
             <div class="ac-sym">${esc(card.label || "")} ${esc(card.name || "Paper")}</div>
-            <span class="tag">paper ledger · internal, not Webull</span>
+            <span class="tag">${card.fills === "webull" ? "Webull paper fills" : (card.fills === "switching" ? "switching to Webull paper" : "paper ledger · internal, not Webull")}</span>
           </div>
-          <div class="pd-note">Simulated fills on this desk's own ledger. Not a trade call and no broker order${src}${marked}.</div>
+          <div class="pd-note">${card.fills === "webull"
+            ? "Orders on the Webull paper account (sandbox). Entries and exits below are Webull fills. Own equity and loss limits, separate from the main desks. Not a trade call"
+            : (card.fills === "switching"
+              ? "Simulated positions finish on the internal ledger; new entries go to the Webull paper account after they close. Not a trade call"
+              : "Simulated fills on this desk's own ledger. Not a trade call and no broker order")}${src}${marked}.</div>
           <div class="paper-desk-metrics">
             <div><div class="k">Equity</div><div class="v">${plain(card.equity)}</div></div>
             <div><div class="k">Cash</div><div class="v">${plain(card.cash)}</div></div>
@@ -5023,8 +5047,10 @@ PAGE = r"""
           ${rules(card.strategy)}
           <h4>Open positions (${(card.open || []).length})</h4>
           ${openTable(card)}
+          ${workingTable(card)}
           <h4>Closed trades</h4>
           ${closedTable(card)}
+          ${simulatedBlock(card)}
         </article>`;
       }).join("");
       hosts.forEach((host) => { host.innerHTML = html; });

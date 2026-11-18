@@ -164,7 +164,7 @@ def test_tiles_are_on_the_main_tabs_and_never_buttons():
     assert 'id="paperDeskCards"' in PAGE and 'id="paperDeskCardsOverview"' in PAGE
     start = PAGE.index("function renderPaperDeskCards()")
     body = PAGE[start : PAGE.index("function renderPaperLogOnly()")]
-    assert "paper ledger · internal, not Webull" in body
+    assert "paper ledger · internal, not Webull" in body and "Webull paper fills" in body and "simulatedBlock(card)" in body
     assert "Filled @ $" in body
     for banned in ("BUY NOW", "ENTER NOW", "SELL NOW", "<button", "Sure"):
         assert banned not in body

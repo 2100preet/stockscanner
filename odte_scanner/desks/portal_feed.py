@@ -186,12 +186,16 @@ def _position(row: Mapping[str, Any]) -> dict[str, Any]:
         "time_exit": row.get("time_exit"),
         "time_stop_at": row.get("time_stop_at"),
         "flatten_ct": row.get("flatten_ct"),
+        "status": row.get("status"),
+        "fill_source": row.get("fill_source"),
+        "order_label": row.get("order_label"),
     }
 
 
 _CLOSED_KEYS = (
     "symbol", "contract", "contracts", "shares", "right", "strike", "expiry",
     "entry", "entry_at", "exit", "exit_at", "exit_reason", "pnl", "pnl_pct",
+    "fill_source", "order_label", "audit",
 )
 
 
@@ -218,6 +222,19 @@ def _total(view: Mapping[str, Any]) -> float | None:
     if equity is None or start is None:
         return None
     return round(equity - start, 2)
+
+
+def _simulated(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, Mapping):
+        return None
+    return {
+        "label": raw.get("label"),
+        "archived_at": raw.get("archived_at"),
+        "note": raw.get("note"),
+        "realized_pnl": _num(raw.get("realized_pnl")),
+        "ending_equity": _num(raw.get("ending_equity")),
+        "trades": _closed(raw.get("trades")),
+    }
 
 
 def _card(view: Mapping[str, Any], *, label: str, name: str, desk: str, doublings: bool) -> dict[str, Any]:
@@ -248,6 +265,15 @@ def _card(view: Mapping[str, Any], *, label: str, name: str, desk: str, doubling
         "halt_reason": view.get("halt_reason"),
         "strategy": dict(view.get("strategy") or {}),
         "source": view.get("source"),
+        # "webull" = Webull paper fills are this book; "switching" = simulated
+        # positions finishing before Webull entries start; "simulated" = the
+        # internal ledger prices fills itself.
+        "fills": view.get("fills") or "simulated",
+        "fill_source": view.get("fill_source") or "simulated (internal ledger)",
+        "era_since": view.get("era_since"),
+        "working": [dict(r) for r in view.get("working") or [] if isinstance(r, Mapping)],
+        "not_filled": [dict(r) for r in view.get("not_filled") or [] if isinstance(r, Mapping)],
+        "simulated": _simulated(view.get("simulated")),
     }
     if doublings:
         card["doublings"] = _num(view.get("doublings"))

@@ -915,6 +915,16 @@ class AutoTrader:
                     item = dict(pos)
                     item["account_id"] = second_id
                     rows.append(item)
+        # Million holds its own option lots on the same paper account. They
+        # belong to that desk's book: never manage, flatten or sell them here.
+        try:
+            from odte_scanner.desks.webull_desk import isolated_holdings, subtract_isolated
+
+            held = isolated_holdings()
+            if held:
+                rows = subtract_isolated(rows, held, self.broker.account_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("isolated desk holdings unavailable: %s", exc)
         return rows
 
     def _reconcile_positions(self, positions: list[dict[str, Any]] | None) -> None:

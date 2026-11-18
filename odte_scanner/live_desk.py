@@ -124,6 +124,14 @@ def start_live_desk_worker(config_path: str | None = None) -> bool:
     from odte_scanner.fast_desk import start_fast_desk_worker
 
     fast_started = start_fast_desk_worker(config_path)
+    # Kotegawa / Million Webull paper orders: refresh fills, walk limits,
+    # cancel unfilled buys between portal cycles. Its own daemon thread.
+    try:
+        from odte_scanner.desks.webull_desk import start_tick_worker
+
+        start_tick_worker(config_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("isolated desk order worker did not start: %s", exc)
     # 📰 News Desk: its own daemon thread, alert only (never orders). A failure
     # here must never stop the scan desks from starting.
     try:

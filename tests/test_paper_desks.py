@@ -978,10 +978,14 @@ def test_dedicated_sandbox_id_routes_and_production_host_does_not(tmp_path: Path
         live_trading={"sandbox": True, "paper": True},
         transport=transport,
     )
-    assert view["route"] == "sandbox"
-    assert calls and calls[0]["account_id"] == "K-SANDBOX"
-    assert calls[0]["host"] == SANDBOX_HOST
-    assert "SHOULD-NOT-USE" not in json.dumps(calls)
+    # The dedicated id resolves to the sandbox, but with Webull paper submits
+    # off the desk stays on its internal ledger and sends nothing. The routed
+    # path itself is covered in test_isolated_webull.py.
+    assert resolve_route("kotegawa", host=SANDBOX_HOST, live_trading={"sandbox": True, "paper": True})["account_id"] == "K-SANDBOX"
+    assert view["route"] == "internal"
+    assert _book(kot)["route_reason"] == "Webull paper submit is off"
+    assert calls == []
+    assert "SHOULD-NOT-USE" not in json.dumps(_book(kot))
     assert "account_id" not in view
 
     calls.clear()
@@ -1544,6 +1548,24 @@ def test_vwap_reclaim_never_falls_back_to_a_shared_or_live_account(tmp_path: Pat
         calls.append(payload)
         return {"ok": True}
 
+    class _Api:
+        def __init__(self):
+            self.placed = []
+
+        def place_option(self, account, orders):
+            self.placed.append((account, dict(orders[0])))
+            return {"client_order_id": orders[0]["client_order_id"]}
+
+    from odte_scanner.trading.webull import WebullBroker
+
+    monkeypatch.setenv("WEBULL_LOCAL_RATE_LIMIT", "0")
+    api = _Api()
+    broker = WebullBroker(
+        enabled=True, dry_run=False, account_id="M-SANDBOX", app_key="k", app_secret="s",
+        ledger_path=tmp_path / "mil_orders.json", submit_interval_sec=0,
+    )
+    broker._order_api = api
+    broker._session_now = datetime(2026, 11, 16, 9, 40, tzinfo=CT)
     routed = tmp_path / "routed.json"
     sent = run_million(
         _mil_section(routed, signals=["vwap_reclaim"]),
@@ -1561,17 +1583,17 @@ def test_vwap_reclaim_never_falls_back_to_a_shared_or_live_account(tmp_path: Pat
                 "WEBULL_LIVE": "1",
             }
         ),
-        transport=transport,
+        broker=broker,
+        quote_fetcher=lambda t: {"bid": 1.2, "ask": 1.3},
     )
     assert sent["route"] == "sandbox"
-    assert len(calls) == 1
-    assert calls[0]["account_id"] == "M-SANDBOX"
-    assert calls[0]["host"] == SANDBOX_HOST
-    assert calls[0]["order"]["contract"] == "DTE0"
-    assert "SHOULD-NOT-USE" not in json.dumps(calls)
-    assert _book(routed)["sandbox_orders"] == [
-        {"symbol": "SPY", "side": "BUY", "account_id": "M-SANDBOX", "host": SANDBOX_HOST}
-    ]
+    assert len(api.placed) == 1
+    account, body = api.placed[0]
+    assert account == "M-SANDBOX"
+    assert broker.orders[0].meta["host"] == SANDBOX_HOST
+    assert body["client_order_id"].startswith("mil-")
+    assert "SHOULD-NOT-USE" not in json.dumps(api.placed)
+    assert _book(routed)["trades"][0]["status"] == "pending"
     assert "account_id" not in sent
 
     calls.clear()
