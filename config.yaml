@@ -545,6 +545,10 @@ actions:
   # 📰 News Desk: SEC 8-K / PR Newswire / FDA / Nasdaq earnings → Telegram alerts only.
   # Never places orders. NEWS_DESK_TELEGRAM=0 keeps it on the portal tile but silent.
   news_desk_enabled: true
+  # 🧬 Biotech Catalyst Watch (alert only, rides the News Desk cycle; BIOTECH_WATCH=0 turns it off).
+  # $1 floor; volume-spike sweep every 5 min in RTH over this list + names with a catalyst in 10 days.
+  # List: SLS + the most active small/mid biotech 8-K filers since Jun 2025 with ≥$2M daily dollar volume.
+  biotech_watchlist: [SLS, AQST, TNXP, CELC, IONS, CRMD, SMMT, RZLT, RARE, ROIV, VSTM, ALKS, PLX, REPL, CAPR, ADCT, ZURA, DNLI, IRD, NAMS, KURA, BHVN, ZBIO, QTTB, VNDA, SGMT, SRRK, ARVN, RAPP, IBRX, AARD, FENC, NVCR, ANAB, UNCY, CYTK, HROW, TECX, MLYS, VERA]
   power_hour_symbols: focus
   power_hour_max_bar_fetch: 22   # 16 + 6 priority slots (small 1m bar pulls)
   # Recent listings / widest-range names quoted before the 48-name cap (display only).
