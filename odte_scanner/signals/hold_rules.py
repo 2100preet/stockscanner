@@ -265,9 +265,17 @@ def time_stop_reason(
     odte_flatten_et: str = "15:45",
 ) -> str | None:
     """Return a SELL reason if industry clock / max-hold says exit, else None."""
-    style = bucket_style(trade.get("dte_bucket"), trade.get("dte"))
+    bucket_label = trade.get("dte_bucket")
+    style = bucket_style(bucket_label, trade.get("dte"))
+    if style == "0dte" and str(bucket_label or "").lower() in {"0dte", "odte", "1dte"}:
+        # A weekly contract stamped "0dte" (Swing [1W] rows) was flattened by the
+        # 15:45 ET 0DTE clock minutes after entry. Trust the contract's expiry.
+        left = trading_dte(trade.get("expiry"), now)
+        if left is not None and left >= 2:
+            bucket_label = "weekly"
+            style = "weekly"
     spec = hold_spec(
-        trade.get("dte_bucket"),
+        bucket_label,
         trade.get("dte"),
         weekly_max_days=weekly_max_days,
         odte_flatten_et=odte_flatten_et,

@@ -6037,6 +6037,9 @@ def create_app(config_path: str | None = None) -> Flask:
                     quote_syms = sorted(set(quote_syms) | set(sorted(mega_on_board)[:mega_cap]))
                 except Exception:  # noqa: BLE001
                     pass
+                if quote_syms and actions_cfg.get("rip_min_market_pct") is not None:
+                    # RIP market tailwind gate reads QQQ's session change.
+                    quote_syms = sorted(set(quote_syms) | {"QQQ"})
                 for s in quote_syms:
                     aliases.setdefault(s, resolve_yahoo_symbol(s, cfg))
 
@@ -6597,6 +6600,7 @@ def create_app(config_path: str | None = None) -> Flask:
                         auto_enter=bool(jcfg.get("auto_enter", True)),
                         auto_exit=bool(jcfg.get("auto_exit", True)),
                         require_flow_gate=flow_gate_journal,
+                        rth_only=bool(jcfg.get("rth_entries_only", True)),
                     )
                     # If we just opened fills, rebuild SELL NOW (TP/SL/clock) against new opens
                     if journal_sync and journal_sync.get("entered"):
@@ -6723,6 +6727,7 @@ def create_app(config_path: str | None = None) -> Flask:
                             auto_enter=bool(jcfg.get("auto_enter", True)),
                             auto_exit=bool(jcfg.get("auto_exit", True)),
                             lottery=lottery,
+                            rth_only=bool(jcfg.get("rth_entries_only", True)),
                         )
                         if journal_sync is None:
                             journal_sync = lot_sync
@@ -6887,7 +6892,7 @@ def create_app(config_path: str | None = None) -> Flask:
                         loss_cooldown_contracts=loss_cooldown_cts,
                         min_live_pct=float(actions_cfg.get("rip_min_live_pct", 1.0)),
                         min_mom5=float(actions_cfg.get("rip_min_mom_5m", 0.05)),
-                        max_otm_pct=float(actions_cfg.get("rip_max_otm_pct", 5.5)),
+                        max_otm_pct=float(actions_cfg.get("rip_board_max_otm_pct", actions_cfg.get("rip_max_otm_pct", 5.5))),
                         max_itm_pct=float(actions_cfg.get("rip_max_itm_pct", 0.35)),
                         prefer_otm=bool(actions_cfg.get("rip_prefer_otm", True)),
                         max_weekly_dte=int(actions_cfg.get("rip_max_weekly_dte", 14)),
@@ -6896,6 +6901,11 @@ def create_app(config_path: str | None = None) -> Flask:
                         ),
                         max_tickets=int(actions_cfg.get("rip_max_tickets", 12)),
                         win_rate_table=win_table if isinstance(win_table, dict) else None,
+                        min_market_pct=(
+                            float(actions_cfg["rip_min_market_pct"])
+                            if actions_cfg.get("rip_min_market_pct") is not None
+                            else None
+                        ),
                     )
                     rip_radar = _uw_annotate_board(
                         rip_radar, keys=("buy_rip", "buy_now", "watch"), hard_block=False

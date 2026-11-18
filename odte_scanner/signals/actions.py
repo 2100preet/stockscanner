@@ -108,6 +108,36 @@ def _bucket_label(candidate: dict[str, Any]) -> str:
     return "0DTE"
 
 
+# Session move at which decide_exit banks a long call (or put).
+BANK_LIVE_PCT = 1.8
+
+
+def bank_move_ready(live: float | None, last: float | None, entry_spot: Any, *, put: bool = False) -> bool:
+    """True when the session move says bank the premium.
+
+    A position opened when the session was already past the threshold (a weekly
+    pullback reclaim, a RIP continuation) used to be sold on the very next cycle:
+    9 Swing [1W] paper trades in the Nov 17 review closed 0–2 minutes after entry.
+    Those bank only after a further ±BANK_LIVE_PCT move from the entry price.
+    """
+    if live is None:
+        return False
+    sign = -1.0 if put else 1.0
+    if sign * float(live) < BANK_LIVE_PCT:
+        return False
+    try:
+        entry = float(entry_spot)
+    except (TypeError, ValueError):
+        return True
+    if not last or entry <= 0 or float(live) <= -99:
+        return True
+    prev_close = float(last) / (1.0 + float(live) / 100.0)
+    entry_live = (entry / prev_close - 1.0) * 100.0
+    if sign * entry_live < BANK_LIVE_PCT:
+        return True
+    return sign * (float(last) / entry - 1.0) * 100.0 >= BANK_LIVE_PCT
+
+
 def decide_entry(
     candidate: dict[str, Any],
     *,
@@ -594,7 +624,7 @@ def decide_exit(
             sell = True
             strength = max(strength, 90.0)
             reasons.append(f"5m dump {mom5:+.2f}% — exit 0DTE call risk")
-        if live is not None and live >= 1.8:
+        if bank_move_ready(live, last, trade.get("entry_spot")):
             sell = True
             strength = max(strength, 80.0)
             reasons.append(f"underlying ripped {live:+.2f}% — bank call premium")
@@ -607,7 +637,7 @@ def decide_exit(
             sell = True
             strength = max(strength, 90.0)
             reasons.append(f"5m bounce {mom5:+.2f}% — exit 0DTE put risk")
-        if live is not None and live <= -1.8:
+        if bank_move_ready(live, last, trade.get("entry_spot"), put=True):
             sell = True
             strength = max(strength, 80.0)
             reasons.append(f"underlying dumped {live:+.2f}% — bank put premium")

@@ -395,8 +395,19 @@ def decide_rip_entry(
     max_otm_pct: float = 5.5,
     min_volume: int = 50,
     now: datetime | None = None,
+    market_change_pct: float | None = None,
+    min_market_pct: float | None = None,
 ) -> RipAction:
-    """Classify a mega call as BUY_RIP / WATCH_RIP / RIP_COOL."""
+    """Classify a mega call as BUY_RIP / WATCH_RIP / RIP_COOL.
+
+    ``min_market_pct`` (config ``rip_min_market_pct``) is the market tailwind
+    gate: BUY_RIP also needs QQQ up at least that much on the session and the
+    name itself up ``min_live_pct`` (a day-low bounce alone stays WATCH). In the
+    Nov 2026 replay (1,539 signals, Aug 26–Nov 17) the unfiltered lane lost
+    about 11% per trade in both halves; with QQQ ≥ +1% and the name ≥ +1% it
+    was about −1% (H1 −0.8%, H2 −0.4%), and the live v2 shadow's 56 trades
+    inside the gate made +1.8% vs −14.1% outside it.
+    """
     now = now or datetime.now(ET)
     symbol = str(ticket.get("symbol") or "").upper()
     contract = str(ticket.get("contract") or "").upper()
@@ -587,6 +598,18 @@ def decide_rip_entry(
     )
 
     if ripping and confirms >= 3 and (vol >= min_volume or oi >= 100 or ask > 0):
+        gate_note = market_gate_block(live, market_change_pct, min_live_pct=min_live_pct, min_market_pct=min_market_pct)
+        if gate_note:
+            return RipAction(
+                action="WATCH_RIP",
+                strength=min(strength, 72.0),
+                headline=f"WATCH RIP {symbol}",
+                detail=f"Tape ok ({_tape_label()}) but {gate_note}.",
+                playbook=playbook,
+                risk_tag="continuation",
+                confirms=confirms,
+                **base,
+            )
         weekly_fb = bool(ticket.get("weekly_fallback") or ticket.get("nearest_listed"))
         fb_note = ""
         if weekly_fb:
@@ -641,6 +664,31 @@ def decide_rip_entry(
     )
 
 
+def market_gate_block(
+    live: float | None,
+    market_change_pct: float | None,
+    *,
+    min_live_pct: float = 1.0,
+    min_market_pct: float | None = None,
+) -> str | None:
+    """Why a ripping name still waits, or None when the market tailwind gate passes."""
+    if min_market_pct is None:
+        return None
+    if live is None or float(live) < float(min_live_pct):
+        shown = "n/a" if live is None else f"{float(live):+.2f}%"
+        return f"needs the name up ≥{float(min_live_pct):.1f}% on the session (now {shown}); a day-low bounce alone waits"
+    if market_change_pct is None:
+        return f"QQQ session change unknown; BUY RIP needs QQQ ≥{float(min_market_pct):+.1f}%"
+    if float(market_change_pct) < float(min_market_pct):
+        return f"QQQ {float(market_change_pct):+.2f}% < {float(min_market_pct):+.1f}% market tailwind gate"
+    return None
+
+
+def market_change_from_quotes(quotes: dict[str, dict[str, Any]] | None, symbol: str = "QQQ") -> float | None:
+    q = (quotes or {}).get(symbol) or (quotes or {}).get(symbol.lower())
+    return _live_pct(q) if isinstance(q, dict) else None
+
+
 def _needs_rip_weekly_fallback(act: RipAction) -> bool:
     """True when tape is hot but the snapshot ask was missing/thin/junk/far OTM.
 
@@ -683,8 +731,10 @@ def build_rip_board(
     win_rate_table: dict[str, Any] | None = None,
     now: datetime | None = None,
     signal_times_path: str | None = "outputs/rip_signal_times.json",
+    min_market_pct: float | None = None,
 ) -> dict[str, Any]:
     quotes = quotes or {}
+    market_pct = market_change_from_quotes(quotes) if min_market_pct is not None else None
     store = load_signal_store(signal_times_path)
     score_map = {
         str(s.get("symbol") or "").upper(): float(s.get("ensemble_score") or 0)
@@ -763,6 +813,8 @@ def build_rip_board(
             max_ask=max_ask,
             max_otm_pct=max_otm_pct,
             now=now,
+            market_change_pct=market_pct,
+            min_market_pct=min_market_pct,
         )
         # AVGO/ORCL-class: tape OK but 0–1 DTE ask thin → real weekly chain fallback
         # Also re-pick when the snapshot strike is too deep ITM (TSLA 365 vs ~368).
@@ -805,6 +857,8 @@ def build_rip_board(
                     max_ask=max_ask,
                     max_otm_pct=max_otm_pct,
                     now=now,
+                    market_change_pct=market_pct,
+                    min_market_pct=min_market_pct,
                 )
                 if act2.action in {"BUY_RIP", "WATCH_RIP"}:
                     act = act2
@@ -821,6 +875,8 @@ def build_rip_board(
                         max_ask=max_ask,
                         max_otm_pct=max_otm_pct,
                         now=now,
+                        market_change_pct=market_pct,
+                        min_market_pct=min_market_pct,
                     )
             else:
                 act = decide_rip_entry(
@@ -834,6 +890,8 @@ def build_rip_board(
                     max_ask=max_ask,
                     max_otm_pct=max_otm_pct,
                     now=now,
+                    market_change_pct=market_pct,
+                    min_market_pct=min_market_pct,
                 )
         # Stamp walk-forward hist so sure-winner desk can promote elite RIP tickets
         if win_rate_table is not None and (act.win_pct is None or act.win_samples is None):
@@ -889,10 +947,16 @@ def build_rip_board(
             "cool": len(cool),
         },
         "mega_symbols": sorted(MEGA_RIP_SYMBOLS),
+        "market_gate": {"symbol": "QQQ", "change_pct": market_pct, "min_pct": min_market_pct},
         "signal_times": store,
         "rules": [
             "Need session ≥~1% OR ≥1.2% reclaim off the day low (TSLA 347→351 style).",
-            "Prefer ATM→slight OTM (≤5.5%); reject deep ITM (≤0.35% ITM cap) for convexity.",
+            *(
+                [f"BUY RIP also needs QQQ ≥{float(min_market_pct):+.1f}% and the name ≥{float(min_live_pct):+.1f}% on the session; otherwise WATCH."]
+                if min_market_pct is not None
+                else []
+            ),
+            f"Prefer ATM→slight OTM (≤{float(max_otm_pct):g}%); reject deep ITM (≤{float(max_itm_pct):g}% ITM cap) for convexity.",
             "If 0–1 DTE ask missing/thin/far OTM/deep ITM, re-pick nearer ATM/OTM or weekly (≤14 DTE).",
             "Same OCC after a loss stays blocked ~45d.",
             "Symbol cooldown waived on this lane when tape is ripping.",

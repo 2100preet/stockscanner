@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from odte_scanner.time_cst import to_cst_label
 from odte_scanner.json_util import finite_float
@@ -68,6 +69,42 @@ def _parse_live_exit_from_reason(reason: str | None) -> float | None:
             pass
     return None
 
+
+
+_CT_ZONE = ZoneInfo("America/Chicago")
+
+
+def regular_session_open(now: datetime | None = None) -> bool:
+    """Weekday 8:30–14:59 America/Chicago (regular hours, before the last 0DTE minute)."""
+    moment = now or datetime.now(timezone.utc)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    local = moment.astimezone(_CT_ZONE)
+    if local.weekday() >= 5:
+        return False
+    minutes = local.hour * 60 + local.minute
+    return 8 * 60 + 30 <= minutes < 15 * 60
+
+
+def closed_today(trades: Any, contract: str, now: datetime | None = None) -> bool:
+    """True when this contract already has a closed paper trade on today's CT date."""
+    moment = now or datetime.now(timezone.utc)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    today = moment.astimezone(_CT_ZONE).date()
+    for t in trades or []:
+        if getattr(t, "status", "") != "closed" or str(getattr(t, "contract", "") or "") != contract:
+            continue
+        raw = str(getattr(t, "exited_at", "") or "")
+        try:
+            when = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        if when.astimezone(_CT_ZONE).date() == today:
+            return True
+    return False
 
 @dataclass
 class JournalTrade:
@@ -199,8 +236,13 @@ class SignalJournal:
         max_per_day: int = 5,
         require_flow_gate: bool = False,
         now: datetime | None = None,
+        rth_only: bool = False,
     ) -> JournalTrade | None:
         if signal.get("action") != "BUY_NOW":
+            return None
+        if rth_only and not regular_session_open(now):
+            # Nov 17 review: 41 of 60 Swing [1W] paper entries were opened at night or
+            # premarket on stale asks (AAPL −$98, LUV −$79, DOCU −$112).
             return None
         if require_flow_gate:
             detail = str(signal.get("detail") or "")
@@ -223,6 +265,9 @@ class SignalJournal:
         if any(
             t.status == "open" and str(t.contract or "") == contract for t in self.book.trades
         ):
+            return None
+        if rth_only and closed_today(self.book.trades, contract, now):
+            # Same contract already closed today: re-buying it churned 5–6 round trips a day.
             return None
 
         today = datetime.now(timezone.utc).date().isoformat()
@@ -637,6 +682,7 @@ class SignalJournal:
         lottery: dict[str, Any] | None = None,
         ml6: dict[str, Any] | None = None,
         now: datetime | None = None,
+        rth_only: bool = False,
     ) -> dict[str, Any]:
         """Apply BUY NOW / SELL NOW from the action board (+ lottery / ML6) to the journal."""
         entered, exited = [], []
@@ -668,6 +714,7 @@ class SignalJournal:
                     max_risk_usd=max_risk_usd,
                     require_flow_gate=require_flow_gate,
                     now=now,
+                    rth_only=rth_only,
                 )
                 if t:
                     entered.append(t.to_dict())
