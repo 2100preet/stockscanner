@@ -30,5 +30,6 @@ RUN mkdir -p /app/outputs
 
 # Honor $PORT from Railway/Render/Fly (defaults to 8787)
 # LIVE_DESK_LOOP=1 (default): background focus scan → Telegram → Webull each cycle
-# WEBULL_LIVE=1 + WEBULL_APP_KEY/SECRET: real order submits (otherwise dry-run stage only)
+# WEBULL_LIVE=1 does not place production orders (paper stays on the sandbox).
+# SNIPER_LIVE_ENABLED=1 + WEBULL_LIVE_APP_KEY/SECRET/ACCOUNT_ID: Sniper LIVE mirror only.
 CMD ["sh", "-c", "python -m odte_scanner ui --host 0.0.0.0 --port ${PORT:-8787}"]

@@ -232,6 +232,24 @@ PAGE = r"""
     .pulse-card.sniper .pc-meta span,
     .pulse-card.sniper .pc-why { color: #065f46; }
     .pulse-card.sniper .pc-meta strong { color: #022c22; }
+    .pulse-banner.sniper-live {
+      border: 1px solid rgba(220, 80, 70, .45);
+      background: rgba(80, 18, 16, .35);
+    }
+    .pulse-banner.sniper-live .pb-title em { color: #fecaca; }
+    .pulse-card.sniper-live {
+      border: 1px solid rgba(248, 113, 113, .45);
+      background: rgba(127, 29, 29, .25);
+    }
+    .pulse-card.sniper-live .pc-sym { color: #fecaca; }
+    .pulse-card.sniper-live .pc-tag.sniper-live {
+      color: #fecaca;
+      letter-spacing: .08em;
+      font-size: .72rem;
+    }
+    .pulse-card.sniper-live .pc-meta span,
+    .pulse-card.sniper-live .pc-why { color: #fca5a5; }
+    .pulse-card.sniper-live .pc-meta strong { color: #fff7ed; }
     .pulse-card.expected {
       border-color: rgba(147, 197, 253, .8);
       background: linear-gradient(165deg, rgba(219, 234, 254, .94), rgba(191, 219, 254, .5) 42%, rgba(15, 23, 42, .9) 78%);
@@ -381,6 +399,7 @@ PAGE = r"""
     <div id="mustTradeBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="diamondBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="sniperBanner" class="pulse-banner" aria-live="polite"></div>
+    <div id="sniperLiveBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="afternoonBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="lunchBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="expectedMoveBanner" class="pulse-banner" aria-live="polite"></div>
@@ -4454,6 +4473,49 @@ PAGE = r"""
         <div class="pb-grid">${rows.map(card).join("")}</div>`;
     }
 
+    function renderSniperLiveBanner() {
+      const el = document.getElementById("sniperLiveBanner");
+      if (!el) return;
+      const board = DATA.sniper_live || {};
+      el.classList.add("active", "sniper-live");
+      const money = (n) => {
+        if (n == null || Number.isNaN(Number(n))) return "—";
+        const v = Number(n);
+        const body = "$" + Math.abs(v).toFixed(2);
+        if (Math.abs(v) < 0.005) return "$0.00";
+        return v > 0 ? ("+" + body) : ("−" + body);
+      };
+      const status = String(board.status || (board.enabled ? "armed" : "off")).toUpperCase();
+      const rows = board.orders || [];
+      const card = (row) => {
+        const label = row.display_price_label || "";
+        return `<div class="pulse-card sniper-live">
+          <div class="pc-top">
+            <div class="pc-sym">${row.symbol || "—"}</div>
+            <div class="pc-tag sniper-live">LIVE ${row.action || ""} ${row.status || ""}</div>
+          </div>
+          <div class="pc-meta">
+            <div><span>Contract</span><br><strong>${row.contract || "—"}</strong></div>
+            <div><span>Qty</span><br><strong>1</strong></div>
+            <div><span>Premium</span><br><strong>${label || "—"}</strong></div>
+          </div>
+          <p class="pc-why">${row.reason || ""}</p>
+        </div>`;
+      };
+      const grid = rows.length
+        ? rows.slice(0, 6).map(card).join("")
+        : `<div class="pulse-card sniper-live"><p class="pc-why">${board.note || "Sniper LIVE is off. Paper Sniper is unchanged."}</p></div>`;
+      el.innerHTML = `
+        <div class="pb-head">
+          <div>
+            <h2 class="pb-title">🎯 Sniper LIVE <em>real money · not paper</em></h2>
+            <div class="pb-sub">${board.note || "1 contract per trade, max 3 a day, +25% / −40% / flat 10:30 CT. Separate from the paper Sniper tile."}</div>
+          </div>
+          <div class="status">LIVE ${status} · today ${money(board.realized_pnl)} realized${board.open_n ? " · open " + board.open_n + " " + money(board.unrealized_pnl) : ""} · ${board.entries_today || 0}/${board.daily_cap || 3}</div>
+        </div>
+        <div class="pb-grid">${grid}</div>`;
+    }
+
     function afternoonMoney(value) {
       if (value == null || value === "" || Number.isNaN(Number(value))) return "—";
       const n = Number(value);
@@ -4836,7 +4898,7 @@ PAGE = r"""
       const b = DATA.today_pnl || null;
       el.classList.add("active", "top-strip");
       if (!b || b.ok === false) {
-        el.innerHTML = `<div class="pb-head"><div><h2 class="pb-title">📊 Today's P&amp;L <em>· paper only</em></h2><div class="pb-sub">${topEsc((b && b.error) || "Loads with the live desk.")}</div></div></div>`;
+        el.innerHTML = `<div class="pb-head"><div><h2 class="pb-title">📊 Today's P&amp;L</h2><div class="pb-sub">${topEsc((b && b.error) || "Loads with the live desk.")}</div></div></div>`;
         return;
       }
       const rec = (r) => (r.trades ? `${r.wins || 0}W/${r.losses || 0}L` : "—");
@@ -4857,8 +4919,8 @@ PAGE = r"""
       el.innerHTML = `
         <div class="pb-head">
           <div>
-            <h2 class="pb-title">📊 Today's P&amp;L <em>· every desk · paper only</em></h2>
-            <div class="pb-sub">${topEsc(b.day || "")} · as of ${topEsc(asOf)} · realized = closed today · unrealized = open at latest mark vs entry · the two books are never added together</div>
+            <h2 class="pb-title">📊 Today's P&amp;L <em>· paper books below · Sniper LIVE is separate</em></h2>
+            <div class="pb-sub">${topEsc(b.day || "")} · as of ${topEsc(asOf)} · realized = closed today · unrealized = open at latest mark vs entry · the paper books are never added together · Sniper LIVE is real money and is not in those totals</div>
           </div>
           <div class="status">WEBULL ${topMoney((web.total || {}).realized)} · LEDGERS ${topMoney((inn.total || {}).realized)}</div>
         </div>
@@ -4866,6 +4928,15 @@ PAGE = r"""
           <div class="ts-box"><h3>Webull paper desks <em style="font-weight:400">· Webull paper fills are the source of truth</em></h3>${table(web.rows || [])}${total(web.total || {})}</div>
           <div class="ts-box"><h3>Own-book desks <em style="font-weight:400">· Kotegawa &amp; Million on Webull paper with their own equity · journal sleeves internal · not in the total above</em></h3>${table(inn.rows || [])}${total(inn.total || {})}</div>
           <div class="ts-box"><h3>Alert-only desks <em style="font-weight:400">· no orders</em></h3>${alerts}</div>
+          ${(() => {
+            const live = b.sniper_live || {};
+            const cap = live.max_daily_loss != null ? " · cap " + topMoney(live.max_daily_loss) : "";
+            const missing = (live.missing || []).length ? " · need " + live.missing.join(", ") : "";
+            return `<div class="ts-box" style="border-color:rgba(248,113,113,.45)"><h3>Sniper LIVE <em style="font-weight:400">· real money · never added to paper totals</em></h3>
+              <p class="ts-line"><strong>Today</strong> · realized ${topMoney(live.realized_pnl)} · entries ${live.entries_today || 0}/${live.daily_cap || 3} · ${live.open_n ? "open " + live.open_n + " · unrealized " + topMoney(live.unrealized_pnl, {na: "mark n/a"}) : "no open live position"} · status ${topEsc((live.status || "off").toUpperCase())}${cap}${missing}</p>
+              <p class="ts-line">${topEsc(live.note || "Off until SNIPER_LIVE_ENABLED is set.")}</p>
+            </div>`;
+          })()}
         </div>`;
     }
 
@@ -5117,6 +5188,7 @@ PAGE = r"""
       try { renderEdge(); } catch (err) { console.error(err); }
       try { renderDiamondBanner(); } catch (err) { console.error(err); }
       try { renderSniperBanner(); } catch (err) { console.error(err); }
+      try { renderSniperLiveBanner(); } catch (err) { console.error(err); }
       try { renderAfternoonBanner(); } catch (err) { console.error(err); }
       try { renderLunchBanner(); } catch (err) { console.error(err); }
       try { renderExpectedMove(); } catch (err) { console.error(err); }

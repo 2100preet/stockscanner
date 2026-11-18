@@ -435,8 +435,12 @@ class AutoTrader:
         edge_gate: bool = False,
         edge_route: set[str] | None = None,
         challenge_paper: bool = False,
+        lock: threading.Lock | None = None,
     ):
         self.broker = broker
+        # Paper traders share the module lock because they share the paper ledger.
+        # The Sniper LIVE trader passes its own lock so it cannot block paper.
+        self._sync_lock = lock if lock is not None else _SYNC_LOCK
         self.require_perfect_hist = bool(require_perfect_hist)
         self.min_hist_win_pct = float(min_hist_win_pct)
         self.min_hist_win_samples = int(min_hist_win_samples)
@@ -2303,7 +2307,7 @@ class AutoTrader:
             return intent
         if preopen:
             return self._maybe_challenge_entry_alert(self._defer_until_open(intent))
-        return self._maybe_challenge_entry_alert(self.broker.submit(intent))
+        return self._maybe_challenge_entry_alert(self._submit_broker(intent))
 
     def _gold_order_plan(self, row: dict[str, Any]) -> dict[str, Any]:
         """Store the config exit text on the buy. The engine does not parse it."""
@@ -2727,7 +2731,7 @@ class AutoTrader:
         now: datetime | None = None,
     ) -> dict[str, Any]:
         """Route every desk. Shares a lock with the Sniper/Diamond hot path."""
-        with _SYNC_LOCK:
+        with self._sync_lock:
             result = self._sync_under_lock(
                 actions=actions,
                 lottery=lottery,
@@ -2741,6 +2745,7 @@ class AutoTrader:
             orders = list(self.broker.orders)
             moment = self._now
         self._queue_exit_alerts(orders, moment, diamond, sniper)
+        self._after_paper_sync(sniper=sniper, now=moment)
         return result
 
     def sync_exits(self, *, now: datetime | None = None, lock_timeout: float = 3.0) -> dict[str, Any]:
@@ -2750,16 +2755,17 @@ class AutoTrader:
         a 10:30 flatten. It never opens a position. If the main sync holds the
         lock, this tick is skipped (that sync runs the same exits).
         """
-        if not _SYNC_LOCK.acquire(timeout=max(0.0, float(lock_timeout))):
+        if not self._sync_lock.acquire(timeout=max(0.0, float(lock_timeout))):
             return {"skipped": "sync busy"}
         try:
             result = self._sync_exits_locked(now)
             orders = list(self.broker.orders)
             moment = self._now
         finally:
-            _SYNC_LOCK.release()
+            self._sync_lock.release()
         if result.get("sent"):
             self._queue_exit_alerts(orders, moment, None, None)
+        self._after_paper_sync(now=moment)
         return result
 
     def _sync_exits_locked(self, now: datetime | None) -> dict[str, Any]:
@@ -2819,11 +2825,12 @@ class AutoTrader:
         now: datetime | None = None,
     ) -> dict[str, Any]:
         """Chase and route Sniper, Diamond, and Afternoon Puts. Does not walk the focus board."""
-        with _SYNC_LOCK:
+        with self._sync_lock:
             result = self._sync_hot_locked(diamond=diamond, sniper=sniper, afternoon=afternoon, now=now)
             orders = list(self.broker.orders)
             moment = self._now
         self._queue_exit_alerts(orders, moment, diamond, sniper, afternoon)
+        self._after_paper_sync(sniper=sniper, now=moment)
         return result
 
     def _sync_hot_locked(
@@ -3396,7 +3403,7 @@ class AutoTrader:
                     and golden_buys >= self.max_golden_buys_per_sync
                 ):
                     continue
-                _take(self.broker.submit(intent))
+                _take(self._submit_broker(intent))
 
         if self.golden_only:
             for row in _golden_rows(sure_winners, option_flow):
@@ -3473,3 +3480,44 @@ class AutoTrader:
             "activity": self.broker.activity(40),
             "disclaimer": self.broker.status()["disclaimer"],
         }
+
+    def _submit_broker(self, intent: WebullOrderIntent) -> WebullOrderIntent:
+        """Submit on this trader's broker, then maybe mirror a paper Sniper buy live."""
+        out = self.broker.submit(intent)
+        self._maybe_mirror_sniper_live(out)
+        return out
+
+    def _is_live_desk_broker(self) -> bool:
+        try:
+            from odte_scanner.trading.sniper_live import is_live_broker
+
+            return is_live_broker(self.broker)
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _maybe_mirror_sniper_live(self, intent: WebullOrderIntent | None) -> None:
+        if intent is None or self._is_live_desk_broker():
+            return
+        if str(intent.action or "").upper() != "BUY":
+            return
+        try:
+            from odte_scanner.trading.sniper_live import mirror_paper_entry
+
+            mirror_paper_entry(intent, now=self._now)
+        except Exception:  # noqa: BLE001
+            logger.exception("sniper live mirror failed")
+
+    def _after_paper_sync(
+        self,
+        *,
+        sniper: dict[str, Any] | None = None,
+        now: datetime | None = None,
+    ) -> None:
+        if self._is_live_desk_broker():
+            return
+        try:
+            from odte_scanner.trading.sniper_live import tick_sniper_live
+
+            tick_sniper_live(sniper=sniper, now=now)
+        except Exception:  # noqa: BLE001
+            logger.exception("sniper live tick failed")
