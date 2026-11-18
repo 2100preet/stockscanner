@@ -398,3 +398,148 @@ def test_scorecard_records_a_sent_sniper_and_the_desk_has_its_own_tile():
     assert "pulse-card.sniper" in PAGE
     assert "Clint" not in html
     assert "BDSniper" not in html
+
+
+def _put_retest_at(day: str, hh: int, mm: int) -> list[Bar]:
+    """Break the 8:30–8:45 range, then first retest at ``hh:mm`` CT."""
+    bars = [
+        _bar(day, 8, 30, 100.0, high=100.40, low=99.90),
+        _bar(day, 8, 35, 100.1, high=100.30, low=99.95),
+        _bar(day, 8, 40, 100.0, high=100.20, low=99.85),
+        _bar(day, 8, 45, 99.60, high=99.70, low=99.50),
+    ]
+    cursor = datetime.fromisoformat(f"{day}T08:50:00").replace(tzinfo=CT)
+    signal = datetime.fromisoformat(f"{day}T{hh:02d}:{mm:02d}:00").replace(tzinfo=CT)
+    price = 99.40
+    while cursor < signal:
+        bars.append(_bar(day, cursor.hour, cursor.minute, price, high=price + 0.10, low=price - 0.12))
+        price -= 0.01
+        cursor += timedelta(minutes=5)
+    bars.append(_bar(day, hh, mm, 99.60, high=99.86, low=99.45))
+    price = 99.65
+    cursor = signal + timedelta(minutes=5)
+    end = datetime.fromisoformat(f"{day}T10:30:00").replace(tzinfo=CT)
+    while cursor <= end:
+        bars.append(_bar(day, cursor.hour, cursor.minute, price, high=price + 0.03, low=price - 0.05))
+        price -= 0.01
+        cursor += timedelta(minutes=5)
+    return bars
+
+
+def _put_chain(symbols, expiry="2026-11-18"):
+    return {
+        s: [{"right": "P", "strike": 99, "expiry": expiry, "ask": 1.4, "bid": 1.3}]
+        for s in symbols
+    }
+
+
+def test_put_retest_can_wait_until_0910():
+    trades = run_symbol("QQQ", _put_retest_at("2026-11-17", 9, 10), PRIMARY_RULES)
+    assert len(trades) == 1
+    assert trades[0]["side"] == "P"
+    assert trades[0]["at_ct"] == "09:10"
+
+
+def test_late_qqq_bars_keep_the_webull_slot(tmp_path):
+    """Nov 17: QQQ's 9:10 put arrived after SPY/SPX/NVDA locked the cap of 3.
+
+    SPX is alert-only and still counts as one of the three names. The bug was
+    locking NVDA while QQQ's bar was missing, then refusing QQQ the seat it
+    should have had on priority at the same stamp. NVDA must not get a Webull
+    order on the first scan; QQQ must get it once the bars land.
+    """
+    from odte_scanner.signals.slot_lock import lock_daily_symbols
+
+    day = "2026-11-17"
+    puts = _put_retest_at(day, 9, 10)
+    now_first = datetime(2026, 11, 17, 9, 15, 23, tzinfo=CT)
+    store = tmp_path / "sniper_day.json"
+    first_names = ["SPY", "SPX", "NVDA"]
+    first = build_sniper_board(
+        {name: puts for name in first_names},
+        now=now_first,
+        store_path=store,
+        chains=_put_chain(first_names),
+    )
+    assert [row["symbol"] for row in first["qualified"]] == ["SPY", "SPX", "NVDA"]
+    # QQQ is still missing, so only SPY may take a seat. SPX waits too.
+    assert [row["symbol"] for row in first["signals"]] == ["SPY"]
+    assert first["signals"][0]["send_order"] is True
+    locked = __import__("json").loads(store.read_text())["symbols"]
+    assert locked == ["SPY"]
+
+    later = build_sniper_board(
+        {name: puts for name in ("SPY", "QQQ", "SPX", "NVDA")},
+        now=datetime(2026, 11, 17, 9, 16, 10, tzinfo=CT),
+        store_path=store,
+        chains=_put_chain(["SPY", "QQQ", "SPX", "NVDA"]),
+    )
+    by_symbol = {row["symbol"]: row for row in later["signals"]}
+    assert list(by_symbol) == ["SPY", "QQQ", "SPX"]
+    assert by_symbol["QQQ"]["send_order"] is True
+    assert by_symbol["QQQ"]["right"] == "P"
+    assert by_symbol["SPY"]["send_order"] is True
+    assert by_symbol["SPX"]["send_order"] is False
+    assert by_symbol["SPX"]["send"] is True
+    assert "NVDA" not in by_symbol
+    assert __import__("json").loads(store.read_text())["symbols"] == ["SPY", "QQQ", "SPX"]
+
+    # If the first scan had already frozen the wrong trio and NVDA was not
+    # sent, QQQ still evicts it. If NVDA was already sent, the cap stays put.
+    stale = {"day": day, "symbols": ["SPY", "SPX", "NVDA"], "detected": {}}
+    evicted = lock_daily_symbols(
+        [
+            {"symbol": s, "at_ct": "09:10", "day": day}
+            for s in ("SPY", "QQQ", "SPX", "NVDA")
+        ],
+        stale,
+        day,
+        bars_by_symbol={s: puts for s in ("SPY", "QQQ", "SPX", "NVDA")},
+        now=datetime(2026, 11, 17, 9, 16, 10, tzinfo=CT),
+    )
+    assert evicted == ["SPY", "QQQ", "SPX"]
+    sent = lock_daily_symbols(
+        [
+            {"symbol": s, "at_ct": "09:10", "day": day}
+            for s in ("SPY", "QQQ", "SPX", "NVDA")
+        ],
+        {**stale, "detected": {"NVDA|P|09:10": "2026-11-17T15:15:29+00:00"}},
+        day,
+        bars_by_symbol={s: puts for s in ("SPY", "QQQ", "SPX", "NVDA")},
+        now=datetime(2026, 11, 17, 9, 16, 10, tzinfo=CT),
+    )
+    assert sent == ["SPY", "SPX", "NVDA"]
+
+
+def test_spx_counts_toward_the_three_name_cap_when_all_bars_are_in(tmp_path):
+    """SPX is not a Webull order, but it is one of the three daily names."""
+    day = "2026-11-17"
+    puts = _put_retest_at(day, 9, 10)
+    names = ["SPY", "QQQ", "SPX", "NVDA"]
+    board = build_sniper_board(
+        {name: puts for name in names},
+        now=datetime(2026, 11, 17, 9, 15, 23, tzinfo=CT),
+        store_path=tmp_path / "all_in.json",
+        chains=_put_chain(names),
+    )
+    by_symbol = {row["symbol"]: row for row in board["signals"]}
+    assert list(by_symbol) == ["SPY", "QQQ", "SPX"]
+    assert by_symbol["SPX"]["send_order"] is False
+    assert by_symbol["QQQ"]["send_order"] is True
+    assert "NVDA" not in by_symbol
+
+
+def test_missing_higher_priority_gives_up_after_one_extra_bar(tmp_path):
+    """If QQQ never prints a 9:10 bar, SPX and NVDA may take the leftover seats."""
+    day = "2026-11-17"
+    puts = _put_retest_at(day, 9, 10)
+    board = build_sniper_board(
+        {name: puts for name in ("SPY", "SPX", "NVDA")},
+        now=datetime(2026, 11, 17, 9, 20, 3, tzinfo=CT),
+        store_path=tmp_path / "timeout.json",
+        chains=_put_chain(["SPY", "SPX", "NVDA"]),
+    )
+    assert [row["symbol"] for row in board["signals"]] == ["SPY", "SPX", "NVDA"]
+    by_symbol = {row["symbol"]: row for row in board["signals"]}
+    assert by_symbol["NVDA"]["send_order"] is True
+    assert by_symbol["SPX"]["send_order"] is False
