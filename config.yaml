@@ -400,7 +400,9 @@ actions:
   rip_min_live_pct: 1.0
   rip_min_mom_5m: 0.05
   rip_max_tickets: 12
-  rip_max_otm_pct: 5.5          # was 4% — META 1DTE ~4.3% OTM was dying on WATCH
+  rip_max_otm_pct: 5.5          # was 4% — META 1DTE ~4.3% OTM was dying on WATCH (mega short-DTE picks)
+  rip_board_max_otm_pct: 1.0    # RIP board only. Nov 17 review: ATM beat 2% OTM in both halves of the 60-day replay (v2 shadow is ATM–1%)
+  rip_min_market_pct: 1.0       # BUY RIP needs QQQ ≥ +1% and the name ≥ +1% (replay: −11%/trade → ≈−1% in both halves; live v2 shadow +1.8% inside vs −14.1% outside)
   rip_max_weekly_dte: 14        # AVGO-class: fall back to liquid weekly when 0–1 DTE thin
   rip_allow_chain_fallback: true
   # Prefer 0–1 DTE (else ≤7 DTE) over fat beauty monthlies on Options board for megas
