@@ -19,9 +19,12 @@ import os
 import threading
 import time
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+_ET = ZoneInfo("America/New_York")
 
 _worker_started = False
 _lock = threading.Lock()
@@ -34,18 +37,23 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
-def _in_rth_window(*, extended: bool = False) -> bool:
-    """US cash RTH in UTC (approx 13:30–20:00). Extended = weekdays 12:00–21:00 UTC."""
-    now = datetime.now(timezone.utc)
-    if now.weekday() >= 5:
+def _in_rth_window(*, extended: bool = False, now: datetime | None = None) -> bool:
+    """US cash session on the New York clock, so it holds across DST.
+
+    Regular = weekdays 9:25 AM–4:05 PM ET (covers Power Hour, the 2:50–3:00 PM CT
+    entry windows and the 2:55 PM CT flatten). Extended = weekdays 8:00 AM–5:00 PM ET.
+    The old check used fixed UTC hours, which ended the loop at 2:05 PM CT in winter.
+    """
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    et = current.astimezone(_ET)
+    if et.weekday() >= 5:
         return False
+    minutes = et.hour * 60 + et.minute
     if extended:
-        return 12 <= now.hour < 21
-    if now.hour < 13 or (now.hour == 13 and now.minute < 25):
-        return False
-    if now.hour > 20 or (now.hour == 20 and now.minute >= 5):
-        return False
-    return True
+        return 8 * 60 <= minutes < 17 * 60
+    return 9 * 60 + 25 <= minutes < 16 * 60 + 5
 
 
 def run_live_desk_cycle(config_path: str | None = None) -> dict[str, Any]:
@@ -131,6 +139,13 @@ def start_live_desk_worker(config_path: str | None = None) -> bool:
         start_squeeze_fire_worker(config_path)
     except Exception as exc:  # noqa: BLE001
         logger.warning("squeeze fire did not start: %s", exc)
+    # End-of-day P&L line to Telegram, once a day after the 2:55 PM CT flatten.
+    try:
+        from odte_scanner.scorecard.today_pnl import start_eod_worker
+
+        start_eod_worker()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("today pnl EOD worker did not start: %s", exc)
     if not _env_flag("LIVE_DESK_LOOP", True):
         logger.info("LIVE_DESK_LOOP disabled — no background scan worker")
         return fast_started

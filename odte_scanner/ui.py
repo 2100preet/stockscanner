@@ -332,6 +332,17 @@ PAGE = r"""
     .tabs button[data-tab="nowboard"].active { color: var(--long); }
     .now-desk { font-family: "Instrument Serif", Georgia, serif; font-size: 1.05rem; font-weight: 400; margin: 1rem 0 .5rem; }
     .now-desk .status { margin-left: .4rem; }
+    .pulse-banner.top-strip { border-color: rgba(148,163,184,.45); background: linear-gradient(105deg, rgba(30,41,59,.95), rgba(15,23,42,.95)); }
+    .pulse-banner.top-strip .pb-title em { color: #93c5fd; }
+    .pulse-banner.top-strip .pb-sub { color: #cbd5e1; }
+    .top-strip .pb-table { width: 100%; font-size: 12px; border-collapse: collapse; }
+    .top-strip .pb-table th, .top-strip .pb-table td { text-align: left; padding: .2rem .4rem; border-bottom: 1px solid var(--line); white-space: nowrap; }
+    .top-strip .pb-table td.num, .top-strip .pb-table th.num { text-align: right; }
+    .top-strip .ts-grid { display: grid; gap: .6rem; grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr)); padding: 0 .9rem .8rem; }
+    .top-strip .ts-box { border: 1px solid var(--line); border-radius: .6rem; padding: .45rem .6rem; background: rgba(0,0,0,.18); }
+    .top-strip .ts-box h3 { margin: 0 0 .3rem; font-size: .8rem; }
+    .top-strip .ts-total { font-size: .78rem; margin: .3rem 0 0; }
+    .top-strip .ts-line { font-size: .74rem; margin: .12rem 0; }
     .paper-desk-grid { display: grid; gap: .65rem; grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr)); margin: .35rem 0 .85rem; }
     .paper-desk-card h4 { margin: .6rem 0 .25rem; font-size: .74rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
     .paper-desk-card .pd-note { font-size: .72rem; color: var(--muted); margin: .15rem 0 .35rem; }
@@ -364,6 +375,9 @@ PAGE = r"""
       <span class="status" id="counts"></span>
       <span class="status" id="updated">Loading…</span>
     </div>
+    <div id="todayPnlBanner" class="pulse-banner" aria-live="polite"></div>
+    <div id="paperDeskTopBanner" class="pulse-banner" aria-live="polite"></div>
+    <div id="levelsBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="mustTradeBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="diamondBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="sniperBanner" class="pulse-banner" aria-live="polite"></div>
@@ -4772,6 +4786,138 @@ PAGE = r"""
         ${board.ok === false ? `<div class="pulse-card expected"><p class="pc-why">${esc(board.note || "News Desk unavailable.")}</p></div>` : table + shadowBox}`;
     }
 
+    function topMoney(n, opts) {
+      if (n == null || Number.isNaN(Number(n))) return (opts && opts.na) || "—";
+      const v = Number(n);
+      const body = "$" + Math.abs(v).toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 2});
+      if (Math.abs(v) < 0.005) return "$0.00";
+      return v > 0 ? '<span class="up">+' + body + "</span>" : '<span class="down">−' + body + "</span>";
+    }
+    function topEsc(v) {
+      return String(v == null ? "" : v).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+    }
+
+    function renderTodayPnl() {
+      const el = document.getElementById("todayPnlBanner");
+      if (!el) return;
+      const b = DATA.today_pnl || null;
+      el.classList.add("active", "top-strip");
+      if (!b || b.ok === false) {
+        el.innerHTML = `<div class="pb-head"><div><h2 class="pb-title">📊 Today's P&amp;L <em>· paper only</em></h2><div class="pb-sub">${topEsc((b && b.error) || "Loads with the live desk.")}</div></div></div>`;
+        return;
+      }
+      const rec = (r) => (r.trades ? `${r.wins || 0}W/${r.losses || 0}L` : "—");
+      const openCell = (r) => r.open_n ? `${r.open_n} · ${topMoney(r.unrealized, {na: "mark n/a"})}${r.entries_today ? " · " + r.entries_today + " new today" : ""}` : "—";
+      const table = (rows, extra) => `<div style="overflow-x:auto"><table class="pb-table"><thead><tr><th>Desk</th><th class="num">Realized</th><th class="num">Trades</th><th>W/L</th><th>Open · unreal.</th>${extra ? "<th>Note</th>" : ""}<th class="num">Alerts</th></tr></thead><tbody>${rows.map((r) => `<tr><td><strong>${topEsc(r.name === "Lunch-Break Credit" ? "Lunch credit" : r.name)}</strong></td><td class="num">${topMoney(r.realized)}</td><td class="num">${r.trades || 0}</td><td>${rec(r)}</td><td>${openCell(r)}</td>${extra ? `<td>${topEsc(extra(r))}</td>` : ""}<td class="num">${r.alerts || 0}</td></tr>`).join("")}</tbody></table></div>`;
+      const total = (t) => `<p class="ts-total"><strong>Total</strong> · realized ${topMoney(t.realized)} · ${t.trades || 0} trades · ${t.wins || 0}W/${t.losses || 0}L${t.open_n ? " · open " + t.open_n + " · unrealized " + topMoney(t.unrealized, {na: "mark n/a"}) : ""}</p>`;
+      const web = b.webull || {rows: [], total: {}};
+      const inn = b.internal || {rows: [], total: {}};
+      const alerts = ((b.alert_only || {}).rows || []).map((r) => {
+        let detail = (r.alerts || 0) + " alert(s)";
+        if (r.name === "News Desk") detail = `${r.alerts || 0} sent · ${r.events || 0} events`;
+        if (r.name === "Squeeze Fire") detail = `${r.signals || 0} signal(s)` + (r.hypothetical != null ? ` · study ${topMoney(r.hypothetical)} hypothetical (1 contract each)` : "");
+        if (r.name === "Power Hour") detail = `${r.alerts || 0} alert(s) · board ${r.long || 0} long / ${r.short || 0} short · no paper trades`;
+        if (r.name === "SPX plan (modeled)") detail = (r.modeled_realized != null ? `modeled ${topMoney(r.modeled_realized)} · ${r.trades || 0} trade(s) · ` : "") + `${r.alerts || 0} alert(s) · not an order`;
+        return `<p class="ts-line"><strong>${topEsc(r.name)}</strong> · ${detail}</p>`;
+      }).join("");
+      const asOf = b.as_of ? fmtCST(b.as_of) : "";
+      el.innerHTML = `
+        <div class="pb-head">
+          <div>
+            <h2 class="pb-title">📊 Today's P&amp;L <em>· every desk · paper only</em></h2>
+            <div class="pb-sub">${topEsc(b.day || "")} · as of ${topEsc(asOf)} · realized = closed today · unrealized = open at latest mark vs entry · the two books are never added together</div>
+          </div>
+          <div class="status">WEBULL ${topMoney((web.total || {}).realized)} · LEDGERS ${topMoney((inn.total || {}).realized)}</div>
+        </div>
+        <div class="ts-grid">
+          <div class="ts-box"><h3>Webull paper desks <em style="font-weight:400">· Webull paper fills are the source of truth</em></h3>${table(web.rows || [])}${total(web.total || {})}</div>
+          <div class="ts-box"><h3>Internal paper ledgers <em style="font-weight:400">· not Webull orders</em></h3>${table(inn.rows || [])}${total(inn.total || {})}</div>
+          <div class="ts-box"><h3>Alert-only desks <em style="font-weight:400">· no orders</em></h3>${alerts}</div>
+        </div>`;
+    }
+
+    function renderPaperDeskTop() {
+      const el = document.getElementById("paperDeskTopBanner");
+      if (!el) return;
+      const portal = DATA.paper_portal || {};
+      const cards = portal.cards || [];
+      el.classList.add("active", "top-strip");
+      const optName = (row) => {
+        if (row.strike != null && row.expiry) {
+          const e = String(row.expiry);
+          return `${row.symbol || ""} ${e.slice(5, 7)}/${e.slice(8, 10)} ${Number(row.strike)}${String(row.right || "C").toUpperCase().slice(0, 1)}`;
+        }
+        return row.contract || row.symbol || "—";
+      };
+      const name = (card, row) => card.desk === "kotegawa" ? `${row.symbol || "—"} ${row.shares || "?"} sh` : `${optName(row)} ×${row.contracts || "?"}`;
+      const today = new Date().toLocaleDateString("en-CA", {timeZone: "America/Chicago"});
+      const dayOf = (iso) => iso ? new Date(iso).toLocaleDateString("en-CA", {timeZone: "America/Chicago"}) : "";
+      const box = (card) => {
+        const fills = [];
+        (card.open || []).forEach((row) => fills.push({at: row.entry_at, html: `BUY ${topEsc(name(card, row))} · Filled @ $${fmt(row.entry, 2)} · open, mark ${row.mark == null ? "—" : "$" + fmt(row.mark, 2)} · ${topMoney(row.unrealized_pnl)}`}));
+        (card.closed || []).forEach((row) => {
+          fills.push({at: row.entry_at, html: `BUY ${topEsc(name(card, row))} · Filled @ $${fmt(row.entry, 2)}`});
+          fills.push({at: row.exit_at, html: `SELL ${topEsc(name(card, row))} · Filled @ $${fmt(row.exit, 2)} · ${topEsc(String(row.exit_reason || "").replace(/_/g, " "))} · ${topMoney(row.pnl)}`});
+        });
+        fills.sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")));
+        const shown = fills.slice(0, 6).map((f) => `<p class="ts-line">${dayOf(f.at) === today ? "<strong>today</strong> " : ""}${f.at ? fmtCST(f.at) : "—"} · ${f.html}</p>`).join("")
+          || `<p class="ts-line">No fills yet — waiting for its entry window.</p>`;
+        const win = card.strategy && card.strategy.window ? `<p class="ts-line" style="color:var(--muted)">Window: ${topEsc(card.strategy.window)}</p>` : "";
+        return `<div class="ts-box">
+          <h3>${topEsc(card.label || "")} ${topEsc(card.name || "Paper")} <em style="font-weight:400">· paper ledger · internal, not Webull</em></h3>
+          <p class="ts-line">Equity <strong>$${fmt(card.equity, 2)}</strong> · today ${topMoney(card.realized_today)} realized · open ${(card.open || []).length} ${(card.open || []).length ? topMoney(card.unrealized_pnl) : ""} · closed ${card.trades || 0} (${card.wins || 0}W/${card.losses || 0}L)${card.entries_halted ? " · entries halted today" : ""}</p>
+          ${shown}${win}
+        </div>`;
+      };
+      el.innerHTML = `
+        <div class="pb-head">
+          <div>
+            <h2 class="pb-title">📒 Kotegawa &amp; Million <em>· paper ledger</em></h2>
+            <div class="pb-sub">Simulated fills on each desk's own ledger · Telegram [KOTEGAWA] / [MILLION] · full tiles in the BUY / SELL NOW tab · not financial advice</div>
+          </div>
+          <div class="status"><a style="color:#93c5fd" href="#paperDeskCards" onclick="document.querySelector('[data-tab=nowboard]')&&document.querySelector('[data-tab=nowboard]').click()">Full tiles ↓</a></div>
+        </div>
+        <div class="ts-grid">${cards.length ? cards.map(box).join("") : `<div class="ts-box"><p class="ts-line">Paper desks load with the live desk.</p></div>`}</div>`;
+    }
+
+    function renderLevelsCard() {
+      const el = document.getElementById("levelsBanner");
+      if (!el) return;
+      const c = DATA.levels_card || null;
+      el.classList.add("active", "top-strip");
+      if (!c || !c.ok) {
+        el.innerHTML = `<div class="pb-head"><div><h2 class="pb-title">📐 Pre-market levels <em>· info only, not a signal</em></h2><div class="pb-sub">${topEsc((c && (c.error || c.note)) || "Computes once per session from daily closes.")}</div></div></div>`;
+        return;
+      }
+      const n = (v) => v == null ? "—" : Number(v).toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 2});
+      const rows = (c.symbols || []).filter((r) => r.ok).map((r) => {
+        const wk = r.week ? `${n(r.week.low)} – ${n(r.week.high)} <span style="color:var(--muted)">(±${n(r.week.half_width)} from ${topEsc(r.week.anchor_day)} close)</span>` : "—";
+        return `<tr><td><strong>${topEsc(r.symbol)}</strong></td><td class="num">${n(r.prior_close)}</td><td>${topEsc(r.vol_name)} ${n(r.vol)}</td><td class="num">±${n(r.em)} (${n(r.em_pct)}%)</td><td>${n(r.band[0])} – ${n(r.band[1])}</td><td>${n(r.shelves[0])} – ${n(r.shelves[1])}</td><td>${wk}</td></tr>`;
+      }).join("");
+      const statsBy = {};
+      (c.symbols || []).filter((r) => r.ok).forEach((r) => { statsBy[r.study_row] = r.stats_line; });
+      const stats = Object.entries(statsBy).map(([k, v]) => `<p class="ts-line"><strong>${topEsc(k)}</strong> · ${topEsc(v)}</p>`).join("");
+      const ev = c.event ? `⚠️ ${topEsc(c.event.name)} at ${topEsc(c.event.time)}` : "No 8:30 ET release on the calendar";
+      const regime = c.regime === "FAST" ? `<span class="down">FAST</span>` : "calm";
+      let sessionLabel = c.session || "";
+      try { sessionLabel = new Date(c.session + "T12:00:00").toLocaleDateString("en-US", {weekday: "short", month: "short", day: "numeric"}); } catch (e) {}
+      el.innerHTML = `
+        <div class="pb-head">
+          <div>
+            <h2 class="pb-title">📐 Pre-market levels · ${topEsc(sessionLabel)} <em>· info only, not a signal</em></h2>
+            <div class="pb-sub">Regime ${regime} (prior VIX ${n(c.vix_prior)} vs ${c.fast_threshold}) · ${ev} · EM = prior close × VIX (VXN for QQQ) / 100 / √252 · no orders</div>
+          </div>
+          <div class="status">${c.regime === "FAST" ? "FAST" : "CALM"}${c.event ? " · EVENT" : ""}</div>
+        </div>
+        <div class="ts-grid" style="grid-template-columns:1fr">
+          <div class="ts-box">
+            <div style="overflow-x:auto"><table class="pb-table"><thead><tr><th>Index</th><th class="num">Prior close</th><th>Vol</th><th class="num">EM (1σ)</th><th>Band ±EM</th><th>Shelves ±½EM</th><th>Week corridor ±EM×√5</th></tr></thead><tbody>${rows}</tbody></table></div>
+            ${stats}
+            <p class="ts-line" style="color:var(--muted)">${topEsc(c.note || "")}</p>
+          </div>
+        </div>`;
+    }
+
     function renderPaperDeskCards() {
       const hosts = ["paperDeskCards", "paperDeskCardsOverview"].map((id) => document.getElementById(id)).filter(Boolean);
       if (!hosts.length) return;
@@ -4903,6 +5049,9 @@ PAGE = r"""
     }
 
     function paint() {
+      try { renderTodayPnl(); } catch (err) { console.error(err); }
+      try { renderPaperDeskTop(); } catch (err) { console.error(err); }
+      try { renderLevelsCard(); } catch (err) { console.error(err); }
       try { renderPaperDeskCards(); } catch (err) { console.error(err); }
       try { renderPaperLogOnly(); } catch (err) { console.error(err); }
       try { renderScorecard(); } catch (err) { console.error(err); }
@@ -5528,6 +5677,16 @@ def _squeeze_fire_block() -> dict:
         return public_block()
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "today": [], "alert_only": True, "error": str(exc)[:200]}
+
+
+def _levels_card_block() -> dict:
+    """Pre-market levels card (info only). One Yahoo fetch per session."""
+    try:
+        from odte_scanner.market.levels import public_block
+
+        return public_block()
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "info_only": True, "symbols": [], "error": str(exc)[:200]}
 
 
 def _expected_move_block() -> dict:
@@ -8576,6 +8735,7 @@ def create_app(config_path: str | None = None) -> Flask:
                         "rip_v2_shadow": _rip_v2_shadow_block(),
                         "news_desk": _news_desk_block(),
                         "squeeze_fire": _squeeze_fire_block(),
+                        "levels_card": _levels_card_block(),
                         }
                     )
 
@@ -9152,6 +9312,19 @@ def create_app(config_path: str | None = None) -> Flask:
             out[key] = block
         out["generated_at"] = datetime.now(timezone.utc).isoformat()
         return jsonify(sanitize_for_json(out))
+
+    @app.get("/api/today_pnl")
+    def today_pnl_api():
+        """Today's P&L per desk (paper only). Webull fills and internal ledgers stay separate."""
+        from odte_scanner.scorecard.today_pnl import _snapshot_body
+
+        board = _snapshot_body().get("today_pnl") or {"ok": False}
+        return jsonify(sanitize_for_json(board))
+
+    @app.get("/api/levels")
+    def levels_api():
+        """Pre-market levels card. Information only, never an order."""
+        return jsonify(sanitize_for_json(_levels_card_block()))
 
     @app.get("/api/version")
     def version():

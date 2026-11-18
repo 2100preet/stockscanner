@@ -45,6 +45,8 @@ from odte_scanner.signals.exit_rules import (
 )
 from odte_scanner.signals.hold_rules import (
     BEFORE_OPEN_REASON,
+    OPTION_SESSION_OPEN_ET_HOUR,
+    et_session_hour,
     contract_expired,
     entry_block_reason,
     expiry_is_today,
@@ -193,6 +195,11 @@ def _row_has_option_fields(row: dict[str, Any], *price_keys: str) -> tuple[bool,
 FLATTEN_LIMIT = 0.01
 # How long a gold stop rests at the stop price while the bid is below it.
 HARD_STOP_REST_SEC = 15 * 60
+# Webull takes option orders 9:30-16:00 ET. From 15:50 ET a stop that has the
+# bid under it sells at the bid instead of resting into the close (Nov 17 MRK:
+# stop at 15:52 ET rested past 16:00 and the lot was held overnight).
+CLOSE_ESCALATE_ET_HOUR = 15 + 50 / 60
+CORE_CLOSE_ET_HOUR = 16.0
 
 
 def _is_clock_flatten(row: dict[str, Any]) -> bool:
@@ -732,11 +739,39 @@ class AutoTrader:
 
     STALE_STAGED_SEC = 20.0
 
+    def _queued_sells(self, now: datetime | None) -> list[WebullOrderIntent]:
+        """Deferred sells to resend now: one per option, inside 9:30-16:00 ET.
+
+        Older duplicates for the same contract are cancelled, so a lot never
+        gets more than one exit at the open.
+        """
+        rows = [o for o in self.broker.orders if o.status == "deferred" and o.action == "SELL"]
+        newest: dict[str, WebullOrderIntent] = {}
+        for order in sorted(rows, key=lambda o: str(o.created_at or "")):
+            key = str(order.contract or order.id)
+            older = newest.get(key)
+            if older is not None:
+                older.meta["cancel_reason"] = "duplicate queued exit — one exit per option"
+                self.broker.cancel(older)
+            newest[key] = order
+        hour = et_session_hour(now)
+        out: list[WebullOrderIntent] = []
+        for order in newest.values():
+            queued = (order.meta or {}).get("reject_kind") == "outside_hours" or (order.meta or {}).get("queued_for_open")
+            if queued and not (OPTION_SESSION_OPEN_ET_HOUR <= hour < CORE_CLOSE_ET_HOUR):
+                continue
+            out.append(order)
+        return out
+
     def _sell_blocks(self, order: WebullOrderIntent) -> bool:
         """A sell that is really open. A staged row older than 20s with no
         broker id never reached Webull and must not block the next exit."""
         if order.status in ("dry_run", "submitted"):
             return True
+        if order.status == "deferred" and order.action == "SELL":
+            # One queued exit per option. Nov 17 MRK: 16 sells were staged
+            # after 4 PM ET because a deferred sell did not count as working.
+            return (order.meta or {}).get("retryable") is not False
         if order.status != "staged":
             return False
         if order.broker_order_id:
@@ -1438,6 +1473,8 @@ class AutoTrader:
         # exit_clock is the trader's clock when the stop was staged; created_at is wall time.
         placed = _parse_iso((sell.meta or {}).get("exit_clock")) or _parse_iso(str(sell.created_at or ""))
         now = self._now or datetime.now(timezone.utc)
+        if CLOSE_ESCALATE_ET_HOUR <= et_session_hour(now) < CORE_CLOSE_ET_HOUR:
+            return True
         if placed is None:
             return False
         return (now - placed).total_seconds() >= HARD_STOP_REST_SEC
@@ -2536,9 +2573,18 @@ class AutoTrader:
         since = str((opened.created_at if opened is not None else "") or "")
         count = 0
         for order in self.broker.orders:
-            if order.action != "SELL" or order.status != "rejected" or str(order.contract or "") != contract:
+            if order.action != "SELL" or str(order.contract or "") != contract:
                 continue
             if not _follows_open(order, since):
+                continue
+            if order.status == "cancelled":
+                # A working sell cancelled because the bid ran under it also
+                # escalates. Nov 17 JPM: eight cancel/replace rounds at each
+                # new bid while the premium slid from $0.30 to $0.09.
+                if str((order.meta or {}).get("cancel_reason") or "").startswith("stale working sell"):
+                    count += 1
+                continue
+            if order.status != "rejected":
                 continue
             kind = str((order.meta or {}).get("reject_kind") or "")
             if not kind:
@@ -2736,7 +2782,7 @@ class AutoTrader:
         for row in self._flatten_when_signal_leaves(now):
             take(self._safe_exit(row))
         if session:
-            for intent in [o for o in self.broker.orders if o.status == "deferred" and o.action == "SELL"]:
+            for intent in self._queued_sells(now):
                 if contract_expired(intent.expiry, now):
                     intent.meta["cancel_reason"] = "expired contract — not resubmitted"
                     self.broker.cancel(intent)
@@ -3309,7 +3355,11 @@ class AutoTrader:
         # retries stop at the per-sync cap; a deferred sell is not held back
         # by that cap.
         if budget > 0 and option_session_open(now):
-            for intent in [o for o in self.broker.orders if o.status == "deferred"]:
+            queued_sells = {id(o) for o in self._queued_sells(now)}
+            for intent in [
+                o for o in self.broker.orders
+                if o.status == "deferred" and (o.action != "SELL" or id(o) in queued_sells)
+            ]:
                 if budget <= 0:
                     break
                 if intent.action == "BUY" and past_odte_flatten(now):

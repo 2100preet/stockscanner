@@ -742,10 +742,31 @@ def _yahoo_mark(symbol: str) -> dict[str, Any] | None:
     meta = result.get("meta") if isinstance(result, dict) else {}
     if not isinstance(meta, dict):
         return None
+    return mark_from_meta(meta)
+
+
+def mark_from_meta(meta: dict[str, Any], now: datetime | None = None) -> dict[str, Any] | None:
+    """Prior close and live mark from one Yahoo chart ``meta`` block.
+
+    Before the cash open, ``range=1d`` still returns the last session, so
+    ``chartPreviousClose`` is the close two sessions back. When the regular
+    print is from an earlier New York day, that print is the prior close.
+    """
     last = _pos(meta.get("regularMarketPrice") or meta.get("postMarketPrice") or meta.get("preMarketPrice"))
     prev = _pos(meta.get("chartPreviousClose") or meta.get("previousClose"))
     if last is None and prev is None:
         return None
+    regular = _pos(meta.get("regularMarketPrice"))
+    stamp = meta.get("regularMarketTime")
+    if regular is not None and stamp:
+        try:
+            ny = ZoneInfo("America/New_York")
+            printed = datetime.fromtimestamp(int(stamp), tz=timezone.utc).astimezone(ny).date()
+            today = (now or datetime.now(timezone.utc)).astimezone(ny).date()
+        except (TypeError, ValueError, OverflowError):
+            printed = today = None
+        if printed is not None and today is not None and printed < today:
+            prev = regular
     pre = _pos(meta.get("preMarketPrice"))
     # Before the cash open the regular price is often still the prior close.
     # Prefer the pre-market print as the live mark when it is present.

@@ -51,3 +51,28 @@ def test_live_desk_cycle(monkeypatch):
     out = run_live_desk_cycle()
     assert out["desk_alerts"]["ok"] is True
     assert out.get("scan_error") is None
+
+
+def test_rth_window_follows_new_york_clock_in_winter():
+    from datetime import datetime, timezone
+
+    from odte_scanner.live_desk import _in_rth_window
+
+    # Nov 17 2026 (EST, UTC-5): 2:55 PM CT = 3:55 PM ET = 20:55 UTC must be inside.
+    assert _in_rth_window(now=datetime(2026, 11, 17, 20, 55, tzinfo=timezone.utc))
+    assert _in_rth_window(now=datetime(2026, 11, 17, 14, 30, tzinfo=timezone.utc))
+    assert not _in_rth_window(now=datetime(2026, 11, 17, 14, 0, tzinfo=timezone.utc))
+    assert not _in_rth_window(now=datetime(2026, 11, 17, 21, 10, tzinfo=timezone.utc))
+    assert _in_rth_window(extended=True, now=datetime(2026, 11, 17, 21, 30, tzinfo=timezone.utc))
+    # Saturday is closed.
+    assert not _in_rth_window(now=datetime(2026, 11, 21, 18, 0, tzinfo=timezone.utc))
+
+
+def test_rth_window_follows_new_york_clock_in_summer():
+    from datetime import datetime, timezone
+
+    from odte_scanner.live_desk import _in_rth_window
+
+    # Jul 15 2026 (EDT, UTC-4): 9:30 AM ET = 13:30 UTC; 4:10 PM ET = 20:10 UTC.
+    assert _in_rth_window(now=datetime(2026, 7, 15, 13, 30, tzinfo=timezone.utc))
+    assert not _in_rth_window(now=datetime(2026, 7, 15, 20, 10, tzinfo=timezone.utc))

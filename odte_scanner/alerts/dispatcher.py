@@ -985,6 +985,24 @@ def collect_trade_alerts(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     return _collapse_symbol_alerts(out)
 
 
+_PAPER_DESK_LABELS = ("[KOTEGAWA]", "[MILLION]")
+# Paper-ledger desks fire a handful of times a day; they ride outside the
+# per-pulse cap so a busy board never pushes them to a later pulse.
+_PAPER_DESK_MAX = 10
+
+
+def _is_paper_desk_alert(alert: dict[str, Any]) -> bool:
+    message = str(alert.get("message") or "")
+    return any(label in message for label in _PAPER_DESK_LABELS)
+
+
+def _send_order(fresh: list[dict[str, Any]], max_send: int) -> list[dict[str, Any]]:
+    """Fresh paper-desk alerts first (own cap), then the board up to ``max_send``."""
+    paper = [a for a in fresh if _is_paper_desk_alert(a)][:_PAPER_DESK_MAX]
+    rest = [a for a in fresh if not _is_paper_desk_alert(a)][: max(1, int(max_send))]
+    return paper + rest
+
+
 def _append_paper_desk_alerts(
     snapshot: dict[str, Any],
     out: list[dict[str, Any]],
@@ -992,8 +1010,9 @@ def _append_paper_desk_alerts(
 ) -> None:
     """Kotegawa and Million alerts already carry their [KOTEGAWA] / [MILLION] text.
 
-    They are appended after the existing desks so they do not take an earlier
-    slot in the pulse. A snapshot without these keys changes nothing.
+    They are appended after the existing desks; ``_send_order`` still sends them
+    in the same pulse, outside the board cap. A snapshot without these keys
+    changes nothing.
     """
     for desk_key, label in (("kotegawa", "[KOTEGAWA]"), ("million_challenge", "[MILLION]")):
         block = snapshot.get(desk_key)
@@ -1427,7 +1446,7 @@ def _plan_snapshot_alerts(
         }
 
     batch = []
-    for alert in fresh[: max(1, int(max_send))]:
+    for alert in _send_order(fresh, max_send):
         key = str(alert.get("key") or "")
         if not key or key in _INFLIGHT:
             continue
