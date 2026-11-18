@@ -31,7 +31,7 @@ CT = ZoneInfo("America/Chicago")
 ROOT = Path(__file__).resolve().parents[2]
 LABEL = "Today's P&L · paper only, not financial advice"
 WEBULL_LABEL = "Webull paper desks — Webull paper fills are the source of truth"
-INTERNAL_LABEL = "Internal paper ledgers — not Webull orders, not in the Webull total"
+INTERNAL_LABEL = "Own-book desks — Kotegawa/Million (Webull paper, own equity) and journal sleeves; not in the Webull desk total"
 ALERT_LABEL = "Alert-only desks — no orders"
 WEBULL_ORDER = ("Sniper", "Diamond", "Gold Setup", "Afternoon Puts", "Lunch-Break Credit")
 # Alert-log kinds that belong to each desk row.
@@ -256,7 +256,9 @@ def webull_group(
 
 
 def _desk_today(view: Any, name: str, day: str, counts: dict[str, int]) -> dict[str, Any]:
-    row = _row(name, route="internal paper ledger")
+    fills = view.get("fills") if isinstance(view, dict) else None
+    route = "Webull paper (own book)" if fills == "webull" else "internal paper ledger"
+    row = _row(name, route=route)
     if not isinstance(view, dict):
         row["note"] = "desk unavailable"
         return row
@@ -460,7 +462,7 @@ def format_telegram(board: dict[str, Any]) -> str:
     )
     lines.append(" • " + " · ".join(_row_text(r) for r in web["rows"] if r.get("trades") or r.get("open_n") or r["name"] in WEBULL_ORDER))
     lines.append(
-        f"Internal paper ledgers (not Webull): {_usd(int_total['realized'])} realized"
+        f"Own-book desks (Kotegawa/Million on Webull paper, journal sleeves; not in the desk total): {_usd(int_total['realized'])} realized"
         + (f" · open {_usd(int_total['unrealized'])}" if int_total.get("unrealized") is not None else "")
     )
     lines.append(" • " + " · ".join(_row_text(r) for r in internal["rows"]))

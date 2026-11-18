@@ -115,7 +115,7 @@ def test_today_pnl_groups_stay_separate(tmp_path: Path):
     text = board["telegram_text"]
     assert text.startswith("📊 TODAY'S P&L") and "paper only" in text
     assert "Webull paper desks (fills): +$50.00" in text
-    assert "Internal paper ledgers (not Webull): +$133.25" in text
+    assert "not in the desk total): +$133.25" in text
     assert "Million +$108.25 (1W/0L)" in text
     assert "SPX modeled +$3,250.00 (not an order)" in text
     assert "Sure Winner" not in text and "sure_winner" not in json.dumps(board)

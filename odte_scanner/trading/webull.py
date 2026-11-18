@@ -534,6 +534,52 @@ def build_option_place_order(intent: WebullOrderIntent) -> dict[str, Any]:
     }
 
 
+def is_equity_intent(intent: "WebullOrderIntent") -> bool:
+    """True for a stock order (Kotegawa). Options are the default."""
+    return str((intent.meta or {}).get("instrument") or "").upper() == "EQUITY"
+
+
+def build_equity_place_order(intent: "WebullOrderIntent") -> dict[str, Any]:
+    """Regular-hours LIMIT stock order for ``order_v2.place_order``.
+
+    Same ``POST /trading/orders/place`` endpoint as options, with
+    ``instrument_type=EQUITY``. Whole shares only, DAY, CORE session. A
+    positive limit is required: the isolated desks never send MARKET.
+    """
+    side = str(intent.action or "").upper()
+    if side not in {"BUY", "SELL"}:
+        raise ValueError(f"unsupported side {intent.action}")
+    symbol = str(intent.symbol or "").upper().strip()
+    if not symbol:
+        raise ValueError("symbol required")
+    try:
+        limit_f = float(intent.limit_price) if intent.limit_price is not None else 0.0
+    except (TypeError, ValueError):
+        limit_f = 0.0
+    if limit_f <= 0:
+        raise ValueError("limit price required")
+    qty = int(intent.quantity or 0)
+    if qty < 1:
+        raise ValueError("quantity must be at least one share")
+    client_order_id = str(intent.id or "").strip()[:32]
+    if not client_order_id:
+        raise ValueError("client_order_id required")
+    return {
+        "client_order_id": client_order_id,
+        "combo_type": "NORMAL",
+        "symbol": symbol,
+        "instrument_type": "EQUITY",
+        "market": "US",
+        "order_type": "LIMIT",
+        "limit_price": f"{limit_f:.2f}",
+        "quantity": str(qty),
+        "side": side,
+        "time_in_force": "DAY",
+        "support_trading_session": "CORE",
+        "entrust_type": "QTY",
+    }
+
+
 def multi_leg_rejected(error: str | None) -> bool:
     """True when the sandbox refused the order because it is a multi-leg strategy.
 
@@ -1561,6 +1607,12 @@ class WebullBroker:
         """Write a legal option tick back onto the intent before it is sent."""
         if intent.limit_price is None:
             return
+        if is_equity_intent(intent):
+            # Stocks at or above $1 trade in whole cents.
+            snapped_eq = round(float(intent.limit_price) + 1e-9, 2)
+            if snapped_eq > 0:
+                intent.limit_price = snapped_eq
+            return
         side = str(intent.action or "BUY").upper()
         cap = None
         if side == "BUY":
@@ -1698,6 +1750,8 @@ class WebullBroker:
 
         now = getattr(self, "_session_now", None)
         action = str(intent.action or "").upper()
+        if is_equity_intent(intent):
+            return self._hold_equity_outside_session(intent, now)
         if action == "BUY" and past_odte_flatten(now):
             return self._stop_unsent_buy(intent, "cancelled at 15:45 ET")
         if option_session_open(now):
@@ -1705,6 +1759,20 @@ class WebullBroker:
         if before_option_session(now) or action != "BUY":
             return self._queue_until_open(intent)
         return self._stop_unsent_buy(intent, "not submitted outside 09:30–16:15 ET")
+
+    def _hold_equity_outside_session(self, intent: WebullOrderIntent, now: Any) -> WebullOrderIntent | None:
+        """Stocks: regular session 09:30–16:00 ET. A buy outside it is not sent;
+        a sell waits for the next open with the same client order id."""
+        from odte_scanner.signals.hold_rules import before_option_session, et_session_hour, is_weekend_et
+
+        hour = et_session_hour(now)
+        if not is_weekend_et(now) and 9.5 <= hour < 16.0:
+            return None
+        if str(intent.action or "").upper() != "BUY":
+            return self._queue_until_open(intent)
+        if before_option_session(now):
+            return self._queue_until_open(intent)
+        return self._stop_unsent_buy(intent, "not submitted outside 09:30–16:00 ET")
 
     def _queue_until_open(self, intent: WebullOrderIntent) -> WebullOrderIntent:
         intent.status = "deferred"
@@ -2145,7 +2213,40 @@ class WebullBroker:
                 return None
         return find_account_id(payload, account_number)
 
+    def _post_equity(self, intent: WebullOrderIntent) -> str:
+        order = build_equity_place_order(intent)
+        account_id = self._order_account(intent)
+        if not account_id or account_id.upper() == CASH_ACCOUNT_NUMBER:
+            raise RuntimeError(
+                "Webull account_id missing or still the account number. "
+                "Use the internal id from get_account_list."
+            )
+        intent.meta["host"] = SANDBOX_TRADE_HOST
+        intent.meta["openapi_order"] = {
+            "symbol": order["symbol"],
+            "side": order["side"],
+            "instrument_type": "EQUITY",
+            "quantity": order["quantity"],
+        }
+        order_api = self._trade_api()
+        meth = getattr(order_api, "place_order", None)
+        if not callable(meth):
+            raise RuntimeError("Installed Webull SDK does not expose place_order")
+        try:
+            res = meth(account_id, [order])
+        except TypeError:
+            res = meth(account_id=account_id, new_orders=[order])
+        status = _response_status(res)
+        text = _response_text(res)
+        if _looks_like_rate_limit(status, text):
+            raise WebullRateLimit(f"Webull HTTP {status or 429}: {text}"[:500])
+        if status is not None and status not in {200, 201}:
+            raise RuntimeError(f"Webull place_order HTTP {status}: {text}"[:500])
+        return _broker_order_id(res, intent.id)
+
     def _post_option(self, intent: WebullOrderIntent) -> str:
+        if is_equity_intent(intent):
+            return self._post_equity(intent)
         custom = (intent.meta or {}).get("openapi_body")
         if isinstance(custom, dict) and custom.get("legs"):
             order = dict(custom)
@@ -2306,7 +2407,13 @@ class WebullBroker:
             intent.status = "rejected" if broker_status == "REJECTED" else "cancelled"
         else:
             intent.status = "submitted"
-        if intent.action == "SELL" and intent.status in {"filled", "partial"}:
+        if (
+            intent.action == "SELL"
+            and intent.status in {"filled", "partial"}
+            and not (intent.meta or {}).get("isolated_desk")
+        ):
+            # Kotegawa / Million keep their own books; their sells stay out of
+            # the Gold/desk edge samples.
             try:
                 from odte_scanner.edge.round_trips import record_sell_fill
 
@@ -2379,9 +2486,10 @@ class WebullBroker:
         def _once() -> None:
             self._assert_sandbox()
             api = self._trade_api()
-            meth = getattr(api, "cancel_option", None)
+            name = "cancel_order" if is_equity_intent(intent) else "cancel_option"
+            meth = getattr(api, name, None)
             if not callable(meth):
-                raise RuntimeError("Installed Webull SDK does not expose cancel_option")
+                raise RuntimeError(f"Installed Webull SDK does not expose {name}")
             res = meth(self._order_account(intent), intent.id)
             status = _response_status(res)
             text = _response_text(res)

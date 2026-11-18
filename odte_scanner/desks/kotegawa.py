@@ -15,6 +15,8 @@ State file, cash, and the daily realized total belong to this desk only.
 
 from __future__ import annotations
 
+import logging
+import os
 import uuid
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -25,6 +27,9 @@ from odte_scanner.desks.fills import buy_fill, sell_fill
 from odte_scanner.desks.routing import resolve_route, submit_sandbox_order
 from odte_scanner.desks.sp100 import in_sp100, normalize_symbol
 from odte_scanner.desks.store import DeskStateError, load_desk_state, save_desk_state
+from odte_scanner.desks import webull_desk
+
+logger = logging.getLogger(__name__)
 
 CT = ZoneInfo("America/Chicago")
 DESK = "kotegawa"
@@ -62,9 +67,14 @@ def _in_entry_window(now: datetime | None) -> bool:
     return (14 * 60 + 50) <= minutes <= (15 * 60)
 
 
-def _at_or_after_close(now: datetime | None) -> bool:
+def _at_or_after_close(now: datetime | None, clock: tuple[int, int] = (15, 0)) -> bool:
     ct = _as_ct(now)
-    return (ct.hour, ct.minute) >= (15, 0)
+    return (ct.hour, ct.minute) >= clock
+
+
+# Routed to Webull paper, the day-N time exit goes out at 2:50 PM CT so the
+# sell can fill before the 3:00 PM CT close (the walk to the bid needs time).
+WEBULL_TIME_EXIT = (14, 50)
 
 
 def _sessions_inclusive(start: date, end: date) -> int:
@@ -187,11 +197,23 @@ def _load(path: Path, starting: float) -> dict[str, Any]:
     book["trades"] = [dict(row) for row in saved.get("trades") or [] if isinstance(row, dict)]
     book["recent_alerts"] = list(saved.get("recent_alerts") or [])[-30:]
     book["sandbox_orders"] = list(saved.get("sandbox_orders") or [])[-30:]
+    for key in ("era", "era_since", "simulated"):
+        if saved.get(key) is not None:
+            book[key] = saved.get(key)
     return book
 
 
 def _open_trades(book: dict[str, Any]) -> list[dict[str, Any]]:
     return [row for row in book["trades"] if row.get("status") == "open"]
+
+
+def _active_trades(book: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Held stocks, a working Webull sell, or a working Webull buy."""
+    return [
+        row
+        for row in book.get("trades") or []
+        if isinstance(row, dict) and row.get("status") in {"open", "closing", "pending"}
+    ]
 
 
 def _mark_for(trade: Mapping[str, Any], quotes: Mapping[str, Any] | None, bars: list[Mapping[str, Any]] | None) -> float:
@@ -224,7 +246,7 @@ def _held_mark(trade: Mapping[str, Any]) -> float:
 def equity_of(book: Mapping[str, Any], marks: Mapping[str, float] | None = None) -> float:
     total = float(book.get("cash") or 0)
     for trade in book.get("trades") or []:
-        if not isinstance(trade, dict) or trade.get("status") != "open":
+        if not isinstance(trade, dict) or trade.get("status") not in {"open", "closing"}:
             continue
         symbol = str(trade.get("symbol") or "")
         mark = None if marks is None else marks.get(symbol)
@@ -286,6 +308,7 @@ def _exit_reason(
     low: float | None,
     now: datetime,
     hold_sessions: int,
+    close_clock: tuple[int, int] = (15, 0),
 ) -> str | None:
     entry = float(trade.get("entry") or 0)
     if entry <= 0:
@@ -302,7 +325,7 @@ def _exit_reason(
     held = _sessions_inclusive(started, _session_date(now))
     if held > hold_sessions:
         return "time_exit"
-    if held == hold_sessions and _at_or_after_close(now):
+    if held == hold_sessions and _at_or_after_close(now, close_clock):
         return "time_exit"
     return None
 
@@ -381,6 +404,39 @@ def _open_position(row: Mapping[str, Any], *, hold_sessions: int = HOLD_SESSIONS
         "target": round(entry * (1.0 + TAKE_PROFIT), 2) if entry else None,
         "stop": round(entry * (1.0 - DISASTER_STOP), 2) if entry else None,
         "time_exit": time_exit,
+        "status": row.get("status"),
+        "fill_source": row.get("fill_source") or "simulated (internal ledger)",
+        "order_label": webull_desk.working_label(row)
+        or (f"Filled @ ${float(entry):.2f}" if entry is not None else None),
+    }
+
+
+def _working_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "symbol": row.get("symbol"),
+        "shares": row.get("target_qty") or row.get("shares"),
+        "status": row.get("status"),
+        "order_label": webull_desk.working_label(row),
+        "signal_ask": row.get("signal_ask"),
+        "signal_at": row.get("signal_at"),
+        "reason": row.get("not_filled_reason"),
+        "fill_source": webull_desk.FILL_SOURCE,
+    }
+
+
+def _simulated_view(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, Mapping):
+        return None
+    trades = [row for row in raw.get("trades") or [] if isinstance(row, Mapping)]
+    return {
+        "label": raw.get("label") or "Simulated (internal ledger, not Webull fills)",
+        "archived_at": raw.get("archived_at"),
+        "note": raw.get("note"),
+        "realized_pnl": raw.get("realized_pnl"),
+        "ending_equity": raw.get("ending_equity"),
+        "trades": [
+            {**_closed_trade(row), "fill_source": "simulated"} for row in trades if row.get("status") == "closed"
+        ][:20],
     }
 
 
@@ -400,6 +456,8 @@ def _closed_trade(row: Mapping[str, Any]) -> dict[str, Any]:
         "exit_reason": row.get("exit_reason"),
         "pnl": round(pnl, 2) if pnl is not None else None,
         "pnl_pct": round(pnl / cost * 100.0, 2) if pnl is not None and cost else None,
+        "fill_source": row.get("exit_fill_source") or row.get("fill_source") or "simulated (internal ledger)",
+        "order_label": f"Filled @ ${exit_px:.2f}" if exit_px is not None else None,
     }
 
 
@@ -442,7 +500,9 @@ def public_view(
 ) -> dict[str, Any]:
     trades = [row for row in book.get("trades") or [] if isinstance(row, dict)]
     closed = [row for row in trades if row.get("status") == "closed"]
-    opened = [row for row in trades if row.get("status") == "open"]
+    opened = [row for row in trades if row.get("status") in {"open", "closing"}]
+    working = [row for row in trades if row.get("status") == "pending"]
+    not_filled = [row for row in trades if row.get("status") == "not_filled"]
     wins = sum(1 for row in closed if float(row.get("pnl") or 0) > 0)
     losses = sum(1 for row in closed if float(row.get("pnl") or 0) < 0)
     realized = sum(float(row.get("pnl") or 0) for row in closed)
@@ -465,6 +525,12 @@ def public_view(
         "status": status,
         "reason": reason,
         "route": book.get("route") or "internal",
+        "fills": "webull" if book.get("era") == "webull" else ("switching" if book.get("route") == "sandbox" else "simulated"),
+        "fill_source": webull_desk.FILL_SOURCE if book.get("era") == "webull" else "simulated (internal ledger)",
+        "era_since": book.get("era_since"),
+        "working": [_working_row(row) for row in working],
+        "not_filled": [_working_row(row) for row in not_filled[-5:]],
+        "simulated": _simulated_view(book.get("simulated")),
         "equity": round(equity, 2),
         "cash": round(float(book.get("cash") or 0), 2),
         "starting_equity": float(book.get("starting_equity") or STARTING_EQUITY),
@@ -500,6 +566,133 @@ def scorecard_row(view: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _webull_alert(side: str, trade: Mapping[str, Any], text: str, event: str) -> dict[str, Any]:
+    alert = _alert(side, trade, text)
+    alert["key"] = f"KOTEGAWA|{side}|{trade.get('id')}|{event}"
+    alert["fill_source"] = webull_desk.FILL_SOURCE
+    alert["event"] = event
+    return alert
+
+
+def _spec(cfg: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    orders = dict((cfg or {}).get("webull_orders") or {})
+    return {
+        "desk": "kotegawa",
+        "instrument": "EQUITY",
+        "mult": 1.0,
+        "qty_key": "shares",
+        "step_sec": float(orders.get("step_sec") or 15),
+        "entry_chase_sec": float(orders.get("entry_chase_sec") or 240),
+        "slippage": float(orders.get("slippage") or 0.003),
+        "head": lambda trade: "[KOTEGAWA]",
+        "text": lambda trade: str(trade.get("symbol") or ""),
+        "alert": _webull_alert,
+    }
+
+
+def _entry_deadline(trade: Mapping[str, Any], now: datetime) -> bool:
+    """A Kotegawa buy still working at 2:59 PM CT is cancelled before the close."""
+    ct = _as_ct(now)
+    return (ct.hour, ct.minute) >= (14, 59)
+
+
+def _default_stock_quotes(symbols: list[str]) -> dict[str, Any]:
+    """Live Tradier bid/ask for these stocks. Tests do not hit the network."""
+    if os.environ.get("PYTEST_CURRENT_TEST") or not symbols:
+        return {}
+    try:
+        from odte_scanner.data.tradier import fetch_quotes
+
+        return dict(fetch_quotes(list(symbols), timeout=6.0).get("quotes") or {})
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("kotegawa live quotes failed: %s", exc)
+        return {}
+
+
+def _live_quote(symbol: str, quotes: Mapping[str, Any] | None, fetch: Any) -> dict[str, Any]:
+    """Bid/ask from the cycle's quote map, else one live fetch."""
+    got = dict(_quote(quotes, symbol))
+    if _f(got.get("ask")) and _f(got.get("bid")):
+        return got
+    fresh = fetch([symbol]) if fetch else {}
+    row = fresh.get(symbol) if isinstance(fresh, Mapping) else None
+    return dict(row) if isinstance(row, Mapping) else got
+
+
+SIMULATED_NOTE = (
+    "Internal-ledger fills priced by the app (buy at the quote mid, sell at the bid), not by a broker. "
+    "Checked against Tradier 1-minute bars, the Nov 16 2:51 PM CT entries sat inside or within ~0.3% of "
+    "that minute's trades, so these stock fills were close to achievable."
+)
+
+
+def _switch_era(book: dict[str, Any], starting: float, now: datetime) -> bool:
+    """Start the Webull-paper book once the last simulated position has closed."""
+    if book.get("era") == "webull":
+        return False
+    if any(row.get("route") != "webull" for row in _active_trades(book)):
+        return False
+    old = [dict(row) for row in book.get("trades") or [] if isinstance(row, dict)]
+    if old:
+        book["simulated"] = {
+            "label": "Simulated (internal ledger, not Webull fills)",
+            "archived_at": _as_ct(now).isoformat(),
+            "note": SIMULATED_NOTE,
+            "realized_pnl": round(sum(float(r.get("pnl") or 0) for r in old if r.get("status") == "closed"), 2),
+            "ending_equity": round(float(book.get("cash") or 0), 2),
+            "trades": [{**row, "fill_source": "simulated"} for row in old],
+        }
+    book["trades"] = []
+    book["cash"] = float(starting)
+    book["recent_alerts"] = [a for a in book.get("recent_alerts") or [] if str(a.get("session") or "") == _as_ct(now).date().isoformat()]
+    book["era"] = "webull"
+    book["era_since"] = _as_ct(now).isoformat()
+    logger.warning("kotegawa: switched to Webull paper fills; simulated history archived in the book")
+    return True
+
+
+def advance_webull(
+    section: Mapping[str, Any] | None,
+    *,
+    live_trading: Mapping[str, Any] | None = None,
+    now: datetime | None = None,
+    environ: Mapping[str, str] | None = None,
+    broker: Any = None,
+    quote_fetcher: Any = None,
+) -> dict[str, Any]:
+    """Fast tick: refresh, walk and settle working Webull orders."""
+    cfg = dict(section or {})
+    if cfg.get("enabled") is not True or cfg.get("paper_only") is not True:
+        return {"skipped": "disabled"}
+    starting = float(cfg.get("starting_equity") or STARTING_EQUITY)
+    state_path = Path(cfg.get("state_path") or DEFAULT_STATE)
+    if not state_path.is_absolute():
+        state_path = ROOT / state_path
+    if not state_path.exists():
+        return {"skipped": "no book"}
+    book = _load(state_path, starting)
+    if not any(row.get("status") in webull_desk.WORKING for row in book.get("trades") or []):
+        return {"working": 0}
+    route = resolve_route("kotegawa", live_trading=live_trading, environ=environ)
+    use = broker or webull_desk.desk_broker("kotegawa", route, live_trading=live_trading)
+    if use is None:
+        return {"skipped": "not routed"}
+    fetch = quote_fetcher or _default_stock_quotes
+    alerts = webull_desk.advance(
+        book,
+        use,
+        _spec(cfg),
+        quote_fn=lambda t: _live_quote(str(t.get("symbol") or ""), None, fetch),
+        now=now,
+        entry_deadline=_entry_deadline,
+    )
+    for alert in alerts:
+        _remember(book, alert)
+    book["state_path"] = str(state_path)
+    save_desk_state(state_path, book)
+    return {"alerts": len(alerts)}
+
+
 def run_kotegawa(
     section: Mapping[str, Any] | None,
     *,
@@ -511,6 +704,8 @@ def run_kotegawa(
     live_trading: Mapping[str, Any] | None = None,
     environ: Mapping[str, str] | None = None,
     transport: Any = None,
+    broker: Any = None,
+    quote_fetcher: Any = None,
 ) -> dict[str, Any]:
     """Advance the Kotegawa book. Paper only. Returns the public snapshot."""
     cfg = dict(section or {})
@@ -549,13 +744,49 @@ def run_kotegawa(
     session = moment.date()
     alerts: list[dict[str, Any]] = []
     route = resolve_route("kotegawa", host=host, live_trading=live_trading, environ=environ)
+    wb = None
+    if route["mode"] == "sandbox":
+        wb = broker or webull_desk.desk_broker("kotegawa", route, live_trading=live_trading)
+        if wb is None:
+            route = {**route, "mode": "internal", "reason": "Webull paper submit is off"}
     book["route"] = route["mode"]
+    book["route_reason"] = route.get("reason")
+    fetch = quote_fetcher or _default_stock_quotes
+    spec = _spec(cfg)
+    close_clock = WEBULL_TIME_EXIT if wb is not None else (15, 0)
+    if wb is not None:
+        for alert in webull_desk.advance(
+            book, wb, spec, quote_fn=lambda t: _live_quote(str(t.get("symbol") or ""), quotes, fetch),
+            now=moment, entry_deadline=_entry_deadline,
+        ):
+            alerts.append(alert)
+            _remember(book, alert)
 
     for trade in _open_trades(book):
         symbol = str(trade.get("symbol") or "")
         series = None if bars is None else bars.get(symbol) or bars.get(normalize_symbol(symbol))
+        if wb is not None and trade.get("route") == "webull":
+            # A Webull position exits on what it can actually sell for now:
+            # the live bid, not the day's bar high/low.
+            live = _live_quote(symbol, quotes, fetch)
+            live_bid = _f(live.get("bid"))
+            reason = _exit_reason(
+                trade, high=live_bid, low=live_bid, now=moment, hold_sessions=hold_sessions, close_clock=close_clock
+            )
+            if reason is None:
+                continue
+            alert = webull_desk.open_exit(
+                book, wb, spec, trade, reason, bid=live_bid, ask=_f(live.get("ask")),
+                mark=_f(live.get("last")) or trade.get("last_mark"), now=moment,
+            )
+            if alert:
+                alerts.append(alert)
+                _remember(book, alert)
+            continue
         high, low, last, bid = _prices(symbol, list(series) if series else None, quotes, session)
-        reason = _exit_reason(trade, high=high, low=low, now=moment, hold_sessions=hold_sessions)
+        reason = _exit_reason(
+            trade, high=high, low=low, now=moment, hold_sessions=hold_sessions, close_clock=close_clock
+        )
         if reason is None or bid is None:
             continue
         fill = sell_fill(bid=bid, last=last)
@@ -580,12 +811,65 @@ def run_kotegawa(
         alerts.append(alert)
         _remember(book, alert)
 
+    if wb is not None:
+        _switch_era(book, starting, moment)
     realized = _realized_on(book, session)
     halted = realized <= -abs(daily_loss)
     book["entries_halted"] = halted
     book["halt_reason"] = f"daily realized {realized:.2f}" if halted else None
 
-    if not halted and _in_entry_window(moment):
+    routed_entries = wb is not None and book.get("era") == "webull"
+    if wb is not None and not routed_entries:
+        logger.info("kotegawa: simulated positions still open; Webull entries start after they close")
+    if routed_entries and _in_entry_window(moment):
+        from odte_scanner.trading.risk_controls import kill_switch_state
+
+        if kill_switch_state().get("on"):
+            book["halt_reason"] = "paper kill switch"
+            halted = True
+    if routed_entries and not halted and _in_entry_window(moment):
+        held = {str(row.get("symbol")) for row in _active_trades(book)}
+        marks = {
+            str(row.get("symbol")): _mark_for(
+                row,
+                quotes,
+                None if bars is None else list(bars.get(str(row.get("symbol"))) or []),
+            )
+            for row in _active_trades(book)
+        }
+        for idea in candidates(bars, sma_days=sma_days, entry_drop=entry_drop):
+            if len(_active_trades(book)) >= max_positions:
+                break
+            symbol = idea["symbol"]
+            if symbol in held:
+                continue
+            live = _live_quote(symbol, quotes, fetch)
+            ask = _f(live.get("ask"))
+            bid = _f(live.get("bid"))
+            if ask is None or ask <= 0:
+                logger.info("kotegawa entry skipped %s: no live ask", symbol)
+                continue
+            budget = min(
+                equity_of(book, marks) * slot_pct,
+                float(book["cash"]) - webull_desk.pending_cost(book, spec),
+            )
+            shares = int(budget // ask)
+            if shares < 1:
+                continue
+            trade = {
+                "id": f"kot-{symbol}-{session.isoformat()}-{uuid.uuid4().hex[:8]}",
+                "symbol": symbol,
+                "shares": shares,
+                "entry_session": session.isoformat(),
+                "deviation": idea["deviation"],
+            }
+            alert = webull_desk.open_entry(book, wb, spec, trade, bid=bid, ask=ask, now=moment)
+            if alert:
+                alerts.append(alert)
+                _remember(book, alert)
+                held.add(symbol)
+                marks[symbol] = ask
+    if wb is None and not halted and _in_entry_window(moment):
         held = {str(row.get("symbol")) for row in _open_trades(book)}
         marks = {
             str(row.get("symbol")): _mark_for(
@@ -657,7 +941,7 @@ def run_kotegawa(
             alerts.append(alert)
             _remember(book, alert)
 
-    for trade in _open_trades(book):
+    for trade in [row for row in book["trades"] if row.get("status") in {"open", "closing"}]:
         symbol = str(trade.get("symbol") or "")
         series = None if bars is None else list(bars.get(symbol) or bars.get(normalize_symbol(symbol)) or [])
         mark = _mark_for(trade, quotes, series or None)
