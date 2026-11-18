@@ -27,6 +27,7 @@ from odte_scanner.signals.diamond_board import (
     modeled_spx_exits,
     occ_symbol,
 )
+from odte_scanner.signals.slot_lock import lock_daily_symbols as _lock_symbols
 from odte_scanner.signals.sniper import (
     DAILY_CAP,
     PRIORITY,
@@ -101,22 +102,6 @@ def choose_contract(
     return best
 
 
-def _lock_symbols(selected: list[dict[str, Any]], store: dict[str, Any], day: str) -> list[str]:
-    prior = [str(sym).upper() for sym in (store.get("symbols") or [])] if store.get("day") == day else []
-    ordered = [str(row["symbol"]).upper() for row in selected]
-    # A name keeps its slot for the day even if it stops qualifying. Dropping
-    # it freed the slot for a new name: Nov 10 Diamond bought 5 names (GOOGL,
-    # MU, META, SPY, QQQ) plus the SPX alert against a cap of 3.
-    kept = list(dict.fromkeys(prior))[:DAILY_CAP]
-    for sym in ordered:
-        if sym in kept:
-            continue
-        if len(kept) >= DAILY_CAP:
-            break
-        kept.append(sym)
-    return kept[:DAILY_CAP]
-
-
 def _read_store(path: Path) -> dict[str, Any]:
     try:
         blob = json.loads(path.read_text(encoding="utf-8"))
@@ -152,7 +137,13 @@ def build_sniper_board(
     bars_by_symbol = closed_bars(bars_by_symbol, moment)
     trades = [row for row in run_universe(bars_by_symbol) if row.get("day") == day]
     ranked = apply_daily_cap(trades)
-    allowed = _lock_symbols(ranked, store, day)
+    allowed = _lock_symbols(
+        trades,
+        store,
+        day,
+        bars_by_symbol=bars_by_symbol,
+        now=now_ct,
+    )
     detected = day_detected(store, day)
     commit_day_store(
         store,
