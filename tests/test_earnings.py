@@ -249,3 +249,105 @@ def test_iv_move_earnings_week_curated():
     by = {r["symbol"]: r for r in rows}
     assert by["MDB"]["iv_move_pct"] == 20.6
     assert by["AVGO"]["bucket"] in {"this_week", "today", "next_week"}
+
+
+def test_parse_day_uses_eastern_not_utc_midnight():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from odte_scanner.challenge.earnings import _parse_day
+
+    ET = ZoneInfo("America/New_York")
+    # PANW fiscal Q1 2027: after the close Wed Nov 18, stamped 16:00 ET.
+    assert _parse_day(datetime(2026, 11, 18, 16, 0, tzinfo=ET)) == date(2026, 11, 18)
+    # The same instant in UTC is 21:00 Nov 18 — still the 18th.
+    assert _parse_day(datetime(2026, 11, 18, 21, 0, tzinfo=ZoneInfo("UTC"))) == date(2026, 11, 18)
+    # A feed that stamps AMC as midnight UTC the next morning must not roll to the 19th.
+    assert _parse_day(datetime(2026, 11, 19, 0, 0, tzinfo=ZoneInfo("UTC"))) == date(2026, 11, 18)
+    assert _parse_day("2026-11-19T00:00:00Z") == date(2026, 11, 18)
+    # Bare dates and naive midnights (curated rows, tests) stay as written.
+    assert _parse_day("2026-11-19") == date(2026, 11, 19)
+    assert _parse_day(datetime(2026, 11, 19, 0, 0)) == date(2026, 11, 19)
+    assert _parse_day(date(2026, 11, 18)) == date(2026, 11, 18)
+
+
+def test_amc_print_today_is_earnings_day_not_tomorrow():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from odte_scanner.challenge.earnings import classify_earnings
+
+    as_of = date(2026, 11, 18)
+    nxt = datetime(2026, 11, 18, 16, 0, tzinfo=ZoneInfo("America/New_York"))
+    c = classify_earnings({"next_earnings": nxt, "earnings_session": "amc"}, as_of=as_of)
+    assert c["next_earnings"] == "2026-11-18"
+    assert c["window"] == "earnings_day"
+    assert c["bucket"] == "today"
+    assert c["days_to_earnings"] == 0
+    # UTC midnight the next morning is still today's AMC print.
+    rolled = classify_earnings(
+        {"next_earnings": datetime(2026, 11, 19, 0, 0, tzinfo=ZoneInfo("UTC"))},
+        as_of=as_of,
+    )
+    assert rolled["next_earnings"] == "2026-11-18"
+    assert rolled["window"] == "earnings_day"
+
+
+def test_near_term_earnings_cache_refreshes_within_two_hours(tmp_path, monkeypatch):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    import json
+    import sys
+    import types
+
+    from odte_scanner.challenge import earnings as earn
+
+    cache = tmp_path / "earnings_cache.json"
+    as_of = date(2026, 11, 18)
+    clock = datetime(2026, 11, 18, 17, 0, tzinfo=ZoneInfo("UTC"))
+    # Stale cache: Yahoo had not yet stamped 16:00 ET, so the row said Nov 19.
+    cache.write_text(
+        json.dumps(
+            {
+                "PANW": {
+                    "symbol": "PANW",
+                    "next_earnings": "2026-11-19",
+                    "last_earnings": "2026-09-01",
+                    "fetched_at": datetime(2026, 11, 18, 8, 0, tzinfo=ZoneInfo("UTC")).isoformat(),
+                    "source": "yfinance",
+                    "available": True,
+                }
+            }
+        )
+    )
+    monkeypatch.setattr(earn, "_today", lambda: as_of)
+
+    called = {"n": 0}
+
+    class _FakeTicker:
+        def get_earnings_dates(self, limit=8):  # noqa: ARG002
+            import pandas as pd
+
+            called["n"] += 1
+            idx = pd.DatetimeIndex(
+                [pd.Timestamp("2026-11-18 16:00:00", tz="America/New_York")],
+                name="Earnings Date",
+            )
+            return pd.DataFrame({"Reported EPS": [float("nan")]}, index=idx)
+
+    monkeypatch.setitem(sys.modules, "yfinance", types.SimpleNamespace(Ticker=lambda symbol: _FakeTicker()))
+    row = earn.fetch_earnings_row("PANW", cache_path=cache, max_age_hours=18.0, now=clock)
+    assert called["n"] == 1
+    assert row["next_earnings"] == "2026-11-18"
+    assert row.get("earnings_session") == "amc"
+
+    # A fresh 16:00 ET stamp inside the 2-hour near-term window is reused.
+    called["n"] = 0
+    again = earn.fetch_earnings_row(
+        "PANW",
+        cache_path=cache,
+        max_age_hours=18.0,
+        now=clock.replace(hour=18),
+    )
+    assert called["n"] == 0
+    assert again["next_earnings"] == "2026-11-18"

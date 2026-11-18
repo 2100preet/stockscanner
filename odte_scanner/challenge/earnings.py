@@ -14,8 +14,11 @@ import logging
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
+
+ET = ZoneInfo("America/New_York")
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CACHE = ROOT / "outputs" / "earnings_cache.json"
@@ -150,29 +153,48 @@ def merge_curated_earnings(symbol: str, row: dict[str, Any] | None) -> dict[str,
 
 
 def _today() -> date:
-    return datetime.now(timezone.utc).date()
+    """US session date for earnings. UTC date rolls at 19:00 ET and is too early."""
+    return datetime.now(ET).date()
+
+
+def _as_et(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        # A clock time with no zone is exchange time. A naive midnight is
+        # treated as a date-only stamp and is not shifted.
+        if value.hour == 0 and value.minute == 0 and value.second == 0 and value.microsecond == 0:
+            return value.replace(tzinfo=ET)
+        return value.replace(tzinfo=ET)
+    return value.astimezone(ET)
 
 
 def _parse_day(value: Any) -> date | None:
+    """Calendar report date in America/New_York.
+
+    After-close prints are often 16:00 ET on the report day, or midnight UTC
+    the next morning. Taking ``.date()`` on the UTC stamp would move an AMC
+    report (e.g. PANW 2026-11-18 16:00 ET) to the next calendar day.
+    Bare YYYY-MM-DD strings and naive midnights stay as written, so curated
+    rows and tests do not shift.
+    """
     if value is None:
         return None
     if isinstance(value, datetime):
-        return value.date()
-    if hasattr(value, "date") and callable(value.date):
-        try:
-            return value.date()  # type: ignore[no-any-return]
-        except Exception:  # noqa: BLE001
-            pass
-    text = str(value)
+        return _as_et(value).date()
+    if isinstance(value, date):
+        return value
+    text = str(value).strip()
     if not text or text.lower() == "nan":
         return None
     try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except Exception:  # noqa: BLE001
         try:
             return datetime.strptime(text[:10], "%Y-%m-%d").date()
         except Exception:  # noqa: BLE001
             return None
+    if parsed.tzinfo is None and parsed.hour == 0 and parsed.minute == 0 and parsed.second == 0:
+        return parsed.date()
+    return _as_et(parsed).date()
 
 
 def _load_cache(path: Path) -> dict[str, Any]:
@@ -196,19 +218,28 @@ def fetch_earnings_row(
     cache_path: str | Path | None = None,
     force: bool = False,
     max_age_hours: float = 18.0,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     """Return next/last earnings dates for a symbol (cached)."""
     path = Path(cache_path) if cache_path else DEFAULT_CACHE
     cache = _load_cache(path)
     key = symbol.upper()
-    now = datetime.now(timezone.utc)
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
     hit = cache.get(key)
     if hit and not force:
         try:
             fetched = datetime.fromisoformat(str(hit.get("fetched_at")).replace("Z", "+00:00"))
             age_h = (now - fetched).total_seconds() / 3600.0
             # Reuse successes; retry recent failures after 2h
-            if hit.get("available") and age_h <= max_age_hours:
+            ttl = max_age_hours
+            # Near-term dates change as Yahoo fills in the 16:00 ET stamp.
+            # An 18h cache can leave "tomorrow" on a name that reports today AMC.
+            next_cached = _parse_day((hit or {}).get("next_earnings"))
+            if next_cached is not None and 0 <= (next_cached - now.astimezone(ET).date()).days <= 2:
+                ttl = min(ttl, 2.0)
+            if hit.get("available") and age_h <= ttl:
                 return merge_curated_earnings(key, hit) or hit
             if (not hit.get("available")) and age_h < 2.0:
                 return merge_curated_earnings(key, hit) or hit
@@ -235,10 +266,24 @@ def fetch_earnings_row(
             today = _today()
             next_d: date | None = None
             last_d: date | None = None
+            next_session: str | None = None
             for idx in ed.index:
                 d = _parse_day(idx)
                 if d is None:
                     continue
+                session = None
+                try:
+                    stamp = idx.to_pydatetime() if hasattr(idx, "to_pydatetime") else idx
+                    if isinstance(stamp, datetime) and not (
+                        stamp.tzinfo is None and stamp.hour == 0 and stamp.minute == 0
+                    ):
+                        hour = _as_et(stamp).hour
+                        if hour >= 16:
+                            session = "amc"
+                        elif hour <= 10:
+                            session = "bmo"
+                except Exception:  # noqa: BLE001
+                    session = None
                 reported = None
                 try:
                     reported = ed.loc[idx].get("Reported EPS")
@@ -247,10 +292,13 @@ def fetch_earnings_row(
                 has_report = reported is not None and str(reported).lower() != "nan"
                 if d >= today and (next_d is None or d < next_d):
                     next_d = d
+                    next_session = session
                 if (d < today or has_report) and d <= today and (last_d is None or d > last_d):
                     last_d = d
             row["next_earnings"] = next_d.isoformat() if next_d else None
             row["last_earnings"] = last_d.isoformat() if last_d else None
+            if next_session:
+                row["earnings_session"] = next_session
             row["available"] = bool(next_d or last_d)
     except Exception as exc:  # noqa: BLE001
         logger.debug("earnings fetch %s: %s", key, exc)
