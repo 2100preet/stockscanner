@@ -85,6 +85,26 @@ def _static_html(page: str) -> str:
     return html
 
 
+def _live_today_pnl() -> dict | None:
+    """Read-only copy of the live desk's today P&L for the static page (CI only)."""
+    import os
+
+    if os.environ.get("GITHUB_ACTIONS") != "true" or "PYTEST_CURRENT_TEST" in os.environ:
+        return None
+    url = os.environ.get("TODAY_PNL_URL") or "https://stockscanner.fly.dev/api/today_pnl"
+    try:
+        import requests
+
+        response = requests.get(url, timeout=15)
+        response.raise_for_status()
+        body = response.json()
+    except Exception:  # noqa: BLE001
+        return None
+    if isinstance(body, dict) and body.get("ok"):
+        return {**body, "source": "live desk (Fly)"}
+    return None
+
+
 def export_pages(
     out_dir: str | Path = "site",
     config_path: str | None = None,
@@ -100,6 +120,10 @@ def export_pages(
     data_dir.mkdir(parents=True, exist_ok=True)
 
     payload = build_offline_snapshot(config_path)
+    if isinstance(payload, dict) and "today_pnl" not in payload:
+        board = _live_today_pnl()
+        if board:
+            payload["today_pnl"] = board
 
     import re
 

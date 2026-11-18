@@ -175,4 +175,10 @@ def apply_hot_overlay(
         )
     except Exception as exc:  # noqa: BLE001
         body["scorecard_daily_pnl"] = {"ok": False, "error": str(exc)[:200]}
+    try:
+        from odte_scanner.scorecard.today_pnl import build_today_pnl
+
+        body["today_pnl"] = build_today_pnl(body, book)
+    except Exception as exc:  # noqa: BLE001
+        body["today_pnl"] = {"ok": False, "error": str(exc)[:200]}
     return body
