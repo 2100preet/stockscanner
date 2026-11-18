@@ -4763,6 +4763,8 @@ PAGE = r"""
       const table = rows
         ? `<div style="overflow-x:auto"><table class="pb-table" style="width:100%;font-size:12px"><thead><tr><th>Time</th><th>Ticker</th><th>Catalyst</th><th>Date</th><th>Headline</th><th>Move</th><th>Dilution</th><th>Alert</th></tr></thead><tbody>${rows}</tbody></table></div>`
         : `<div class="pulse-card expected"><p class="pc-why">No biotech catalysts or volume spikes yet today.</p></div>`;
+      const upcoming = (board.upcoming || []).slice(0, 12).map((u) => `<div class="pc-why"><strong>${esc(u.ticker)}</strong>: ${esc(u.label)} — expected ${esc(u.date)}</div>`).join("");
+      const upcomingBox = upcoming ? `<div class="pulse-card expected" style="margin-top:.4rem"><p class="pc-why"><strong>Upcoming catalysts (calendar, alert only):</strong></p>${upcoming}</div>` : "";
       el.innerHTML = `
         <div class="pb-head">
           <div>
@@ -4771,7 +4773,7 @@ PAGE = r"""
           </div>
           <div class="status">${board.ok === false ? "UNAVAILABLE" : ((board.n_events || 0) + " TODAY · " + (board.sent_today || 0) + " SENT")}</div>
         </div>
-        ${board.ok === false ? `<div class="pulse-card expected"><p class="pc-why">${esc(board.note || "Biotech watch unavailable.")}</p></div>` : table + `<div class="pulse-card expected" style="margin-top:.4rem"><p class="pc-why">${esc(board.note || "")}</p></div>`}`;
+        ${board.ok === false ? `<div class="pulse-card expected"><p class="pc-why">${esc(board.note || "Biotech watch unavailable.")}</p></div>` : table + upcomingBox + `<div class="pulse-card expected" style="margin-top:.4rem"><p class="pc-why">${esc(board.note || "")}</p></div>`}`;
     }
 
     function renderNewsDesk() {

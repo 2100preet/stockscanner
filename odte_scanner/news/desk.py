@@ -1231,6 +1231,7 @@ def _worker_loop(config_path: str | None) -> None:
         from odte_scanner.news import biotech_watch as B
 
         B.RUNTIME.watchlist = B.load_watchlist(config_path)
+        B.RUNTIME.upcoming_seeds = B.load_upcoming_seeds(config_path)
     except Exception as exc:  # noqa: BLE001
         logger.info("biotech watchlist load failed: %s", exc)
     while True:

@@ -549,6 +549,12 @@ actions:
   # $1 floor; volume-spike sweep every 5 min in RTH over this list + names with a catalyst in 10 days.
   # List: SLS + the most active small/mid biotech 8-K filers since Jun 2025 with ≥$2M daily dollar volume.
   biotech_watchlist: [SLS, AQST, TNXP, CELC, IONS, CRMD, SMMT, RZLT, RARE, ROIV, VSTM, ALKS, PLX, REPL, CAPR, ADCT, ZURA, DNLI, IRD, NAMS, KURA, BHVN, ZBIO, QTTB, VNDA, SGMT, SRRK, ARVN, RAPP, IBRX, AARD, FENC, NVCR, ANAB, UNCY, CYTK, HROW, TECX, MLYS, VERA]
+  # Company-guided scheduled catalysts shown as "Upcoming: …" on alerts and the tile (alert only).
+  # PDUFA / AdCom / topline dates parsed from new releases are added automatically.
+  biotech_upcoming:
+    - {ticker: SLS, label: "SLS009 first-line AML Phase 2 preliminary topline", date: "Q4 2026", source: "SELLAS Q3 release, Nov 12 2026 (8-K)"}
+    - {ticker: SLS, label: "SLS009 r/r AML Phase 2 data at ASH", date: "December 2026", source: "SELLAS Q3 release, Nov 12 2026 (8-K)"}
+    - {ticker: SLS, label: "GPS BLA submission (planned)", date: "first half of 2027", source: "SELLAS REGAL topline release, Nov 17 2026 (8-K)"}
   power_hour_symbols: focus
   power_hour_max_bar_fetch: 22   # 16 + 6 priority slots (small 1m bar pulls)
   # Recent listings / widest-range names quoted before the 48-name cap (display only).

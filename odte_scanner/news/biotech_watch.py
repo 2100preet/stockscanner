@@ -56,6 +56,8 @@ SEND_START_CT = dtime(5, 0)
 SEND_END_CT = dtime(20, 0)
 
 DEFAULT_WATCHLIST = ("SLS",)
+MAX_UPCOMING = 60
+UPCOMING_UNDATED_DAYS = 180
 
 KIND_LABELS = {
     "FDA_APPROVAL": "FDA approval",
@@ -125,7 +127,8 @@ def _fresh(day: str, carry: dict[str, Any] | None = None) -> dict[str, Any]:
     recent = {k: v for k, v in (carry.get("recent_catalysts") or {}).items()
               if str(v) >= (date.fromisoformat(day) - timedelta(days=RECENT_CATALYST_DAYS)).isoformat()}
     return {"day": day, "events": [], "alerted": [], "sends": [], "sent_today": 0,
-            "recent_catalysts": dict(sorted(recent.items(), key=lambda kv: kv[1])[-MAX_WATCH:])}
+            "recent_catalysts": dict(sorted(recent.items(), key=lambda kv: kv[1])[-MAX_WATCH:]),
+            "upcoming": prune_upcoming(carry.get("upcoming") or [], date.fromisoformat(day))}
 
 
 def catalyst_kind(ev: dict[str, Any], text: str = "") -> str | None:
@@ -206,6 +209,98 @@ def move_label(view: dict[str, Any]) -> str:
     return " · ".join(bits) or "no quote"
 
 
+# ================================================================= upcoming-catalyst calendar
+
+_Q_WORD = {"first": 1, "second": 2, "third": 3, "fourth": 4, "1q": 1, "2q": 2, "3q": 3, "4q": 4,
+           "q1": 1, "q2": 2, "q3": 3, "q4": 4}
+
+
+def date_bound(text: str | None) -> date | None:
+    """Latest calendar day a catalyst date string can mean ("March 3, 2027", "Q4 2026", "mid-2027")."""
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    m = re.search(r"(" + _MONTH + r")\s+(\d{1,2}),?\s+(20\d\d)", raw)
+    if m:
+        try:
+            return datetime.strptime(f"{m.group(1)[:3]} {m.group(2)} {m.group(3)}", "%b %d %Y").date()
+        except ValueError:
+            pass
+    year = re.search(r"(20\d\d)", raw)
+    if not year:
+        return None
+    y = int(year.group(1))
+    low = raw.lower()
+    if re.search(r"first half|\b1h\b|\bh1\b", low):
+        return date(y, 6, 30)
+    if re.search(r"second half|\b2h\b|\bh2\b|year[- ]end|end of", low):
+        return date(y, 12, 31)
+    for word, q in _Q_WORD.items():
+        if re.search(r"\b" + word + r"\b", low) and ("quarter" in low or word.startswith("q") or word.endswith("q")):
+            month = q * 3
+            return date(y + (month == 12), 1 if month == 12 else month + 1, 1) - timedelta(days=1)
+    if re.search(r"early|mid", low):
+        return date(y, 4, 30) if "early" in low else date(y, 7, 31)
+    m = re.search(r"(" + _MONTH + r")\s+(20\d\d)", raw)
+    if m:
+        try:
+            first = datetime.strptime(f"{m.group(1)[:3]} 1 {m.group(2)}", "%b %d %Y").date()
+            return (first.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+        except ValueError:
+            pass
+    return date(y, 12, 31)
+
+
+def prune_upcoming(rows: list[dict[str, Any]], today: date) -> list[dict[str, Any]]:
+    keep: list[dict[str, Any]] = []
+    for r in rows or []:
+        if not isinstance(r, dict) or not r.get("ticker"):
+            continue
+        bound = date_bound(r.get("date"))
+        if bound is not None:
+            if bound < today - timedelta(days=2):
+                continue
+        else:
+            try:
+                if date.fromisoformat(str(r.get("seen"))) < today - timedelta(days=UPCOMING_UNDATED_DAYS):
+                    continue
+            except ValueError:
+                continue
+        keep.append(r)
+    keep.sort(key=lambda r: (date_bound(r.get("date")) or date.max, str(r.get("ticker"))))
+    return keep[:MAX_UPCOMING]
+
+
+def add_upcoming(state: dict[str, Any], row: dict[str, Any], today: date) -> None:
+    rows = [r for r in state.get("upcoming") or []
+            if not (r.get("ticker") == row["ticker"] and r.get("label") == row["label"])]
+    rows.append(row)
+    state["upcoming"] = prune_upcoming(rows, today)
+
+
+def seed_upcoming(state: dict[str, Any], seeds: Iterable[dict[str, Any]], today: date) -> None:
+    """Config-listed scheduled catalysts (company-guided dates); never overwrite a learned row."""
+    have = {(r.get("ticker"), r.get("label")) for r in state.get("upcoming") or []}
+    for s in seeds or []:
+        if not isinstance(s, dict) or not s.get("ticker") or not s.get("label") or not s.get("date"):
+            continue
+        tk = str(s["ticker"]).upper()
+        if (tk, str(s["label"])) in have:
+            continue
+        add_upcoming(state, {"ticker": tk, "label": str(s["label"])[:80], "date": str(s["date"])[:40],
+                             "source": str(s.get("source") or "config")[:200], "seen": today.isoformat()}, today)
+
+
+def upcoming_for(state: dict[str, Any], ticker: str) -> list[dict[str, Any]]:
+    return [r for r in state.get("upcoming") or [] if r.get("ticker") == str(ticker).upper()]
+
+
+def upcoming_line(rows: list[dict[str, Any]]) -> str | None:
+    if not rows:
+        return None
+    return "Upcoming: " + "; ".join(f"{r['label']} — expected {r['date']}" for r in rows[:3])
+
+
 # ================================================================= dilution (EDGAR submissions, cached)
 
 
@@ -277,6 +372,7 @@ class Runtime:
         self.last_spike_mono = 0.0
         self.last_send_mono = 0.0
         self.watchlist: tuple[str, ...] = DEFAULT_WATCHLIST
+        self.upcoming_seeds: tuple[dict[str, Any], ...] = ()
 
 
 RUNTIME = Runtime()
@@ -292,6 +388,17 @@ def load_watchlist(config_path: str | None = None) -> tuple[str, ...]:
         return out[:MAX_WATCH] or DEFAULT_WATCHLIST
     except Exception:  # noqa: BLE001
         return DEFAULT_WATCHLIST
+
+
+def load_upcoming_seeds(config_path: str | None = None) -> tuple[dict[str, Any], ...]:
+    try:
+        from odte_scanner.config import load_config
+
+        cfg = load_config(config_path)
+        raw = ((cfg.get("actions") or {}).get("biotech_upcoming")) or []
+        return tuple(r for r in raw if isinstance(r, dict))[:MAX_UPCOMING]
+    except Exception:  # noqa: BLE001
+        return ()
 
 
 def telegram_enabled() -> bool:
@@ -333,6 +440,8 @@ def format_alert(row: dict[str, Any]) -> str:
     dil = row.get("dilution") or {}
     icon = "⚠️ Dilution" if dil.get("status") == "warn" else ("Dilution" if dil.get("status") == "clear" else "Dilution ?")
     lines.append(f"{icon}: {dil.get('detail') or 'unknown'}")
+    if row.get("upcoming_line"):
+        lines.append(str(row["upcoming_line"]))
     lines.append(f"Playbook: {NOTE}")
     link = str(row.get("url") or "").strip()
     lines.append(f"{link} · alert only — no orders" if link else "alert only — no orders")
@@ -411,6 +520,7 @@ def run_pass(
     state = read_state(store_path)
     if str(state.get("day") or "") != day:
         state = _fresh(day, carry=state)
+    seed_upcoming(state, rt.upcoming_seeds, local.date())
     budget = [DILUTION_LOOKUPS_PER_CYCLE]
     offering_today = {str(e.get("ticker") or "").upper() for e in state.get("desk_offerings") or []}
     rows: list[dict[str, Any]] = []
@@ -445,6 +555,12 @@ def run_pass(
                 "_cik": ev.get("cik"),
             })
             state.setdefault("recent_catalysts", {})[tk] = day
+            when = rows[-1]["catalyst_date"]
+            if kind in {"PDUFA", "ADCOM", "TOPLINE"} and when:
+                bound = date_bound(when)
+                if bound is None or bound >= local.date():
+                    add_upcoming(state, {"ticker": tk, "label": KIND_LABELS.get(kind, kind), "date": when,
+                                         "source": str(ev.get("url") or "")[:200], "seen": day}, local.date())
         # Volume spikes on the watchlist + names with a catalyst in the last 10 days.
         mono = time.monotonic()
         if force_spike or (_rth(moment) and mono - rt.last_spike_mono >= SPIKE_EVERY_SEC):
@@ -471,6 +587,7 @@ def run_pass(
             row["dilution"] = rt.dilution.check(row["ticker"], cik, local.date(), budget,
                                                 offering_today=row["ticker"] in offering_today)
             row["alert_only"] = True
+            row["upcoming_line"] = upcoming_line(upcoming_for(state, row["ticker"]))
             _deliver(row, state, moment, rt, send, telegram)
             state.setdefault("events", []).append(row)
         state["events"] = state["events"][-MAX_EVENTS:]
@@ -489,12 +606,14 @@ def run_pass(
 def build_block(store_path: Path | None = None) -> dict[str, Any]:
     state = read_state(store_path)
     keys = ("ticker", "label", "kind", "headline", "url", "published_ct", "seen_ct", "catalyst_date", "price",
-            "change_pct", "vol_x", "move_label", "dilution", "sent", "why_not_sent")
+            "change_pct", "vol_x", "move_label", "dilution", "upcoming_line", "sent", "why_not_sent")
     events = [{k: e.get(k) for k in keys} for e in reversed(state.get("events") or [])][:30]
     return {
         "ok": True, "label": LABEL, "alert_only": True, "orders": False, "day": state.get("day"),
         "events": events, "n_events": len(state.get("events") or []), "sent_today": int(state.get("sent_today") or 0),
         "watchlist": list(RUNTIME.watchlist), "min_price": MIN_PRICE,
+        "upcoming": [{k: r.get(k) for k in ("ticker", "label", "date", "source")}
+                     for r in prune_upcoming(state.get("upcoming") or [], _ct().date())][:30],
         "spike_rule": f"≥{SPIKE_VOL_X:.0f}x avg volume and ≥{SPIKE_MOVE_PCT:.0f}% move, price ≥ ${MIN_PRICE:.0f}",
         "updated_at": state.get("updated_at"), "note": NOTE,
     }

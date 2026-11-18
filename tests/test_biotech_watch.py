@@ -114,3 +114,31 @@ def test_hourly_rate_limit(tmp_path):
     out = B.run_pass(evs, quotes, TUE_10, rt=rt, store_path=tmp_path / "r.json",
                      send=lambda t: sent.append(t) or {"ok": True}, telegram=True)
     assert len(sent) == B.SEND_MAX_PER_HOUR and out["rows"] == len(evs)
+
+
+def test_upcoming_calendar_seed_learn_and_prune(tmp_path):
+    sent = []
+    rt = _rt()
+    rt.upcoming_seeds = ({"ticker": "SLS", "label": "SLS009 topline", "date": "Q4 2026", "source": "8-K"},
+                         {"ticker": "SLS", "label": "Old thing", "date": "Q1 2026"})
+    ev = _ev("ACME", kind="OTHER", headline="Acme announces PDUFA target action date",
+             bio_text="The FDA set a PDUFA target action date of March 3, 2027 for the BLA.")
+    store = tmp_path / "u.json"
+    B.run_pass([ev, _ev()], {"ACME": _quote(4, 3.9, 1e6, 1e6), "SLS": _quote(3.1, 2.2, 4e7, 5e6)}, TUE_10, rt=rt,
+               store_path=store, send=lambda t: sent.append(t) or {"ok": True}, telegram=True)
+    block = B.build_block(store)
+    ups = {(u["ticker"], u["label"]): u["date"] for u in block["upcoming"]}
+    assert ups[("SLS", "SLS009 topline")] == "Q4 2026"
+    assert ("SLS", "Old thing") not in ups  # past window pruned
+    assert ups[("ACME", "PDUFA date")] == "March 3, 2027"
+    sls_msg = [m for m in sent if "· SLS ·" in m][0]
+    assert "Upcoming: SLS009 topline — expected Q4 2026" in sls_msg
+    assert "alert only" in sls_msg
+
+
+def test_date_bound():
+    assert B.date_bound("Q4 2026") == date(2026, 12, 31)
+    assert B.date_bound("March 3, 2027") == date(2027, 3, 3)
+    assert B.date_bound("first half of 2027") == date(2027, 6, 30)
+    assert B.date_bound("mid-2027") == date(2027, 7, 31)
+    assert B.date_bound("no date") is None
