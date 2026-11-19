@@ -7,6 +7,9 @@ the desk toast regex does not treat a ticket as an order.
 The stop is the premium. The exit ladder (half at 5×, rest at 10× or a 50%
 giveback from the peak close, else a 15:45 ET time exit) is recorded on the
 ticket for the log and for replay. It is not sent to a broker.
+
+The portal scores that log after the session (lottery_v2_score). Scoring is
+display only. It does not change this ladder, the size, or routing.
 """
 from __future__ import annotations
 
@@ -481,6 +484,7 @@ def replay_ladder(
 
     half_px: float | None = None
     rest_px: float | None = None
+    exit_ts: datetime | None = None
     peak_close = entry
     peak_high = entry
     reason = "last_print"
@@ -498,26 +502,32 @@ def replay_ladder(
         if half_px is not None and rest_px is None:
             if close >= entry * rules.rest_multiple:
                 rest_px = close
+                exit_ts = ts
                 reason = "10x"
                 break
             if prior_peak >= entry * rules.half_multiple and close <= prior_peak * (1.0 - rules.giveback_from_peak):
                 rest_px = close
+                exit_ts = ts
                 reason = "giveback"
                 break
         if ts is not None and _clock_reached(ts, rules.time_exit_et) and rest_px is None:
             if half_px is None:
                 half_px = close
             rest_px = close
+            exit_ts = ts
             reason = "time_exit"
             break
 
     last = float(series[-1]["close"])
+    last_ts = _bar_time(series[-1])
     if half_px is None:
         half_px = last
         rest_px = last
+        exit_ts = last_ts
         reason = "last_print"
     elif rest_px is None:
         rest_px = last
+        exit_ts = last_ts
         reason = "last_print"
     blended = 0.5 * half_px + 0.5 * rest_px
     multiple = blended / entry
@@ -541,6 +551,7 @@ def replay_ladder(
         "went_to_zero": went_to_zero,
         "pnl_per_contract": round((blended - entry) * 100.0, 2),
         "ev_per_100": round((multiple - 1.0) * 100.0, 2),
+        "exit_ts": exit_ts.isoformat() if exit_ts is not None else None,
     }
 
 
