@@ -1,0 +1,2196 @@
+{
+  "source": "tradier_timesales_option_prints",
+  "not_bid_ask": true,
+  "daily_bars_used": false,
+  "proxy_used": false,
+  "slippage": {
+    "stop": "min(stop, bar low). The low is a trade print, not a bid.",
+    "target": "the limit, only after a print trades at or above it. Not an ask.",
+    "flatten": "that minute's close print, not a bid.",
+    "same_minute": "if low reaches the stop and high reaches the target, the stop fills.",
+    "size": "original quantity. Skip when one lot risks more than $175. Never upsize."
+  },
+  "generated_at": "2026-11-10T01:00:45.845733+00:00",
+  "trips": 102,
+  "fill_arithmetic": {
+    "note": "Recorded P&L versus (exit-entry)*100*qty. This does not use bars.",
+    "checked": 102,
+    "mismatch_over_5_cents": 0,
+    "examples": []
+  },
+  "fill_versus_print": {
+    "note": "Whether the recorded price sits inside that minute's print high/low. Neighbor minutes are not used.",
+    "entry_minute_present": 22,
+    "entry_inside_print": 13,
+    "entry_outside_print": 9,
+    "exit_minute_present": 23,
+    "exit_inside_print": 15,
+    "exit_outside_print": 8
+  },
+  "coverage": {
+    "full": {
+      "trips": 102,
+      "eligible": 4,
+      "by_desk": {
+        "Gold Setup": {
+          "trips": 60,
+          "eligible": 1
+        },
+        "Diamond": {
+          "trips": 15,
+          "eligible": 2
+        },
+        "Afternoon Puts": {
+          "trips": 5,
+          "eligible": 0
+        },
+        "Sniper": {
+          "trips": 22,
+          "eligible": 1
+        }
+      },
+      "exclude_reasons": {
+        "exit_session_no_minute_file": 1,
+        "no_minute_file": 2,
+        "entry_outside_print": 3,
+        "entry_minute_absent": 15,
+        "gap": 4,
+        "overnight_without_continuous_tape": 11,
+        "symbol_not_found": 55,
+        "exit_session_symbol_not_found": 7
+      }
+    },
+    "focus": {
+      "trips": 65,
+      "eligible": 4,
+      "by_desk": {
+        "Gold Setup": {
+          "trips": 34,
+          "eligible": 1
+        },
+        "Afternoon Puts": {
+          "trips": 5,
+          "eligible": 0
+        },
+        "Diamond": {
+          "trips": 11,
+          "eligible": 2
+        },
+        "Sniper": {
+          "trips": 15,
+          "eligible": 1
+        }
+      },
+      "exclude_reasons": {
+        "exit_session_no_minute_file": 1,
+        "entry_outside_print": 3,
+        "entry_minute_absent": 13,
+        "gap": 4,
+        "overnight_without_continuous_tape": 10,
+        "symbol_not_found": 28,
+        "exit_session_symbol_not_found": 2
+      }
+    }
+  },
+  "excluded": [
+    {
+      "desk": "Gold Setup",
+      "symbol": "TSLA",
+      "day": "2026-11-06",
+      "contract": "TSLA261113C00377500",
+      "reason": "exit_session_no_minute_file"
+    },
+    {
+      "desk": "Diamond",
+      "symbol": "SPY",
+      "day": "2026-11-09",
+      "contract": "SPY261109C00748000",
+      "reason": "no_minute_file"
+    },
+    {
+      "desk": "Diamond",
+      "symbol": "AVGO",
+      "day": "2026-11-09",
+      "contract": "AVGO261109C00315000",
+      "reason": "no_minute_file"
+    },
+    {
+      "desk": "Afternoon Puts",
+      "symbol": "QQQ",
+      "day": "2026-11-06",
+      "contract": "QQQ261106P00655000",
+      "reason": "entry_outside_print"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "LUNR",
+      "day": "2026-11-06",
+      "contract": "LUNR261106C00010000",
+      "reason": "entry_minute_absent"
+    },
+    {
+      "desk": "Afternoon Puts",
+      "symbol": "SPY",
+      "day": "2026-11-06",
+      "contract": "SPY261106P00736000",
+      "reason": "entry_outside_print"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "LUNR",
+      "day": "2026-11-06",
+      "contract": "LUNR261106C00010000",
+      "reason": "entry_minute_absent"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "JPM",
+      "day": "2026-11-06",
+      "contract": "JPM261106C00345000",
+      "reason": "entry_minute_absent"
+    },
+    {
+      "desk": "Diamond",
+      "symbol": "MSFT",
+      "day": "2026-11-06",
+      "contract": "MSFT261106C00532500",
+      "reason": "gap"
+    },
+    {
+      "desk": "Sniper",
+      "symbol": "AMD",
+      "day": "2026-11-06",
+      "contract": "AMD261106C00450000",
+      "reason": "entry_outside_print"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "MRK",
+      "day": "2026-11-06",
+      "contract": "MRK261106C00150000",
+      "reason": "gap"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "CRWV",
+      "day": "2026-11-05",
+      "contract": "CRWV261106C00046500",
+      "reason": "overnight_without_continuous_tape"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "TSLA",
+      "day": "2026-11-05",
+      "contract": "TSLA261106C00350000",
+      "reason": "overnight_without_continuous_tape"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "MRK",
+      "day": "2026-11-05",
+      "contract": "MRK261106P00150000",
+      "reason": "overnight_without_continuous_tape"
+    },
+    {
+      "desk": "Afternoon Puts",
+      "symbol": "QQQ",
+      "day": "2026-11-05",
+      "contract": "QQQ261105P00655000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "WFC",
+      "day": "2026-11-05",
+      "contract": "WFC261106C00086000",
+      "reason": "overnight_without_continuous_tape"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "SLV",
+      "day": "2026-11-05",
+      "contract": "SLV261106P00047000",
+      "reason": "overnight_without_continuous_tape"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "SLV",
+      "day": "2026-11-05",
+      "contract": "SLV261106P00046000",
+      "reason": "entry_minute_absent"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "TSLA",
+      "day": "2026-11-05",
+      "contract": "TSLA261106C00370000",
+      "reason": "overnight_without_continuous_tape"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "WFC",
+      "day": "2026-11-05",
+      "contract": "WFC261106P00084000",
+      "reason": "entry_minute_absent"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "WFC",
+      "day": "2026-11-04",
+      "contract": "WFC261106C00084000",
+      "reason": "entry_minute_absent"
+    },
+    {
+      "desk": "Sniper",
+      "symbol": "IWM",
+      "day": "2026-11-05",
+      "contract": "IWM261105P00281000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "SLV",
+      "day": "2026-11-05",
+      "contract": "SLV261106C00048000",
+      "reason": "entry_minute_absent"
+    },
+    {
+      "desk": "Sniper",
+      "symbol": "MSFT",
+      "day": "2026-11-05",
+      "contract": "MSFT261106P00547500",
+      "reason": "gap"
+    },
+    {
+      "desk": "Sniper",
+      "symbol": "NVDA",
+      "day": "2026-11-05",
+      "contract": "NVDA261106P00192500",
+      "reason": "gap"
+    },
+    {
+      "desk": "Sniper",
+      "symbol": "QQQ",
+      "day": "2026-11-05",
+      "contract": "QQQ261105P00670000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Sniper",
+      "symbol": "SPY",
+      "day": "2026-11-05",
+      "contract": "SPY261105P00755000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "SLV",
+      "day": "2026-11-05",
+      "contract": "SLV261106C00049000",
+      "reason": "overnight_without_continuous_tape"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "TSLA",
+      "day": "2026-11-04",
+      "contract": "TSLA261106C00402500",
+      "reason": "overnight_without_continuous_tape"
+    },
+    {
+      "desk": "Afternoon Puts",
+      "symbol": "SPY",
+      "day": "2026-11-04",
+      "contract": "SPY261104P00767000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Afternoon Puts",
+      "symbol": "QQQ",
+      "day": "2026-11-04",
+      "contract": "QQQ261104P00694000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "WFC",
+      "day": "2026-11-03",
+      "contract": "WFC261106C00085000",
+      "reason": "entry_minute_absent"
+    },
+    {
+      "desk": "Sniper",
+      "symbol": "QQQ",
+      "day": "2026-11-04",
+      "contract": "QQQ261104C00697000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Sniper",
+      "symbol": "QQQ",
+      "day": "2026-11-04",
+      "contract": "QQQ261104C00698000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Diamond",
+      "symbol": "MSFT",
+      "day": "2026-11-04",
+      "contract": "MSFT261104C00552500",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Diamond",
+      "symbol": "AAPL",
+      "day": "2026-11-04",
+      "contract": "AAPL261104C00352500",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Diamond",
+      "symbol": "TSLA",
+      "day": "2026-11-04",
+      "contract": "TSLA261104C00385000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Diamond",
+      "symbol": "SPY",
+      "day": "2026-11-04",
+      "contract": "SPY261104C00768000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Diamond",
+      "symbol": "QQQ",
+      "day": "2026-11-04",
+      "contract": "QQQ261104C00699000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Sniper",
+      "symbol": "SPY",
+      "day": "2026-11-04",
+      "contract": "SPY261104C00767000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Diamond",
+      "symbol": "GOOGL",
+      "day": "2026-11-04",
+      "contract": "GOOGL261104C00292500",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Diamond",
+      "symbol": "AMZN",
+      "day": "2026-11-04",
+      "contract": "AMZN261104C00270000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Sniper",
+      "symbol": "GOOGL",
+      "day": "2026-11-04",
+      "contract": "GOOGL261104C00290000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "SLV",
+      "day": "2026-11-03",
+      "contract": "SLV261104C00047000",
+      "reason": "exit_session_symbol_not_found"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "SLV",
+      "day": "2026-11-03",
+      "contract": "SLV261104C00046000",
+      "reason": "exit_session_symbol_not_found"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "WFC",
+      "day": "2026-11-03",
+      "contract": "WFC261106C00089000",
+      "reason": "entry_minute_absent"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "SLV",
+      "day": "2026-11-03",
+      "contract": "SLV261104C00046500",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Sniper",
+      "symbol": "AMZN",
+      "day": "2026-11-03",
+      "contract": "AMZN261104P00247500",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "WFC",
+      "day": "2026-11-03",
+      "contract": "WFC261106C00088000",
+      "reason": "overnight_without_continuous_tape"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "TSLA",
+      "day": "2026-11-03",
+      "contract": "TSLA261104P00390000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Sniper",
+      "symbol": "META",
+      "day": "2026-11-03",
+      "contract": "META261104C00615000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Sniper",
+      "symbol": "IWM",
+      "day": "2026-11-03",
+      "contract": "IWM261103C00280000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "TSLA",
+      "day": "2026-11-03",
+      "contract": "TSLA261104C00420000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "TSLA",
+      "day": "2026-11-02",
+      "contract": "TSLA261106C00425000",
+      "reason": "overnight_without_continuous_tape"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "DOCU",
+      "day": "2026-10-30",
+      "contract": "DOCU261106C00082000",
+      "reason": "entry_minute_absent"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "TSLA",
+      "day": "2026-11-02",
+      "contract": "TSLA261102P00385000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "LUNR",
+      "day": "2026-11-02",
+      "contract": "LUNR261106P00010500",
+      "reason": "entry_minute_absent"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "LUNR",
+      "day": "2026-11-02",
+      "contract": "LUNR261106P00010000",
+      "reason": "entry_minute_absent"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "LUNR",
+      "day": "2026-11-02",
+      "contract": "LUNR261106P00010000",
+      "reason": "entry_minute_absent"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "LUNR",
+      "day": "2026-11-02",
+      "contract": "LUNR261106P00010500",
+      "reason": "entry_minute_absent"
+    },
+    {
+      "desk": "Diamond",
+      "symbol": "IWM",
+      "day": "2026-11-02",
+      "contract": "IWM261102C00282000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "TSLA",
+      "day": "2026-11-02",
+      "contract": "TSLA261102C00422500",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Sniper",
+      "symbol": "SPY",
+      "day": "2026-11-02",
+      "contract": "SPY261102C00760000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "TSLA",
+      "day": "2026-11-02",
+      "contract": "TSLA261102C00410000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "TSLA",
+      "day": "2026-10-30",
+      "contract": "TSLA261106C00412500",
+      "reason": "entry_minute_absent"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "DOCU",
+      "day": "2026-10-30",
+      "contract": "DOCU261030C00082000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "TSLA",
+      "day": "2026-10-30",
+      "contract": "TSLA261106C00410000",
+      "reason": "overnight_without_continuous_tape"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "TSLA",
+      "day": "2026-10-30",
+      "contract": "TSLA261030C00407500",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "SLV",
+      "day": "2026-10-30",
+      "contract": "SLV261030P00045000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "CRWV",
+      "day": "2026-10-30",
+      "contract": "CRWV261030C00057000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "SLV",
+      "day": "2026-10-30",
+      "contract": "SLV261030C00045000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "TSLA",
+      "day": "2026-10-30",
+      "contract": "TSLA261030C00405000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "TSLA",
+      "day": "2026-10-29",
+      "contract": "TSLA261030C00420000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Sniper",
+      "symbol": "MU",
+      "day": "2026-10-29",
+      "contract": "MU261030P00950000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Sniper",
+      "symbol": "NVDA",
+      "day": "2026-10-29",
+      "contract": "NVDA261030P00212500",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Diamond",
+      "symbol": "SPY",
+      "day": "2026-10-29",
+      "contract": "SPY261029C00769000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Diamond",
+      "symbol": "IWM",
+      "day": "2026-10-29",
+      "contract": "IWM261029C00284000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Sniper",
+      "symbol": "META",
+      "day": "2026-10-29",
+      "contract": "META261030C00622500",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "WFC",
+      "day": "2026-10-29",
+      "contract": "WFC261030C00086000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Sniper",
+      "symbol": "MSFT",
+      "day": "2026-10-29",
+      "contract": "MSFT261030P00525000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "TSLA",
+      "day": "2026-10-28",
+      "contract": "TSLA261030C00415000",
+      "reason": "exit_session_symbol_not_found"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "TSLA",
+      "day": "2026-10-29",
+      "contract": "TSLA261030C00412500",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "CRWV",
+      "day": "2026-10-29",
+      "contract": "CRWV261030C00065000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "WFC",
+      "day": "2026-10-28",
+      "contract": "WFC261030C00083000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Sniper",
+      "symbol": "IWM",
+      "day": "2026-10-28",
+      "contract": "IWM261028C00280000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "SLV",
+      "day": "2026-10-28",
+      "contract": "SLV261028P00048000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "JPM",
+      "day": "2026-10-26",
+      "contract": "JPM261030C00340000",
+      "reason": "exit_session_symbol_not_found"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "WFC",
+      "day": "2026-10-28",
+      "contract": "WFC261030C00085000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "WFC",
+      "day": "2026-10-28",
+      "contract": "WFC261030C00083000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "WFC",
+      "day": "2026-10-28",
+      "contract": "WFC261030C00085000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Sniper",
+      "symbol": "IWM",
+      "day": "2026-10-28",
+      "contract": "IWM261028C00281000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "SLV",
+      "day": "2026-10-28",
+      "contract": "SLV261028C00049000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Sniper",
+      "symbol": "META",
+      "day": "2026-10-28",
+      "contract": "META261028P00620000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "WFC",
+      "day": "2026-10-27",
+      "contract": "WFC261030P00082000",
+      "reason": "exit_session_symbol_not_found"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "TSLA",
+      "day": "2026-10-28",
+      "contract": "TSLA261028C00420000",
+      "reason": "symbol_not_found"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "MRK",
+      "day": "2026-10-27",
+      "contract": "MRK261030C00145000",
+      "reason": "exit_session_symbol_not_found"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "JPM",
+      "day": "2026-10-27",
+      "contract": "JPM261030C00350000",
+      "reason": "exit_session_symbol_not_found"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "QUBT",
+      "day": "2026-10-28",
+      "contract": "QUBT261030P00006500",
+      "reason": "symbol_not_found"
+    }
+  ],
+  "focus": {
+    "eligible": 4,
+    "variants": {
+      "baseline": {
+        "all": {
+          "trades": 4,
+          "skipped": 0,
+          "wins": 3,
+          "losses": 1,
+          "win_rate": 0.75,
+          "pnl": -208.0,
+          "avg_win": 147.33,
+          "avg_loss": -650.0,
+          "profit_factor": 0.68,
+          "max_drawdown": -208.0,
+          "worst_day": "2026-11-06",
+          "worst_day_pnl": -208.0,
+          "curve": [
+            {
+              "day": "2026-11-06",
+              "pnl": -208.0,
+              "equity": -208.0
+            }
+          ],
+          "eligible_denominator": 4,
+          "filled_of_eligible": "4/4"
+        },
+        "by_desk": {
+          "Diamond": {
+            "trades": 2,
+            "skipped": 0,
+            "wins": 2,
+            "losses": 0,
+            "win_rate": 1.0,
+            "pnl": 435.0,
+            "avg_win": 217.5,
+            "avg_loss": null,
+            "profit_factor": null,
+            "max_drawdown": 0.0,
+            "worst_day": "2026-11-06",
+            "worst_day_pnl": 435.0,
+            "curve": [
+              {
+                "day": "2026-11-06",
+                "pnl": 435.0,
+                "equity": 435.0
+              }
+            ],
+            "rows_in_desk": 2
+          },
+          "Gold Setup": {
+            "trades": 1,
+            "skipped": 0,
+            "wins": 1,
+            "losses": 0,
+            "win_rate": 1.0,
+            "pnl": 7.0,
+            "avg_win": 7.0,
+            "avg_loss": null,
+            "profit_factor": null,
+            "max_drawdown": 0.0,
+            "worst_day": "2026-11-06",
+            "worst_day_pnl": 7.0,
+            "curve": [
+              {
+                "day": "2026-11-06",
+                "pnl": 7.0,
+                "equity": 7.0
+              }
+            ],
+            "rows_in_desk": 1
+          },
+          "Sniper": {
+            "trades": 1,
+            "skipped": 0,
+            "wins": 0,
+            "losses": 1,
+            "win_rate": 0.0,
+            "pnl": -650.0,
+            "avg_win": null,
+            "avg_loss": -650.0,
+            "profit_factor": 0.0,
+            "max_drawdown": -650.0,
+            "worst_day": "2026-11-06",
+            "worst_day_pnl": -650.0,
+            "curve": [
+              {
+                "day": "2026-11-06",
+                "pnl": -650.0,
+                "equity": -650.0
+              }
+            ],
+            "rows_in_desk": 1
+          }
+        }
+      },
+      "broker_stop": {
+        "all": {
+          "trades": 4,
+          "skipped": 0,
+          "wins": 3,
+          "losses": 1,
+          "win_rate": 0.75,
+          "pnl": -551.8,
+          "avg_win": 84.4,
+          "avg_loss": -805.0,
+          "profit_factor": 0.315,
+          "max_drawdown": -551.8,
+          "worst_day": "2026-11-06",
+          "worst_day_pnl": -551.8,
+          "curve": [
+            {
+              "day": "2026-11-06",
+              "pnl": -551.8,
+              "equity": -551.8
+            }
+          ],
+          "eligible_denominator": 4,
+          "filled_of_eligible": "4/4"
+        },
+        "by_desk": {
+          "Diamond": {
+            "trades": 2,
+            "skipped": 0,
+            "wins": 2,
+            "losses": 0,
+            "win_rate": 1.0,
+            "pnl": 247.5,
+            "avg_win": 123.75,
+            "avg_loss": null,
+            "profit_factor": null,
+            "max_drawdown": 0.0,
+            "worst_day": "2026-11-06",
+            "worst_day_pnl": 247.5,
+            "curve": [
+              {
+                "day": "2026-11-06",
+                "pnl": 247.5,
+                "equity": 247.5
+              }
+            ],
+            "rows_in_desk": 2
+          },
+          "Gold Setup": {
+            "trades": 1,
+            "skipped": 0,
+            "wins": 1,
+            "losses": 0,
+            "win_rate": 1.0,
+            "pnl": 5.7,
+            "avg_win": 5.7,
+            "avg_loss": null,
+            "profit_factor": null,
+            "max_drawdown": 0.0,
+            "worst_day": "2026-11-06",
+            "worst_day_pnl": 5.7,
+            "curve": [
+              {
+                "day": "2026-11-06",
+                "pnl": 5.7,
+                "equity": 5.7
+              }
+            ],
+            "rows_in_desk": 1
+          },
+          "Sniper": {
+            "trades": 1,
+            "skipped": 0,
+            "wins": 0,
+            "losses": 1,
+            "win_rate": 0.0,
+            "pnl": -805.0,
+            "avg_win": null,
+            "avg_loss": -805.0,
+            "profit_factor": 0.0,
+            "max_drawdown": -805.0,
+            "worst_day": "2026-11-06",
+            "worst_day_pnl": -805.0,
+            "curve": [
+              {
+                "day": "2026-11-06",
+                "pnl": -805.0,
+                "equity": -805.0
+              }
+            ],
+            "rows_in_desk": 1
+          }
+        }
+      },
+      "size_175": {
+        "all": {
+          "trades": 2,
+          "skipped": 2,
+          "wins": 2,
+          "losses": 0,
+          "win_rate": 1.0,
+          "pnl": 177.0,
+          "avg_win": 88.5,
+          "avg_loss": null,
+          "profit_factor": null,
+          "max_drawdown": 0.0,
+          "worst_day": "2026-11-06",
+          "worst_day_pnl": 177.0,
+          "curve": [
+            {
+              "day": "2026-11-06",
+              "pnl": 177.0,
+              "equity": 177.0
+            }
+          ],
+          "eligible_denominator": 4,
+          "filled_of_eligible": "2/4"
+        },
+        "by_desk": {
+          "Diamond": {
+            "trades": 1,
+            "skipped": 1,
+            "wins": 1,
+            "losses": 0,
+            "win_rate": 1.0,
+            "pnl": 170.0,
+            "avg_win": 170.0,
+            "avg_loss": null,
+            "profit_factor": null,
+            "max_drawdown": 0.0,
+            "worst_day": "2026-11-06",
+            "worst_day_pnl": 170.0,
+            "curve": [
+              {
+                "day": "2026-11-06",
+                "pnl": 170.0,
+                "equity": 170.0
+              }
+            ],
+            "rows_in_desk": 2
+          },
+          "Gold Setup": {
+            "trades": 1,
+            "skipped": 0,
+            "wins": 1,
+            "losses": 0,
+            "win_rate": 1.0,
+            "pnl": 7.0,
+            "avg_win": 7.0,
+            "avg_loss": null,
+            "profit_factor": null,
+            "max_drawdown": 0.0,
+            "worst_day": "2026-11-06",
+            "worst_day_pnl": 7.0,
+            "curve": [
+              {
+                "day": "2026-11-06",
+                "pnl": 7.0,
+                "equity": 7.0
+              }
+            ],
+            "rows_in_desk": 1
+          },
+          "Sniper": {
+            "trades": 0,
+            "skipped": 1,
+            "wins": 0,
+            "losses": 0,
+            "win_rate": null,
+            "pnl": 0,
+            "avg_win": null,
+            "avg_loss": null,
+            "profit_factor": null,
+            "max_drawdown": 0.0,
+            "worst_day": null,
+            "worst_day_pnl": null,
+            "curve": [],
+            "rows_in_desk": 1
+          }
+        }
+      },
+      "breakeven": {
+        "all": {
+          "trades": 4,
+          "skipped": 0,
+          "wins": 3,
+          "losses": 1,
+          "win_rate": 0.75,
+          "pnl": -208.0,
+          "avg_win": 147.33,
+          "avg_loss": -650.0,
+          "profit_factor": 0.68,
+          "max_drawdown": -208.0,
+          "worst_day": "2026-11-06",
+          "worst_day_pnl": -208.0,
+          "curve": [
+            {
+              "day": "2026-11-06",
+              "pnl": -208.0,
+              "equity": -208.0
+            }
+          ],
+          "eligible_denominator": 4,
+          "filled_of_eligible": "4/4"
+        },
+        "by_desk": {
+          "Diamond": {
+            "trades": 2,
+            "skipped": 0,
+            "wins": 2,
+            "losses": 0,
+            "win_rate": 1.0,
+            "pnl": 435.0,
+            "avg_win": 217.5,
+            "avg_loss": null,
+            "profit_factor": null,
+            "max_drawdown": 0.0,
+            "worst_day": "2026-11-06",
+            "worst_day_pnl": 435.0,
+            "curve": [
+              {
+                "day": "2026-11-06",
+                "pnl": 435.0,
+                "equity": 435.0
+              }
+            ],
+            "rows_in_desk": 2
+          },
+          "Gold Setup": {
+            "trades": 1,
+            "skipped": 0,
+            "wins": 1,
+            "losses": 0,
+            "win_rate": 1.0,
+            "pnl": 7.0,
+            "avg_win": 7.0,
+            "avg_loss": null,
+            "profit_factor": null,
+            "max_drawdown": 0.0,
+            "worst_day": "2026-11-06",
+            "worst_day_pnl": 7.0,
+            "curve": [
+              {
+                "day": "2026-11-06",
+                "pnl": 7.0,
+                "equity": 7.0
+              }
+            ],
+            "rows_in_desk": 1
+          },
+          "Sniper": {
+            "trades": 1,
+            "skipped": 0,
+            "wins": 0,
+            "losses": 1,
+            "win_rate": 0.0,
+            "pnl": -650.0,
+            "avg_win": null,
+            "avg_loss": -650.0,
+            "profit_factor": 0.0,
+            "max_drawdown": -650.0,
+            "worst_day": "2026-11-06",
+            "worst_day_pnl": -650.0,
+            "curve": [
+              {
+                "day": "2026-11-06",
+                "pnl": -650.0,
+                "equity": -650.0
+              }
+            ],
+            "rows_in_desk": 1
+          }
+        }
+      },
+      "daily_halt": {
+        "all": {
+          "trades": 4,
+          "skipped": 0,
+          "wins": 3,
+          "losses": 1,
+          "win_rate": 0.75,
+          "pnl": -208.0,
+          "avg_win": 147.33,
+          "avg_loss": -650.0,
+          "profit_factor": 0.68,
+          "max_drawdown": -208.0,
+          "worst_day": "2026-11-06",
+          "worst_day_pnl": -208.0,
+          "curve": [
+            {
+              "day": "2026-11-06",
+              "pnl": -208.0,
+              "equity": -208.0
+            }
+          ],
+          "eligible_denominator": 4,
+          "filled_of_eligible": "4/4"
+        },
+        "by_desk": {
+          "Diamond": {
+            "trades": 2,
+            "skipped": 0,
+            "wins": 2,
+            "losses": 0,
+            "win_rate": 1.0,
+            "pnl": 435.0,
+            "avg_win": 217.5,
+            "avg_loss": null,
+            "profit_factor": null,
+            "max_drawdown": 0.0,
+            "worst_day": "2026-11-06",
+            "worst_day_pnl": 435.0,
+            "curve": [
+              {
+                "day": "2026-11-06",
+                "pnl": 435.0,
+                "equity": 435.0
+              }
+            ],
+            "rows_in_desk": 2
+          },
+          "Gold Setup": {
+            "trades": 1,
+            "skipped": 0,
+            "wins": 1,
+            "losses": 0,
+            "win_rate": 1.0,
+            "pnl": 7.0,
+            "avg_win": 7.0,
+            "avg_loss": null,
+            "profit_factor": null,
+            "max_drawdown": 0.0,
+            "worst_day": "2026-11-06",
+            "worst_day_pnl": 7.0,
+            "curve": [
+              {
+                "day": "2026-11-06",
+                "pnl": 7.0,
+                "equity": 7.0
+              }
+            ],
+            "rows_in_desk": 1
+          },
+          "Sniper": {
+            "trades": 1,
+            "skipped": 0,
+            "wins": 0,
+            "losses": 1,
+            "win_rate": 0.0,
+            "pnl": -650.0,
+            "avg_win": null,
+            "avg_loss": -650.0,
+            "profit_factor": 0.0,
+            "max_drawdown": -650.0,
+            "worst_day": "2026-11-06",
+            "worst_day_pnl": -650.0,
+            "curve": [
+              {
+                "day": "2026-11-06",
+                "pnl": -650.0,
+                "equity": -650.0
+              }
+            ],
+            "rows_in_desk": 1
+          }
+        }
+      },
+      "clock_ontime": {
+        "all": {
+          "trades": 4,
+          "skipped": 0,
+          "wins": 3,
+          "losses": 1,
+          "win_rate": 0.75,
+          "pnl": -208.0,
+          "avg_win": 147.33,
+          "avg_loss": -650.0,
+          "profit_factor": 0.68,
+          "max_drawdown": -208.0,
+          "worst_day": "2026-11-06",
+          "worst_day_pnl": -208.0,
+          "curve": [
+            {
+              "day": "2026-11-06",
+              "pnl": -208.0,
+              "equity": -208.0
+            }
+          ],
+          "eligible_denominator": 4,
+          "filled_of_eligible": "4/4"
+        },
+        "by_desk": {
+          "Diamond": {
+            "trades": 2,
+            "skipped": 0,
+            "wins": 2,
+            "losses": 0,
+            "win_rate": 1.0,
+            "pnl": 435.0,
+            "avg_win": 217.5,
+            "avg_loss": null,
+            "profit_factor": null,
+            "max_drawdown": 0.0,
+            "worst_day": "2026-11-06",
+            "worst_day_pnl": 435.0,
+            "curve": [
+              {
+                "day": "2026-11-06",
+                "pnl": 435.0,
+                "equity": 435.0
+              }
+            ],
+            "rows_in_desk": 2
+          },
+          "Gold Setup": {
+            "trades": 1,
+            "skipped": 0,
+            "wins": 1,
+            "losses": 0,
+            "win_rate": 1.0,
+            "pnl": 7.0,
+            "avg_win": 7.0,
+            "avg_loss": null,
+            "profit_factor": null,
+            "max_drawdown": 0.0,
+            "worst_day": "2026-11-06",
+            "worst_day_pnl": 7.0,
+            "curve": [
+              {
+                "day": "2026-11-06",
+                "pnl": 7.0,
+                "equity": 7.0
+              }
+            ],
+            "rows_in_desk": 1
+          },
+          "Sniper": {
+            "trades": 1,
+            "skipped": 0,
+            "wins": 0,
+            "losses": 1,
+            "win_rate": 0.0,
+            "pnl": -650.0,
+            "avg_win": null,
+            "avg_loss": -650.0,
+            "profit_factor": 0.0,
+            "max_drawdown": -650.0,
+            "worst_day": "2026-11-06",
+            "worst_day_pnl": -650.0,
+            "curve": [
+              {
+                "day": "2026-11-06",
+                "pnl": -650.0,
+                "equity": -650.0
+              }
+            ],
+            "rows_in_desk": 1
+          }
+        }
+      },
+      "combined_no_upsize": {
+        "all": {
+          "trades": 2,
+          "skipped": 2,
+          "wins": 2,
+          "losses": 0,
+          "win_rate": 1.0,
+          "pnl": 119.7,
+          "avg_win": 59.85,
+          "avg_loss": null,
+          "profit_factor": null,
+          "max_drawdown": 0.0,
+          "worst_day": "2026-11-06",
+          "worst_day_pnl": 119.7,
+          "curve": [
+            {
+              "day": "2026-11-06",
+              "pnl": 119.7,
+              "equity": 119.7
+            }
+          ],
+          "eligible_denominator": 4,
+          "filled_of_eligible": "2/4"
+        },
+        "by_desk": {
+          "Diamond": {
+            "trades": 1,
+            "skipped": 1,
+            "wins": 1,
+            "losses": 0,
+            "win_rate": 1.0,
+            "pnl": 114.0,
+            "avg_win": 114.0,
+            "avg_loss": null,
+            "profit_factor": null,
+            "max_drawdown": 0.0,
+            "worst_day": "2026-11-06",
+            "worst_day_pnl": 114.0,
+            "curve": [
+              {
+                "day": "2026-11-06",
+                "pnl": 114.0,
+                "equity": 114.0
+              }
+            ],
+            "rows_in_desk": 2
+          },
+          "Gold Setup": {
+            "trades": 1,
+            "skipped": 0,
+            "wins": 1,
+            "losses": 0,
+            "win_rate": 1.0,
+            "pnl": 5.7,
+            "avg_win": 5.7,
+            "avg_loss": null,
+            "profit_factor": null,
+            "max_drawdown": 0.0,
+            "worst_day": "2026-11-06",
+            "worst_day_pnl": 5.7,
+            "curve": [
+              {
+                "day": "2026-11-06",
+                "pnl": 5.7,
+                "equity": 5.7
+              }
+            ],
+            "rows_in_desk": 1
+          },
+          "Sniper": {
+            "trades": 0,
+            "skipped": 1,
+            "wins": 0,
+            "losses": 0,
+            "win_rate": null,
+            "pnl": 0,
+            "avg_win": null,
+            "avg_loss": null,
+            "profit_factor": null,
+            "max_drawdown": 0.0,
+            "worst_day": null,
+            "worst_day_pnl": null,
+            "curve": [],
+            "rows_in_desk": 1
+          }
+        }
+      }
+    },
+    "actual_pnl_on_eligible": -270.0,
+    "actual_trades": 4
+  },
+  "full": {
+    "eligible": 4,
+    "variants": {
+      "baseline": {
+        "all": {
+          "trades": 4,
+          "skipped": 0,
+          "wins": 3,
+          "losses": 1,
+          "win_rate": 0.75,
+          "pnl": -208.0,
+          "avg_win": 147.33,
+          "avg_loss": -650.0,
+          "profit_factor": 0.68,
+          "max_drawdown": -208.0,
+          "worst_day": "2026-11-06",
+          "worst_day_pnl": -208.0,
+          "curve": [
+            {
+              "day": "2026-11-06",
+              "pnl": -208.0,
+              "equity": -208.0
+            }
+          ],
+          "eligible_denominator": 4,
+          "filled_of_eligible": "4/4"
+        },
+        "by_desk": {
+          "Diamond": {
+            "trades": 2,
+            "skipped": 0,
+            "wins": 2,
+            "losses": 0,
+            "win_rate": 1.0,
+            "pnl": 435.0,
+            "avg_win": 217.5,
+            "avg_loss": null,
+            "profit_factor": null,
+            "max_drawdown": 0.0,
+            "worst_day": "2026-11-06",
+            "worst_day_pnl": 435.0,
+            "curve": [
+              {
+                "day": "2026-11-06",
+                "pnl": 435.0,
+                "equity": 435.0
+              }
+            ],
+            "rows_in_desk": 2
+          },
+          "Gold Setup": {
+            "trades": 1,
+            "skipped": 0,
+            "wins": 1,
+            "losses": 0,
+            "win_rate": 1.0,
+            "pnl": 7.0,
+            "avg_win": 7.0,
+            "avg_loss": null,
+            "profit_factor": null,
+            "max_drawdown": 0.0,
+            "worst_day": "2026-11-06",
+            "worst_day_pnl": 7.0,
+            "curve": [
+              {
+                "day": "2026-11-06",
+                "pnl": 7.0,
+                "equity": 7.0
+              }
+            ],
+            "rows_in_desk": 1
+          },
+          "Sniper": {
+            "trades": 1,
+            "skipped": 0,
+            "wins": 0,
+            "losses": 1,
+            "win_rate": 0.0,
+            "pnl": -650.0,
+            "avg_win": null,
+            "avg_loss": -650.0,
+            "profit_factor": 0.0,
+            "max_drawdown": -650.0,
+            "worst_day": "2026-11-06",
+            "worst_day_pnl": -650.0,
+            "curve": [
+              {
+                "day": "2026-11-06",
+                "pnl": -650.0,
+                "equity": -650.0
+              }
+            ],
+            "rows_in_desk": 1
+          }
+        }
+      },
+      "broker_stop": {
+        "all": {
+          "trades": 4,
+          "skipped": 0,
+          "wins": 3,
+          "losses": 1,
+          "win_rate": 0.75,
+          "pnl": -551.8,
+          "avg_win": 84.4,
+          "avg_loss": -805.0,
+          "profit_factor": 0.315,
+          "max_drawdown": -551.8,
+          "worst_day": "2026-11-06",
+          "worst_day_pnl": -551.8,
+          "curve": [
+            {
+              "day": "2026-11-06",
+              "pnl": -551.8,
+              "equity": -551.8
+            }
+          ],
+          "eligible_denominator": 4,
+          "filled_of_eligible": "4/4"
+        },
+        "by_desk": {
+          "Diamond": {
+            "trades": 2,
+            "skipped": 0,
+            "wins": 2,
+            "losses": 0,
+            "win_rate": 1.0,
+            "pnl": 247.5,
+            "avg_win": 123.75,
+            "avg_loss": null,
+            "profit_factor": null,
+            "max_drawdown": 0.0,
+            "worst_day": "2026-11-06",
+            "worst_day_pnl": 247.5,
+            "curve": [
+              {
+                "day": "2026-11-06",
+                "pnl": 247.5,
+                "equity": 247.5
+              }
+            ],
+            "rows_in_desk": 2
+          },
+          "Gold Setup": {
+            "trades": 1,
+            "skipped": 0,
+            "wins": 1,
+            "losses": 0,
+            "win_rate": 1.0,
+            "pnl": 5.7,
+            "avg_win": 5.7,
+            "avg_loss": null,
+            "profit_factor": null,
+            "max_drawdown": 0.0,
+            "worst_day": "2026-11-06",
+            "worst_day_pnl": 5.7,
+            "curve": [
+              {
+                "day": "2026-11-06",
+                "pnl": 5.7,
+                "equity": 5.7
+              }
+            ],
+            "rows_in_desk": 1
+          },
+          "Sniper": {
+            "trades": 1,
+            "skipped": 0,
+            "wins": 0,
+            "losses": 1,
+            "win_rate": 0.0,
+            "pnl": -805.0,
+            "avg_win": null,
+            "avg_loss": -805.0,
+            "profit_factor": 0.0,
+            "max_drawdown": -805.0,
+            "worst_day": "2026-11-06",
+            "worst_day_pnl": -805.0,
+            "curve": [
+              {
+                "day": "2026-11-06",
+                "pnl": -805.0,
+                "equity": -805.0
+              }
+            ],
+            "rows_in_desk": 1
+          }
+        }
+      },
+      "size_175": {
+        "all": {
+          "trades": 2,
+          "skipped": 2,
+          "wins": 2,
+          "losses": 0,
+          "win_rate": 1.0,
+          "pnl": 177.0,
+          "avg_win": 88.5,
+          "avg_loss": null,
+          "profit_factor": null,
+          "max_drawdown": 0.0,
+          "worst_day": "2026-11-06",
+          "worst_day_pnl": 177.0,
+          "curve": [
+            {
+              "day": "2026-11-06",
+              "pnl": 177.0,
+              "equity": 177.0
+            }
+          ],
+          "eligible_denominator": 4,
+          "filled_of_eligible": "2/4"
+        },
+        "by_desk": {
+          "Diamond": {
+            "trades": 1,
+            "skipped": 1,
+            "wins": 1,
+            "losses": 0,
+            "win_rate": 1.0,
+            "pnl": 170.0,
+            "avg_win": 170.0,
+            "avg_loss": null,
+            "profit_factor": null,
+            "max_drawdown": 0.0,
+            "worst_day": "2026-11-06",
+            "worst_day_pnl": 170.0,
+            "curve": [
+              {
+                "day": "2026-11-06",
+                "pnl": 170.0,
+                "equity": 170.0
+              }
+            ],
+            "rows_in_desk": 2
+          },
+          "Gold Setup": {
+            "trades": 1,
+            "skipped": 0,
+            "wins": 1,
+            "losses": 0,
+            "win_rate": 1.0,
+            "pnl": 7.0,
+            "avg_win": 7.0,
+            "avg_loss": null,
+            "profit_factor": null,
+            "max_drawdown": 0.0,
+            "worst_day": "2026-11-06",
+            "worst_day_pnl": 7.0,
+            "curve": [
+              {
+                "day": "2026-11-06",
+                "pnl": 7.0,
+                "equity": 7.0
+              }
+            ],
+            "rows_in_desk": 1
+          },
+          "Sniper": {
+            "trades": 0,
+            "skipped": 1,
+            "wins": 0,
+            "losses": 0,
+            "win_rate": null,
+            "pnl": 0,
+            "avg_win": null,
+            "avg_loss": null,
+            "profit_factor": null,
+            "max_drawdown": 0.0,
+            "worst_day": null,
+            "worst_day_pnl": null,
+            "curve": [],
+            "rows_in_desk": 1
+          }
+        }
+      },
+      "breakeven": {
+        "all": {
+          "trades": 4,
+          "skipped": 0,
+          "wins": 3,
+          "losses": 1,
+          "win_rate": 0.75,
+          "pnl": -208.0,
+          "avg_win": 147.33,
+          "avg_loss": -650.0,
+          "profit_factor": 0.68,
+          "max_drawdown": -208.0,
+          "worst_day": "2026-11-06",
+          "worst_day_pnl": -208.0,
+          "curve": [
+            {
+              "day": "2026-11-06",
+              "pnl": -208.0,
+              "equity": -208.0
+            }
+          ],
+          "eligible_denominator": 4,
+          "filled_of_eligible": "4/4"
+        },
+        "by_desk": {
+          "Diamond": {
+            "trades": 2,
+            "skipped": 0,
+            "wins": 2,
+            "losses": 0,
+            "win_rate": 1.0,
+            "pnl": 435.0,
+            "avg_win": 217.5,
+            "avg_loss": null,
+            "profit_factor": null,
+            "max_drawdown": 0.0,
+            "worst_day": "2026-11-06",
+            "worst_day_pnl": 435.0,
+            "curve": [
+              {
+                "day": "2026-11-06",
+                "pnl": 435.0,
+                "equity": 435.0
+              }
+            ],
+            "rows_in_desk": 2
+          },
+          "Gold Setup": {
+            "trades": 1,
+            "skipped": 0,
+            "wins": 1,
+            "losses": 0,
+            "win_rate": 1.0,
+            "pnl": 7.0,
+            "avg_win": 7.0,
+            "avg_loss": null,
+            "profit_factor": null,
+            "max_drawdown": 0.0,
+            "worst_day": "2026-11-06",
+            "worst_day_pnl": 7.0,
+            "curve": [
+              {
+                "day": "2026-11-06",
+                "pnl": 7.0,
+                "equity": 7.0
+              }
+            ],
+            "rows_in_desk": 1
+          },
+          "Sniper": {
+            "trades": 1,
+            "skipped": 0,
+            "wins": 0,
+            "losses": 1,
+            "win_rate": 0.0,
+            "pnl": -650.0,
+            "avg_win": null,
+            "avg_loss": -650.0,
+            "profit_factor": 0.0,
+            "max_drawdown": -650.0,
+            "worst_day": "2026-11-06",
+            "worst_day_pnl": -650.0,
+            "curve": [
+              {
+                "day": "2026-11-06",
+                "pnl": -650.0,
+                "equity": -650.0
+              }
+            ],
+            "rows_in_desk": 1
+          }
+        }
+      },
+      "daily_halt": {
+        "all": {
+          "trades": 4,
+          "skipped": 0,
+          "wins": 3,
+          "losses": 1,
+          "win_rate": 0.75,
+          "pnl": -208.0,
+          "avg_win": 147.33,
+          "avg_loss": -650.0,
+          "profit_factor": 0.68,
+          "max_drawdown": -208.0,
+          "worst_day": "2026-11-06",
+          "worst_day_pnl": -208.0,
+          "curve": [
+            {
+              "day": "2026-11-06",
+              "pnl": -208.0,
+              "equity": -208.0
+            }
+          ],
+          "eligible_denominator": 4,
+          "filled_of_eligible": "4/4"
+        },
+        "by_desk": {
+          "Diamond": {
+            "trades": 2,
+            "skipped": 0,
+            "wins": 2,
+            "losses": 0,
+            "win_rate": 1.0,
+            "pnl": 435.0,
+            "avg_win": 217.5,
+            "avg_loss": null,
+            "profit_factor": null,
+            "max_drawdown": 0.0,
+            "worst_day": "2026-11-06",
+            "worst_day_pnl": 435.0,
+            "curve": [
+              {
+                "day": "2026-11-06",
+                "pnl": 435.0,
+                "equity": 435.0
+              }
+            ],
+            "rows_in_desk": 2
+          },
+          "Gold Setup": {
+            "trades": 1,
+            "skipped": 0,
+            "wins": 1,
+            "losses": 0,
+            "win_rate": 1.0,
+            "pnl": 7.0,
+            "avg_win": 7.0,
+            "avg_loss": null,
+            "profit_factor": null,
+            "max_drawdown": 0.0,
+            "worst_day": "2026-11-06",
+            "worst_day_pnl": 7.0,
+            "curve": [
+              {
+                "day": "2026-11-06",
+                "pnl": 7.0,
+                "equity": 7.0
+              }
+            ],
+            "rows_in_desk": 1
+          },
+          "Sniper": {
+            "trades": 1,
+            "skipped": 0,
+            "wins": 0,
+            "losses": 1,
+            "win_rate": 0.0,
+            "pnl": -650.0,
+            "avg_win": null,
+            "avg_loss": -650.0,
+            "profit_factor": 0.0,
+            "max_drawdown": -650.0,
+            "worst_day": "2026-11-06",
+            "worst_day_pnl": -650.0,
+            "curve": [
+              {
+                "day": "2026-11-06",
+                "pnl": -650.0,
+                "equity": -650.0
+              }
+            ],
+            "rows_in_desk": 1
+          }
+        }
+      },
+      "clock_ontime": {
+        "all": {
+          "trades": 4,
+          "skipped": 0,
+          "wins": 3,
+          "losses": 1,
+          "win_rate": 0.75,
+          "pnl": -208.0,
+          "avg_win": 147.33,
+          "avg_loss": -650.0,
+          "profit_factor": 0.68,
+          "max_drawdown": -208.0,
+          "worst_day": "2026-11-06",
+          "worst_day_pnl": -208.0,
+          "curve": [
+            {
+              "day": "2026-11-06",
+              "pnl": -208.0,
+              "equity": -208.0
+            }
+          ],
+          "eligible_denominator": 4,
+          "filled_of_eligible": "4/4"
+        },
+        "by_desk": {
+          "Diamond": {
+            "trades": 2,
+            "skipped": 0,
+            "wins": 2,
+            "losses": 0,
+            "win_rate": 1.0,
+            "pnl": 435.0,
+            "avg_win": 217.5,
+            "avg_loss": null,
+            "profit_factor": null,
+            "max_drawdown": 0.0,
+            "worst_day": "2026-11-06",
+            "worst_day_pnl": 435.0,
+            "curve": [
+              {
+                "day": "2026-11-06",
+                "pnl": 435.0,
+                "equity": 435.0
+              }
+            ],
+            "rows_in_desk": 2
+          },
+          "Gold Setup": {
+            "trades": 1,
+            "skipped": 0,
+            "wins": 1,
+            "losses": 0,
+            "win_rate": 1.0,
+            "pnl": 7.0,
+            "avg_win": 7.0,
+            "avg_loss": null,
+            "profit_factor": null,
+            "max_drawdown": 0.0,
+            "worst_day": "2026-11-06",
+            "worst_day_pnl": 7.0,
+            "curve": [
+              {
+                "day": "2026-11-06",
+                "pnl": 7.0,
+                "equity": 7.0
+              }
+            ],
+            "rows_in_desk": 1
+          },
+          "Sniper": {
+            "trades": 1,
+            "skipped": 0,
+            "wins": 0,
+            "losses": 1,
+            "win_rate": 0.0,
+            "pnl": -650.0,
+            "avg_win": null,
+            "avg_loss": -650.0,
+            "profit_factor": 0.0,
+            "max_drawdown": -650.0,
+            "worst_day": "2026-11-06",
+            "worst_day_pnl": -650.0,
+            "curve": [
+              {
+                "day": "2026-11-06",
+                "pnl": -650.0,
+                "equity": -650.0
+              }
+            ],
+            "rows_in_desk": 1
+          }
+        }
+      },
+      "combined_no_upsize": {
+        "all": {
+          "trades": 2,
+          "skipped": 2,
+          "wins": 2,
+          "losses": 0,
+          "win_rate": 1.0,
+          "pnl": 119.7,
+          "avg_win": 59.85,
+          "avg_loss": null,
+          "profit_factor": null,
+          "max_drawdown": 0.0,
+          "worst_day": "2026-11-06",
+          "worst_day_pnl": 119.7,
+          "curve": [
+            {
+              "day": "2026-11-06",
+              "pnl": 119.7,
+              "equity": 119.7
+            }
+          ],
+          "eligible_denominator": 4,
+          "filled_of_eligible": "2/4"
+        },
+        "by_desk": {
+          "Diamond": {
+            "trades": 1,
+            "skipped": 1,
+            "wins": 1,
+            "losses": 0,
+            "win_rate": 1.0,
+            "pnl": 114.0,
+            "avg_win": 114.0,
+            "avg_loss": null,
+            "profit_factor": null,
+            "max_drawdown": 0.0,
+            "worst_day": "2026-11-06",
+            "worst_day_pnl": 114.0,
+            "curve": [
+              {
+                "day": "2026-11-06",
+                "pnl": 114.0,
+                "equity": 114.0
+              }
+            ],
+            "rows_in_desk": 2
+          },
+          "Gold Setup": {
+            "trades": 1,
+            "skipped": 0,
+            "wins": 1,
+            "losses": 0,
+            "win_rate": 1.0,
+            "pnl": 5.7,
+            "avg_win": 5.7,
+            "avg_loss": null,
+            "profit_factor": null,
+            "max_drawdown": 0.0,
+            "worst_day": "2026-11-06",
+            "worst_day_pnl": 5.7,
+            "curve": [
+              {
+                "day": "2026-11-06",
+                "pnl": 5.7,
+                "equity": 5.7
+              }
+            ],
+            "rows_in_desk": 1
+          },
+          "Sniper": {
+            "trades": 0,
+            "skipped": 1,
+            "wins": 0,
+            "losses": 0,
+            "win_rate": null,
+            "pnl": 0,
+            "avg_win": null,
+            "avg_loss": null,
+            "profit_factor": null,
+            "max_drawdown": 0.0,
+            "worst_day": null,
+            "worst_day_pnl": null,
+            "curve": [],
+            "rows_in_desk": 1
+          }
+        }
+      }
+    },
+    "actual_pnl_on_eligible": -270.0,
+    "actual_trades": 4
+  },
+  "eligible_trades": [
+    {
+      "desk": "Gold Setup",
+      "symbol": "TSLA",
+      "day": "2026-11-06",
+      "contract": "TSLA261106C00365000",
+      "entry": 0.19,
+      "exit": 0.29,
+      "actual_pnl": 10.0,
+      "qty": 1
+    },
+    {
+      "desk": "Diamond",
+      "symbol": "TSLA",
+      "day": "2026-11-06",
+      "contract": "TSLA261106C00357500",
+      "entry": 3.8,
+      "exit": 5.1,
+      "actual_pnl": 130.0,
+      "qty": 1
+    },
+    {
+      "desk": "Sniper",
+      "symbol": "MU",
+      "day": "2026-11-06",
+      "contract": "MU261106C00710000",
+      "entry": 16.25,
+      "exit": 9.8,
+      "actual_pnl": -645.0,
+      "qty": 1
+    },
+    {
+      "desk": "Diamond",
+      "symbol": "TSLA",
+      "day": "2026-11-06",
+      "contract": "TSLA261106C00355000",
+      "entry": 4.45,
+      "exit": 6.8,
+      "actual_pnl": 235.0,
+      "qty": 1
+    }
+  ],
+  "entry_outside_print": [
+    {
+      "desk": "Afternoon Puts",
+      "symbol": "QQQ",
+      "day": "2026-11-06",
+      "contract": "QQQ261106P00655000",
+      "entry": 1.98,
+      "entry_minute": "2026-11-06T12:47:00-05:00"
+    },
+    {
+      "desk": "Afternoon Puts",
+      "symbol": "SPY",
+      "day": "2026-11-06",
+      "contract": "SPY261106P00736000",
+      "entry": 1.66,
+      "entry_minute": "2026-11-06T12:47:00-05:00"
+    },
+    {
+      "desk": "Diamond",
+      "symbol": "MSFT",
+      "day": "2026-11-06",
+      "contract": "MSFT261106C00532500",
+      "entry": 2.22,
+      "entry_minute": "2026-11-06T10:12:00-05:00"
+    },
+    {
+      "desk": "Sniper",
+      "symbol": "AMD",
+      "day": "2026-11-06",
+      "contract": "AMD261106C00450000",
+      "entry": 9.95,
+      "entry_minute": "2026-11-06T10:03:00-05:00"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "MRK",
+      "day": "2026-11-06",
+      "contract": "MRK261106C00150000",
+      "entry": 0.16,
+      "entry_minute": "2026-11-06T09:37:00-05:00"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "CRWV",
+      "day": "2026-11-05",
+      "contract": "CRWV261106C00046500",
+      "entry": 0.9,
+      "entry_minute": "2026-11-05T15:55:00-05:00"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "WFC",
+      "day": "2026-11-03",
+      "contract": "WFC261106C00088000",
+      "entry": 0.38,
+      "entry_minute": "2026-11-03T09:39:00-05:00"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "TSLA",
+      "day": "2026-11-02",
+      "contract": "TSLA261106C00425000",
+      "entry": 4.5,
+      "entry_minute": "2026-11-02T12:20:00-05:00"
+    },
+    {
+      "desk": "Gold Setup",
+      "symbol": "TSLA",
+      "day": "2026-10-30",
+      "contract": "TSLA261106C00410000",
+      "entry": 4.4,
+      "entry_minute": "2026-10-30T10:09:00-04:00"
+    }
+  ],
+  "verdict": {
+    "meets_20_session_gate": false,
+    "sessions_in_archive": 16,
+    "reason": "The archive has 16 weekdays. That cannot meet a 20-session gate. Minute prints also cannot show that a staged or rejected live sell would have filled."
+  }
+}
