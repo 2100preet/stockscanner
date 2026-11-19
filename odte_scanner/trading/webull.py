@@ -2134,6 +2134,10 @@ class WebullBroker:
         self._order_api = self._build_trade_api()
         return self._order_api
 
+    def _token_dir(self) -> str | None:
+        """Where the SDK keeps its 2FA access token. None keeps the SDK default."""
+        return None
+
     def _build_trade_api(self) -> Any:
         try:
             from webull.core.client import ApiClient
@@ -2150,6 +2154,10 @@ class WebullBroker:
         host = self._api_host()
         client = ApiClient(self.app_key, self.app_secret, self.region)
         client.add_endpoint(self.region, host)
+        token_dir = self._token_dir()
+        if token_dir:
+            Path(token_dir).mkdir(mode=0o700, parents=True, exist_ok=True)
+            client.set_token_dir(str(token_dir))
         # Without these the SDK adds a DEBUG stdout handler and a
         # webull_trade_sdk.log file handler on every TradeClient (one per
         # broker), and those print request headers. SDK records go to our

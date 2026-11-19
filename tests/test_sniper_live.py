@@ -469,3 +469,154 @@ def test_telegram_tag_and_portal_are_separate(tmp_path, monkeypatch):
     assert view["host"] == PRODUCTION_TRADE_HOST
     assert view["entries_today"] == 1
     assert "paper" in (view["note"] or "").lower() or view["status"] == "armed"
+
+
+# --- Real-account isolation: the owner's own positions are never touched ---
+
+FRIDAY_LATE = datetime(2026, 11, 20, 14, 40, tzinfo=CT)  # past the 2:30 PM CT 0DTE time-stop
+
+
+def _wb_positions(*rows):
+    out = []
+    for sym, right, expiry, strike, qty, cost, last in rows:
+        out.append(
+            {
+                "symbol": sym,
+                "quantity": str(qty),
+                "cost_price": str(cost),
+                "last_price": str(last),
+                "instrument_type": "OPTION",
+                "option_strategy": "SINGLE",
+                "legs": [
+                    {
+                        "symbol": sym,
+                        "instrument_type": "OPTION",
+                        "option_type": "CALL" if right == "C" else "PUT",
+                        "option_expire_date": expiry,
+                        "option_exercise_price": str(strike),
+                        "last_price": str(last),
+                        "cost": str(cost),
+                    }
+                ],
+            }
+        )
+    return out
+
+
+def _bot_fill(broker, contract="QQQ261120C00683000", oid="wb-live-1"):
+    order = WebullOrderIntent(
+        id=oid,
+        desk="sniper",
+        action="BUY",
+        symbol="QQQ",
+        right="C",
+        contract=contract,
+        expiry="2026-11-20",
+        strike=683.0,
+        quantity=1,
+        limit_price=2.98,
+        fill_price=2.98,
+        status="filled",
+        reason="test",
+        created_at="2026-11-20T15:00:00+00:00",
+        updated_at="2026-11-20T15:00:00+00:00",
+        meta={"golden_kind": "sniper", "live": True, "venue": "webull_live", "fill_state": "filled"},
+    )
+    broker.orders.insert(0, order)
+    broker.save()
+    return order
+
+
+def test_live_positions_hide_owner_manual_holdings(tmp_path, monkeypatch):
+    broker = _armed_broker(tmp_path, monkeypatch)
+    payload = _wb_positions(
+        ("NFLX", "P", "2026-11-20", 56, 3, 0.03, 0.035),
+        ("AAPL", "C", "2026-11-20", 360, 2, 0.68, 0.575),
+        ("QQQ", "C", "2026-11-20", 683, 3, 2.98, 2.145),
+    )
+    broker._fetch_positions = lambda account_id=None: payload
+    assert broker.list_option_positions() == []  # nothing the bot bought
+    _bot_fill(broker)
+    rows = broker.list_option_positions()
+    assert [r["contract"] for r in rows] == ["QQQ261120C00683000"]
+    assert rows[0]["quantity"] == 1  # owner's other 2 QQQ contracts are not the bot's
+    assert rows[0]["owner_qty_hidden"] == 2
+
+
+def test_live_trader_never_sells_owner_positions(tmp_path, monkeypatch):
+    from odte_scanner.trading.sniper_live import get_live_trader
+
+    broker = _armed_broker(tmp_path, monkeypatch, now=FRIDAY_LATE)
+    sent = []
+
+    def place(intent):
+        sent.append((intent.action, intent.contract, intent.quantity))
+        return "LIVE-OID-" + str(intent.id)
+
+    broker._place_via_openapi = place
+    # Deep losers, expiring today, past the 0DTE time-stop: on the paper desk
+    # these would be sold. On the real account they belong to the owner.
+    broker._fetch_positions = lambda account_id=None: _wb_positions(
+        ("NFLX", "P", "2026-11-20", 56, 3, 0.90, 0.03),
+        ("AAPL", "C", "2026-11-20", 360, 2, 3.00, 0.57),
+        ("SPXW", "C", "2026-11-20", 7595, 2, 5.00, 1.12),
+    )
+    broker.order_history = lambda start, end, **kw: [
+        {"client_order_id": "wb-foreign-1", "side": "BUY", "symbol": "AAPL", "option_type": "CALL",
+         "strike": "360", "expiry": "2026-11-20", "quantity": "2", "status": "FILLED", "filled_price": "3.00"},
+    ]
+    trader = get_live_trader(broker=broker, force_new=True)
+    trader.sync_exits(now=FRIDAY_LATE)
+    assert sent == []
+    assert all(o.id != "wb-foreign-1" for o in broker.orders)
+    assert not [o for o in broker.orders if o.action == "SELL"]
+
+
+def test_live_history_import_only_updates_own_orders(tmp_path, monkeypatch):
+    broker = _armed_broker(tmp_path, monkeypatch)
+    mine = _bot_fill(broker, oid="wb-mine")
+    mine.status = "submitted"
+    out = broker.import_history(
+        [
+            {"client_order_id": "wb-mine", "side": "BUY", "symbol": "QQQ", "status": "FILLED", "filled_price": "3.10"},
+            {"client_order_id": "wb-other", "side": "BUY", "symbol": "AAPL", "status": "FILLED"},
+        ]
+    )
+    assert out["ignored_foreign"] == 1
+    assert {o.id for o in broker.orders} == {"wb-mine"}
+
+
+def test_live_token_lives_on_volume_apart_from_paper(tmp_path, monkeypatch):
+    from odte_scanner.trading import sniper_live as sl
+
+    broker = _armed_broker(tmp_path, monkeypatch)
+    monkeypatch.delenv(sl.TOKEN_DIR_ENV, raising=False)
+    assert broker._token_dir() == str(sl.DEFAULT_TOKEN_DIR)
+    assert "outputs" in Path(broker._token_dir()).parts
+    paper = WebullBroker(ledger_path=tmp_path / "paper.json", enabled=False, dry_run=True)
+    assert paper._token_dir() is None
+    monkeypatch.setenv(sl.TOKEN_DIR_ENV, str(tmp_path / "tok"))
+    assert broker._token_dir() == str(tmp_path / "tok")
+
+
+def test_failed_live_token_check_is_not_retried_every_loop(tmp_path, monkeypatch):
+    from odte_scanner.trading import sniper_live as sl
+
+    broker = _armed_broker(tmp_path, monkeypatch)
+    clock = [1000.0]
+    broker._clock = lambda: clock[0]
+    calls = []
+
+    def boom(self):
+        calls.append(1)
+        raise RuntimeError("ERROR_INIT_TOKEN")
+
+    monkeypatch.setattr(WebullBroker, "_build_trade_api", boom)
+    for _ in range(3):
+        with pytest.raises(RuntimeError):
+            broker._build_trade_api()
+    assert len(calls) == 1
+    clock[0] += sl.TOKEN_RETRY_SEC + 1
+    with pytest.raises(RuntimeError):
+        broker._build_trade_api()
+    assert len(calls) == 2
