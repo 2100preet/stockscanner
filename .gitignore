@@ -12,3 +12,4 @@ webull_trade_sdk.log
 dist/
 *.egg-info/
 site/
+conf/

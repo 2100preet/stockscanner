@@ -43,6 +43,10 @@ KEY_ENV = "WEBULL_LIVE_APP_KEY"
 SECRET_ENV = "WEBULL_LIVE_APP_SECRET"
 ACCOUNT_ENV = "WEBULL_LIVE_ACCOUNT_ID"
 LIVE_CREDS = (KEY_ENV, SECRET_ENV, ACCOUNT_ENV)
+TOKEN_DIR_ENV = "WEBULL_LIVE_TOKEN_DIR"
+DEFAULT_TOKEN_DIR = ROOT / "outputs" / ".webull_live_token"
+TOKEN_RETRY_SEC = 900.0
+_TOKEN_FAIL_AT: float | None = None
 
 LIVE_QTY = 1
 DAILY_CAP = 3
@@ -268,6 +272,27 @@ class SniperLiveBroker(WebullBroker):
     def _api_host(self) -> str:
         return PRODUCTION_TRADE_HOST
 
+    def _token_dir(self) -> str | None:
+        # The live app has 2FA on, so the SDK keeps a verified access token on
+        # disk. Keep it on the persistent volume (not /app/conf, which a deploy
+        # wipes, forcing a new phone approval) and apart from the paper token.
+        override = _env_text(TOKEN_DIR_ENV)
+        return override or str(DEFAULT_TOKEN_DIR)
+
+    def _build_trade_api(self) -> Any:
+        # A failed 2FA token check blocks up to 5 minutes and sends a new
+        # approval request to the phone. Do not retry it every loop.
+        global _TOKEN_FAIL_AT
+        if _TOKEN_FAIL_AT is not None and self._clock() - _TOKEN_FAIL_AT < TOKEN_RETRY_SEC:
+            raise RuntimeError("Sniper LIVE Webull token not verified; waiting before retry")
+        try:
+            api = super()._build_trade_api()
+        except Exception:
+            _TOKEN_FAIL_AT = self._clock()
+            raise
+        _TOKEN_FAIL_AT = None
+        return api
+
     def _assert_sandbox(self) -> None:
         # Same hook the parent calls before every HTTP call. For this object
         # the rule is the inverse: refuse the paper sandbox.
@@ -374,6 +399,73 @@ class SniperLiveBroker(WebullBroker):
             self.save()
             return intent
         return super().submit(intent)
+
+    # ------------------------------------------------------------------
+    # Real-account isolation. The live account also holds the owner's own
+    # manual positions and orders. The shared AutoTrader exit code treats
+    # any account long without a ledger buy as a lot to manage (premium
+    # exits, 2:30 PM CT time-stop flattens), and history import adds any
+    # ``wb-`` order it sees. On the paper sandbox that is right; on the real
+    # account it would sell positions the bot never opened. So this broker
+    # only ever reports contracts it bought itself, capped at its own net
+    # quantity, and never adopts orders it did not place.
+    # ------------------------------------------------------------------
+    def _own_net_qty(self) -> dict[str, float]:
+        net: dict[str, float] = {}
+        for order in self.orders:
+            occ = str(order.contract or "")
+            if not occ:
+                continue
+            meta = order.meta or {}
+            if str(meta.get("source") or "") == "webull_history_import":
+                continue
+            if order.action == "BUY":
+                if order.status not in {"submitted", "partial", "filled"}:
+                    continue
+                if str(order.desk or "") not in {"sniper", "sniper_live"} and str(meta.get("golden_kind") or "") != "sniper":
+                    continue
+                qty = _float_or(meta.get("filled_qty")) if order.status == "partial" else None
+                net[occ] = net.get(occ, 0.0) + float(qty if qty and qty > 0 else (order.quantity or LIVE_QTY))
+            elif order.action == "SELL" and order.status in {"filled", "partial"}:
+                qty = _float_or(meta.get("filled_qty")) or float(order.quantity or 1)
+                net[occ] = net.get(occ, 0.0) - float(qty)
+        return {occ: qty for occ, qty in net.items() if qty > 0}
+
+    def list_option_positions(self, account_id: str | None = None) -> list[dict[str, Any]] | None:
+        rows = super().list_option_positions(account_id)
+        if rows is None:
+            return None
+        own = self._own_net_qty()
+        kept: list[dict[str, Any]] = []
+        for row in rows:
+            occ = str(row.get("contract") or "")
+            cap = own.get(occ)
+            if not occ or not cap:
+                continue  # owner's own position: never visible to the bot
+            item = dict(row)
+            try:
+                held = float(item.get("quantity") or 0)
+            except (TypeError, ValueError):
+                held = 0.0
+            if held > cap:
+                item["quantity"] = cap
+                item["owner_qty_hidden"] = held - cap
+            kept.append(item)
+        return kept
+
+    def import_history(self, rows: list[dict[str, Any]] | None) -> dict[str, Any]:
+        known = {o.id for o in self.orders}
+        mine = [r for r in (rows or []) if str((r or {}).get("client_order_id") or "") in known]
+        summary = super().import_history(mine)
+        summary["ignored_foreign"] = len(rows or []) - len(mine)
+        return summary
+
+
+def _float_or(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def build_sniper_live_broker(
@@ -934,7 +1026,8 @@ def portal_view(
 
 def reset_singletons() -> None:
     """Tests only."""
-    global _broker, _trader
+    global _broker, _trader, _TOKEN_FAIL_AT
     with _LOCK:
         _broker = None
         _trader = None
+        _TOKEN_FAIL_AT = None
