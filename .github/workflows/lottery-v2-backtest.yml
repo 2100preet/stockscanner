@@ -1,0 +1,90 @@
+name: Lottery v2 provider backtest
+
+# Push on this branch, or run by hand. Secrets are scrubbed before the artifact is written.
+# Flat files are not entitled (S3 403). Option aggregates are paced and split by date
+# so a rate limit cannot make the two halves fight over the same key.
+on:
+  workflow_dispatch:
+  push:
+    branches: ["cursor/lottery-v2-provider-bt-db9d"]
+    paths:
+      - scripts/lottery_v2_provider_backtest.py
+      - .github/workflows/lottery-v2-backtest.yml
+
+jobs:
+  early:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: python -m pip install requests pandas
+
+      - name: Replay 2026-10-01 through 2026-10-08
+        env:
+          PYTHONUNBUFFERED: "1"
+          PYTHONPATH: .
+          LOTTERY_V2_START: "2026-10-01"
+          LOTTERY_V2_END: "2026-10-08"
+          TRADIER_ACCESS_TOKEN: ${{ secrets.TRADIER_ACCESS_TOKEN }}
+          TRADIER_SANDBOX: ${{ secrets.TRADIER_SANDBOX }}
+          POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
+          MASSIVE_API_KEY: ${{ secrets.MASSIVE_API_KEY }}
+        run: |
+          if [ -n "${TRADIER_ACCESS_TOKEN:-}" ]; then echo "TRADIER configured=yes"; else echo "TRADIER configured=NO"; fi
+          if [ -n "${POLYGON_API_KEY:-}" ] || [ -n "${MASSIVE_API_KEY:-}" ]; then echo "POLYGON configured=yes"; else echo "POLYGON configured=NO"; fi
+          python3 scripts/lottery_v2_provider_backtest.py
+
+      - name: Upload early result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lottery-v2-early
+          path: outputs/lottery_v2_provider_backtest.json
+          if-no-files-found: warn
+
+  late:
+    needs: early
+    runs-on: ubuntu-latest
+    timeout-minutes: 200
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: python -m pip install requests pandas
+
+      - name: Replay 2026-10-09 through 2026-10-14
+        env:
+          PYTHONUNBUFFERED: "1"
+          PYTHONPATH: .
+          LOTTERY_V2_START: "2026-10-09"
+          LOTTERY_V2_END: "2026-10-14"
+          TRADIER_ACCESS_TOKEN: ${{ secrets.TRADIER_ACCESS_TOKEN }}
+          TRADIER_SANDBOX: ${{ secrets.TRADIER_SANDBOX }}
+          POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
+          MASSIVE_API_KEY: ${{ secrets.MASSIVE_API_KEY }}
+        run: |
+          if [ -n "${TRADIER_ACCESS_TOKEN:-}" ]; then echo "TRADIER configured=yes"; else echo "TRADIER configured=NO"; fi
+          if [ -n "${POLYGON_API_KEY:-}" ] || [ -n "${MASSIVE_API_KEY:-}" ]; then echo "POLYGON configured=yes"; else echo "POLYGON configured=NO"; fi
+          python3 scripts/lottery_v2_provider_backtest.py
+
+      - name: Upload late result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lottery-v2-late
+          path: outputs/lottery_v2_provider_backtest.json
+          if-no-files-found: warn
