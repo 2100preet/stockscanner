@@ -406,6 +406,7 @@ PAGE = r"""
     <div id="confluenceBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="ripV2ShadowBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="newsDeskBanner" class="pulse-banner" aria-live="polite"></div>
+    <div id="polymarketBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="biotechWatchBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="loadNote" class="loading" style="display:none;margin-bottom:.6rem"></div>
     <div id="alertToasts" aria-live="assertive"></div>
@@ -4846,6 +4847,34 @@ PAGE = r"""
         ${board.ok === false ? `<div class="pulse-card expected"><p class="pc-why">${esc(board.note || "Biotech watch unavailable.")}</p></div>` : table + upcomingBox + `<div class="pulse-card expected" style="margin-top:.4rem"><p class="pc-why">${esc(board.note || "")}</p></div>`}`;
     }
 
+    function renderPolymarket() {
+      const el = document.getElementById("polymarketBanner");
+      if (!el) return;
+      const pm = DATA.polymarket || {};
+      el.classList.add("active", "expected");
+      const esc = (v) => String(v == null ? "" : v).replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+      const safeUrl = (u) => /^https:\/\/polymarket\.com\//i.test(String(u || "")) ? esc(u) : "";
+      const cents = (p) => p == null ? "—" : (Number(p) * 100).toFixed(1) + "¢";
+      const rows = (pm.recent_alerts || []).slice(0, 8).map((a) => {
+        const link = safeUrl(a.url);
+        const q = link ? `<a href="${link}" target="_blank" rel="noopener noreferrer">${esc(a.question)}</a>` : esc(a.question);
+        const size = a.cluster_usd == null ? "—" : "$" + Number(a.cluster_usd).toLocaleString("en-US", {maximumFractionDigits: 0});
+        return `<tr><td>${esc(a.ts_ct || "—")}</td><td>${esc(a.tier_label || "")}</td><td><strong>${esc(a.ticker || "—")}</strong></td><td>${q}</td><td>${esc((a.outcome || "").toUpperCase())} ${cents(a.avg_price != null ? a.avg_price : a.mid_now)}</td><td>${size}</td><td>${esc(a.score)}</td><td>${esc((a.reasons || []).slice(0, 3).join(" · "))}</td></tr>`;
+      }).join("");
+      const table = rows
+        ? `<div style="overflow-x:auto"><table class="pb-table" style="width:100%;font-size:12px"><thead><tr><th>Time</th><th>Tier</th><th>Ticker</th><th>Market</th><th>Entry</th><th>USD</th><th>Score</th><th>Why</th></tr></thead><tbody>${rows}</tbody></table></div>`
+        : `<div class="pulse-card expected"><p class="pc-why">${pm.enabled ? "Watching — no unusual Polymarket flow yet." : "Polymarket monitor off."}</p></div>`;
+      el.innerHTML = `
+        <div class="pb-head">
+          <div>
+            <h2 class="pb-title">🛰️ Polymarket flow <em>· ${esc(pm.label || "Unusual Polymarket flow — review")} · alert only</em></h2>
+            <div class="pb-sub">Corporate catalyst markets · fresh-wallet longshots · whales · odds spikes · never places orders${pm.last_error ? " · last error: " + esc(pm.last_error) : ""}</div>
+          </div>
+          <div class="status">${esc(pm.universe_count || 0)} MARKETS · ${esc(pm.alerts_today || 0)} TODAY${pm.last_poll_ct ? " · " + esc(pm.last_poll_ct) : ""}</div>
+        </div>
+        ${table}`;
+    }
+
     function renderNewsDesk() {
       const el = document.getElementById("newsDeskBanner");
       if (!el) return;
@@ -5203,6 +5232,7 @@ PAGE = r"""
       try { renderConfluence(); } catch (err) { console.error(err); }
       try { renderRipV2Shadow(); } catch (err) { console.error(err); }
       try { renderNewsDesk(); } catch (err) { console.error(err); }
+      try { renderPolymarket(); } catch (err) { console.error(err); }
       try { renderBiotechWatch(); } catch (err) { console.error(err); }
       try { renderSpxStrategy(); } catch (err) { console.error(err); }
       renderMustTradeBanner();
@@ -5909,6 +5939,19 @@ def _attach_bullflow(body: dict | None, health: dict | None = None) -> dict | No
     return out
 
 
+def _polymarket_block() -> dict:
+    """Polymarket unusual-flow monitor health for snapshot / scan_status. Alert only."""
+    try:
+        from odte_scanner.polymarket.monitor import public_block
+
+        block = public_block()
+        if isinstance(block, dict):
+            return block
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "enabled": False, "alert_only": True, "last_error": str(exc)[:200], "recent_alerts": []}
+    return {"ok": False, "enabled": False, "alert_only": True, "last_error": None, "recent_alerts": []}
+
+
 def _overlay_live(body: dict | None) -> dict | None:
     """Merge the fast-loop boards and the paper ledger into a cached snapshot."""
     if not isinstance(body, dict):
@@ -5922,10 +5965,13 @@ def _overlay_live(body: dict | None) -> dict | None:
         logger.warning("hot overlay failed: %s", exc)
         overlaid = body
     try:
-        return _attach_bullflow(overlaid)
+        overlaid = _attach_bullflow(overlaid)
     except Exception as exc:  # noqa: BLE001
         logger.warning("bullflow overlay failed: %s", exc)
-        return overlaid
+    if isinstance(overlaid, dict):
+        overlaid = dict(overlaid)
+        overlaid["polymarket"] = _polymarket_block()
+    return overlaid
 
 
 def _annotate_snapshot(body: dict, note: str | None) -> dict:
@@ -9276,6 +9322,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 "latest_mtime": mtime,
                 "flow_source": health.get("flow_source") or "yahoo",
                 "bullflow": health,
+                "polymarket": _polymarket_block(),
             }
         )
 

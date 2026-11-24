@@ -76,3 +76,10 @@ def _no_live_market_or_telegram_keys(monkeypatch):
         "TELEGRAM_CHAT_ID",
     ):
         monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _polymarket_monitor_off(monkeypatch, tmp_path):
+    """No Polymarket poller thread or state file from the suite; tests opt in."""
+    monkeypatch.setenv("POLYMARKET_MONITOR_ENABLED", "0")
+    monkeypatch.setenv("POLYMARKET_STATE_PATH", str(tmp_path / "polymarket_monitor_state.json"))
