@@ -5890,7 +5890,11 @@ def _bullflow_block() -> dict:
 
 
 def _attach_bullflow(body: dict | None, health: dict | None = None) -> dict | None:
-    """Stamp live tape health onto a snapshot without leaking credentials."""
+    """Stamp live tape health onto a snapshot without leaking credentials.
+
+    When Bullflow is configured, replace any cached Yahoo option_flow with the
+    live/backfill tape so a stale snapshot cannot be labeled bullflow.
+    """
     if not isinstance(body, dict):
         return body
     info = health if isinstance(health, dict) else _bullflow_block()
@@ -5900,11 +5904,33 @@ def _attach_bullflow(body: dict | None, health: dict | None = None) -> dict | No
     echo = out.get("echo")
     if isinstance(echo, dict):
         echo = dict(echo)
-        flow = echo.get("option_flow") if isinstance(echo.get("option_flow"), dict) else {}
-        flow = dict(flow)
-        flow["flow_source"] = out["flow_source"]
-        flow["bullflow"] = info
-        echo["option_flow"] = flow
+        if info.get("configured"):
+            try:
+                from odte_scanner.echo.flow import build_flow_leaders
+                from odte_scanner.signals.bullflow import option_flow_from_tape
+
+                tape_flow = option_flow_from_tape()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("bullflow live board overlay failed: %s", exc)
+                tape_flow = None
+            if isinstance(tape_flow, dict):
+                echo["option_flow"] = tape_flow
+                try:
+                    echo["flow_leaders"] = build_flow_leaders(tape_flow.get("prints") or [], top_n=20)
+                except Exception:  # noqa: BLE001
+                    pass
+            else:
+                flow = echo.get("option_flow") if isinstance(echo.get("option_flow"), dict) else {}
+                flow = dict(flow)
+                flow["flow_source"] = out["flow_source"]
+                flow["bullflow"] = info
+                echo["option_flow"] = flow
+        else:
+            flow = echo.get("option_flow") if isinstance(echo.get("option_flow"), dict) else {}
+            flow = dict(flow)
+            flow.setdefault("flow_source", "yahoo")
+            flow["bullflow"] = info
+            echo["option_flow"] = flow
         out["echo"] = echo
     return out
 
