@@ -175,6 +175,13 @@ def start_live_desk_worker(config_path: str | None = None) -> bool:
         start_polymarket_worker(config_path)
     except Exception as exc:  # noqa: BLE001
         logger.warning("polymarket monitor did not start: %s", exc)
+    # Extended-hours shadow desks: AH earnings drift + overnight bias. Alerts only.
+    try:
+        from odte_scanner.ext_hours.worker import start_ext_hours_worker
+
+        start_ext_hours_worker(config_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ext-hours shadow desks did not start: %s", exc)
     if not _env_flag("LIVE_DESK_LOOP", True):
         logger.info("LIVE_DESK_LOOP disabled — no background scan worker")
         return fast_started
