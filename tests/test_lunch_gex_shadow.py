@@ -161,14 +161,48 @@ def test_negative_gex_entry_opens_shadow_priced_from_live_quotes(tmp_path):
     assert json.dumps(board, sort_keys=True) == before  # the real card is untouched
     (row,) = json.loads(p.read_text())["trades"]
     assert row["shadow_only"] and row["status"] == "open" and row["regime"] == "negative"
+    assert row["variant"] == "wider_2" and row["id"] == "2026-11-24|SPY|wider_2"
     assert (row["short_strike"], row["long_strike"], row["width"]) == (598.0, 596.0, 2.0)
     assert (row["short_contract"], row["long_contract"]) == (SH, SL)
     assert row["credit"] == pytest.approx(0.60) and row["desk_short_strike"] == 600.0
 
 
-def test_no_shadow_on_positive_or_unknown_gex_or_unfired_or_spx(tmp_path):
+def test_positive_gex_logs_the_desk_spread_as_baseline(tmp_path):
     p = tmp_path / "s.json"
-    sync_shadow({"signals": [card()]}, ct(12, 36), regime_for=POS, quotes=quotes_for(0.9, 0.3), path=p)
+    DS, DL = "SPY261124P00600000", "SPY261124P00598000"
+
+    def q(contracts):
+        assert set(contracts) == {DS, DL}
+        return {DS: (1.19, 1.21), DL: (0.39, 0.41)}
+
+    board = {"signals": [card()]}
+    before = json.dumps(board, sort_keys=True)
+    sync_shadow(board, ct(12, 36), regime_for=POS, quotes=q, path=p)
+    assert json.dumps(board, sort_keys=True) == before
+    (row,) = json.loads(p.read_text())["trades"]
+    assert row["variant"] == "desk_spread" and row["regime"] == "positive" and row["shadow_only"]
+    assert (row["short_strike"], row["long_strike"]) == (600.0, 598.0) and row["credit"] == pytest.approx(0.80)
+    neg = json.loads(json.dumps(row))
+    assert neg["id"].endswith("|desk_spread")
+
+
+def test_summary_splits_by_regime(tmp_path):
+    p = tmp_path / "s.json"
+    p.write_text(json.dumps({"trades": [
+        {"id": "a", "day": "2026-11-20", "variant": "wider_2", "regime": "negative", "status": "closed", "pnl_usd": 30.0,
+         "desk": {"pnl_usd": 40.0}},
+        {"id": "b", "day": "2026-11-21", "variant": "desk_spread", "regime": "positive", "status": "closed", "pnl_usd": -20.0,
+         "desk": {"pnl_usd": -25.0}},
+        {"id": "c", "day": "2026-11-23", "variant": "desk_spread", "regime": "positive", "status": "closed", "pnl_usd": 10.0},
+    ]}))
+    res = summary(now=ct(15, 0), path=p)
+    assert res["by_regime"]["negative"]["shadow_pnl_usd"] == 30.0 and res["by_regime"]["negative"]["desk_pnl_usd_same_days"] == 40.0
+    assert res["by_regime"]["positive"]["closed"] == 2 and res["by_regime"]["positive"]["win_rate_pct"] == 50.0
+    assert res["by_regime"]["positive"]["shadow_pnl_usd"] == -10.0
+
+
+def test_no_shadow_on_unknown_gex_or_unfired_or_spx(tmp_path):
+    p = tmp_path / "s.json"
     sync_shadow({"signals": [card()]}, ct(12, 36), regime_for=lambda s: "unknown", quotes=quotes_for(0.9, 0.3), path=p)
     sync_shadow({"signals": [card(send=False)]}, ct(12, 36), regime_for=NEG, quotes=quotes_for(0.9, 0.3), path=p)
     sync_shadow({"signals": [card("SPX", 6000, 5995)]}, ct(12, 36), regime_for=NEG, quotes=lambda c: {}, path=p)
@@ -271,9 +305,19 @@ def test_shadow_path_never_calls_any_order_function(tmp_path, monkeypatch):
     led = _ledger(tmp_path)
     before = led.read_bytes()
     p = tmp_path / "s.json"
-    for when, q in ((ct(12, 36), quotes_for(0.9, 0.3)), (ct(13, 0), quotes_for(0.8, 0.3)), (ct(14, 45), quotes_for(0.7, 0.3))):
-        sync_shadow({"signals": [card(), card("QQQ", 520, 518)]}, when, regime_for=NEG, quotes=q if when else None,
+    def any_quotes(mark):
+        def q(contracts):
+            # short legs (higher strike) priced at mark+0.3, long legs at 0.3
+            ks = sorted(contracts)
+            return {c: ((mark + 0.29, mark + 0.31) if c in (ks[1], ks[3]) else (0.29, 0.31)) for c in contracts}
+        return q
+
+    mixed = lambda sym: "negative" if sym == "SPY" else "positive"  # noqa: E731
+    for when, mark in ((ct(12, 36), 0.6), (ct(13, 0), 0.5), (ct(14, 45), 0.4)):
+        sync_shadow({"signals": [card(), card("QQQ", 520, 518)]}, when, regime_for=mixed, quotes=any_quotes(mark),
                     path=p, ledger=led)
+    rows = json.loads(p.read_text())["trades"]
+    assert {r["variant"] for r in rows} == {"wider_2", "desk_spread"} and all(r["status"] == "closed" for r in rows)
     assert called == [] and led.read_bytes() == before
     import re
 
@@ -342,3 +386,38 @@ def test_lunch_tile_shows_regime():
     assert "DATA.gex_regime" in fn and fn.count("${gexLine}") == 2
     assert "positive" in fn and "negative" in fn and "unknown" in fn and "not traded" in fn
     assert "Sure Winner" not in fn
+
+
+# ---------------------------------------------------------------- entry alert context line
+def test_entry_alert_shows_gex_context_only():
+    from odte_scanner.alerts.lunch_credit import format_gex_context, format_lunch_entry
+
+    base = {"symbol": "SPY", "short_strike": 600, "long_strike": 598, "expiry": DAY, "credit": 0.8, "width": 2,
+            "at_ct": "12:35", "short": {"strike": 600, "bid": 1.19, "ask": 1.21}, "long": {"strike": 598, "bid": 0.39, "ask": 0.41}}
+    plain = format_lunch_entry(base)
+    assert "GEX" not in plain
+    text = format_lunch_entry({**base, "gex_regime": {"regime": "negative", "net_gex_band": -1332280767.5, "session": "2026-11-23"}})
+    line = [ln for ln in text.splitlines() if "GEX" in ln][0]
+    assert line == "Prior-day GEX ±2%: negative (−GEX) · −$1.33B · 2026-11-23 close · context only, not an entry rule"
+    assert plain.splitlines() == [ln for ln in text.splitlines() if "GEX" not in ln]  # nothing else changed
+    assert format_gex_context({"regime": "unknown"}) == "Prior-day GEX ±2%: unknown · context only, not an entry rule"
+    assert "positive (+GEX)" in format_gex_context({"regime": "positive", "net_gex_band": 4e8})
+
+
+def test_lunch_cycle_tags_cards_for_the_alert_after_route(monkeypatch):
+    from odte_scanner import fast_desk
+
+    monkeypatch.setenv("FAST_DESK_ALWAYS", "1")
+    monkeypatch.setenv("BULLFLOW_API_KEY", "test-key")
+    monkeypatch.setattr(lunch_gex_shadow, "tradier_quotes", lambda c: {})
+    monkeypatch.setattr(gex_regime, "fetch_eod_gex",
+                        lambda sym, *, api_key: {"ok": True, "data": eod(600, [(600, 2e9)])})
+    seen_by_route, sent = [], []
+    board = {"signals": [card()]}
+    fast_desk.run_lunch_credit_cycle(
+        now=ct(12, 36), board=board,
+        route=lambda b, n: seen_by_route.append("gex_regime" in b["signals"][0]) or {"ok": True},
+        dispatch=lambda snap: sent.append(snap["lunch_credit"]["signals"][0].get("gex_regime")) or {"ok": True, "sent": 1},
+    )
+    assert seen_by_route == [False]  # the router never sees the tag
+    assert sent == [{"regime": "positive", "net_gex_band": 2e9, "session": "2026-11-23"}]

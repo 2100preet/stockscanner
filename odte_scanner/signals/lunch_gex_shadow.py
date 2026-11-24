@@ -1,9 +1,12 @@
-"""Lunch-Break Credit negative-GEX shadow log. SHADOW ONLY — never an order.
+"""Lunch-Break Credit GEX shadow log. SHADOW ONLY — never an order.
 
-When Lunch-Break Credit fires an entry on SPY or QQQ and that symbol's
-prior-day EOD GEX regime is negative, record a hypothetical second put
-credit spread with the short strike $2 further out (same width, same exits:
-buy back at 50% of the credit, stop at 2x the credit, flat 2:45 PM CT).
+When Lunch-Break Credit fires an entry on SPY or QQQ:
+
+* prior-day EOD GEX negative -> record a hypothetical second put credit
+  spread with the short strike $2 further out (same width, same exits: buy
+  back at 50% of the credit, stop at 2x the credit, flat 2:45 PM CT);
+* prior-day EOD GEX positive -> record the desk's own spread, priced the
+  same way, so both regimes can be compared on equal footing.
 Both legs are priced from live option quotes at entry and on every cycle
 until exit. The real desk's fill is read (read-only) from the paper order
 ledger and kept next to the shadow for comparison.
@@ -37,6 +40,11 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_LOG = ROOT / "outputs" / "lunch_gex_shadow.json"
 DEFAULT_LEDGER = ROOT / "outputs" / "webull_orders.json"
 SHADOW_OFFSET = 2.0
+VARIANT_BY_REGIME = {"negative": "wider_2", "positive": "desk_spread"}
+VARIANT_LABEL = {
+    "wider_2": "Negative GEX · short $2 further out, same width",
+    "desk_spread": "Positive GEX · desk's own spread (baseline)",
+}
 DESK = "lunch_credit"
 MAX_ROWS = 400
 _lock = threading.RLock()
@@ -177,11 +185,13 @@ def sync_shadow(
             if not isinstance(card, dict) or not _fired(card):
                 continue
             sym = str(card["symbol"]).upper()
-            rid = f"{day}|{sym}"
-            if rid in by_id:
-                continue
             regime = regime_for(sym)
-            if regime != "negative":
+            # negative GEX: the $2-further-out variant; positive GEX: the desk's own spread
+            variant = VARIANT_BY_REGIME.get(regime)
+            if variant is None:
+                continue
+            rid = f"{day}|{sym}|{variant}"
+            if rid in by_id:
                 continue
             if now_ct.time() >= rules.entry_end:
                 continue
@@ -190,13 +200,18 @@ def sync_shadow(
             if short_k is None or long_k is None:
                 continue
             width = abs(short_k - long_k) or rules.width
-            s_short, s_long = shadow_strikes(short_k, width)
+            if variant == "wider_2":
+                s_short, s_long = shadow_strikes(short_k, width)
+            else:
+                s_short, s_long = short_k, short_k - width
             expiry = str(card.get("expiry") or day)[:10]
             row = {
                 "id": rid,
                 "day": day,
                 "symbol": sym,
                 "regime": regime,
+                "variant": variant,
+                "variant_label": VARIANT_LABEL[variant],
                 "shadow_only": True,
                 "status": "pending_quote",
                 "signal_at_ct": card.get("at_ct"),
@@ -281,11 +296,31 @@ def summary(*, now: datetime | None = None, path: Path | None = None, days: int 
     closed = [r for r in rows if r.get("status") == "closed" and r.get("pnl_usd") is not None]
     desk_closed = [r for r in rows if isinstance(r.get("desk"), dict) and r["desk"].get("pnl_usd") is not None]
     wins = sum(1 for r in closed if r["pnl_usd"] > 0)
+    by_regime: dict[str, Any] = {}
+    for regime, variant in VARIANT_BY_REGIME.items():
+        rs = [r for r in rows if r.get("variant", "wider_2") == variant]
+        cl = [r for r in rs if r.get("status") == "closed" and r.get("pnl_usd") is not None]
+        dk = [r for r in rs if isinstance(r.get("desk"), dict) and r["desk"].get("pnl_usd") is not None]
+        w = sum(1 for r in cl if r["pnl_usd"] > 0)
+        by_regime[regime] = {
+            "variant": variant,
+            "label": VARIANT_LABEL[variant],
+            "trades": len(rs),
+            "closed": len(cl),
+            "wins": w,
+            "win_rate_pct": round(100 * w / len(cl), 1) if cl else None,
+            "shadow_pnl_usd": round(sum(r["pnl_usd"] for r in cl), 2),
+            "desk_pnl_usd_same_days": round(sum(r["desk"]["pnl_usd"] for r in dk), 2),
+        }
     return {
         "ok": True,
         "shadow_only": True,
         "days": days,
-        "rule": "Negative prior-day GEX (±2% of spot): second put credit spread, short $2 further out, same width and exits. Not traded.",
+        "rule": (
+            "Prior-day GEX within ±2% of spot. Negative: a second put credit spread with the short $2 further out, "
+            "same width and exits. Positive: the desk's own spread, priced the same way, as the baseline. Not traded."
+        ),
+        "by_regime": by_regime,
         "trades": len(rows),
         "closed": len(closed),
         "wins": wins,

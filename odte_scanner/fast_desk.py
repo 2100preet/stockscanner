@@ -592,6 +592,12 @@ def run_lunch_credit_cycle(
 
         regimes = gex_regime.ensure_today(moment)
         board["gex_regime"] = regimes
+        for row in board.get("signals") or []:
+            if isinstance(row, dict):
+                sym_regime = (regimes.get("symbols") or {}).get(str(row.get("symbol") or "").upper())
+                if isinstance(sym_regime, dict):
+                    # Alert context only; the route above has already run.
+                    row["gex_regime"] = {k: sym_regime.get(k) for k in ("regime", "net_gex_band", "session")}
         board["gex_shadow"] = {
             k: v
             for k, v in lunch_gex_shadow.sync_shadow(

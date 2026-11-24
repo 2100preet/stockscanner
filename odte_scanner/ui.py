@@ -4637,7 +4637,7 @@ PAGE = r"""
         return sym + " " + (r === "positive" ? "+GEX (positive)" : r === "negative" ? "−GEX (negative)" : "GEX unknown");
       }).join(" · ");
       const shadow = board.gex_shadow || {};
-      const gexLine = `<div class="pb-sub lunch-gex">Prior-day GEX ±2%: ${gexTxt} · negative-GEX days log a shadow spread $2 further out (not traded)${shadow.closed ? " · 30d shadow " + shadow.closed + " closed, $" + fmt(shadow.shadow_pnl_usd, 0) : ""}</div>`;
+      const gexLine = `<div class="pb-sub lunch-gex">Prior-day GEX ±2%: ${gexTxt} · shadow log (not traded): −GEX days a spread $2 further out, +GEX days the desk spread${shadow.closed ? " · 30d shadow " + shadow.closed + " closed, $" + fmt(shadow.shadow_pnl_usd, 0) : ""}</div>`;
       const leg = (row) => {
         const sell = row.short_strike == null ? "—" : row.short_strike;
         const buy = row.long_strike == null ? "—" : row.long_strike;
