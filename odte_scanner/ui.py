@@ -3343,18 +3343,26 @@ PAGE = r"""
         if (!prints.length) {
           flowEl.innerHTML = `<div class="empty">No prints for filter “${FLOW_FILTER}” — try All / Unusual, or wait for chain volume.</div>`;
         } else {
+          const flowSrc = (echo.option_flow && echo.option_flow.flow_source) || "yahoo";
+          const tapeNote = flowSrc === "bullflow"
+            ? "Bullflow live options tape — market prints, not Webull fills."
+            : "Yahoo snapshot ≠ OPRA tape.";
           flowEl.innerHTML = `<table><thead><tr>
-            <th>Tier</th><th>Sym</th><th>Side</th><th>Strike</th><th>DTE</th><th>Vol</th><th>OI</th><th>Vol/OI</th><th>Premium</th><th>Sent</th><th>Flags</th><th>Score</th>
+            <th>Tier</th><th>Sym</th><th>Side</th><th>Type</th><th>Aggressor</th><th>Strike</th><th>Exp</th><th>Vol</th><th>OI</th><th>Vol/OI</th><th>Premium</th><th>Sent</th><th>Flags</th><th>Score</th>
           </tr></thead><tbody>${prints.slice(0,24).map(p=>{
             const flags = (p.flags||[]).filter(f=>f!==p.tier).slice(0,3).join(" · ") || "—";
             const earn = EARNINGS_FLOW_SYMS.has(p.symbol) ? ` <span class="tag">earn</span>` : "";
             const skip = p.edge_skip ? `<div class="why">${String(p.edge_skip).replace(/[&<>]/g, "")}</div>` : "";
+            const typ = p.trade_type || p.tradeType || "—";
+            const agg = p.side || p.execution_side || "—";
             return `<tr>
               <td><span class="badge ${p.tier||"aggressive"}">${(p.tier||"").toUpperCase()}</span></td>
               <td><strong>${p.symbol}</strong>${earn}${skip}</td>
               <td class="mono">${p.right}</td>
+              <td class="mono">${typ}</td>
+              <td class="mono">${agg}</td>
               <td class="mono">${fmt(p.strike,2)}</td>
-              <td class="mono">${p.dte??"—"}</td>
+              <td class="mono">${p.expiry||p.dte||"—"}</td>
               <td class="mono">${p.volume??"—"}</td>
               <td class="mono">${p.open_interest??"—"}</td>
               <td class="mono">${p.vol_oi_ratio==null?"—":fmt(p.vol_oi_ratio,2)}</td>
@@ -3364,7 +3372,7 @@ PAGE = r"""
               <td class="mono ${p.flow_score>=0?"up":"down"}">${fmt(p.flow_score,0)}</td>
             </tr>`;
           }).join("")}</tbody></table>
-          <p class="lede" style="font-size:.72rem;margin:.4rem 0 0">${echo.option_flow.note||""} Showing ${Math.min(24, prints.length)} / ${prints.length} filtered · Yahoo snapshot ≠ OPRA tape.</p>`;
+          <p class="lede" style="font-size:.72rem;margin:.4rem 0 0">${echo.option_flow.note||""} Showing ${Math.min(24, prints.length)} / ${prints.length} filtered · ${tapeNote}</p>`;
         }
       }
 
@@ -5850,17 +5858,74 @@ def _expected_move_block() -> dict:
     return {"ok": False, "symbols": [], "note": "Expected move prints around 8:15 CT."}
 
 
+def _bullflow_block() -> dict:
+    """Live Bullflow health for snapshot / scan_status. Never includes the key."""
+    try:
+        from odte_scanner.signals.bullflow import public_block
+
+        block = public_block()
+        if isinstance(block, dict):
+            return block
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False,
+            "configured": False,
+            "flow_source": "yahoo",
+            "connected": False,
+            "last_heartbeat": None,
+            "events_today": 0,
+            "last_error": str(exc)[:200],
+            "alert_only": True,
+        }
+    return {
+        "ok": False,
+        "configured": False,
+        "flow_source": "yahoo",
+        "connected": False,
+        "last_heartbeat": None,
+        "events_today": 0,
+        "last_error": None,
+        "alert_only": True,
+    }
+
+
+def _attach_bullflow(body: dict | None, health: dict | None = None) -> dict | None:
+    """Stamp live tape health onto a snapshot without leaking credentials."""
+    if not isinstance(body, dict):
+        return body
+    info = health if isinstance(health, dict) else _bullflow_block()
+    out = dict(body)
+    out["bullflow"] = info
+    out["flow_source"] = info.get("flow_source") or "yahoo"
+    echo = out.get("echo")
+    if isinstance(echo, dict):
+        echo = dict(echo)
+        flow = echo.get("option_flow") if isinstance(echo.get("option_flow"), dict) else {}
+        flow = dict(flow)
+        flow["flow_source"] = out["flow_source"]
+        flow["bullflow"] = info
+        echo["option_flow"] = flow
+        out["echo"] = echo
+    return out
+
+
 def _overlay_live(body: dict | None) -> dict | None:
     """Merge the fast-loop boards and the paper ledger into a cached snapshot."""
     if not isinstance(body, dict):
         return body
+    overlaid = body
     try:
         from odte_scanner.hot_state import apply_hot_overlay
 
-        return apply_hot_overlay(body)
+        overlaid = apply_hot_overlay(body)
     except Exception as exc:  # noqa: BLE001
         logger.warning("hot overlay failed: %s", exc)
-        return body
+        overlaid = body
+    try:
+        return _attach_bullflow(overlaid)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("bullflow overlay failed: %s", exc)
+        return overlaid
 
 
 def _annotate_snapshot(body: dict, note: str | None) -> dict:
@@ -7439,8 +7504,12 @@ def create_app(config_path: str | None = None) -> Flask:
                         journal_sync=journal_sync if isinstance(journal_sync, dict) else None,
                         actions=actions,
                         lottery=lottery,
-                        max_symbols=int(actions_cfg.get("echo_max_symbols", 8)),
-                        max_dte=int((cfg.get("options") or {}).get("max_dte", 5)),
+                        max_symbols=int(actions_cfg.get("echo_max_symbols", 12)),
+                        max_dte=int(actions_cfg.get("echo_max_dte") or 45),
+                        max_expiries=int(actions_cfg.get("echo_max_expiries") or 3),
+                        anchor_symbols=list(
+                            actions_cfg.get("echo_anchor_symbols") or ["SPY", "QQQ", "IWM", "NVDA"]
+                        ),
                         fetch_ladders=bool(actions_cfg.get("echo_fetch_ladders", True)) and not offline,
                     )
                     if echo.get("flow_leaders"):
@@ -8858,6 +8927,12 @@ def create_app(config_path: str | None = None) -> Flask:
                         "diamond": diamond_board,
                         "sniper": sniper_board,
                         "echo": echo,
+                        "flow_source": (echo.get("option_flow") or {}).get("flow_source")
+                        if isinstance(echo, dict)
+                        else "yahoo",
+                        "bullflow": (echo.get("option_flow") or {}).get("bullflow")
+                        if isinstance(echo, dict)
+                        else None,
                         "challenge": challenge,
                         "tradier": tradier_status,
                         "polygon": polygon_status,
@@ -9192,12 +9267,15 @@ def create_app(config_path: str | None = None) -> Flask:
         has_scan = latest.exists() and latest.stat().st_size > 50
         mtime = latest.stat().st_mtime if has_scan else None
         running = scan_lock.locked()
+        health = _bullflow_block()
         return jsonify(
             {
                 "running": running,
                 "has_scan": has_scan,
                 "ready": has_scan and not running,
                 "latest_mtime": mtime,
+                "flow_source": health.get("flow_source") or "yahoo",
+                "bullflow": health,
             }
         )
 

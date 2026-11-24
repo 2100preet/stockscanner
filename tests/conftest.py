@@ -71,6 +71,7 @@ def _no_live_market_or_telegram_keys(monkeypatch):
         "MASSIVE_API_KEY",
         "UW_API_KEY",
         "UNUSUAL_WHALES_API_KEY",
+        "BULLFLOW_API_KEY",
         "TELEGRAM_BOT_TOKEN",
         "TELEGRAM_CHAT_ID",
     ):

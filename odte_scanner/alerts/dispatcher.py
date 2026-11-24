@@ -467,11 +467,46 @@ def _fmt_alert(
             if skipped:
                 lines.append(skipped)
     else:
-        ask = row.get("ask")
-        spot = row.get("spot") or row.get("last")
-        ask_s = f"${float(ask):.2f}" if ask is not None else "—"
-        spot_s = f"${float(spot):.2f}" if spot is not None else "—"
-        lines.append(f"Ask {ask_s} · spot {spot_s}")
+        src = str(row.get("source") or row.get("flow_source") or "").lower()
+        if desk == "Golden Flow" and src == "bullflow":
+            trade_type = str(row.get("trade_type") or row.get("tradeType") or "PRINT")
+            side = str(row.get("side") or row.get("execution_side") or "—")
+            premium = row.get("premium_notional") or row.get("premium")
+            try:
+                prem_s = f"${float(premium):,.0f}"
+            except (TypeError, ValueError):
+                prem_s = "—"
+            fill = row.get("trade_price") or row.get("ask") or row.get("mid")
+            size = row.get("trade_size")
+            try:
+                fill_s = f"${float(fill):g}" if fill is not None else "—"
+            except (TypeError, ValueError):
+                fill_s = "—"
+            size_s = f"{int(size)}" if size not in (None, "") else "—"
+            vol = row.get("volume")
+            oi = row.get("open_interest")
+            vol_s = f"vol {int(vol):,} / OI {int(oi):,}" if vol not in (None, "") and oi not in (None, "") else ""
+            spot = row.get("spot") or row.get("last")
+            try:
+                spot_s = f"spot ${float(spot):.2f}" if spot is not None else ""
+            except (TypeError, ValueError):
+                spot_s = ""
+            bits = [trade_type, side, prem_s, f"{size_s} @ {fill_s}"]
+            if vol_s:
+                bits.append(vol_s)
+            if spot_s:
+                bits.append(spot_s)
+            lines.append(" · ".join(bits))
+            when_ct = row.get("signaled_at_cst")
+            if when_ct:
+                lines.append(f"Printed {when_ct}")
+            lines.append("Bullflow market tape print — not a Webull fill")
+        else:
+            ask = row.get("ask")
+            spot = row.get("spot") or row.get("last")
+            ask_s = f"${float(ask):.2f}" if ask is not None else "—"
+            spot_s = f"${float(spot):.2f}" if spot is not None else "—"
+            lines.append(f"Ask {ask_s} · spot {spot_s}")
     for extra in extras or []:
         if isinstance(extra, dict):
             lines.append(_also_line(extra))
@@ -812,6 +847,9 @@ def collect_trade_alerts(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
 
     for raw in _golden_flow_rows(snapshot):
         row = dict(raw)
+        # Startup backfill is already on the board; do not re-alert those IDs.
+        if row.get("backfill") is True or row.get("alertable") is False:
+            continue
         # A reason stamped at scan time, or the same check if this snapshot is older.
         reason = row.get("edge_skip") or golden_flow_skip_reason(row)
         if reason:

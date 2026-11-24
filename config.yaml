@@ -511,9 +511,22 @@ actions:
   # Options BUY NOW: block symbols after a losing flip; block same OCC longer
   buy_now_loss_cooldown_days: 5
   buy_now_contract_cooldown_days: 45
-  # Flow Desk (Bullflow-inspired) — Yahoo chain ladders for top symbols
-  echo_max_symbols: 8
+  # Flow Desk — Bullflow live tape when BULLFLOW_API_KEY is set; else Yahoo ladders
+  echo_max_symbols: 12
+  echo_max_dte: 45
+  echo_max_expiries: 3
+  echo_anchor_symbols: [SPY, QQQ, IWM, NVDA]
   echo_fetch_ladders: true
+  # Golden Flow Telegram (Bullflow only): buy-side aggressor institutional prints
+  bullflow:
+    golden_min_premium: 1000000
+    unusual_min_premium: 250000
+    min_sig_score: 0.50
+    alert_sides: [Ask, "Above Ask"]
+    trade_types: [SWEEP, BLOCK, MULTI]
+    backfill_min_premium: 250000
+    reconnect_initial_sec: 25
+    reconnect_cap_sec: 300
   # ZeroLoss Flow Tier-1 — proxy flow leaders gate journal BUY NOW
   require_flow_confirm: true
   flow_leaders_top_n: 12

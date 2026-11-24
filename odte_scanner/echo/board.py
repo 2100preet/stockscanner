@@ -24,6 +24,9 @@ ALGO_CHANNELS: dict[str, list[str]] = {
 }
 
 
+ECHO_ANCHOR_SYMBOLS = ("SPY", "QQQ", "IWM", "NVDA")
+
+
 def _pick_echo_symbols(
     *,
     scores: list[dict[str, Any]],
@@ -31,43 +34,49 @@ def _pick_echo_symbols(
     quotes: dict[str, dict[str, Any]],
     max_symbols: int = 10,
     prefer_symbols: list[str] | None = None,
+    anchor_symbols: list[str] | tuple[str, ...] | None = None,
 ) -> list[str]:
-    ranked: list[tuple[float, str]] = []
-    seen: set[str] = set()
-    # Earnings / darling names first so Flow Desk mirrors Bullflow "earnings soon" focus
-    for sym in prefer_symbols or []:
-        u = str(sym or "").upper()
-        if not u or u in seen:
-            continue
-        seen.add(u)
-        ranked.append((200.0, u))
-    for s in scores or []:
-        sym = str(s.get("symbol") or "")
-        if not sym or sym in seen:
-            continue
-        if s.get("horizon") not in (None, "0dte", "weekly"):
-            # still allow, but prefer 0dte later via score
-            pass
-        seen.add(sym)
-        ranked.append((float(s.get("ensemble_score") or 0), sym))
-    for c in candidates or []:
-        sym = str(c.get("symbol") or "")
-        if not sym or sym in seen:
-            continue
-        seen.add(sym)
-        ranked.append((float(c.get("score") or 0), sym))
-    # Always include liquid index names if present in quotes
-    for prefer in ("SPY", "QQQ", "IWM", "SPX", "XSP"):
-        if prefer in quotes and prefer not in seen:
-            seen.add(prefer)
-            ranked.append((90.0, prefer))
-    ranked.sort(reverse=True)
+    """Majors/focus first so stale earnings names cannot lock all Yahoo slots."""
+    cap = max(1, int(max_symbols))
     out: list[str] = []
-    for _, sym in ranked:
-        if sym not in out:
-            out.append(sym)
-        if len(out) >= max_symbols:
-            break
+    seen: set[str] = set()
+
+    def _add(sym: Any) -> bool:
+        name = str(sym or "").replace(".", "-").upper().strip()
+        if not name or name in seen:
+            return False
+        if len(out) >= cap:
+            return False
+        seen.add(name)
+        out.append(name)
+        return True
+
+    for sym in anchor_symbols or ECHO_ANCHOR_SYMBOLS:
+        _add(sym)
+    # High-scoring live names next, then earnings prefers, then candidates.
+    scored: list[tuple[float, str]] = []
+    for s in scores or []:
+        sym = str(s.get("symbol") or "").replace(".", "-").upper()
+        if not sym or sym in seen:
+            continue
+        scored.append((float(s.get("ensemble_score") or 0), sym))
+    scored.sort(reverse=True)
+    for _, sym in scored:
+        _add(sym)
+    for sym in prefer_symbols or []:
+        _add(sym)
+    cand: list[tuple[float, str]] = []
+    for c in candidates or []:
+        sym = str(c.get("symbol") or "").replace(".", "-").upper()
+        if not sym or sym in seen:
+            continue
+        cand.append((float(c.get("score") or 0), sym))
+    cand.sort(reverse=True)
+    for _, sym in cand:
+        _add(sym)
+    for prefer in ("SPY", "QQQ", "IWM", "SPX", "XSP", "NVDA", "TSLA", "AAPL", "AMZN", "META", "MSFT"):
+        if prefer in (quotes or {}) or prefer in ECHO_ANCHOR_SYMBOLS:
+            _add(prefer)
     return out
 
 
@@ -184,7 +193,9 @@ def _build_cortex(
     bits: list[str] = []
     fc = flow.get("counts") or {}
     if fc.get("golden"):
-        bits.append(f"{fc['golden']} golden-tier flow prints (Yahoo proxy)")
+        src = flow.get("flow_source") or "yahoo"
+        label = "Bullflow tape" if src == "bullflow" else "Yahoo proxy"
+        bits.append(f"{fc['golden']} golden-tier flow prints ({label})")
     if fc.get("bullish") or fc.get("bearish"):
         bits.append(f"flow skew bull {fc.get('bullish', 0)} / bear {fc.get('bearish', 0)}")
     prim = dealer.get("primary") or {}
@@ -290,11 +301,13 @@ def build_echo_board(
     journal_sync: dict[str, Any] | None = None,
     actions: dict[str, Any] | None = None,
     lottery: dict[str, Any] | None = None,
-    max_symbols: int = 8,
-    max_dte: int = 5,
+    max_symbols: int = 12,
+    max_dte: int = 45,
+    max_expiries: int = 3,
     fetch_ladders: bool = True,
     include_darkpool: bool = True,
     prefer_symbols: list[str] | None = None,
+    anchor_symbols: list[str] | None = None,
 ) -> dict[str, Any]:
     scores = scores or []
     candidates = candidates or []
@@ -317,6 +330,7 @@ def build_echo_board(
         quotes=quotes,
         max_symbols=max_symbols,
         prefer_symbols=prefer,
+        anchor_symbols=anchor_symbols,
     )
 
     ladders: list[dict[str, Any]] = []
@@ -332,6 +346,7 @@ def build_echo_board(
             spot=spot,
             max_dte=max_dte,
             prefer_dte=0,
+            max_expiries=max_expiries,
             use_cache=True,
         )
 

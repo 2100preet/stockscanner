@@ -122,6 +122,14 @@ def _chicago_hour(row: dict[str, Any], now: datetime | None) -> int | None:
     return moment.astimezone(CT).hour
 
 
+def _is_bullflow_print(row: dict[str, Any]) -> bool:
+    """True for a real Bullflow tape print, not a Yahoo chain-volume proxy."""
+    source = str(row.get("source") or row.get("flow_source") or "").strip().lower()
+    if source == "bullflow":
+        return True
+    return bool(row.get("bullflow_id") or row.get("trade_type") or row.get("tradeType"))
+
+
 def golden_flow_skip_reason(row: dict[str, Any], now: datetime | None = None) -> str | None:
     """Return the card reason, or None when the print may be alerted.
 
@@ -129,8 +137,16 @@ def golden_flow_skip_reason(row: dict[str, Any], now: datetime | None = None) ->
     shows the put reason. The clock is America/Chicago. "Before 8:00 CT" is
     the measured bucket (hour < 8). The first half hour after the 8:30 CT
     open is not this bucket and is not cut.
+
+    Yahoo-proxy slices (puts, 1–3% moneyness, 8–21 DTE, before 8:00 CT,
+    10–12 CT) were measured on chain-volume snapshots, not classified
+    institutional tape. Real Bullflow prints skip those Yahoo hacks so a
+    $1M Ask BLOCK or Above-Ask SWEEP is not dropped. Bid-side spam is
+    gated separately by the Bullflow Golden Flow classifier, not here.
     """
     if not isinstance(row, dict):
+        return None
+    if _is_bullflow_print(row):
         return None
     if _is_short(row):
         return GF_PUT
