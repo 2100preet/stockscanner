@@ -910,3 +910,32 @@ million_challenge:
     low_band_pct: 0.03
     sma_days: 25
     sma_drop_pct: 0.10
+
+# Polymarket unusual-flow & odds-spike monitor. ALERT ONLY: never routes to
+# Webull paper, Sniper LIVE, or any order path. Public no-auth Polymarket
+# APIs (Gamma, Data API v2, CLOB), polled every 60s. Telegram copy is always
+# "Unusual Polymarket flow — review". Env POLYMARKET_MONITOR_ENABLED=0 turns
+# it off. Optional single Bullflow REST confirmation per alert (never SSE).
+polymarket:
+  enabled: true
+  poll_sec: 60
+  universe_refresh_sec: 1200
+  max_markets: 150
+  min_fill_usd: 250
+  max_wallet_lookups: 8
+  tag_ids: [107, 120, 1013, 101999, 1330]   # Business, Finance, Earnings, Big Tech, NVIDIA
+  search_queries: [NVIDIA, Apple, Tesla, Microsoft, Amazon, Meta, Alphabet, Netflix, AMD, Intel]
+  state_path: outputs/polymarket_monitor_state.json
+  longshot_max: 0.20
+  longshot_strong: 0.15
+  fresh_days: 7
+  max_wallet_markets: 3          # distinct markets for a 'concentrated' wallet
+  concentration_share: 0.60
+  tier_a_min_usd: 1000
+  tier_b_min_usd: 10000
+  cluster_window_sec: 7200
+  spike_abs: 0.05
+  spike_rel: 0.50
+  spike_window_sec: 3600
+  spike_min_volume_usd: 2000
+  dedupe_sec: 86400

@@ -161,6 +161,13 @@ def start_live_desk_worker(config_path: str | None = None) -> bool:
         start_bullflow_worker(config_path)
     except Exception as exc:  # noqa: BLE001
         logger.warning("bullflow worker did not start: %s", exc)
+    # Polymarket unusual-flow monitor: public REST poll every 60s, alert only.
+    try:
+        from odte_scanner.polymarket.monitor import start_polymarket_worker
+
+        start_polymarket_worker(config_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("polymarket monitor did not start: %s", exc)
     if not _env_flag("LIVE_DESK_LOOP", True):
         logger.info("LIVE_DESK_LOOP disabled — no background scan worker")
         return fast_started
