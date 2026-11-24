@@ -4553,6 +4553,12 @@ PAGE = r"""
         else if (!rows.length) phase = "closed";
         else phase = rows.some(function (row) { return !row.closed; }) ? "triggered" : "closed";
       }
+      const shadow = board.shadow || {};
+      const shadowTot = shadow.totals || {};
+      const shadowNoon = shadow.after_noon || {};
+      const shadowLine = (shadow.active || shadowTot.entries)
+        ? `<div class="pb-sub afternoon-shadow">Shadow log (not traded): sell all at +150% · ${shadowTot.entries || 0} entries, ${shadowTot.hit_150 || 0} hit +150%, shadow ${afternoonMoney(shadowTot.shadow_pnl_usd)} vs real ${afternoonMoney(shadowTot.real_pnl_usd)} · after 12:00 CT ${shadowNoon.entries || 0} (real ${afternoonMoney(shadowNoon.real_pnl_usd)})${shadow.active ? " · ends " + (shadow.ends_day || "") : " · stopped"}</div>`
+        : "";
       const label = phase === "waiting" ? "Waiting — window opens 10:00 CT"
         : phase === "scanning" ? "Scanning SPY QQQ SPX — no trigger yet"
         : phase === "triggered" ? "Triggered"
@@ -4563,12 +4569,21 @@ PAGE = r"""
           <div>
             <h2 class="pb-title">🌅 Afternoon <em>Puts</em></h2>
             <div class="pb-sub">${board.note || "SPY and QQQ paper. SPX alert only. Flat 2:45 PM CT."}</div>
+            ${shadowLine}
           </div>
           <div class="status">${label.toUpperCase()}</div>
         </div>
         <div class="pb-grid"><div class="pulse-card afternoon"><p class="pc-why">${label}</p></div></div>`;
         return;
       }
+      const shadowCard = (row) => {
+        const sh = ((shadow.today || {})[row.contract || row.occ || ""]) || null;
+        if (!sh) return "";
+        const out = sh.shadow_done
+          ? (sh.shadow_exit_why || "closed") + " · " + afternoonMoney(sh.shadow_pnl_usd)
+          : "watching" + (sh.max_bid != null ? " · high bid $" + fmt(sh.max_bid, 2) : "");
+        return `<p class="pc-why">Shadow (not traded): sell all at Limit $${fmt(sh.shadow_target, 2)} (+150%) · ${out}${sh.after_noon ? " · after 12:00 CT" : ""}</p>`;
+      };
       const card = (row) => {
         const view = tradedView(row);
         const state = row.closed ? "closed" : "triggered";
@@ -4595,6 +4610,7 @@ PAGE = r"""
             <div><span>Exit</span><br><strong>${view.exitText || (exitPx == null ? "—" : ("Filled @ $" + fmt(exitPx, 2)))}</strong><div class="why">${afternoonPct(pct)} · ${afternoonMoney(dollars)} · ${contracts} contract${contracts === 1 ? "" : "s"}</div></div>
           </div>
           <p class="pc-why">${row.detail || ""} · <strong>${row.exit_plan || ""}</strong></p>
+          ${shadowCard(row)}
         </div>`;
       };
       el.innerHTML = `
@@ -4602,6 +4618,7 @@ PAGE = r"""
           <div>
             <h2 class="pb-title">🌅 Afternoon <em>Puts</em></h2>
             <div class="pb-sub">${board.note || "SPY and QQQ paper. SPX alert only. Flat 2:45 PM CT."}</div>
+            ${shadowLine}
           </div>
           <div class="status">${label.toUpperCase()} ${rows.length}</div>
         </div>
@@ -9718,6 +9735,17 @@ def create_app(config_path: str | None = None) -> Flask:
         if not str(_os.environ.get("PAPER_ADMIN_TOKEN") or "").strip():
             return jsonify({"ok": False, "error": "disabled: PAPER_ADMIN_TOKEN is not set"}), 403
         return jsonify({"ok": False, "error": "admin token required (X-Admin-Token)"}), 403
+
+    @app.get("/api/afternoon_puts_shadow")
+    def afternoon_puts_shadow_results():
+        """30-day Afternoon Puts shadow: a full exit at +150% next to the real fills. No orders."""
+        from odte_scanner.signals.afternoon_puts_shadow import summary
+
+        try:
+            days = max(1, min(60, int(request.args.get("days") or 30)))
+        except ValueError:
+            days = 30
+        return jsonify(summary(days=days))
 
     @app.get("/api/paper/limits")
     def paper_limits():
