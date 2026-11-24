@@ -154,6 +154,13 @@ def start_live_desk_worker(config_path: str | None = None) -> bool:
         start_eod_worker()
     except Exception as exc:  # noqa: BLE001
         logger.warning("today pnl EOD worker did not start: %s", exc)
+    # Bullflow Golden Flow tape: one SSE connection for this process, alerts only.
+    try:
+        from odte_scanner.signals.bullflow import start_bullflow_worker
+
+        start_bullflow_worker(config_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("bullflow worker did not start: %s", exc)
     if not _env_flag("LIVE_DESK_LOOP", True):
         logger.info("LIVE_DESK_LOOP disabled — no background scan worker")
         return fast_started

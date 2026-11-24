@@ -65,15 +65,30 @@ def test_flow_score_flags_and_tiers():
 
 
 def test_pick_echo_prefers_earnings_darlings():
+    """Earnings names still appear, but they cannot evict the major anchors."""
     syms = _pick_echo_symbols(
         scores=[{"symbol": "AAA", "ensemble_score": 99, "horizon": "0dte"}],
         candidates=[],
         quotes={"SPY": {"last": 1}},
-        max_symbols=5,
+        max_symbols=8,
         prefer_symbols=["SMCI", "CRWV", "NBIS"],
     )
-    assert syms[0] in {"SMCI", "CRWV", "NBIS"}
-    assert "AAA" in syms or len(syms) == 5
+    assert "SPY" in syms and "QQQ" in syms and "IWM" in syms and "NVDA" in syms
+    assert "SMCI" in syms or "CRWV" in syms or "NBIS" in syms or "AAA" in syms
+
+
+def test_pick_echo_anchors_survive_stale_earnings_list():
+    stale = ["VG", "USAR", "SE", "RKLB", "QUBT", "PLUG", "ONON", "NBIS", "CRWV", "CBRS"]
+    syms = _pick_echo_symbols(
+        scores=[],
+        candidates=[],
+        quotes={},
+        max_symbols=8,
+        prefer_symbols=stale,
+    )
+    for anchor in ("SPY", "QQQ", "IWM", "NVDA"):
+        assert anchor in syms
+    assert syms[:4] == ["SPY", "QQQ", "IWM", "NVDA"]
 
 
 def test_build_option_flow_buckets():

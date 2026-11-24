@@ -79,6 +79,34 @@ def build_option_flow(
     min_premium: float = 15_000,
     max_rows: int = 40,
 ) -> dict[str, Any]:
+    try:
+        from odte_scanner.signals.bullflow import option_flow_from_tape
+
+        tape_flow = option_flow_from_tape()
+    except Exception:  # noqa: BLE001
+        tape_flow = None
+    if isinstance(tape_flow, dict) and tape_flow.get("flow_source") == "bullflow":
+        prints = list(tape_flow.get("prints") or [])
+        stamp_flow_prints(prints)
+        tape_flow = dict(tape_flow)
+        tape_flow["prints"] = prints
+        tape_flow["golden"] = [r for r in prints if r.get("tier") == "golden"][:40]
+        tape_flow["unusual"] = [r for r in prints if r.get("tier") == "unusual"][:40]
+        tape_flow["aggressive"] = [r for r in prints if r.get("tier") == "aggressive"][:40]
+        counts = dict(tape_flow.get("counts") or {})
+        counts.update(
+            {
+                "prints": len(prints),
+                "golden": len(tape_flow["golden"]),
+                "unusual": len(tape_flow["unusual"]),
+                "aggressive": len(tape_flow["aggressive"]),
+                "bullish": sum(1 for r in prints if r.get("sentiment") == "bullish"),
+                "bearish": sum(1 for r in prints if r.get("sentiment") == "bearish"),
+            }
+        )
+        tape_flow["counts"] = counts
+        return tape_flow
+
     prints: list[dict[str, Any]] = []
     for ladder in ladders:
         sym = ladder["symbol"]
@@ -139,6 +167,7 @@ def build_option_flow(
             "bullish": bull,
             "bearish": bear,
         },
+        "flow_source": "yahoo",
         "note": (
             "ZeroLoss Flow proxy — Yahoo chain snapshot + vol/OI delta vs prior refresh. "
             "Not OPRA time & sales. Tiers: premium notional + unusualness + session delta."
