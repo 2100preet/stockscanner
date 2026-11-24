@@ -586,6 +586,29 @@ def run_lunch_credit_cycle(
     except Exception as exc:  # noqa: BLE001
         route_meta = {"ok": False, "error": str(exc)[:200]}
         logger.exception("lunch credit route failed: %s", exc)
+    # Negative-GEX shadow log: logging only, after the real route, never an order.
+    try:
+        from odte_scanner.signals import gex_regime, lunch_gex_shadow
+
+        regimes = gex_regime.ensure_today(moment)
+        board["gex_regime"] = regimes
+        for row in board.get("signals") or []:
+            if isinstance(row, dict):
+                sym_regime = (regimes.get("symbols") or {}).get(str(row.get("symbol") or "").upper())
+                if isinstance(sym_regime, dict):
+                    # Alert context only; the route above has already run.
+                    row["gex_regime"] = {k: sym_regime.get(k) for k in ("regime", "net_gex_band", "session")}
+        board["gex_shadow"] = {
+            k: v
+            for k, v in lunch_gex_shadow.sync_shadow(
+                board,
+                moment,
+                regime_for=lambda sym: str(((regimes.get("symbols") or {}).get(sym) or {}).get("regime") or "unknown"),
+            ).items()
+            if k != "rows"
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.info("lunch gex shadow skipped: %s", type(exc).__name__)
     snapshot = {"lunch_credit": board}
     sample = None
     try:
