@@ -6023,6 +6023,15 @@ def _ext_hours_blocks() -> dict:
     return out
 
 
+def _with_ext_hours(body):
+    """Copy of the snapshot with the extended-hours shadow blocks attached."""
+    if not isinstance(body, dict):
+        return body
+    out = dict(body)
+    out.update(_ext_hours_blocks())
+    return out
+
+
 def _overlay_live(body: dict | None) -> dict | None:
     """Merge the fast-loop boards and the paper ledger into a cached snapshot."""
     if not isinstance(body, dict):
@@ -6039,10 +6048,10 @@ def _overlay_live(body: dict | None) -> dict | None:
         overlaid = _attach_bullflow(overlaid)
     except Exception as exc:  # noqa: BLE001
         logger.warning("bullflow overlay failed: %s", exc)
+    overlaid = _with_ext_hours(overlaid)
     if isinstance(overlaid, dict):
         overlaid = dict(overlaid)
         overlaid["polymarket"] = _polymarket_block()
-        overlaid.update(_ext_hours_blocks())
     return overlaid
 
 
