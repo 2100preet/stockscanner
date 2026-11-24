@@ -404,3 +404,32 @@ def test_sse_handler_tracks_health_without_storing_a_key():
     assert "BULLFLOW_API_KEY" not in blob
     assert "X-API-Key" not in blob
     assert "test-key" not in blob
+
+
+
+def test_attach_bullflow_replaces_stale_yahoo_prints(monkeypatch):
+    from odte_scanner.ui import _attach_bullflow
+
+    tape = BullflowTape()
+    tape.ingest_trade(NVDA_ASK_BLOCK)
+    monkeypatch.setenv("BULLFLOW_API_KEY", "test-key")
+    monkeypatch.setattr("odte_scanner.signals.bullflow.get_tape", lambda settings=None: tape)
+    monkeypatch.setattr("odte_scanner.ui._bullflow_block", lambda: tape.health())
+    stale = {
+        "echo": {
+            "option_flow": {
+                "flow_source": "yahoo",
+                "golden": [{"symbol": "VG", "tier": "golden", "source": "yahoo", "premium_notional": 300000}],
+                "prints": [{"symbol": "VG", "tier": "golden", "source": "yahoo"}],
+                "counts": {"golden": 40, "all": 40},
+            }
+        }
+    }
+    out = _attach_bullflow(stale)
+    assert out["flow_source"] == "bullflow"
+    flow = out["echo"]["option_flow"]
+    assert flow["flow_source"] == "bullflow"
+    symbols = {row.get("symbol") for row in (flow.get("golden") or [])}
+    assert "NVDA" in symbols
+    assert "VG" not in symbols
+    assert flow["golden"][0]["trade_type"] == "BLOCK"
