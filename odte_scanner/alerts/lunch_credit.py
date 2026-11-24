@@ -71,6 +71,24 @@ def _head(card: dict[str, Any]) -> str:
     return " ".join(bit for bit in bits if bit)
 
 
+def format_gex_context(row: Any) -> str | None:
+    """Prior-day GEX regime line. Context only: it never gates or sizes the entry."""
+    if not isinstance(row, dict):
+        return None
+    regime = str(row.get("regime") or "unknown").lower()
+    label = {"positive": "positive (+GEX)", "negative": "negative (−GEX)"}.get(regime, "unknown")
+    bits = [f"Prior-day GEX ±2%: {label}"]
+    if row.get("net_gex_band") is not None:
+        try:
+            v = float(row["net_gex_band"])
+            bits.append(("−" if v < 0 else "+") + f"${abs(v) / 1e9:.2f}B")
+        except (TypeError, ValueError):
+            pass
+    if row.get("session"):
+        bits.append(f"{row['session']} close")
+    return " · ".join(bits) + " · context only, not an entry rule"
+
+
 def format_lunch_entry(card: dict[str, Any]) -> str:
     """Entry alert. Both legs, the credit, and the max risk."""
     contracts = int(card.get("contracts") or 1)
@@ -98,6 +116,9 @@ def format_lunch_entry(card: dict[str, Any]) -> str:
     detail = str(card.get("detail") or "").strip()
     if detail:
         lines.append(detail[:180])
+    gex_line = format_gex_context(card.get("gex_regime"))
+    if gex_line:
+        lines.append(gex_line)
     from odte_scanner.signals.expected_move import format_em_used
 
     em_used = format_em_used(card.get("em_used_pct"))
