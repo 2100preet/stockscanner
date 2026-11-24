@@ -4631,6 +4631,13 @@ PAGE = r"""
         : phase === "scanning" ? "Scanning SPY QQQ SPX — no break yet"
         : phase === "triggered" ? "Triggered"
         : (rows.length ? "Closed" : "No Lunch-Break Credit today");
+      const gexSyms = ((DATA.gex_regime || {}).symbols) || {};
+      const gexTxt = ["SPY", "QQQ"].map(function (sym) {
+        const r = (gexSyms[sym] || {}).regime || "unknown";
+        return sym + " " + (r === "positive" ? "+GEX (positive)" : r === "negative" ? "−GEX (negative)" : "GEX unknown");
+      }).join(" · ");
+      const shadow = board.gex_shadow || {};
+      const gexLine = `<div class="pb-sub lunch-gex">Prior-day GEX ±2%: ${gexTxt} · negative-GEX days log a shadow spread $2 further out (not traded)${shadow.closed ? " · 30d shadow " + shadow.closed + " closed, $" + fmt(shadow.shadow_pnl_usd, 0) : ""}</div>`;
       const leg = (row) => {
         const sell = row.short_strike == null ? "—" : row.short_strike;
         const buy = row.long_strike == null ? "—" : row.long_strike;
@@ -4648,6 +4655,7 @@ PAGE = r"""
           <div>
             <h2 class="pb-title">🌤️ Lunch-Break <em>Credit</em></h2>
             <div class="pb-sub">${board.note || "SPY and QQQ paper. SPX alert only. Flat 2:45 PM CT."}</div>
+            ${gexLine}
           </div>
           <div class="status">${label.toUpperCase()}</div>
         </div>
@@ -4680,6 +4688,7 @@ PAGE = r"""
           <div>
             <h2 class="pb-title">🌤️ Lunch-Break <em>Credit</em></h2>
             <div class="pb-sub">${board.note || "SPY and QQQ paper. SPX alert only. Flat 2:45 PM CT."}</div>
+            ${gexLine}
           </div>
           <div class="status">${label.toUpperCase()} ${rows.length}</div>
         </div>
@@ -5965,6 +5974,16 @@ def _attach_bullflow(body: dict | None, health: dict | None = None) -> dict | No
     return out
 
 
+def _gex_regime_block() -> dict:
+    """Prior-day EOD GEX regime (cache read only; never fetches in a request)."""
+    try:
+        from odte_scanner.signals.gex_regime import regime_block
+
+        return regime_block()
+    except Exception as exc:  # noqa: BLE001
+        return {"symbols": {}, "error": str(exc)[:200]}
+
+
 def _polymarket_block() -> dict:
     """Polymarket unusual-flow monitor health for snapshot / scan_status. Alert only."""
     try:
@@ -5997,6 +6016,7 @@ def _overlay_live(body: dict | None) -> dict | None:
     if isinstance(overlaid, dict):
         overlaid = dict(overlaid)
         overlaid["polymarket"] = _polymarket_block()
+        overlaid["gex_regime"] = _gex_regime_block()
     return overlaid
 
 
@@ -9333,6 +9353,17 @@ def create_app(config_path: str | None = None) -> Flask:
             return jsonify({"ok": False, "error": "exit failed"}), 409
         return jsonify({"ok": True, "trade": out.to_dict(), "book": tracker.book.to_dict()})
 
+    @app.get("/api/lunch_gex_shadow")
+    def lunch_gex_shadow_results():
+        """30-day negative-GEX shadow vs the real Lunch-Break Credit desk. Shadow only."""
+        from odte_scanner.signals.lunch_gex_shadow import summary
+
+        try:
+            days = max(1, min(60, int(request.args.get("days") or 30)))
+        except ValueError:
+            days = 30
+        return jsonify({**summary(days=days), "gex_regime": _gex_regime_block()})
+
     @app.get("/api/scan_status")
     def scan_status():
         latest = ROOT / "outputs" / "latest_scan.json"
@@ -9349,6 +9380,7 @@ def create_app(config_path: str | None = None) -> Flask:
                 "flow_source": health.get("flow_source") or "yahoo",
                 "bullflow": health,
                 "polymarket": _polymarket_block(),
+                "gex_regime": _gex_regime_block(),
             }
         )
 
