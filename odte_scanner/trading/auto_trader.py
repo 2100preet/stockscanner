@@ -59,6 +59,7 @@ from odte_scanner.trading.chase import CHASE_SLIPPAGE, chase_action, repair_sign
 from odte_scanner.trading.ticks import initial_buy_limit, normalize_option_limit
 from odte_scanner.trading.golden import golden_signal_kind
 from odte_scanner.trading.webull import WebullBroker, WebullOrderIntent, parse_occ_contract, reject_kind
+from odte_scanner.trading.afternoon_lots import is_afternoon_lot, is_flat_reject, ledger_open_qty, quote_mark
 
 logger = logging.getLogger(__name__)
 
@@ -584,6 +585,10 @@ class AutoTrader:
                 # are retried on the same client order id.
                 if o.status != "rejected" or (o.meta or {}).get("retryable") is True:
                     continue
+            if desk == "afternoon_puts" and self._stale_afternoon_lot(o):
+                # A prior-session 0DTE lot (expired, or closed by our own
+                # filled sell) can't be open now. It must not block a new entry.
+                continue
             if occ and o.contract and occ == o.contract:
                 return True
             if o.symbol == sym and o.desk == desk and o.right == right.upper():
@@ -867,8 +872,82 @@ class AutoTrader:
             self.broker.cancel(sell)
         return fresh
 
+    def _afternoon_scope(self, order: WebullOrderIntent | None) -> bool:
+        """An Afternoon Puts paper lot. Never true on the Sniper LIVE broker."""
+        return is_afternoon_lot(order) and not self._is_live_desk_broker()
+
+    def _stale_afternoon_lot(self, order: WebullOrderIntent) -> bool:
+        """An Afternoon Puts buy from a prior session that can't still be open.
+
+        Its contract expired, or (with no expiry on the row) it was placed on a
+        prior CT day and our own filled sells closed it. Working buys from today
+        still block. So does any lot from today, to keep one entry per name a day.
+        """
+        if not self._afternoon_scope(order):
+            return False
+        if order.expiry:
+            return contract_expired(order.expiry, self._now)
+        placed = _parse_iso(str(order.created_at or ""))
+        if placed is None:
+            return False
+        from odte_scanner.time_cst import CT
+
+        moment = self._now or datetime.now(timezone.utc)
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        if placed.astimezone(CT).date() >= moment.astimezone(CT).date():
+            return False
+        return ledger_open_qty(order, self.broker.orders) <= 0
+
+    def _afternoon_held_qty(self, order: WebullOrderIntent) -> float:
+        """Afternoon Puts lot still long: the filled buy less our own filled sells.
+
+        Webull's positions snapshot can lower that count. Its silence can't zero
+        it: Nov 6 the QQQ lot fell out of one snapshot and the −40% stop was never
+        watched. When the positions call fails, a lot our own sell already closed
+        (Nov 19/20), or an expired contract, is flat, not still long.
+        """
+        if order.status == "dry_run":
+            return float(order.quantity or 1)
+        if not self._is_position_buy(order):
+            return 0.0
+        if (order.meta or {}).get("position_gone"):
+            return 0.0
+        if contract_expired(order.expiry, self._now):
+            return 0.0
+        net = ledger_open_qty(order, self.broker.orders)
+        if net <= 0:
+            return 0.0
+        book = self._positions_by_contract
+        if book is not None:
+            pos = book.get(str(order.contract or ""))
+            qty = float((pos or {}).get("quantity") or 0)
+            if qty > 0:
+                return min(net, qty)
+        return net
+
+    def _afternoon_watch_mark(self, order: WebullOrderIntent) -> float | None:
+        """Live contract bid for an Afternoon Puts lot that Webull gave no mark for."""
+        mark, source = quote_mark(order)
+        meta = order.meta
+        previous = meta.get("exit_mark_source")
+        meta["exit_watch_at"] = (self._now or datetime.now(timezone.utc)).isoformat()
+        meta["exit_mark_source"] = source
+        if mark is not None:
+            meta["exit_mark"] = mark
+        elif previous != source:
+            logger.warning(
+                "afternoon puts lot %s %s has no Webull mark and no live quote (%s); stop unwatched this tick",
+                order.id,
+                order.contract,
+                source,
+            )
+        return mark
+
     def _held_qty(self, order: WebullOrderIntent) -> float:
         """Contracts still long. A live positions snapshot overrides the ledger."""
+        if self._afternoon_scope(order):
+            return self._afternoon_held_qty(order)
         book = self._positions_by_contract
         acct = str((order.meta or {}).get("account_id") or self.broker.account_id or "")
         if book is not None and acct and self._position_accounts and acct not in self._position_accounts:
@@ -1086,7 +1165,9 @@ class AutoTrader:
             # a weekly that does not expire today. Gold stays on 2:30 PM CT.
             return past_gold_flatten(now, "10:30")
         if str(desk or "") == "afternoon_puts":
-            return past_gold_flatten(now, "14:45")
+            # A 0DTE from a prior session already expired. It has nothing to
+            # flatten, and Webull rejects the order (Nov 19, Nov 17/18 lots).
+            return past_gold_flatten(now, "14:45") and not contract_expired(expiry, now)
         if str(desk or "") == self.second_desk:
             if not past_odte_flatten(now):
                 return False
@@ -1534,7 +1615,11 @@ class AutoTrader:
             opened = self._find_open_long(probe, str(sell.right or "C"))
             position = self._open_position(probe, str(sell.right or "C"))
             held = 0.0
-            if self._positions_by_contract is not None:
+            afternoon = opened is not None and self._afternoon_scope(opened)
+            if afternoon:
+                # The ledger long, capped by the snapshot when it lists the lot.
+                held = self._held_qty(opened)
+            elif self._positions_by_contract is not None:
                 if position is not None:
                     held = float(position.get("quantity") or 0)
             elif opened is not None:
@@ -1548,6 +1633,8 @@ class AutoTrader:
                 self.broker.cancel(sell)
                 continue
             bid = self._lot_mark(position)
+            if bid is None and afternoon:
+                bid = self._afternoon_watch_mark(opened)
             if (sell.meta or {}).get("hard_stop"):
                 # A gold stop rests at the stop. Walking it down to each new
                 # bid is how a −50% stop filled at −67%. But a stop the market
@@ -1595,6 +1682,10 @@ class AutoTrader:
             if order is None and (pos is None or float(pos.get("quantity") or 0) <= 0):
                 return
             mark = self._lot_mark(pos)
+            if mark is None and order is not None and self._afternoon_scope(order):
+                # No Webull mark (the lot is missing from the snapshot, or the
+                # snapshot failed). Watch the stop on a live contract quote.
+                mark = self._afternoon_watch_mark(order)
             entry = self._lot_entry(order, pos)
             if mark is None or entry is None or entry <= 0:
                 return
@@ -2623,6 +2714,26 @@ class AutoTrader:
         kind = str((sell.meta or {}).get("reject_kind") or reject_kind(code))
         if kind == "tick":
             kind = "other"
+        if opened is not None and self._afternoon_scope(opened):
+            text = (sell.meta or {}).get("reject_reason") or sell.error
+            if is_flat_reject(code, text) or contract_expired(sell.expiry, self._now):
+                # Webull says there is no long to close (Nov 20 "close intent
+                # mismatch"), or the 0DTE already expired (Nov 19). A retry at
+                # Limit $0.01 can't fill. Stop sending closes for this lot.
+                now_iso = (self._now or datetime.now(timezone.utc)).isoformat()
+                sell.meta["reject_kind"] = "no_position"
+                sell.meta["next_step"] = "Webull shows no long for this Afternoon Puts lot — not retried"
+                opened.meta["position_gone"] = True
+                opened.meta["position_gone_at"] = now_iso
+                opened.meta["position_gone_reason"] = str(code or text or "expired contract")[:160]
+                logger.warning(
+                    "afternoon puts close rejected as flat for %s %s (%s); lot marked gone",
+                    opened.id,
+                    opened.contract,
+                    code or "expired",
+                )
+                self.broker.save()
+                return
         positions = self._managed_positions()
         if positions is not None:
             self._reconcile_positions(positions)

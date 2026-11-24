@@ -34,6 +34,14 @@ def _no_webull_history_network(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _afternoon_shadow_log_in_tmp(monkeypatch, tmp_path):
+    """The Afternoon Puts shadow log never touches repo outputs/."""
+    monkeypatch.setenv("AFTERNOON_PUTS_SHADOW_PATH", str(tmp_path / "afternoon_puts_shadow.json"))
+    monkeypatch.delenv("AFTERNOON_PUTS_SHADOW_OFF", raising=False)
+    monkeypatch.delenv("AFTERNOON_PUTS_SHADOW_START", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _paper_limit_files_in_tmp(monkeypatch, tmp_path):
     """Kill switch and limit-alert dedupe never touch the repo outputs/ folder."""
     from odte_scanner.trading import risk_controls

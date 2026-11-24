@@ -347,12 +347,20 @@ def load_afternoon_board(
         def fetch_chain(symbol: str, spot: float, side: str) -> list[dict[str, Any]]:
             return _yahoo_chain(symbol, side, now=now)
 
-        return build_afternoon_board(
+        board = build_afternoon_board(
             bars,
             now=now,
             store_path=store_path,
             fetch_chain=fetch_chain,
         )
+        try:
+            from odte_scanner.signals.afternoon_puts_shadow import tile_block
+
+            # Shadow log summary for the tile. Reads the file only; not traded.
+            board["shadow"] = tile_block(now)
+        except Exception as exc:  # noqa: BLE001
+            logger.info("afternoon puts shadow block skipped: %s", type(exc).__name__)
+        return board
     except Exception as exc:  # noqa: BLE001
         logger.warning("afternoon puts board failed: %s", exc)
         return {
