@@ -407,6 +407,7 @@ PAGE = r"""
     <div id="ripV2ShadowBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="newsDeskBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="polymarketBanner" class="pulse-banner" aria-live="polite"></div>
+    <div id="extHoursBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="biotechWatchBanner" class="pulse-banner" aria-live="polite"></div>
     <div id="loadNote" class="loading" style="display:none;margin-bottom:.6rem"></div>
     <div id="alertToasts" aria-live="assertive"></div>
@@ -4875,6 +4876,35 @@ PAGE = r"""
         ${table}`;
     }
 
+    function renderExtHours() {
+      const el = document.getElementById("extHoursBanner");
+      if (!el) return;
+      const ah = DATA.ah_earnings_shadow || {};
+      const ob = DATA.overnight_bias || {};
+      el.classList.add("active", "expected");
+      const esc = (v) => String(v == null ? "" : v).replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+      const usd = (v) => v == null ? "—" : "$" + Number(v).toFixed(2);
+      const pc = (v) => v == null ? "—" : (Number(v) * 100 >= 0 ? "+" : "") + (Number(v) * 100).toFixed(1) + "%";
+      const todayCt = new Date().toLocaleDateString("en-CA", {timeZone: "America/Chicago"});
+      const obToday = (ob.today && ob.today.date === todayCt) ? ob.today : null;
+      const obRows = obToday ? (obToday.rows || []).map((r) => `<span class="pill">${esc(r.symbol)} ${(Number(r.range_pos) * 100).toFixed(0)}% of range${r.triggered ? " · 🌙 bottom 25% → " + esc(r.futures) : ""}</span>`).join(" ") : "";
+      const obLines = obToday ? (obToday.lines || []).map((l) => `<p class="pc-why">${esc(l)}</p>`).join("") : "";
+      const t = ah.season_tally || {};
+      const rows = (ah.recent_trades || []).slice(0, 6).map((x) => `<tr><td>${esc(x.entry_date)}</td><td><strong>${esc(x.symbol)}</strong>${x.gold ? " · Gold Setup (shadow)" : ""}</td><td>${esc(x.side)}</td><td>${pc(x.R)}</td><td>Limit ${usd(x.limit)}</td><td>${esc(x.status)}</td><td>${pc(x.ret)}</td></tr>`).join("");
+      const table = rows ? `<div style="overflow-x:auto"><table class="pb-table" style="width:100%;font-size:12px"><thead><tr><th>Date</th><th>Name</th><th>Side</th><th>AH move</th><th>Entry</th><th>Status</th><th>Open result</th></tr></thead><tbody>${rows}</tbody></table></div>` : `<div class="pulse-card expected"><p class="pc-why">${ah.enabled === false ? "AH earnings shadow off." : "No after-hours earnings setups yet. Checks the 27 names at 5:00 PM CT on report days."}</p></div>`;
+      const cal = ah.calendar && ah.calendar.date === todayCt ? (ah.calendar.names || []).join(", ") : "";
+      el.innerHTML = `
+        <div class="pb-head">
+          <div>
+            <h2 class="pb-title">🌙 Extended hours <em>· SHADOW (alerts only, no order placed)</em></h2>
+            <div class="pb-sub">AH earnings drift: 5:00 PM CT alert, exit next 8:30 AM CT open${cal ? " · reporting tonight: " + esc(cal) : ""} · ${esc(ah.warning || "")}</div>
+          </div>
+          <div class="status">SEASON ${esc(t.season || "")} · ${esc(t.trades || 0)} TRADES · ${esc(t.wins || 0)}W/${esc(t.losses || 0)}L${t.avg_ret != null ? " · " + pc(t.avg_ret) + " AVG" : ""}</div>
+        </div>
+        <div class="pulse-card expected"><p class="pc-why"><strong>QQQ / IWM overnight bias (context only):</strong> ${obRows || (ob.enabled === false ? "off" : "checks at 2:55 PM CT")}</p>${obLines}</div>
+        ${table}`;
+    }
+
     function renderNewsDesk() {
       const el = document.getElementById("newsDeskBanner");
       if (!el) return;
@@ -5233,6 +5263,7 @@ PAGE = r"""
       try { renderRipV2Shadow(); } catch (err) { console.error(err); }
       try { renderNewsDesk(); } catch (err) { console.error(err); }
       try { renderPolymarket(); } catch (err) { console.error(err); }
+      try { renderExtHours(); } catch (err) { console.error(err); }
       try { renderBiotechWatch(); } catch (err) { console.error(err); }
       try { renderSpxStrategy(); } catch (err) { console.error(err); }
       renderMustTradeBanner();
@@ -5978,6 +6009,20 @@ def _polymarket_block() -> dict:
     return {"ok": False, "enabled": False, "alert_only": True, "last_error": None, "recent_alerts": []}
 
 
+def _ext_hours_blocks() -> dict:
+    """AH earnings shadow + overnight bias views. Alerts/context only, no secrets."""
+    out: dict = {}
+    try:
+        from odte_scanner.ext_hours.worker import ah_block, bias_block
+
+        out["ah_earnings_shadow"] = ah_block()
+        out["overnight_bias"] = bias_block()
+    except Exception as exc:  # noqa: BLE001
+        out["ah_earnings_shadow"] = {"ok": False, "shadow": True, "orders_placed": 0, "last_error": type(exc).__name__}
+        out["overnight_bias"] = {"ok": False, "context_only": True, "orders_placed": 0, "last_error": type(exc).__name__}
+    return out
+
+
 def _overlay_live(body: dict | None) -> dict | None:
     """Merge the fast-loop boards and the paper ledger into a cached snapshot."""
     if not isinstance(body, dict):
@@ -5997,6 +6042,7 @@ def _overlay_live(body: dict | None) -> dict | None:
     if isinstance(overlaid, dict):
         overlaid = dict(overlaid)
         overlaid["polymarket"] = _polymarket_block()
+        overlaid.update(_ext_hours_blocks())
     return overlaid
 
 
@@ -9625,6 +9671,16 @@ def create_app(config_path: str | None = None) -> Flask:
 
         board = _snapshot_body().get("today_pnl") or {"ok": False}
         return jsonify(sanitize_for_json(board))
+
+    @app.get("/api/ah_earnings_shadow")
+    def ah_earnings_shadow_api():
+        """After-hours earnings drift shadow ledger. Alerts only, never an order."""
+        return jsonify(sanitize_for_json(_ext_hours_blocks()["ah_earnings_shadow"]))
+
+    @app.get("/api/overnight_bias")
+    def overnight_bias_api():
+        """QQQ/IWM overnight bias context + close-to-open shadow ledger. No orders."""
+        return jsonify(sanitize_for_json(_ext_hours_blocks()["overnight_bias"]))
 
     @app.get("/api/levels")
     def levels_api():

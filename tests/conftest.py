@@ -83,3 +83,13 @@ def _polymarket_monitor_off(monkeypatch, tmp_path):
     """No Polymarket poller thread or state file from the suite; tests opt in."""
     monkeypatch.setenv("POLYMARKET_MONITOR_ENABLED", "0")
     monkeypatch.setenv("POLYMARKET_STATE_PATH", str(tmp_path / "polymarket_monitor_state.json"))
+
+
+@pytest.fixture(autouse=True)
+def _ext_hours_shadow_off(monkeypatch, tmp_path):
+    """No extended-hours shadow thread or ledger writes from the suite; tests opt in."""
+    monkeypatch.setenv("AH_EARNINGS_SHADOW_OFF", "1")
+    monkeypatch.setenv("OVERNIGHT_BIAS_OFF", "1")
+    monkeypatch.setenv("AH_EARNINGS_SHADOW_PATH", str(tmp_path / "ah_earnings_shadow.json"))
+    monkeypatch.setenv("AH_EARNINGS_CALENDAR_PATH", str(tmp_path / "ah_earnings_calendar.json"))
+    monkeypatch.setenv("OVERNIGHT_BIAS_PATH", str(tmp_path / "overnight_bias_shadow.json"))

@@ -939,3 +939,15 @@ polymarket:
   spike_window_sec: 3600
   spike_min_volume_usd: 2000
   dedupe_sec: 86400
+
+# Extended-hours shadow desks (odte_scanner/ext_hours). ALERTS / CONTEXT ONLY:
+# no broker, router or order path. Rules are fixed to the Nov 24, 2026 study.
+#  - AH earnings drift (S2): 5:00 PM CT Telegram "SHADOW (alerts only, no order
+#    placed)" on the 27 names reporting after the close, |R| >= 3%, skips on
+#    5PM-vs-4PM >= 3% and spread > 0.5%; 8:35 AM CT result + season tally.
+#    Ledger outputs/ah_earnings_shadow.json, /api/ah_earnings_shadow.
+#    Kill switch env AH_EARNINGS_SHADOW_OFF=1.
+#  - Overnight bias (S1): 2:55 PM CT context line + note when QQQ/IWM are in
+#    the bottom 25% of the day range (MNQ/M2K). Ledger
+#    outputs/overnight_bias_shadow.json, /api/overnight_bias.
+#    Kill switch env OVERNIGHT_BIAS_OFF=1.
