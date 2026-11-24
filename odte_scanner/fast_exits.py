@@ -8,6 +8,8 @@ It never opens a position and never blocks on the scan: when the main sync
 holds the lock, the tick is skipped and the next one runs.
 
 Env: FAST_EXIT_LOOP=0 disables it. FAST_EXIT_PAUSE_SEC (default 7, 5–10).
+Each tick also runs the Afternoon Puts shadow log (live quotes, no orders;
+AFTERNOON_PUTS_SHADOW_OFF=1 turns it off).
 """
 from __future__ import annotations
 
@@ -53,6 +55,22 @@ def run_exit_tick(trader: Any, now: datetime | None = None) -> dict[str, Any]:
     return result
 
 
+def run_shadow_tick(trader: Any, now: datetime | None = None) -> dict[str, Any]:
+    """Afternoon Puts shadow log (quotes only, never an order). Errors stay here."""
+    from odte_scanner.signals.hold_rules import option_session_open
+
+    moment = now or datetime.now(timezone.utc)
+    if not option_session_open(moment):
+        return {"skipped": "session closed"}
+    try:
+        from odte_scanner.signals import afternoon_puts_shadow
+
+        return afternoon_puts_shadow.tick(list(getattr(trader.broker, "orders", None) or []), moment)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("afternoon puts shadow tick skipped: %s", type(exc).__name__)
+        return {"skipped": "error"}
+
+
 def _loop(config_path: str | None, build: Callable[[str | None], Any] | None = None) -> None:
     from odte_scanner.fast_desk import build_paper_trader
 
@@ -64,6 +82,7 @@ def _loop(config_path: str | None, build: Callable[[str | None], Any] | None = N
             if trader is None:
                 trader = builder(config_path)
             run_exit_tick(trader)
+            run_shadow_tick(trader)
         except Exception as exc:  # noqa: BLE001
             logger.exception("fast exit tick failed: %s", exc)
             trader = None  # rebuild from config next tick

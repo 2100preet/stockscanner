@@ -34,6 +34,14 @@ def _no_webull_history_network(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _afternoon_shadow_log_in_tmp(monkeypatch, tmp_path):
+    """The Afternoon Puts shadow log never touches repo outputs/."""
+    monkeypatch.setenv("AFTERNOON_PUTS_SHADOW_PATH", str(tmp_path / "afternoon_puts_shadow.json"))
+    monkeypatch.delenv("AFTERNOON_PUTS_SHADOW_OFF", raising=False)
+    monkeypatch.delenv("AFTERNOON_PUTS_SHADOW_START", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _paper_limit_files_in_tmp(monkeypatch, tmp_path):
     """Kill switch and limit-alert dedupe never touch the repo outputs/ folder."""
     from odte_scanner.trading import risk_controls
@@ -93,3 +101,11 @@ def _polymarket_monitor_off(monkeypatch, tmp_path):
     """No Polymarket poller thread or state file from the suite; tests opt in."""
     monkeypatch.setenv("POLYMARKET_MONITOR_ENABLED", "0")
     monkeypatch.setenv("POLYMARKET_STATE_PATH", str(tmp_path / "polymarket_monitor_state.json"))
+
+
+@pytest.fixture(autouse=True)
+def _gex_shadow_files_in_tmp(monkeypatch, tmp_path):
+    """GEX regime cache and the Lunch shadow log never touch repo outputs/; no warm thread."""
+    monkeypatch.setenv("GEX_REGIME_ENABLED", "0")
+    monkeypatch.setenv("GEX_REGIME_CACHE_PATH", str(tmp_path / "gex_regime.json"))
+    monkeypatch.setenv("LUNCH_GEX_SHADOW_PATH", str(tmp_path / "lunch_gex_shadow.json"))

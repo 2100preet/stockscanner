@@ -161,6 +161,13 @@ def start_live_desk_worker(config_path: str | None = None) -> bool:
         start_bullflow_worker(config_path)
     except Exception as exc:  # noqa: BLE001
         logger.warning("bullflow worker did not start: %s", exc)
+    # Prior-day EOD GEX regime (Bullflow REST eodGex, once a day). Logging only.
+    try:
+        from odte_scanner.signals.gex_regime import start_gex_regime_worker
+
+        start_gex_regime_worker()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("gex regime worker did not start: %s", exc)
     # Polymarket unusual-flow monitor: public REST poll every 60s, alert only.
     try:
         from odte_scanner.polymarket.monitor import start_polymarket_worker
