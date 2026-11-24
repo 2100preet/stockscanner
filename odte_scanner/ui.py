@@ -4642,12 +4642,28 @@ PAGE = r"""
         const ask = side.ask == null ? "—" : ("$" + fmt(side.ask, 2));
         return "Bid " + bid + " / Ask " + ask;
       };
+      const esc = (v) => String(v == null ? "" : v).replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+      const gexBlock = board.gex_regime || DATA.gex_regime || {};
+      const gexName = (reg) => reg === "positive" ? "Positive GEX" : (reg === "negative" ? "Negative GEX" : "unknown");
+      const gexTickers = gexBlock.tickers || {};
+      const gexLine = "Prior-day GEX (" + (gexBlock.gex_date || "—") + "): " + ["SPY", "QQQ"].map(function (t) {
+        return t + " " + gexName((gexTickers[t] || {}).regime);
+      }).join(" · ") + " · context only";
+      const shadow = DATA.lunch_gex_shadow || {};
+      const shNeg = ((shadow.by_regime || {}).negative || {});
+      const shPos = ((shadow.by_regime || {}).positive || {});
+      const shMoney = (v) => v == null ? "—" : ((v < 0 ? "−$" : "$") + fmt(Math.abs(v), 0));
+      const shadowLine = shadow.ok ? ("Shadow log, no orders" + (shadow.expires_on ? " (ends " + shadow.expires_on + ")" : "") + ": +GEX base " + ((shPos.base || {}).closed || 0) + " closed " + shMoney((shPos.base || {}).total_usd)
+        + " · −GEX base " + ((shNeg.base || {}).closed || 0) + " closed " + shMoney((shNeg.base || {}).total_usd)
+        + " vs $2-wider " + ((shNeg.wide || {}).closed || 0) + " closed " + shMoney((shNeg.wide || {}).total_usd)) : "";
+      const gexHtml = `<div class="pb-sub" id="lunchGexRegime">${esc(gexLine)}${shadowLine ? "<br>" + esc(shadowLine) : ""}</div>`;
       if (!rows.length) {
         el.innerHTML = `
         <div class="pb-head">
           <div>
             <h2 class="pb-title">🌤️ Lunch-Break <em>Credit</em></h2>
             <div class="pb-sub">${board.note || "SPY and QQQ paper. SPX alert only. Flat 2:45 PM CT."}</div>
+            ${gexHtml}
           </div>
           <div class="status">${label.toUpperCase()}</div>
         </div>
@@ -4671,6 +4687,7 @@ PAGE = r"""
             <div><span>Signal</span><br><strong>${row.at_ct || "—"} CT</strong></div>
             <div><span>Short</span><br><strong>${quote(row.short)}</strong></div>
             <div><span>Long</span><br><strong>${quote(row.long)}</strong><div class="why">${order} · max risk ${risk}</div></div>
+            <div><span>Prior-day GEX</span><br><strong>${esc(gexName(row.gex_regime))}</strong></div>
           </div>
           <p class="pc-why">${row.detail || ""} · <strong>${row.exit_plan || ""}</strong></p>
         </div>`;
@@ -4680,6 +4697,7 @@ PAGE = r"""
           <div>
             <h2 class="pb-title">🌤️ Lunch-Break <em>Credit</em></h2>
             <div class="pb-sub">${board.note || "SPY and QQQ paper. SPX alert only. Flat 2:45 PM CT."}</div>
+            ${gexHtml}
           </div>
           <div class="status">${label.toUpperCase()} ${rows.length}</div>
         </div>
@@ -5978,6 +5996,40 @@ def _polymarket_block() -> dict:
     return {"ok": False, "enabled": False, "alert_only": True, "last_error": None, "recent_alerts": []}
 
 
+def _gex_regime_block() -> dict:
+    """Cached prior-day GEX regime for SPY/QQQ. Disk only, never the network."""
+    try:
+        from odte_scanner.signals.gex_regime import cached_block
+
+        return cached_block()
+    except Exception as exc:  # noqa: BLE001
+        return {"context_only": True, "tickers": {}, "error": str(exc)[:200]}
+
+
+def _lunch_gex_shadow_block() -> dict:
+    """Lunch-Break Credit GEX shadow log. Shadow only, no orders."""
+    try:
+        from odte_scanner.signals.lunch_gex_shadow import public_block
+
+        return public_block()
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "shadow_only": True, "error": str(exc)[:200], "recent": []}
+
+
+def _lunch_with_regime(board):
+    """Copy of the Lunch board with the cached regime stamped on it."""
+    if not isinstance(board, dict):
+        return board
+    try:
+        from odte_scanner.signals.gex_regime import attach_to_lunch_board
+
+        copy = dict(board)
+        copy["signals"] = [dict(c) if isinstance(c, dict) else c for c in (board.get("signals") or [])]
+        return attach_to_lunch_board(copy)
+    except Exception:  # noqa: BLE001
+        return board
+
+
 def _overlay_live(body: dict | None) -> dict | None:
     """Merge the fast-loop boards and the paper ledger into a cached snapshot."""
     if not isinstance(body, dict):
@@ -5997,6 +6049,10 @@ def _overlay_live(body: dict | None) -> dict | None:
     if isinstance(overlaid, dict):
         overlaid = dict(overlaid)
         overlaid["polymarket"] = _polymarket_block()
+        overlaid["gex_regime"] = _gex_regime_block()
+        overlaid["lunch_gex_shadow"] = _lunch_gex_shadow_block()
+        if isinstance(overlaid.get("lunch_credit"), dict):
+            overlaid["lunch_credit"] = _lunch_with_regime(overlaid["lunch_credit"])
     return overlaid
 
 
@@ -9349,8 +9405,14 @@ def create_app(config_path: str | None = None) -> Flask:
                 "flow_source": health.get("flow_source") or "yahoo",
                 "bullflow": health,
                 "polymarket": _polymarket_block(),
+                "gex_regime": _gex_regime_block(),
             }
         )
+
+    @app.get("/api/lunch_gex_shadow")
+    def lunch_gex_shadow():
+        """Lunch-Break Credit GEX shadow log. Shadow only, no orders."""
+        return jsonify({"gex_regime": _gex_regime_block(), "shadow": _lunch_gex_shadow_block()})
 
     @app.post("/api/scan")
     def trigger_scan():

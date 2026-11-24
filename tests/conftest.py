@@ -83,3 +83,14 @@ def _polymarket_monitor_off(monkeypatch, tmp_path):
     """No Polymarket poller thread or state file from the suite; tests opt in."""
     monkeypatch.setenv("POLYMARKET_MONITOR_ENABLED", "0")
     monkeypatch.setenv("POLYMARKET_STATE_PATH", str(tmp_path / "polymarket_monitor_state.json"))
+
+
+@pytest.fixture(autouse=True)
+def _gex_regime_and_lunch_shadow_in_tmp(monkeypatch, tmp_path):
+    """The GEX regime cache and the Lunch shadow log never touch repo outputs/."""
+    from odte_scanner.signals import gex_regime, lunch_gex_shadow
+
+    monkeypatch.setattr(gex_regime, "DEFAULT_STORE", tmp_path / "gex_regime.json")
+    monkeypatch.setattr(lunch_gex_shadow, "DEFAULT_STORE", tmp_path / "lunch_gex_shadow.json")
+    monkeypatch.setenv("LUNCH_GEX_SHADOW", "0")
+    lunch_gex_shadow._last_chain.clear()

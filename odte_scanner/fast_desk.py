@@ -543,6 +543,28 @@ def _default_lunch_route(board: dict[str, Any], now: datetime, config_path: str 
     return LunchRouter(broker, enabled=enabled).sync(board, now)
 
 
+def _attach_gex_regime(board: dict[str, Any], moment: datetime) -> None:
+    """Stamp the cached prior-day GEX regime (context only, no network)."""
+    try:
+        from odte_scanner.signals.gex_regime import attach_to_lunch_board
+
+        attach_to_lunch_board(board, moment)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("gex regime attach failed: %s", exc)
+
+
+def _lunch_gex_shadow(board: dict[str, Any], moment: datetime) -> None:
+    """Shadow log only (no orders). Runs on its own thread so the desk never waits."""
+    if not _env_flag("LUNCH_GEX_SHADOW", True):
+        return
+    try:
+        from odte_scanner.signals.lunch_gex_shadow import run_shadow_cycle_async
+
+        run_shadow_cycle_async(board, moment)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("lunch gex shadow failed: %s", exc)
+
+
 def run_lunch_credit_cycle(
     config_path: str | None = None,
     *,
@@ -577,6 +599,7 @@ def run_lunch_credit_cycle(
             _publish_lunch_failure(error)
             return {"ok": False, "error": error, "scan": "not_used"}
     board = board if isinstance(board, dict) else {}
+    _attach_gex_regime(board, moment)
     route_meta: dict[str, Any] = {"ok": False}
     try:
         if route is None:
@@ -614,6 +637,7 @@ def run_lunch_credit_cycle(
         publish_hot(lunch=board)
     except Exception as exc:  # noqa: BLE001
         logger.info("lunch credit publish failed: %s", exc)
+    _lunch_gex_shadow(board, moment)
     logger.info(
         "lunch credit cycle signals=%s sent=%s path=%s",
         len(board.get("signals") or []),
@@ -676,6 +700,13 @@ def publish_index_boards_if_missing(now: datetime | None = None) -> dict[str, An
 
 def _side_cycles() -> None:
     """Expected move, confluence and the rip v2 shadow tick. Not latency critical, so they run after the entries."""
+    try:
+        from odte_scanner.signals.gex_regime import ensure_regimes
+
+        # One cached Bullflow eodGex REST call per ticker per day. Never the SSE stream.
+        ensure_regimes()
+    except Exception as exc:  # noqa: BLE001
+        logger.info("gex regime refresh failed: %s", exc)
     try:
         from odte_scanner.signals.expected_move import run_expected_move_cycle
 

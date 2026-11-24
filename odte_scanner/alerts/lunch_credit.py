@@ -98,6 +98,11 @@ def format_lunch_entry(card: dict[str, Any]) -> str:
     detail = str(card.get("detail") or "").strip()
     if detail:
         lines.append(detail[:180])
+    from odte_scanner.signals.gex_regime import lunch_alert_line
+
+    gex_line = lunch_alert_line(card)
+    if gex_line:
+        lines.append(gex_line)
     from odte_scanner.signals.expected_move import format_em_used
 
     em_used = format_em_used(card.get("em_used_pct"))

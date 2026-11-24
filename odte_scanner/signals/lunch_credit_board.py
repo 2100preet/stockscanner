@@ -348,12 +348,16 @@ def load_lunch_board(
         def fetch_chain(symbol: str, spot: float, side: str) -> list[dict[str, Any]]:
             return _yahoo_chain(symbol, side, now=now)
 
-        return build_lunch_board(
+        board = build_lunch_board(
             bars,
             now=now,
             store_path=store_path,
             fetch_chain=fetch_chain,
         )
+        from odte_scanner.signals.gex_regime import attach_to_lunch_board
+
+        # Context only: the cached prior-day GEX regime. No network, no routing change.
+        return attach_to_lunch_board(board, now)
     except Exception as exc:  # noqa: BLE001
         logger.warning("lunch credit board failed: %s", exc)
         return {
