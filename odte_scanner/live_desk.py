@@ -175,6 +175,14 @@ def start_live_desk_worker(config_path: str | None = None) -> bool:
         start_polymarket_worker(config_path)
     except Exception as exc:  # noqa: BLE001
         logger.warning("polymarket monitor did not start: %s", exc)
+    # Mega-cap Morning Sweep shadow desk: listens to the existing Bullflow tape
+    # (no new SSE connection), Tradier quotes for marks. Alerts only, no orders.
+    try:
+        from odte_scanner.signals.morning_sweep_shadow import start_morning_sweep_shadow
+
+        start_morning_sweep_shadow()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("morning sweep shadow did not start: %s", exc)
     # Extended-hours shadow desks: AH earnings drift + overnight bias. Alerts only.
     try:
         from odte_scanner.ext_hours.worker import start_ext_hours_worker

@@ -606,6 +606,9 @@ class BullflowTape:
         self._last_error: str | None = None
         self._backfill_ok = False
         self._session_date = ""
+        # In-process subscribers to NEW live prints (e.g. shadow desks). They
+        # share this one SSE connection; registering never opens a stream.
+        self._listeners: list[Callable[..., Any]] = []
 
     def health(self) -> dict[str, Any]:
         with self._lock:
@@ -674,8 +677,10 @@ class BullflowTape:
         if print_row is None:
             return None
         trade_id = str(print_row.get("id") or "")
+        fresh_live = False
         with self._lock:
             already = trade_id in self._prints
+            fresh_live = not backfill and not already and trade_id not in self._alert_seen
             if backfill:
                 print_row["backfill"] = True
                 print_row["alertable"] = False
@@ -696,7 +701,25 @@ class BullflowTape:
                     self._prints.pop(evicted, None)
                 self._order = self._order[overflow:]
             self._bump_event_locked(print_row.get("signaled_at") or print_row.get("trade_date"))
-            return dict(print_row)
+            stored = dict(print_row)
+        if fresh_live:
+            self._notify(raw, stored)
+        return stored
+
+    def add_listener(self, fn: Callable[..., Any]) -> None:
+        """Subscribe ``fn(raw_payload, print_row)`` to new live (non-backfill) prints."""
+        with self._lock:
+            if fn not in self._listeners:
+                self._listeners.append(fn)
+
+    def _notify(self, raw: dict[str, Any], row: dict[str, Any]) -> None:
+        with self._lock:
+            listeners = list(self._listeners)
+        for fn in listeners:
+            try:
+                fn(dict(raw), dict(row))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("bullflow listener failed: %s", type(exc).__name__)
 
     def mark_backfill(self, trade_ids: Iterable[str]) -> None:
         with self._lock:

@@ -4907,6 +4907,7 @@ PAGE = r"""
       if (!el) return;
       const ah = DATA.ah_earnings_shadow || {};
       const ob = DATA.overnight_bias || {};
+      const ms = DATA.morning_sweep_shadow || {};
       el.classList.add("active", "expected");
       const esc = (v) => String(v == null ? "" : v).replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
       const usd = (v) => v == null ? "—" : "$" + Number(v).toFixed(2);
@@ -4918,6 +4919,11 @@ PAGE = r"""
       const t = ah.season_tally || {};
       const rows = (ah.recent_trades || []).slice(0, 6).map((x) => `<tr><td>${esc(x.entry_date)}</td><td><strong>${esc(x.symbol)}</strong>${x.gold ? " · Gold Setup (shadow)" : ""}</td><td>${esc(x.side)}</td><td>${pc(x.R)}</td><td>Limit ${usd(x.limit)}</td><td>${esc(x.status)}</td><td>${pc(x.ret)}</td></tr>`).join("");
       const table = rows ? `<div style="overflow-x:auto"><table class="pb-table" style="width:100%;font-size:12px"><thead><tr><th>Date</th><th>Name</th><th>Side</th><th>AH move</th><th>Entry</th><th>Status</th><th>Open result</th></tr></thead><tbody>${rows}</tbody></table></div>` : `<div class="pulse-card expected"><p class="pc-why">${ah.enabled === false ? "AH earnings shadow off." : "No after-hours earnings setups yet. Checks the 27 names at 5:00 PM CT on report days."}</p></div>`;
+      const mt = ms.tally || {};
+      const mg = ms.gate || {};
+      const msLast = (ms.trades || [])[0];
+      const msLastTxt = msLast ? ` · last: ${esc(msLast.date)} ${esc(msLast.ticker)} ${esc(msLast.status)}${msLast.entry_ask != null ? " · Limit " + usd(msLast.entry_ask) : ""}${msLast.ret != null ? " → " + pc(msLast.ret) : ""}` : "";
+      const msLine = `<div class="pulse-card expected"><p class="pc-why"><strong>🔎 Mega-cap Morning Sweep (SHADOW, 8:30–9:30 AM CT, 60-min hold):</strong> ${ms.enabled === false ? "off" : `${esc(mt.trades || 0)} trades${mt.win_rate != null ? " · " + Math.round(mt.win_rate * 100) + "% win" : ""}${mt.avg_ret != null ? " · " + pc(mt.avg_ret) + " avg" : ""}${mt.profit_factor != null ? " · PF " + Number(mt.profit_factor).toFixed(2) : ""} · gate ${esc(mg.verdict || "collecting")} (day ${esc(mg.trading_days_elapsed || 0)}/30, need 25+ trades)`}${msLastTxt}</p></div>`;
       const cal = ah.calendar && ah.calendar.date === todayCt ? (ah.calendar.names || []).join(", ") : "";
       el.innerHTML = `
         <div class="pb-head">
@@ -4928,6 +4934,7 @@ PAGE = r"""
           <div class="status">SEASON ${esc(t.season || "")} · ${esc(t.trades || 0)} TRADES · ${esc(t.wins || 0)}W/${esc(t.losses || 0)}L${t.avg_ret != null ? " · " + pc(t.avg_ret) + " AVG" : ""}</div>
         </div>
         <div class="pulse-card expected"><p class="pc-why"><strong>QQQ / IWM overnight bias (context only):</strong> ${obRows || (ob.enabled === false ? "off" : "checks at 2:55 PM CT")}</p>${obLines}</div>
+        ${msLine}
         ${table}`;
     }
 
@@ -6056,6 +6063,12 @@ def _ext_hours_blocks() -> dict:
     except Exception as exc:  # noqa: BLE001
         out["ah_earnings_shadow"] = {"ok": False, "shadow": True, "orders_placed": 0, "last_error": type(exc).__name__}
         out["overnight_bias"] = {"ok": False, "context_only": True, "orders_placed": 0, "last_error": type(exc).__name__}
+    try:
+        from odte_scanner.signals.morning_sweep_shadow import block as morning_sweep_block
+
+        out["morning_sweep_shadow"] = morning_sweep_block()
+    except Exception as exc:  # noqa: BLE001
+        out["morning_sweep_shadow"] = {"ok": False, "shadow_only": True, "orders_placed": 0, "last_error": type(exc).__name__}
     return out
 
 
@@ -9739,6 +9752,11 @@ def create_app(config_path: str | None = None) -> Flask:
     def overnight_bias_api():
         """QQQ/IWM overnight bias context + close-to-open shadow ledger. No orders."""
         return jsonify(sanitize_for_json(_ext_hours_blocks()["overnight_bias"]))
+
+    @app.get("/api/morning_sweep_shadow")
+    def morning_sweep_shadow_api():
+        """Mega-cap Morning Sweep shadow ledger + promotion gate. Alerts only, never an order."""
+        return jsonify(sanitize_for_json(_ext_hours_blocks()["morning_sweep_shadow"]))
 
     @app.get("/api/levels")
     def levels_api():
