@@ -4924,6 +4924,12 @@ PAGE = r"""
       const msLast = (ms.trades || [])[0];
       const msLastTxt = msLast ? ` · last: ${esc(msLast.date)} ${esc(msLast.ticker)} ${esc(msLast.status)}${msLast.entry_ask != null ? " · Limit " + usd(msLast.entry_ask) : ""}${msLast.ret != null ? " → " + pc(msLast.ret) : ""}` : "";
       const msLine = `<div class="pulse-card expected"><p class="pc-why"><strong>🔎 Mega-cap Morning Sweep (SHADOW, 8:30–9:30 AM CT, 60-min hold):</strong> ${ms.enabled === false ? "off" : `${esc(mt.trades || 0)} trades${mt.win_rate != null ? " · " + Math.round(mt.win_rate * 100) + "% win" : ""}${mt.avg_ret != null ? " · " + pc(mt.avg_ret) + " avg" : ""}${mt.profit_factor != null ? " · PF " + Number(mt.profit_factor).toFixed(2) : ""} · gate ${esc(mg.verdict || "collecting")} (day ${esc(mg.trading_days_elapsed || 0)}/30, need 25+ trades)`}${msLastTxt}</p></div>`;
+      const rv = DATA.reversal_shadow || {};
+      const rt = rv.tally || {};
+      const rg = rv.gate || {};
+      const rvLast = (rv.open_positions || [])[0] || (rv.closed || [])[0];
+      const rvLastTxt = rvLast ? ` · last: ${esc(rvLast.date)} ${esc(rvLast.ticker)} ${esc(rvLast.side)} ${esc(rvLast.status)}${rvLast.entry_ask != null ? " · Limit " + usd(rvLast.entry_ask) : ""}${rvLast.ret != null ? " → " + pc(rvLast.ret) : ""}` : "";
+      const rvLine = `<div class="pulse-card expected"><p class="pc-why"><strong>🔁 Reversal 7–14 DTE (SHADOW, 30-trading-day test, alerts only, no live orders):</strong> ${rv.enabled === false ? "off" : `${esc(rt.trades || 0)} trades${rt.win_rate != null ? " · " + Math.round(rt.win_rate * 100) + "% win" : ""}${rt.avg_ret != null ? " · " + pc(rt.avg_ret) + " avg" : ""} · ${esc((rv.open_positions || []).length)} open · gate ${esc(rg.verdict || "collecting")} (day ${esc(rg.trading_days_elapsed || 0)}/30, need 30+ trades, t ≥ 2.0, no ticker &gt; 50%)`}${rvLastTxt}</p></div>`;
       const cal = ah.calendar && ah.calendar.date === todayCt ? (ah.calendar.names || []).join(", ") : "";
       el.innerHTML = `
         <div class="pb-head">
@@ -4935,6 +4941,7 @@ PAGE = r"""
         </div>
         <div class="pulse-card expected"><p class="pc-why"><strong>QQQ / IWM overnight bias (context only):</strong> ${obRows || (ob.enabled === false ? "off" : "checks at 2:55 PM CT")}</p>${obLines}</div>
         ${msLine}
+        ${rvLine}
         ${table}`;
     }
 
@@ -6069,6 +6076,13 @@ def _ext_hours_blocks() -> dict:
         out["morning_sweep_shadow"] = morning_sweep_block()
     except Exception as exc:  # noqa: BLE001
         out["morning_sweep_shadow"] = {"ok": False, "shadow_only": True, "orders_placed": 0, "last_error": type(exc).__name__}
+    try:
+        from odte_scanner.signals.reversal_shadow import block as reversal_shadow_block
+
+        out["reversal_shadow"] = reversal_shadow_block()
+    except Exception as exc:  # noqa: BLE001
+        out["reversal_shadow"] = {"ok": False, "shadow_only": True, "orders_enabled": False, "orders_placed": 0,
+                                  "last_error": type(exc).__name__}
     return out
 
 
@@ -9757,6 +9771,11 @@ def create_app(config_path: str | None = None) -> Flask:
     def morning_sweep_shadow_api():
         """Mega-cap Morning Sweep shadow ledger + promotion gate. Alerts only, never an order."""
         return jsonify(sanitize_for_json(_ext_hours_blocks()["morning_sweep_shadow"]))
+
+    @app.get("/api/reversal_shadow")
+    def reversal_shadow_api():
+        """Heavy-volume Reversal 7-14 DTE shadow ledger + promotion gate. Alerts only, never an order."""
+        return jsonify(sanitize_for_json(_ext_hours_blocks()["reversal_shadow"]))
 
     @app.get("/api/levels")
     def levels_api():
