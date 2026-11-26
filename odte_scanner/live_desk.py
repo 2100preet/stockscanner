@@ -183,6 +183,14 @@ def start_live_desk_worker(config_path: str | None = None) -> bool:
         start_morning_sweep_shadow()
     except Exception as exc:  # noqa: BLE001
         logger.warning("morning sweep shadow did not start: %s", exc)
+    # Heavy-volume Reversal 7-14 DTE shadow desk: read-only Tradier bars/quotes
+    # (no Bullflow, no Polygon). 30-trading-day shadow test, alerts only, no orders.
+    try:
+        from odte_scanner.signals.reversal_shadow import start_reversal_shadow
+
+        start_reversal_shadow()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("reversal shadow did not start: %s", exc)
     # Extended-hours shadow desks: AH earnings drift + overnight bias. Alerts only.
     try:
         from odte_scanner.ext_hours.worker import start_ext_hours_worker
