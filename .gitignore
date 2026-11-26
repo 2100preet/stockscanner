@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 data/cache/
+data/tradier_bars/
 outputs/
 webull_trade_sdk.log
 *.parquet
