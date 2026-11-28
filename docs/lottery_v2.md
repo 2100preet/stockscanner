@@ -2,7 +2,7 @@
 
 Lottery v2 is a separate lane from the existing call-only lottery desk. It logs a ticket when price **holds the direction of the break**. It does not send orders to Webull and it does not open a paper-journal trade.
 
-The measured sample below is small. It does **not** justify turning routing on.
+The provider sample below covers ten sessions. It does **not** justify turning routing on.
 
 ## Rules
 
@@ -50,29 +50,38 @@ The Lottery tab (the old Explosive tab) has its own **Lottery v2 — LOG ONLY** 
 
 ## Backtest
 
-Replay uses Yahoo 5-minute equity bars (about 2026-10-01 through 2026-10-14) and Yahoo 1-minute option bars. Polygon and Tradier were not reachable from this environment (`flyctl` is not installed and `FLY_API_TOKEN` is unset), so there is no Fly `ssh` tape.
+The live desk marks prices from **Tradier, then Polygon, then Yahoo**. This replay uses that tape. Equity bars are Tradier production 5-minute timesales (every one of the 16 names, all ten weekdays). Option bars are Polygon 1-minute aggregates. Tradier timesales rejects option symbols (HTTP 400). Polygon’s daily flat files return HTTP 403, so the option path is the aggregates API, paced at about one call every 12 seconds. Polygon historical bid/ask quotes also return HTTP 403, so the entry is the **trade close**, not a quoted ask, and the 45% spread filter did not run. A missing bid is not counted as a failed gate.
 
-A session is a ticket only when the first post-break 1-minute **print** (not a quoted ask) is inside $0.05–$0.40, the contract is 0–1 DTE, session volume through that print is at least 50, and `decide_lottery_v2` returns `LOG`. Expired contracts Yahoo no longer serves are missing data, not zeros. The ladder runs on later prints the same session through 15:45 ET. GEX and flow were not available historically, so those confirms did not fire. VIX and relative volume did.
+The window is **2026-10-01 through 2026-10-14** (ten sessions, 149 opening-range breaks, 116 logged tickets). Twenty-four breaks had no minute bars on the strikes that were requested. Seven had bars but no print inside $0.05–$0.40. Two were too thin to log. GEX and flow were not in the history, so they never confirmed and never vetoed. When contract volume cleared 50, that same volume also counted as the third confirm.
 
-Numbers below are the whole reachable sample, not a cherry-picked 10/14 anecdote. Entries are Yahoo **prints**, not asks, and the replay had no bid, so the spread filter did not fire. GEX and flow were not in the history, so they never confirmed and never vetoed. When contract volume cleared 50, that same volume also counted as the third confirm. A separate VIX or relative-volume confirm was not required on those tickets.
-
-| Sample | Tickets | Hit 5× | Hit 10× | Finished ≤ $0.05 | Median result per $100 | Mean EV per $100 |
+| Sample | Tickets | Hit 5× | Hit 10× | Finished ≤ $0.05 | Median per $100 | Mean EV per $100 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 2026-10-12 – 10-14, rules actually logged | 31 | 9 (29%) | 2 (6%) | 14 (45%) | **−$31** | **+$88** |
-| Puts only | 18 | 7 | 1 | 7 |  | +$149 |
-| Calls only | 13 | 2 | 1 | 7 |  | +$3 |
-| 2026-10-01 – 10-09 | 0 |  |  |  |  | no option tape |
+| 2026-10-01 – 10-14, rules actually logged | 116 | 19 (16%) | 4 (3%) | 53 (46%) | **−$54** | **+$32** |
+| Puts only | 58 | 12 | 3 | 23 | −$45 | +$50 |
+| Calls only | 58 | 7 | 1 | 30 | −$67 | +$14 |
 
-Equity bars exist for 2026-10-01 through 2026-10-14 (16 names). That is 149 opening-range breaks. Yahoo still had 1-minute option bars only for contracts that traded on 10/12–10/14. Earlier expirations returned no bars. Those are missing, not zeros. On the three days with option tape, 45 breaks fired and 14 had no 0–1 DTE print inside $0.05–$0.40 (DIA, NFLX, JNJ, and PFE among them). PFE’s penny call that was discussed elsewhere was 2 DTE, so this rule does not take it.
+Exact figures: median EV **−$53.59** per $100, mean EV **+$32.15**. Puts mean +$50.38. Calls mean +$13.91. Worthless means the contract never printed 5× and the last close was at or under $0.05.
 
-The mean is positive because a handful of puts blended about 4×–8× (AMD, IWM, AMZN, META, NVDA on 10/14, plus AMD on 10/13). The typical ticket lost money. Fourteen of the thirty-one never reached 5× and finished at or under $0.05.
+The same three days Yahoo could serve (2026-10-12 through 10-14) are 31 Polygon tickets, 8 hits at 5×, 1 hit at 10×, 14 worthless, median **−$30**, mean **+$68**. The earlier Yahoo print sample on those days was 31 tickets, 9 hits at 5×, 2 hits at 10×, 14 worthless, median −$31, mean +$88. The two tapes agree on the shape. The extra seven sessions, which Yahoo had no option bars for, pull the Polygon median from −$30 to −$54 and the mean from +$68 to +$32.
 
-SPY on 10/14 is the cautionary row. The first hold was a **call** at 09:45 ET (`SPY261015C00783000` around $0.20). It went to about zero. The later SPY put rip was not the ticket. META’s first hold that day was a put, and that one did reach 5× before the giveback exit.
+The mean is still a fat right tail, not a typical win. The best rows blended about 5×–8× (SPY call on 10/05, QQQ and AVGO puts on 10/08, and the 10/14 puts in IWM, AMZN, AMD, NVDA, and META). Fifty-three of the 116 never reached 5× and finished at or under $0.05.
 
-This is three sessions and 31 prints. It is not a reason to route the lane.
+SPY on 10/14 is still the cautionary row on this tape. The first hold was the **call** `SPY261015C00783000` at a $0.21 print. It finished worthless (about −$90 per $100). The later SPY put rip was not the ticket. META’s first hold that day was a put, and that one did reach 5× before the giveback exit.
+
+Applying the live cap of 3 tickets a day, ranked by confirms and then a cheaper ask, makes the sample worse: 30 tickets, 2 hits at 5×, none at 10×, 17 worthless, median **−$69**, mean **−$14**. The cap is not what produced the positive mean above. That mean is the uncapped log.
+
+### What should not change
+
+Do not turn routing on. Do not widen the ask band, the 0–1 DTE limit, or the spread rule. The spread rule was not testable: there is still no historical bid. Do not drop the 3-ticket cap to chase the uncapped tail, and do not retune the rank so it prefers the handful of puts that paid 5×. Ten sessions is enough to see that the typical ticket loses about half the premium. It is not enough to rewrite the gate.
+
+PFE’s penny call that was discussed elsewhere was 2 DTE, so this rule does not take it.
+
+### Earlier Yahoo sample
+
+The first pass used Yahoo 5-minute equity bars and Yahoo 1-minute option prints. Yahoo still had option bars only for 2026-10-12 through 10-14. Those numbers are the print sample in the paragraph above. They are not a second independent edge.
 
 ### What this does not say
 
 Holding the cheap contracts the **current** call-only flags actually printed, on the days those flags exist, did not reach 3× in the earlier study. That sample is a different rule. It is not this backtest, and it is not a reason to route lottery v2.
 
-Do not turn on Webull routing from this file. The lane stays log only until a larger sample, with real asks and a bid, says otherwise.
+Do not turn on Webull routing from this file. The lane stays log only. A later sample would need real asks and a bid before that changed.
